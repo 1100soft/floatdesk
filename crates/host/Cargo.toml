@@ -1,0 +1,23 @@
+[package]
+name = "floatdesk"
+version = "0.1.0"
+edition = "2021"
+description = "X11 host for the Floatdesk XR desktop"
+license = "LicenseRef-proprietary"
+
+[[bin]]
+name = "floatdesk"
+path = "src/main.rs"
+
+[dependencies]
+floatdesk-protocol = { path = "../protocol" }
+x11rb = { version = "0.13.2", default-features = false, features = ["randr", "shm", "damage", "xfixes"] }
+libc = "0.2"
+clap = { version = "4.5", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+libloading = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+ctrlc = "3.4"

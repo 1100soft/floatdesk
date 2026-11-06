@@ -1,0 +1,13 @@
+[Unit]
+Description=Floatdesk X11 host
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/floatdesk serve --listen 0.0.0.0:47000 --monitors 1 --width 1920 --height 1080
+Restart=on-failure
+RestartSec=2
+Environment=DISPLAY=:0
+
+[Install]
+WantedBy=default.target

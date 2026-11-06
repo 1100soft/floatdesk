@@ -1,0 +1,17 @@
+[package]
+name = "floatdesk-protocol"
+version = "0.1.0"
+edition = "2021"
+description = "Floatdesk session protocol: control datagrams, RTP H.264, workspace geometry"
+license = "LicenseRef-proprietary"
+
+[lib]
+name = "floatdesk_protocol"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"

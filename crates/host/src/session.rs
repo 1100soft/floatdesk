@@ -15,7 +15,7 @@ use floatdesk_protocol::{
 };
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -38,6 +38,17 @@ struct ClientTarget {
     generation: u64,
 }
 
+struct CursorSprite {
+    root_x: i32,
+    root_y: i32,
+    hotspot_x: i16,
+    hotspot_y: i16,
+    width: u16,
+    height: u16,
+    /// BGRA, length width * height * 4. Empty until the first shape arrives.
+    pixels: Vec<u8>,
+}
+
 struct Shared {
     stop: AtomicBool,
     client: RwLock<Option<ClientTarget>>,
@@ -46,6 +57,7 @@ struct Shared {
     captured: AtomicU64,
     skipped: AtomicU64,
     bytes: AtomicU64,
+    cursor: Mutex<CursorSprite>,
 }
 
 pub fn serve(opts: ServeOpts) -> Result<()> {
@@ -124,6 +136,15 @@ fn run(monitors: &[MonitorRect], opts: &ServeOpts) -> Result<()> {
         captured: AtomicU64::new(0),
         skipped: AtomicU64::new(0),
         bytes: AtomicU64::new(0),
+        cursor: Mutex::new(CursorSprite {
+            root_x: 0,
+            root_y: 0,
+            hotspot_x: 0,
+            hotspot_y: 0,
+            width: 0,
+            height: 0,
+            pixels: Vec::new(),
+        }),
     });
     let stop_flag = Arc::clone(&shared);
     let _ = ctrlc::set_handler(move || {
@@ -146,11 +167,9 @@ fn run(monitors: &[MonitorRect], opts: &ServeOpts) -> Result<()> {
     }
 
     tracing::info!(listen = %opts.listen, "waiting for a client hello");
-    let cursor_socket = socket.try_clone()?;
     let cursor_shared = Arc::clone(&shared);
-    let cursor_monitors = monitors.to_vec();
     threads.push(thread::spawn(move || {
-        cursor_loop(cursor_shared, cursor_socket, &cursor_monitors);
+        cursor_loop(cursor_shared);
     }));
     let mut last_hello = Instant::now() - Duration::from_secs(2);
     let mut last_stats = Instant::now();
@@ -218,7 +237,6 @@ fn monitor_thread(
     let mut packetizer = RtpH264Packetizer::new(ssrc);
     let interval = Duration::from_secs_f64(1.0 / f64::from(fps));
     let mut seen_generation = 0u64;
-    let mut last_submit = Instant::now() - Duration::from_secs(1);
     while !shared.stop.load(Ordering::Relaxed) {
         let target = shared
             .client
@@ -239,18 +257,18 @@ fn monitor_thread(
         if rect.index < 6 && shared.keys[rect.index as usize].swap(false, Ordering::Relaxed) {
             force = true;
         }
-        if force || last_submit.elapsed() >= Duration::from_millis(250) {
-            // A picture that was still and then changes is sent as an intra frame,
-            // so the decoder does not keep the old region from a reference it missed.
+        if force {
             encoder.request_keyframe();
         }
-        let Some(frame) = capture.poll(interval, force)? else {
+        let Some(mut frame) = capture.poll(interval, force)? else {
             shared.skipped.fetch_add(1, Ordering::Relaxed);
             thread::sleep(Duration::from_millis(2));
             continue;
         };
+        if let Ok(cursor) = shared.cursor.lock() {
+            paint_cursor(&mut frame, rect.x, rect.y, &cursor);
+        }
         encoder.submit(&frame)?;
-        last_submit = Instant::now();
         shared.captured.fetch_add(1, Ordering::Relaxed);
         tracing::trace!(
             generation = frame.damage_generation,
@@ -445,7 +463,7 @@ fn send_layout(shared: &Shared, socket: &UdpSocket, hellos: &[MonitorHello]) {
     let _ = socket.send_to(&packet.encode(), client.control);
 }
 
-fn cursor_loop(shared: Arc<Shared>, socket: UdpSocket, monitors: &[MonitorRect]) {
+fn cursor_loop(shared: Arc<Shared>) {
     let mut cursor = match X11Cursor::open() {
         Ok(cursor) => cursor,
         Err(err) => {
@@ -453,31 +471,73 @@ fn cursor_loop(shared: Arc<Shared>, socket: UdpSocket, monitors: &[MonitorRect])
             return;
         }
     };
-    let mut last = (i32::MIN, i32::MIN, u64::MAX);
-    let mut seen_generation = 0u64;
     while !shared.stop.load(Ordering::Relaxed) {
-        let generation = shared
-            .client
-            .read()
-            .unwrap_or_else(|err| err.into_inner())
-            .as_ref()
-            .map(|client| client.generation)
-            .unwrap_or(0);
-        if generation != seen_generation {
-            seen_generation = generation;
-            last = (i32::MIN, i32::MIN, u64::MAX);
-        }
         match cursor.poll() {
             Ok(sample) => {
-                let key = (sample.root_x, sample.root_y, sample.serial);
-                if key != last {
-                    last = key;
-                    send_cursor(&shared, &socket, monitors, &sample);
+                if let Ok(mut slot) = shared.cursor.lock() {
+                    slot.root_x = sample.root_x;
+                    slot.root_y = sample.root_y;
+                    if !sample.argb.is_empty() {
+                        slot.hotspot_x = sample.hotspot_x;
+                        slot.hotspot_y = sample.hotspot_y;
+                        slot.width = sample.width;
+                        slot.height = sample.height;
+                        slot.pixels = argb_to_bgra(&sample.argb);
+                    }
                 }
             }
             Err(err) => tracing::debug!("cursor poll: {err}"),
         }
         thread::sleep(Duration::from_millis(2));
+    }
+}
+
+fn paint_cursor(frame: &mut crate::core::CapturedFrame, origin_x: i32, origin_y: i32, cursor: &CursorSprite) {
+    let width = cursor.width as i32;
+    let height = cursor.height as i32;
+    if width <= 0 || height <= 0 {
+        return;
+    }
+    let expected = cursor.width as usize * cursor.height as usize * 4;
+    if cursor.pixels.len() < expected {
+        return;
+    }
+    let left = cursor.root_x - i32::from(cursor.hotspot_x) - origin_x;
+    let top = cursor.root_y - i32::from(cursor.hotspot_y) - origin_y;
+    let frame_w = frame.width as i32;
+    let frame_h = frame.height as i32;
+    let stride = frame.stride as usize;
+    for row in 0..height {
+        let dst_y = top + row;
+        if dst_y < 0 || dst_y >= frame_h {
+            continue;
+        }
+        for col in 0..width {
+            let dst_x = left + col;
+            if dst_x < 0 || dst_x >= frame_w {
+                continue;
+            }
+            let src = ((row as usize * cursor.width as usize) + col as usize) * 4;
+            let alpha = cursor.pixels[src + 3] as u32;
+            if alpha == 0 {
+                continue;
+            }
+            let dst = dst_y as usize * stride + dst_x as usize * 4;
+            if dst + 2 >= frame.bgra.len() {
+                continue;
+            }
+            if alpha == 255 {
+                frame.bgra[dst] = cursor.pixels[src];
+                frame.bgra[dst + 1] = cursor.pixels[src + 1];
+                frame.bgra[dst + 2] = cursor.pixels[src + 2];
+            } else {
+                for channel in 0..3 {
+                    let blended = cursor.pixels[src + channel] as u32 * alpha
+                        + frame.bgra[dst + channel] as u32 * (255 - alpha);
+                    frame.bgra[dst + channel] = (blended / 255) as u8;
+                }
+            }
+        }
     }
 }
 

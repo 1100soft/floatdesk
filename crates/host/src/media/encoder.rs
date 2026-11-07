@@ -28,7 +28,7 @@ const VA: &[(&str, &str)] = &[
     ("b-frames", "0"),
     ("cabac", "false"),
     ("target-usage", "6"),
-    ("cpb-size", "400"),
+    ("cpb-size", "8000"),
     ("ref-frames", "1"),
     ("aud", "true"),
 ];

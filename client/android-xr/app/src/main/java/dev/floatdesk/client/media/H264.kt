@@ -244,8 +244,11 @@ internal class MonitorDecoder(
 
     private fun queue(codec: MediaCodec, accessUnit: ByteArray, ptsUs: Long, keyframe: Boolean) {
         try {
-            val index = codec.dequeueInputBuffer(0)
-            if (index < 0) return
+            val index = codec.dequeueInputBuffer(40)
+            if (index < 0) {
+                onGap()
+                return
+            }
             val input = codec.getInputBuffer(index) ?: return
             input.clear()
             if (accessUnit.size > input.remaining()) {

@@ -31,6 +31,9 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.xr.arcore.Hand
+import androidx.xr.arcore.HandJointType
+import androidx.xr.arcore.TrackingState
 import androidx.xr.compose.platform.LocalSession
 import androidx.xr.compose.platform.LocalSpatialCapabilities
 import androidx.xr.compose.spatial.ExperimentalFollowingSubspaceApi
@@ -56,7 +59,11 @@ import androidx.xr.compose.subspace.layout.requiredWidth
 import androidx.xr.compose.subspace.layout.resizable
 import androidx.xr.compose.subspace.layout.rotate
 import androidx.xr.compose.unit.DpVolumeSize
+import androidx.xr.runtime.Config
+import androidx.xr.runtime.DeviceTrackingMode
+import androidx.xr.runtime.HandTrackingMode
 import androidx.xr.runtime.math.Quaternion
+import androidx.xr.runtime.math.Vector3
 import androidx.xr.scenecore.InputEvent
 import androidx.xr.scenecore.PixelDensity
 import androidx.xr.scenecore.scene
@@ -74,6 +81,8 @@ import dev.floatdesk.client.workspace.deskLayout
 import dev.floatdesk.client.workspace.monitorPlaced
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 import java.nio.ByteBuffer
@@ -93,6 +102,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         store = WorkspaceStore(File(filesDir, "workspace.json"))
+        if (checkSelfPermission("android.permission.HAND_TRACKING") !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf("android.permission.HAND_TRACKING"), 7)
+        }
         val dump = if (intent.getBooleanExtra("floatdesk_dump", false)) {
             File(getExternalFilesDir(null), "frame.jpg")
         } else {
@@ -132,7 +146,36 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     val density = LocalDensity.current
     val pixelDensity = session?.scene?.virtualPixelDensity
     LaunchedEffect(session) {
-        session?.scene?.requestFullSpace()
+        val current = session ?: return@LaunchedEffect
+        current.scene.requestFullSpace()
+        runCatching {
+            current.configure(
+                Config.Builder(current.config)
+                    .setHandTracking(HandTrackingMode.BOTH)
+                    .setDeviceTracking(DeviceTrackingMode.SPATIAL)
+                    .build(),
+            )
+        }
+        val hands = listOfNotNull(
+            runCatching { Hand.left(current) }.getOrNull(),
+            runCatching { Hand.right(current) }.getOrNull(),
+        )
+        val wasFist = BooleanArray(hands.size)
+        while (isActive) {
+            delay(40)
+            var anyFist = false
+            var opened = false
+            hands.forEachIndexed { index, hand ->
+                val fist = handIsFist(hand.state.value)
+                if (fist) anyFist = true
+                if (wasFist[index] && !fist && handIsOpen(hand.state.value)) opened = true
+                wasFist[index] = fist
+            }
+            when {
+                anyFist -> headLocked = true
+                opened -> headLocked = false
+            }
+        }
     }
     LaunchedEffect(monitors) {
         if (monitors.isNotEmpty() && workspace.layouts[workspace.activeLayout]?.size != monitors.size) {
@@ -198,46 +241,6 @@ private fun DeskContent(
     val latest = rememberUpdatedState(workspace)
     val layout = layoutFor(workspace, monitors)
     val control = workspace.control
-    val margin = 0.08f
-    val front = rotateVector(control.pose.rotation, 0f, 0f, -0.015f)
-    SpatialPanel(
-        modifier = placedPanel(
-            pose = control.pose,
-            widthM = control.widthM + margin * 2f,
-            heightM = control.heightM + margin * 2f,
-            density = density,
-            pixelDensity = pixelDensity,
-        ).movable(
-            movePolicy = MovePolicy.custom(scaleWithDistance = false) { event ->
-                val current = latest.value.control
-                onWorkspace(
-                    latest.value.controlPlaced(
-                        current.copy(pose = event.workspacePose(pixelDensity)),
-                        store,
-                        event.type == SpatialMoveEventType.End,
-                    ),
-                )
-            },
-        ).resizable(
-            minimumSize = DpVolumeSize(0.45f.meters(density, pixelDensity), 0.30f.meters(density, pixelDensity), 0.dp),
-            maximumSize = DpVolumeSize(1.8f.meters(density, pixelDensity), 1.3f.meters(density, pixelDensity), 0.dp),
-            resizePolicy = ResizePolicy.custom { event ->
-                val size = event.sizeInMeters(pixelDensity) ?: return@custom
-                onWorkspace(
-                    latest.value.controlPlaced(
-                        latest.value.control.copy(
-                            widthM = (size.first - margin * 2f).coerceAtLeast(0.35f),
-                            heightM = (size.second - margin * 2f).coerceAtLeast(0.22f),
-                        ),
-                        store,
-                        event.type == SpatialResizeEventType.End,
-                    ),
-                )
-            },
-        ),
-    ) {
-        Box(Modifier.fillMaxSize().background(Color(0xFF3A3A3C)))
-    }
     SpatialPanel(
         modifier = placedPanel(
             pose = control.pose,
@@ -245,9 +248,32 @@ private fun DeskContent(
             heightM = control.heightM,
             density = density,
             pixelDensity = pixelDensity,
-            dx = front[0],
-            dy = front[1],
-            dz = front[2],
+        ).movable(
+            movePolicy = MovePolicy.system(scaleWithDistance = false) { event ->
+                if (event.type != SpatialMoveEventType.End) return@system
+                val current = latest.value.control
+                onWorkspace(
+                    latest.value.controlPlaced(
+                        current.copy(pose = event.workspacePose(pixelDensity)),
+                        store,
+                        true,
+                    ),
+                )
+            },
+        ).resizable(
+            minimumSize = DpVolumeSize(0.45f.meters(density, pixelDensity), 0.28f.meters(density, pixelDensity), 0.dp),
+            maximumSize = DpVolumeSize(1.6f.meters(density, pixelDensity), 1.1f.meters(density, pixelDensity), 0.dp),
+            resizePolicy = ResizePolicy.system { event ->
+                if (event.type != SpatialResizeEventType.End) return@system
+                val size = event.sizeInMeters(pixelDensity) ?: return@system
+                onWorkspace(
+                    latest.value.controlPlaced(
+                        latest.value.control.copy(widthM = size.first, heightM = size.second),
+                        store,
+                        true,
+                    ),
+                )
+            },
         ),
     ) {
         controls()
@@ -316,7 +342,6 @@ private fun DeskContent(
             onSurfaceCreated { surface -> connection.attachSurface(index, surface) }
             onSurfaceDestroyed { connection.detachSurface(index) }
         }
-        MonitorCursor(connection, index, placement, density, pixelDensity)
     }
 }
 
@@ -424,9 +449,9 @@ private fun ControlPanel(
         Text(
             if (spatial) {
                 if (headLocked) {
-                    "The desk is following your head. Grab the gray border to move this panel. Pinch a screen with both hands to resize and turn it."
+                    "The desk is following your head. Close a fist to keep following, and open that hand to lock it in the room."
                 } else {
-                    "The desk stays where you leave it. Grab the gray border to move this panel. Pinch a screen with both hands to resize and turn it."
+                    "The desk stays where you leave it. Close a fist to make it follow your head, and open that hand to lock it again."
                 }
             } else {
                 "Opening the workspace. If this stays flat, close the app and open it once more."
@@ -567,6 +592,30 @@ private class TwoHandState {
         val right: FloatArray,
         val placement: MonitorPlacement,
     )
+}
+
+private fun handIsFist(state: Hand.State): Boolean = fingerReach(state)?.let { it < 0.085f } == true
+
+private fun handIsOpen(state: Hand.State): Boolean = fingerReach(state)?.let { it > 0.13f } == true
+
+private fun fingerReach(state: Hand.State): Float? {
+    if (state.trackingState != TrackingState.TRACKING) return null
+    val palm = state.handJoints[HandJointType.PALM]?.translation ?: return null
+    val tips = listOf(
+        HandJointType.INDEX_TIP,
+        HandJointType.MIDDLE_TIP,
+        HandJointType.RING_TIP,
+        HandJointType.LITTLE_TIP,
+    ).mapNotNull { state.handJoints[it]?.translation }
+    if (tips.size < 4) return null
+    return tips.map { distance(it, palm) }.average().toFloat()
+}
+
+private fun distance(a: Vector3, b: Vector3): Float {
+    val dx = a.x - b.x
+    val dy = a.y - b.y
+    val dz = a.z - b.z
+    return kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
 }
 
 private fun cursorBitmap(cursor: CursorView): Bitmap? {

@@ -205,7 +205,7 @@ internal class DeskConnection(
 
     private fun askKeyframe() {
         val now = System.currentTimeMillis()
-        if (now - lastGapAsk < 250) return
+        if (now - lastGapAsk < 1000) return
         lastGapAsk = now
         send(Protocol.keyframeRequest(0xff))
     }

@@ -18,6 +18,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -36,13 +37,10 @@ import androidx.xr.arcore.HandJointType
 import androidx.xr.arcore.TrackingState
 import androidx.xr.compose.platform.LocalSession
 import androidx.xr.compose.platform.LocalSpatialCapabilities
-import androidx.xr.compose.spatial.ExperimentalFollowingSubspaceApi
 import androidx.xr.compose.spatial.Subspace
 import androidx.xr.compose.subspace.SpatialExternalSurface
 import androidx.xr.compose.subspace.SpatialPanel
 import androidx.xr.compose.subspace.StereoMode
-import androidx.xr.compose.subspace.animation.follow.FollowMode
-import androidx.xr.compose.subspace.animation.follow.FollowTarget
 import androidx.xr.compose.subspace.layout.MovePolicy
 import androidx.xr.compose.subspace.layout.ResizePolicy
 import androidx.xr.compose.subspace.layout.InteractionPolicy
@@ -129,7 +127,6 @@ private object SessionHolder {
     var session: androidx.xr.runtime.Session? = null
 }
 
-@OptIn(ExperimentalFollowingSubspaceApi::class)
 @Composable
 private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     val connection = remember { DeskConnection(dumpFile) }
@@ -142,7 +139,18 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     val status by connection.status
     val spatial = LocalSpatialCapabilities.current.isSpatialUiEnabled
     var note by remember { mutableStateOf("") }
-    var headLocked by remember { mutableStateOf(false) }
+    var latchedFollow by remember { mutableStateOf(false) }
+    var holdingFist by remember { mutableStateOf(false) }
+    var suppressFist by remember { mutableStateOf(false) }
+    var followGeneration by remember { mutableIntStateOf(0) }
+    val following = (holdingFist || latchedFollow) && !suppressFist
+    val workspaceNow = rememberUpdatedState(workspace)
+    fun pinToFixed() {
+        latchedFollow = false
+        holdingFist = false
+        suppressFist = true
+        followGeneration += 1
+    }
     val density = LocalDensity.current
     val pixelDensity = session?.scene?.virtualPixelDensity
     LaunchedEffect(session) {
@@ -160,20 +168,68 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             runCatching { Hand.left(current) }.getOrNull(),
             runCatching { Hand.right(current) }.getOrNull(),
         )
-        val wasFist = BooleanArray(hands.size)
+        val viewpoint = runCatching { androidx.xr.arcore.RenderViewpoint.mono(current) }.getOrNull()
+        var pinchHeld = 0
+        var pinchArmed = true
+        var palmHeld = 0
+        var palmArmed = true
+        var followLock: FollowLock? = null
+        var seenGeneration = followGeneration
         while (isActive) {
             delay(40)
-            var anyFist = false
-            var opened = false
-            hands.forEachIndexed { index, hand ->
-                val fist = handIsFist(hand.state.value)
-                if (fist) anyFist = true
-                if (wasFist[index] && !fist && handIsOpen(hand.state.value)) opened = true
-                wasFist[index] = fist
+            if (followGeneration != seenGeneration) {
+                followLock = null
+                seenGeneration = followGeneration
             }
-            when {
-                anyFist -> headLocked = true
-                opened -> headLocked = false
+            val head = viewpoint?.state?.value?.pose
+            var anyFist = false
+            var anyOpen = false
+            var anyPinch = false
+            var palmShown = false
+            for (hand in hands) {
+                val read = readHand(hand.state.value, head?.translation) ?: continue
+                if (read.fist) anyFist = true
+                if (read.open) anyOpen = true
+                if (read.pinch) anyPinch = true
+                if (read.palmToFace) palmShown = true
+            }
+            if (anyOpen && !anyFist) suppressFist = false
+            holdingFist = anyFist && !suppressFist
+            if (anyPinch) {
+                pinchHeld += 1
+                if (pinchHeld == 6 && pinchArmed) {
+                    latchedFollow = !latchedFollow
+                    pinchArmed = false
+                }
+            } else {
+                pinchHeld = 0
+                pinchArmed = true
+            }
+            if (palmShown) {
+                palmHeld += 1
+                if (palmHeld == 5 && palmArmed && head != null) {
+                    palmArmed = false
+                    val summoned = summonPanel(workspaceNow.value, head)
+                    workspace = summoned
+                    store.save(summoned)
+                    followLock = null
+                    latchedFollow = false
+                    suppressFist = true
+                }
+            } else {
+                palmHeld = 0
+                palmArmed = true
+            }
+            val wantFollow = (holdingFist || latchedFollow) && !suppressFist && head != null
+            if (!wantFollow || head == null) {
+                if (followLock != null) {
+                    store.save(workspaceNow.value)
+                    followLock = null
+                }
+            } else if (followLock == null) {
+                followLock = FollowLock.capture(head, workspaceNow.value)
+            } else {
+                workspace = followLock.advance(head, workspaceNow.value)
             }
         }
     }
@@ -199,8 +255,9 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             },
             onOpenWorkspace = { session?.scene?.requestFullSpace() },
             onReset = { workspace = workspace.reset(monitors, store) },
-            headLocked = headLocked,
-            onToggleHead = { headLocked = !headLocked },
+            headLocked = following,
+            latchedFollow = latchedFollow,
+            onToggleHead = { latchedFollow = !latchedFollow },
         )
     }
 
@@ -215,13 +272,10 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 density = density,
                 pixelDensity = pixelDensity,
                 controls = controls,
+                onManipulate = { pinToFixed() },
             )
         }
-        if (headLocked) {
-            Subspace(follow = FollowTarget.view(FollowMode.tight())) { desk() }
-        } else {
-            Subspace { desk() }
-        }
+        Subspace { desk() }
     } else {
         controls()
     }
@@ -237,6 +291,7 @@ private fun DeskContent(
     density: Density,
     pixelDensity: PixelDensity,
     controls: @Composable () -> Unit,
+    onManipulate: () -> Unit,
 ) {
     val latest = rememberUpdatedState(workspace)
     val layout = layoutFor(workspace, monitors)
@@ -249,28 +304,28 @@ private fun DeskContent(
             density = density,
             pixelDensity = pixelDensity,
         ).movable(
-            movePolicy = MovePolicy.system(scaleWithDistance = false) { event ->
-                if (event.type != SpatialMoveEventType.End) return@system
+            movePolicy = MovePolicy.custom(scaleWithDistance = false) { event ->
+                if (event.type == SpatialMoveEventType.Start) onManipulate()
                 val current = latest.value.control
                 onWorkspace(
                     latest.value.controlPlaced(
                         current.copy(pose = event.workspacePose(pixelDensity)),
                         store,
-                        true,
+                        event.type == SpatialMoveEventType.End,
                     ),
                 )
             },
         ).resizable(
             minimumSize = DpVolumeSize(0.45f.meters(density, pixelDensity), 0.28f.meters(density, pixelDensity), 0.dp),
             maximumSize = DpVolumeSize(1.6f.meters(density, pixelDensity), 1.1f.meters(density, pixelDensity), 0.dp),
-            resizePolicy = ResizePolicy.system { event ->
-                if (event.type != SpatialResizeEventType.End) return@system
-                val size = event.sizeInMeters(pixelDensity) ?: return@system
+            resizePolicy = ResizePolicy.custom { event ->
+                if (event.type == SpatialResizeEventType.Start) onManipulate()
+                val size = event.sizeInMeters(pixelDensity) ?: return@custom
                 onWorkspace(
                     latest.value.controlPlaced(
                         latest.value.control.copy(widthM = size.first, heightM = size.second),
                         store,
-                        true,
+                        event.type == SpatialResizeEventType.End,
                     ),
                 )
             },
@@ -289,7 +344,9 @@ private fun DeskContent(
                     override fun onInputEvent(event: SpatialInputEvent) {
                         val file = latest.value
                         val existing = file.monitorAt(index) ?: return
+                        val wasEngaged = hands.engaged
                         val next = hands.onEvent(event, existing, pixelDensity) ?: return
+                        if (!wasEngaged && hands.engaged) onManipulate()
                         onWorkspace(
                             file.monitorPlaced(
                                 index,
@@ -310,6 +367,7 @@ private fun DeskContent(
             ).movable(
                 movePolicy = MovePolicy.custom(scaleWithDistance = false) { event ->
                     if (hands.engaged) return@custom
+                    if (event.type == SpatialMoveEventType.Start) onManipulate()
                     val existing = latest.value.monitorAt(index) ?: return@custom
                     onWorkspace(
                         latest.value.monitorPlaced(
@@ -326,6 +384,7 @@ private fun DeskContent(
                 maintainAspectRatio = true,
                 resizePolicy = ResizePolicy.custom { event ->
                     if (hands.engaged) return@custom
+                    if (event.type == SpatialResizeEventType.Start) onManipulate()
                     val size = event.sizeInMeters(pixelDensity) ?: return@custom
                     val existing = latest.value.monitorAt(index) ?: return@custom
                     onWorkspace(
@@ -438,6 +497,7 @@ private fun ControlPanel(
     onOpenWorkspace: () -> Unit,
     onReset: () -> Unit,
     headLocked: Boolean,
+    latchedFollow: Boolean,
     onToggleHead: () -> Unit,
 ) {
     Column(
@@ -448,10 +508,13 @@ private fun ControlPanel(
         Text(status, color = Color.White)
         Text(
             if (spatial) {
-                if (headLocked) {
-                    "The desk is following your head. Close a fist to keep following, and open that hand to lock it in the room."
-                } else {
-                    "The desk stays where you leave it. Close a fist to make it follow your head, and open that hand to lock it again."
+                when {
+                    headLocked && latchedFollow ->
+                        "Follow is latched. Pinch to lock the desk in place, or grab anything to do the same. Show an open palm to bring this panel back."
+                    headLocked ->
+                        "Following your head while that fist is closed. Open the hand to stop. Pinch to latch follow on."
+                    else ->
+                        "The desk stays where you put it. Close a fist to follow your head, and pinch to latch that. Show an open palm to bring this panel back."
                 }
             } else {
                 "Opening the workspace. If this stays flat, close the app and open it once more."
@@ -463,7 +526,9 @@ private fun ControlPanel(
             Button(onClick = onOpenWorkspace) { Text("Open workspace") }
             Button(onClick = onAnchor) { Text("Save room anchor") }
             Button(onClick = onReset) { Text("Reset desk") }
-            Button(onClick = onToggleHead) { Text(if (headLocked) "Lock in space" else "Follow head") }
+            Button(onClick = onToggleHead) {
+                Text(if (latchedFollow) "Unlock follow" else "Latch follow")
+            }
         }
         Text(anchorLabel, color = Color.White)
     }
@@ -594,13 +659,61 @@ private class TwoHandState {
     )
 }
 
-private fun handIsFist(state: Hand.State): Boolean = fingerReach(state)?.let { it < 0.085f } == true
+private class FollowLock(
+    val head: androidx.xr.runtime.math.Pose,
+    val monitors: List<androidx.xr.runtime.math.Pose>,
+    val control: androidx.xr.runtime.math.Pose,
+) {
+    fun advance(headNow: androidx.xr.runtime.math.Pose, file: WorkspaceFile): WorkspaceFile {
+        val delta = headNow.compose(head.inverse)
+        val current = file.layouts[file.activeLayout] ?: return file
+        val moved = current.mapIndexed { index, monitor ->
+            val source = monitors.getOrNull(index) ?: monitor.pose.toRuntimePose()
+            monitor.copy(pose = delta.compose(source).toWorkspacePose())
+        }.toMutableList()
+        val layouts = file.layouts.toMutableMap()
+        layouts[file.activeLayout] = moved
+        return file.copy(
+            layouts = layouts,
+            control = file.control.copy(pose = delta.compose(control).toWorkspacePose()),
+        )
+    }
 
-private fun handIsOpen(state: Hand.State): Boolean = fingerReach(state)?.let { it > 0.13f } == true
+    companion object {
+        fun capture(head: androidx.xr.runtime.math.Pose, file: WorkspaceFile): FollowLock {
+            val monitors = file.layouts[file.activeLayout].orEmpty().map { it.pose.toRuntimePose() }
+            return FollowLock(head, monitors, file.control.pose.toRuntimePose())
+        }
+    }
+}
 
-private fun fingerReach(state: Hand.State): Float? {
+private fun summonPanel(file: WorkspaceFile, head: androidx.xr.runtime.math.Pose): WorkspaceFile {
+    val look = head.forward
+    val down = head.down
+    val origin = head.translation
+    val place = Vector3(
+        origin.x + look.x * 0.85f + down.x * 0.22f,
+        origin.y + look.y * 0.85f + down.y * 0.22f,
+        origin.z + look.z * 0.85f + down.z * 0.22f,
+    )
+    val facing = head.rotation * Quaternion(0f, 1f, 0f, 0f)
+    return file.copy(control = file.control.copy(pose = androidx.xr.runtime.math.Pose(place, facing).toWorkspacePose()))
+}
+
+private data class HandRead(
+    val fist: Boolean,
+    val open: Boolean,
+    val pinch: Boolean,
+    val palmToFace: Boolean,
+)
+
+private fun readHand(state: Hand.State, head: Vector3?): HandRead? {
     if (state.trackingState != TrackingState.TRACKING) return null
-    val palm = state.handJoints[HandJointType.PALM]?.translation ?: return null
+    val palmPose = state.handJoints[HandJointType.PALM] ?: return null
+    val wrist = state.handJoints[HandJointType.WRIST]?.translation ?: return null
+    val palm = palmPose.translation
+    val bone = distance(wrist, palm)
+    if (bone < 0.015f || bone > 0.12f) return null
     val tips = listOf(
         HandJointType.INDEX_TIP,
         HandJointType.MIDDLE_TIP,
@@ -608,7 +721,48 @@ private fun fingerReach(state: Hand.State): Float? {
         HandJointType.LITTLE_TIP,
     ).mapNotNull { state.handJoints[it]?.translation }
     if (tips.size < 4) return null
-    return tips.map { distance(it, palm) }.average().toFloat()
+    val reach = tips.map { distance(it, palm) }.average().toFloat()
+    if (reach < 0.015f) return null
+    val fist = reach < 0.075f
+    val open = reach > 0.12f
+    val thumb = state.handJoints[HandJointType.THUMB_TIP]?.translation
+    val index = state.handJoints[HandJointType.INDEX_TIP]?.translation
+    val middle = state.handJoints[HandJointType.MIDDLE_TIP]?.translation
+    val pinch = thumb != null && index != null && middle != null &&
+        distance(thumb, index) < 0.03f &&
+        distance(middle, palm) > 0.10f &&
+        !fist
+    var palmToFace = false
+    if (open && head != null) {
+        val toward = Vector3(head.x - palm.x, head.y - palm.y, head.z - palm.z)
+        val length = kotlin.math.sqrt(toward.x * toward.x + toward.y * toward.y + toward.z * toward.z)
+        if (length in 0.15f..0.65f) {
+            val dir = Vector3(toward.x / length, toward.y / length, toward.z / length)
+            palmToFace = maxOf(dot(palmPose.up, dir), dot(palmPose.forward, dir)) > 0.72f
+        }
+    }
+    return HandRead(fist, open, pinch, palmToFace)
+}
+
+private fun dot(a: Vector3, b: Vector3): Float = a.x * b.x + a.y * b.y + a.z * b.z
+
+private fun Pose.toRuntimePose(): androidx.xr.runtime.math.Pose {
+    return androidx.xr.runtime.math.Pose(
+        Vector3(position.getOrElse(0) { 0f }, position.getOrElse(1) { 0f }, position.getOrElse(2) { 0f }),
+        Quaternion(
+            rotation.getOrElse(0) { 0f },
+            rotation.getOrElse(1) { 0f },
+            rotation.getOrElse(2) { 0f },
+            rotation.getOrElse(3) { 1f },
+        ),
+    )
+}
+
+private fun androidx.xr.runtime.math.Pose.toWorkspacePose(): Pose {
+    return Pose(
+        floatArrayOf(translation.x, translation.y, translation.z),
+        floatArrayOf(rotation.x, rotation.y, rotation.z, rotation.w),
+    )
 }
 
 private fun distance(a: Vector3, b: Vector3): Float {

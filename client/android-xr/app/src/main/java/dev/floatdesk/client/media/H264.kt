@@ -244,11 +244,10 @@ internal class MonitorDecoder(
 
     private fun queue(codec: MediaCodec, accessUnit: ByteArray, ptsUs: Long, keyframe: Boolean) {
         try {
-            val index = codec.dequeueInputBuffer(40)
-            if (index < 0) {
-                onGap()
-                return
-            }
+            // Dropping this frame would leave the headset showing an older picture
+            // until the next keyframe. Wait for a free buffer instead.
+            val index = codec.dequeueInputBuffer(50)
+            if (index < 0) return
             val input = codec.getInputBuffer(index) ?: return
             input.clear()
             if (accessUnit.size > input.remaining()) {

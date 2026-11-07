@@ -23,7 +23,15 @@ const NVENC: &[(&str, &str)] = &[
     ("zerolatency", "true"),
     ("bframes", "0"),
 ];
-const VA: &[(&str, &str)] = &[("rate-control", "cbr")];
+const VA: &[(&str, &str)] = &[
+    ("rate-control", "cbr"),
+    ("b-frames", "0"),
+    ("cabac", "false"),
+    ("target-usage", "6"),
+    ("cpb-size", "400"),
+    ("ref-frames", "1"),
+    ("aud", "true"),
+];
 const X264: &[(&str, &str)] = &[
     ("tune", "zerolatency"),
     ("speed-preset", "ultrafast"),
@@ -31,7 +39,10 @@ const X264: &[(&str, &str)] = &[
     ("bframes", "0"),
     ("byte-stream", "true"),
     ("aud", "true"),
-    ("vbv-buf-capacity", "80"),
+    ("vbv-buf-capacity", "60"),
+    ("rc-lookahead", "0"),
+    ("sync-lookahead", "0"),
+    ("sliced-threads", "true"),
     ("threads", "4"),
 ];
 const OPENH264: &[(&str, &str)] = &[
@@ -150,7 +161,7 @@ impl GstEncoder {
              ! {} name=enc \
              ! h264parse config-interval=-1 \
              ! video/x-h264,stream-format=byte-stream,alignment=au \
-             ! appsink name=sink emit-signals=false sync=false max-buffers=3 drop=true",
+             ! appsink name=sink emit-signals=false sync=false max-buffers=1 drop=true",
             profile.format, profile.element
         );
         let pipeline = Pipeline::launch(&description)?;

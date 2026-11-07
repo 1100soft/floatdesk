@@ -10,8 +10,8 @@ use crate::error::{Error, Result};
 use crate::media::GstEncoder;
 use crate::platform::x11::{X11Capture, X11Cursor, X11Display};
 use floatdesk_protocol::{
-    allocate_bitrate, cursor_packets, rtp_timestamp, ControlPacket, CursorState, LayoutEntry,
-    MonitorHello, MonitorLoad, RtpH264Packetizer,
+    allocate_bitrate, cursor_packets, rtp_timestamp, BEACON_PORT, ControlPacket, CursorState,
+    LayoutEntry, MonitorHello, MonitorLoad, RtpH264Packetizer,
 };
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -148,6 +148,7 @@ fn run(monitors: &[MonitorRect], opts: &ServeOpts) -> Result<()> {
     tracing::info!(listen = %opts.listen, "waiting for a client hello");
     let mut cursor = X11Cursor::open()?;
     let mut last_cursor = (i32::MIN, i32::MIN, u64::MAX);
+    let mut seen_cursor_generation = 0u64;
     let mut last_hello = Instant::now() - Duration::from_secs(2);
     let mut last_stats = Instant::now();
     let started = Instant::now();
@@ -170,7 +171,19 @@ fn run(monitors: &[MonitorRect], opts: &ServeOpts) -> Result<()> {
         }
         if last_hello.elapsed() >= Duration::from_secs(1) {
             send_hello(&shared, &socket, &hellos);
+            send_beacon(opts.listen.port());
             last_hello = Instant::now();
+        }
+        let cursor_generation = shared
+            .client
+            .read()
+            .unwrap_or_else(|err| err.into_inner())
+            .as_ref()
+            .map(|client| client.generation)
+            .unwrap_or(0);
+        if cursor_generation != seen_cursor_generation {
+            seen_cursor_generation = cursor_generation;
+            last_cursor = (i32::MIN, i32::MIN, u64::MAX);
         }
         if let Ok(sample) = cursor.poll() {
             let moved = (sample.root_x, sample.root_y, sample.serial) != last_cursor;
@@ -335,6 +348,63 @@ fn handle_datagram(
         }
         _ => {}
     }
+}
+
+fn send_beacon(listen_port: u16) {
+    let Ok(socket) = UdpSocket::bind("0.0.0.0:0") else {
+        return;
+    };
+    let _ = socket.set_broadcast(true);
+    let packet = ControlPacket::Beacon {
+        listen_port,
+        name: host_name(),
+    }
+    .encode();
+    for address in broadcast_targets() {
+        let _ = socket.send_to(&packet, address);
+    }
+}
+
+fn host_name() -> String {
+    let mut buffer = [0u8; 64];
+    let rc = unsafe { libc::gethostname(buffer.as_mut_ptr() as *mut libc::c_char, buffer.len()) };
+    if rc != 0 {
+        return "floatdesk".into();
+    }
+    let end = buffer.iter().position(|byte| *byte == 0).unwrap_or(buffer.len());
+    String::from_utf8_lossy(&buffer[..end]).into_owned()
+}
+
+fn broadcast_targets() -> Vec<SocketAddr> {
+    let mut targets = vec![SocketAddr::from(([255, 255, 255, 255], BEACON_PORT))];
+    unsafe {
+        let mut interfaces: *mut libc::ifaddrs = std::ptr::null_mut();
+        if libc::getifaddrs(&mut interfaces) != 0 {
+            return targets;
+        }
+        let mut cursor = interfaces;
+        while !cursor.is_null() {
+            let interface = &*cursor;
+            if !interface.ifa_addr.is_null()
+                && (*interface.ifa_addr).sa_family == libc::AF_INET as libc::sa_family_t
+                && !interface.ifa_netmask.is_null()
+            {
+                let address = &*(interface.ifa_addr as *const libc::sockaddr_in);
+                let mask = &*(interface.ifa_netmask as *const libc::sockaddr_in);
+                let ip = u32::from_be(address.sin_addr.s_addr);
+                let netmask = u32::from_be(mask.sin_addr.s_addr);
+                if ip != 0 && netmask != 0 && ip != u32::from(Ipv4Addr::LOCALHOST) {
+                    let broadcast = Ipv4Addr::from(ip | !netmask);
+                    targets.push(SocketAddr::from((broadcast, BEACON_PORT)));
+                }
+            }
+            cursor = interface.ifa_next;
+        }
+        libc::freeifaddrs(interfaces);
+    }
+    targets.sort_by_key(|address| address.to_string());
+    targets.dedup();
+    targets
 }
 
 fn send_hello(shared: &Shared, socket: &UdpSocket, hellos: &[MonitorHello]) {

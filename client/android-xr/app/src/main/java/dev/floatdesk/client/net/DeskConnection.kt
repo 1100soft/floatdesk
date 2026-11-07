@@ -1,17 +1,21 @@
 package dev.floatdesk.client.net
 
+import android.content.Context
+import android.net.wifi.WifiManager
 import android.os.Handler
 import android.os.Looper
 import android.view.Surface
+import androidx.compose.runtime.mutableStateOf
 import dev.floatdesk.client.media.MonitorDecoder
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
 import java.net.SocketTimeoutException
-import androidx.compose.runtime.mutableStateOf
 
-internal class DeskConnection {
-    val status = mutableStateOf("Disconnected")
+internal class DeskConnection(
+    private val dumpFile: java.io.File? = null,
+) {
+    val status = mutableStateOf("Looking for your computer…")
     val monitors = mutableStateOf<List<MonitorHello>>(emptyList())
     val cursors = mutableStateOf<Map<Int, CursorView>>(emptyMap())
 
@@ -19,36 +23,47 @@ internal class DeskConnection {
     private val assembler = CursorAssembler()
     private val decoders = HashMap<Int, MonitorDecoder>()
     private var control: DatagramSocket? = null
+    private var beacon: DatagramSocket? = null
     private var videos: List<DatagramSocket> = emptyList()
     private var thread: Thread? = null
+    private var multicastLock: WifiManager.MulticastLock? = null
     @Volatile private var running = false
+    @Volatile private var pendingRemote: InetSocketAddress? = null
 
-    fun connect(hostText: String) {
-        disconnect()
-        val remote = parse(hostText)
-        if (remote == null) {
-            status.value = "Enter the host as host or host:47000"
-            return
-        }
+    fun start(context: Context) {
+        if (running) return
         val opened = ArrayList<DatagramSocket>()
         try {
-            for (port in 48000 until 48006) opened += DatagramSocket(port)
-            control = DatagramSocket()
+            for (port in 48000 until 48006) {
+                opened += DatagramSocket(port).apply { receiveBufferSize = 8 * 1024 * 1024 }
+            }
+            control = DatagramSocket().apply { broadcast = true }
+            beacon = DatagramSocket(47001).apply {
+                broadcast = true
+                soTimeout = 200
+            }
         } catch (err: Exception) {
             opened.forEach { it.close() }
-            status.value = "Could not bind UDP ports: ${err.message}"
+            control?.close()
+            beacon?.close()
+            status.value = "Could not listen for the computer: ${err.message}"
             return
         }
         videos = opened
-        pendingRemote = remote
+        val wifi = context.applicationContext.getSystemService(WifiManager::class.java)
+        multicastLock = wifi?.createMulticastLock("floatdesk")?.apply {
+            setReferenceCounted(false)
+            acquire()
+        }
         running = true
-        status.value = "Waiting for $remote"
-        thread = Thread({ controlLoop(remote) }, "floatdesk-control").also { it.start() }
+        status.value = "Looking for your computer…"
+        thread = Thread({ controlLoop() }, "floatdesk-control").also { it.start() }
     }
 
     fun disconnect() {
         running = false
         control?.close()
+        beacon?.close()
         decoders.values.forEach { it.stop() }
         decoders.clear()
         videos.forEach { runCatching { it.close() } }
@@ -56,10 +71,14 @@ internal class DeskConnection {
         thread?.join(500)
         thread = null
         control = null
+        beacon = null
+        pendingRemote = null
+        multicastLock?.let { if (it.isHeld) it.release() }
+        multicastLock = null
         main.post {
             monitors.value = emptyList()
             cursors.value = emptyMap()
-            if (status.value.startsWith("Connected")) status.value = "Disconnected"
+            status.value = "Disconnected"
         }
     }
 
@@ -72,24 +91,37 @@ internal class DeskConnection {
         decoders[index]?.detach()
     }
 
-    private fun controlLoop(remote: InetSocketAddress) {
+    private fun controlLoop() {
         val socket = control ?: return
         socket.soTimeout = 200
         val buffer = ByteArray(65535)
         val incoming = DatagramPacket(buffer, buffer.size)
+        val broadcast = InetSocketAddress("255.255.255.255", 47000)
         var lastHello = 0L
         while (running) {
+            pollBeacon()
             val now = System.currentTimeMillis()
-            if (now - lastHello > 1000) {
+            if (pendingRemote == null && now - lastHello > 1000) {
+                val hello = Protocol.clientHello("floatdesk", 48000)
+                runCatching { socket.send(DatagramPacket(hello, hello.size, broadcast)) }
+                lastHello = now
+            } else if (pendingRemote != null && now - lastHello > 1000) {
                 send(Protocol.clientHello("floatdesk", 48000))
                 lastHello = now
             }
             try {
+                incoming.setLength(buffer.size)
                 socket.receive(incoming)
                 val decoded = Protocol.decode(buffer.copyOf(incoming.length)) ?: continue
                 when (decoded) {
-                    is Packet.HostHello -> onHello(decoded, remote)
+                    is Packet.HostHello -> {
+                        if (pendingRemote == null) {
+                            pendingRemote = InetSocketAddress(incoming.address, 47000)
+                        }
+                        onHello(decoded, pendingRemote ?: InetSocketAddress(incoming.address, 47000))
+                    }
                     is Packet.Cursor -> onCursor(decoded.fragment)
+                    is Packet.Beacon -> Unit
                     is Packet.Ignored -> Unit
                 }
             } catch (_: SocketTimeoutException) {
@@ -100,19 +132,39 @@ internal class DeskConnection {
         }
     }
 
+    private fun pollBeacon() {
+        val socket = beacon ?: return
+        val buffer = ByteArray(512)
+        val packet = DatagramPacket(buffer, buffer.size)
+        try {
+            packet.setLength(buffer.size)
+            socket.receive(packet)
+        } catch (_: Exception) {
+            return
+        }
+        val decoded = Protocol.decode(buffer.copyOf(packet.length)) ?: return
+        if (decoded is Packet.Beacon && pendingRemote == null) {
+            val remote = InetSocketAddress(packet.address, decoded.listenPort)
+            pendingRemote = remote
+            val label = decoded.name.ifEmpty { packet.address.hostAddress ?: "computer" }
+            main.post { status.value = "Found $label" }
+        }
+    }
+
     @Synchronized
     private fun onHello(hello: Packet.HostHello, remote: InetSocketAddress) {
         if (decoders.isNotEmpty()) return
         for (monitor in hello.monitors) {
             val video = videos.getOrNull(monitor.index) ?: continue
-            val decoder = MonitorDecoder(video, monitor.width, monitor.height)
+            val decoder = MonitorDecoder(video, monitor.width, monitor.height, dumpFile)
+            decoder.punch(remote.address)
             decoder.start()
             decoders[monitor.index] = decoder
         }
         send(Protocol.keyframeRequest(0xff))
         main.post {
             monitors.value = hello.monitors
-            status.value = "Connected to $remote, ${hello.monitors.size} monitor(s)"
+            status.value = "Connected to ${remote.hostString}:${remote.port}, ${hello.monitors.size} monitor(s)"
         }
     }
 
@@ -134,16 +186,5 @@ internal class DeskConnection {
         val socket = control ?: return
         val address = pendingRemote ?: return
         runCatching { socket.send(DatagramPacket(bytes, bytes.size, address)) }
-    }
-
-    @Volatile private var pendingRemote: InetSocketAddress? = null
-
-    private fun parse(text: String): InetSocketAddress? {
-        val trimmed = text.trim()
-        if (trimmed.isEmpty()) return null
-        val parts = trimmed.split(":")
-        val host = parts[0]
-        val port = parts.getOrNull(1)?.toIntOrNull() ?: 47000
-        return runCatching { InetSocketAddress(host, port) }.getOrNull()?.takeIf { !it.isUnresolved }
     }
 }

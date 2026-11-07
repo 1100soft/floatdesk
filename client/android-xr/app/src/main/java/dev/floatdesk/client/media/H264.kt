@@ -20,6 +20,9 @@ internal class H264Depacketizer {
     private var fu = ByteArray(0)
     private var fuSize = 0
     private var fuOpen = false
+    private var lost = false
+
+    fun consumeLoss(): Boolean = lost.also { lost = false }
 
     fun push(packet: ByteArray, length: Int): ByteArray? {
         if (length < 12) return null
@@ -34,6 +37,7 @@ internal class H264Depacketizer {
         expectedSeq = (seq + 1) and 0xFFFF
         if (expected != null && seq != expected) {
             reset()
+            lost = true
         }
         if (length <= 12) return null
         val nalType = packet[12].toInt() and 0x1F
@@ -122,6 +126,7 @@ internal class MonitorDecoder(
     private val width: Int,
     private val height: Int,
     private val dumpFile: File? = null,
+    private val onGap: () -> Unit = {},
 ) {
     private val running = AtomicBoolean(true)
     private val surface = AtomicReference<Surface?>(null)
@@ -174,7 +179,9 @@ internal class MonitorDecoder(
                 if (packets == 1 || packets % 120 == 0) {
                     Log.i(TAG, "video packets=$packets last=${packet.length} surface=${surface.get() != null}")
                 }
-                depacketizer.push(buffer, packet.length)
+                val unit = depacketizer.push(buffer, packet.length)
+                if (depacketizer.consumeLoss()) onGap()
+                unit
             } catch (_: java.net.SocketTimeoutException) {
                 null
             } catch (_: java.net.SocketException) {

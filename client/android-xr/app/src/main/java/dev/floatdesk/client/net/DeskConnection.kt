@@ -11,6 +11,9 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
 import java.net.SocketTimeoutException
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 internal class DeskConnection(
     private val dumpFile: java.io.File? = null,
@@ -22,6 +25,10 @@ internal class DeskConnection(
     private val main = Handler(Looper.getMainLooper())
     private val assembler = CursorAssembler()
     private val decoders = HashMap<Int, MonitorDecoder>()
+    private val pendingCursors = ConcurrentHashMap<Int, CursorView>()
+    private val cursorSeq = AtomicInteger()
+    private val cursorFlushPosted = AtomicBoolean(false)
+    private var lastGapAsk = 0L
     private var control: DatagramSocket? = null
     private var beacon: DatagramSocket? = null
     private var videos: List<DatagramSocket> = emptyList()
@@ -156,7 +163,7 @@ internal class DeskConnection(
         if (decoders.isNotEmpty()) return
         for (monitor in hello.monitors) {
             val video = videos.getOrNull(monitor.index) ?: continue
-            val decoder = MonitorDecoder(video, monitor.width, monitor.height, dumpFile)
+            val decoder = MonitorDecoder(video, monitor.width, monitor.height, dumpFile, ::askKeyframe)
             decoder.punch(remote.address)
             decoder.start()
             decoders[monitor.index] = decoder
@@ -170,16 +177,37 @@ internal class DeskConnection(
 
     private fun onCursor(fragment: CursorFragment) {
         val view = assembler.push(fragment)
-        main.post {
-            val next = cursors.value.toMutableMap()
-            val previous = next[fragment.monitor]
-            next[fragment.monitor] = if (view.pixels == null && previous?.pixels != null) {
-                view.copy(pixels = previous.pixels)
-            } else {
-                view
-            }
-            cursors.value = next
+        val previous = pendingCursors[fragment.monitor] ?: cursors.value[fragment.monitor]
+        val merged = if (view.pixels == null && previous?.pixels != null) {
+            view.copy(pixels = previous.pixels)
+        } else {
+            view
         }
+        pendingCursors[fragment.monitor] = merged
+        cursorSeq.incrementAndGet()
+        if (cursorFlushPosted.compareAndSet(false, true)) {
+            main.post { flushCursors() }
+        }
+    }
+
+    private fun flushCursors() {
+        val seen = cursorSeq.get()
+        cursors.value = HashMap(pendingCursors)
+        if (cursorSeq.get() != seen) {
+            main.post { flushCursors() }
+        } else {
+            cursorFlushPosted.set(false)
+            if (cursorSeq.get() != seen && cursorFlushPosted.compareAndSet(false, true)) {
+                main.post { flushCursors() }
+            }
+        }
+    }
+
+    private fun askKeyframe() {
+        val now = System.currentTimeMillis()
+        if (now - lastGapAsk < 250) return
+        lastGapAsk = now
+        send(Protocol.keyframeRequest(0xff))
     }
 
     private fun send(bytes: ByteArray) {

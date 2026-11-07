@@ -215,9 +215,15 @@ impl CaptureBackend for X11Capture {
         if !self.dirty && !force {
             return Ok(None);
         }
-        let frame = self.grab()?;
+        // Clear the damage region before reading pixels. A change that lands
+        // during the grab then produces a new notification, instead of being
+        // erased with the region we already decided to read.
         self.subtract_damage();
+        let frame = self.grab()?;
         self.dirty = false;
+        if self.damage_ok {
+            self.drain_damage();
+        }
         self.last = Some(Instant::now());
         Ok(Some(frame))
     }

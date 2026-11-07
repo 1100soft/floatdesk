@@ -8,6 +8,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -32,12 +33,17 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.xr.compose.platform.LocalSession
 import androidx.xr.compose.platform.LocalSpatialCapabilities
+import androidx.xr.compose.spatial.ExperimentalFollowingSubspaceApi
 import androidx.xr.compose.spatial.Subspace
 import androidx.xr.compose.subspace.SpatialExternalSurface
 import androidx.xr.compose.subspace.SpatialPanel
 import androidx.xr.compose.subspace.StereoMode
+import androidx.xr.compose.subspace.animation.follow.FollowMode
+import androidx.xr.compose.subspace.animation.follow.FollowTarget
 import androidx.xr.compose.subspace.layout.MovePolicy
 import androidx.xr.compose.subspace.layout.ResizePolicy
+import androidx.xr.compose.subspace.layout.InteractionPolicy
+import androidx.xr.compose.subspace.layout.SpatialInputEvent
 import androidx.xr.compose.subspace.layout.SpatialMoveEvent
 import androidx.xr.compose.subspace.layout.SpatialMoveEventType
 import androidx.xr.compose.subspace.layout.SpatialResizeEvent
@@ -51,6 +57,7 @@ import androidx.xr.compose.subspace.layout.resizable
 import androidx.xr.compose.subspace.layout.rotate
 import androidx.xr.compose.unit.DpVolumeSize
 import androidx.xr.runtime.math.Quaternion
+import androidx.xr.scenecore.InputEvent
 import androidx.xr.scenecore.PixelDensity
 import androidx.xr.scenecore.scene
 import dev.floatdesk.client.net.CursorView
@@ -108,6 +115,7 @@ private object SessionHolder {
     var session: androidx.xr.runtime.Session? = null
 }
 
+@OptIn(ExperimentalFollowingSubspaceApi::class)
 @Composable
 private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     val connection = remember { DeskConnection(dumpFile) }
@@ -116,12 +124,11 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     val session = LocalSession.current
     SessionHolder.session = session
     var workspace by remember { mutableStateOf(store.load()) }
-    val workspaceNow by rememberUpdatedState(workspace)
     val monitors by connection.monitors
-    val cursors by connection.cursors
     val status by connection.status
     val spatial = LocalSpatialCapabilities.current.isSpatialUiEnabled
     var note by remember { mutableStateOf("") }
+    var headLocked by remember { mutableStateOf(false) }
     val density = LocalDensity.current
     val pixelDensity = session?.scene?.virtualPixelDensity
     LaunchedEffect(session) {
@@ -149,96 +156,202 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             },
             onOpenWorkspace = { session?.scene?.requestFullSpace() },
             onReset = { workspace = workspace.reset(monitors, store) },
+            headLocked = headLocked,
+            onToggleHead = { headLocked = !headLocked },
         )
     }
 
     if (session != null && pixelDensity != null) {
-        val layout = layoutFor(workspace, monitors)
-        val control = workspace.control
-        Subspace {
-            SpatialPanel(
-                modifier = SubspaceModifier
-                    .requiredWidth(control.widthM.meters(density, pixelDensity))
-                    .requiredHeight(control.heightM.meters(density, pixelDensity))
-                    .rotate(control.pose.toQuaternion())
-                    .offset3d(
-                        x = control.pose.position[0].meters(density, pixelDensity),
-                        y = control.pose.position[1].meters(density, pixelDensity),
-                        z = control.pose.position[2].meters(density, pixelDensity),
-                    )
-                    .movable(
-                        movePolicy = MovePolicy.custom(scaleWithDistance = false) { event ->
-                            val current = workspaceNow.control
-                            workspace = workspaceNow.controlPlaced(
-                                current.copy(pose = event.workspacePose(pixelDensity)),
-                                store,
-                                event.type == SpatialMoveEventType.End,
-                            )
-                        },
-                    )
-                    .resizable(
-                        minimumSize = DpVolumeSize(0.35f.meters(density, pixelDensity), 0.22f.meters(density, pixelDensity), 0.dp),
-                        maximumSize = DpVolumeSize(1.6f.meters(density, pixelDensity), 1.1f.meters(density, pixelDensity), 0.dp),
-                        resizePolicy = ResizePolicy.custom { event ->
-                            val size = event.sizeInMeters(pixelDensity) ?: return@custom
-                            workspace = workspaceNow.controlPlaced(
-                                workspaceNow.control.copy(widthM = size.first, heightM = size.second),
-                                store,
-                                event.type == SpatialResizeEventType.End,
-                            )
-                        },
-                    ),
-            ) {
-                controls()
-            }
-            layout.forEachIndexed { index, placement ->
-                SpatialExternalSurface(
-                    stereoMode = StereoMode.Mono,
-                    modifier = SubspaceModifier
-                        .requiredWidth(placement.physicalWidthM.meters(density, pixelDensity))
-                        .requiredHeight(placement.physicalHeightM.meters(density, pixelDensity))
-                        .rotate(placement.pose.toQuaternion())
-                        .offset3d(
-                            x = placement.pose.position[0].meters(density, pixelDensity),
-                            y = placement.pose.position[1].meters(density, pixelDensity),
-                            z = placement.pose.position[2].meters(density, pixelDensity),
-                        )
-                        .movable(
-                            movePolicy = MovePolicy.custom(scaleWithDistance = false) { event ->
-                                val existing = workspaceNow.monitorAt(index) ?: return@custom
-                                workspace = workspaceNow.monitorPlaced(
-                                    index,
-                                    existing.copy(pose = event.workspacePose(pixelDensity)),
-                                    store,
-                                    event.type == SpatialMoveEventType.End,
-                                )
-                            },
-                        )
-                        .resizable(
-                            minimumSize = DpVolumeSize(0.28f.meters(density, pixelDensity), 0.16f.meters(density, pixelDensity), 0.dp),
-                            maximumSize = DpVolumeSize(2.4f.meters(density, pixelDensity), 1.5f.meters(density, pixelDensity), 0.dp),
-                            maintainAspectRatio = true,
-                            resizePolicy = ResizePolicy.custom { event ->
-                                val size = event.sizeInMeters(pixelDensity) ?: return@custom
-                                val existing = workspaceNow.monitorAt(index) ?: return@custom
-                                workspace = workspaceNow.monitorPlaced(
-                                    index,
-                                    existing.copy(physicalWidthM = size.first, physicalHeightM = size.second),
-                                    store,
-                                    event.type == SpatialResizeEventType.End,
-                                )
-                            },
-                        ),
-                ) {
-                    onSurfaceCreated { surface -> connection.attachSurface(index, surface) }
-                    onSurfaceDestroyed { connection.detachSurface(index) }
-                }
-                CursorPanel(placement, cursors[index], density, pixelDensity)
-            }
+        val desk: @Composable () -> Unit = {
+            DeskContent(
+                connection = connection,
+                workspace = workspace,
+                onWorkspace = { workspace = it },
+                monitors = monitors,
+                store = store,
+                density = density,
+                pixelDensity = pixelDensity,
+                controls = controls,
+            )
+        }
+        if (headLocked) {
+            Subspace(follow = FollowTarget.view(FollowMode.tight())) { desk() }
+        } else {
+            Subspace { desk() }
         }
     } else {
         controls()
     }
+}
+
+@Composable
+private fun DeskContent(
+    connection: DeskConnection,
+    workspace: WorkspaceFile,
+    onWorkspace: (WorkspaceFile) -> Unit,
+    monitors: List<MonitorHello>,
+    store: WorkspaceStore,
+    density: Density,
+    pixelDensity: PixelDensity,
+    controls: @Composable () -> Unit,
+) {
+    val latest = rememberUpdatedState(workspace)
+    val layout = layoutFor(workspace, monitors)
+    val control = workspace.control
+    val margin = 0.08f
+    val front = rotateVector(control.pose.rotation, 0f, 0f, -0.015f)
+    SpatialPanel(
+        modifier = placedPanel(
+            pose = control.pose,
+            widthM = control.widthM + margin * 2f,
+            heightM = control.heightM + margin * 2f,
+            density = density,
+            pixelDensity = pixelDensity,
+        ).movable(
+            movePolicy = MovePolicy.custom(scaleWithDistance = false) { event ->
+                val current = latest.value.control
+                onWorkspace(
+                    latest.value.controlPlaced(
+                        current.copy(pose = event.workspacePose(pixelDensity)),
+                        store,
+                        event.type == SpatialMoveEventType.End,
+                    ),
+                )
+            },
+        ).resizable(
+            minimumSize = DpVolumeSize(0.45f.meters(density, pixelDensity), 0.30f.meters(density, pixelDensity), 0.dp),
+            maximumSize = DpVolumeSize(1.8f.meters(density, pixelDensity), 1.3f.meters(density, pixelDensity), 0.dp),
+            resizePolicy = ResizePolicy.custom { event ->
+                val size = event.sizeInMeters(pixelDensity) ?: return@custom
+                onWorkspace(
+                    latest.value.controlPlaced(
+                        latest.value.control.copy(
+                            widthM = (size.first - margin * 2f).coerceAtLeast(0.35f),
+                            heightM = (size.second - margin * 2f).coerceAtLeast(0.22f),
+                        ),
+                        store,
+                        event.type == SpatialResizeEventType.End,
+                    ),
+                )
+            },
+        ),
+    ) {
+        Box(Modifier.fillMaxSize().background(Color(0xFF3A3A3C)))
+    }
+    SpatialPanel(
+        modifier = placedPanel(
+            pose = control.pose,
+            widthM = control.widthM,
+            heightM = control.heightM,
+            density = density,
+            pixelDensity = pixelDensity,
+            dx = front[0],
+            dy = front[1],
+            dz = front[2],
+        ),
+    ) {
+        controls()
+    }
+    layout.forEachIndexed { index, placement ->
+        val hands = remember(index) { TwoHandState() }
+        val pinch = remember(index) { PinchMemory() }
+        SpatialExternalSurface(
+            stereoMode = StereoMode.Mono,
+            interactionPolicy = remember(index) {
+                object : InteractionPolicy {
+                    override val isEnabled: Boolean = true
+                    override fun onInputEvent(event: SpatialInputEvent) {
+                        val file = latest.value
+                        val existing = file.monitorAt(index) ?: return
+                        val next = hands.onEvent(event, existing, pixelDensity) ?: return
+                        onWorkspace(
+                            file.monitorPlaced(
+                                index,
+                                next,
+                                store,
+                                event.action == InputEvent.Action.UP || event.action == InputEvent.Action.CANCEL,
+                            ),
+                        )
+                    }
+                }
+            },
+            modifier = placedPanel(
+                pose = placement.pose,
+                widthM = placement.physicalWidthM,
+                heightM = placement.physicalHeightM,
+                density = density,
+                pixelDensity = pixelDensity,
+            ).movable(
+                movePolicy = MovePolicy.custom(scaleWithDistance = false) { event ->
+                    if (hands.engaged) return@custom
+                    val existing = latest.value.monitorAt(index) ?: return@custom
+                    onWorkspace(
+                        latest.value.monitorPlaced(
+                            index,
+                            pinch.apply(event, existing, pixelDensity),
+                            store,
+                            event.type == SpatialMoveEventType.End,
+                        ),
+                    )
+                },
+            ).resizable(
+                minimumSize = DpVolumeSize(0.28f.meters(density, pixelDensity), 0.16f.meters(density, pixelDensity), 0.dp),
+                maximumSize = DpVolumeSize(2.4f.meters(density, pixelDensity), 1.5f.meters(density, pixelDensity), 0.dp),
+                maintainAspectRatio = true,
+                resizePolicy = ResizePolicy.custom { event ->
+                    if (hands.engaged) return@custom
+                    val size = event.sizeInMeters(pixelDensity) ?: return@custom
+                    val existing = latest.value.monitorAt(index) ?: return@custom
+                    onWorkspace(
+                        latest.value.monitorPlaced(
+                            index,
+                            existing.copy(physicalWidthM = size.first, physicalHeightM = size.second),
+                            store,
+                            event.type == SpatialResizeEventType.End,
+                        ),
+                    )
+                },
+            ),
+        ) {
+            onSurfaceCreated { surface -> connection.attachSurface(index, surface) }
+            onSurfaceDestroyed { connection.detachSurface(index) }
+        }
+        MonitorCursor(connection, index, placement, density, pixelDensity)
+    }
+}
+
+@Composable
+private fun placedPanel(
+    pose: Pose,
+    widthM: Float,
+    heightM: Float,
+    density: Density,
+    pixelDensity: PixelDensity,
+    dx: Float = 0f,
+    dy: Float = 0f,
+    dz: Float = 0f,
+): SubspaceModifier {
+    return SubspaceModifier
+        .requiredWidth(widthM.meters(density, pixelDensity))
+        .requiredHeight(heightM.meters(density, pixelDensity))
+        .rotate(pose.toQuaternion())
+        .offset3d(
+            x = (pose.position[0] + dx).meters(density, pixelDensity),
+            y = (pose.position[1] + dy).meters(density, pixelDensity),
+            z = (pose.position[2] + dz).meters(density, pixelDensity),
+        )
+}
+
+@Composable
+private fun MonitorCursor(
+    connection: DeskConnection,
+    index: Int,
+    monitor: MonitorPlacement,
+    density: Density,
+    pixelDensity: PixelDensity,
+) {
+    val cursors by connection.cursors
+    CursorPanel(monitor, cursors[index], density, pixelDensity)
 }
 
 @Composable
@@ -299,6 +412,8 @@ private fun ControlPanel(
     onAnchor: () -> Unit,
     onOpenWorkspace: () -> Unit,
     onReset: () -> Unit,
+    headLocked: Boolean,
+    onToggleHead: () -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxSize().background(Color(0xFF1C1C1E)).padding(24.dp),
@@ -308,7 +423,11 @@ private fun ControlPanel(
         Text(status, color = Color.White)
         Text(
             if (spatial) {
-                "Grab a monitor or this panel to move and turn it. Drag the handles to resize. The pointer follows the laptop cursor."
+                if (headLocked) {
+                    "The desk is following your head. Grab the gray border to move this panel. Pinch a screen with both hands to resize and turn it."
+                } else {
+                    "The desk stays where you leave it. Grab the gray border to move this panel. Pinch a screen with both hands to resize and turn it."
+                }
             } else {
                 "Opening the workspace. If this stays flat, close the app and open it once more."
             },
@@ -319,6 +438,7 @@ private fun ControlPanel(
             Button(onClick = onOpenWorkspace) { Text("Open workspace") }
             Button(onClick = onAnchor) { Text("Save room anchor") }
             Button(onClick = onReset) { Text("Reset desk") }
+            Button(onClick = onToggleHead) { Text(if (headLocked) "Lock in space" else "Follow head") }
         }
         Text(anchorLabel, color = Color.White)
     }
@@ -370,6 +490,85 @@ private fun Float.meters(density: Density, pixelDensity: PixelDensity): Dp {
     return with(density) { pixelDensity.convertMetersToPixels(this@meters).toDp() }
 }
 
+private class PinchMemory {
+    private var startScale = 1f
+    private var startWidth = 0f
+    private var startHeight = 0f
+
+    fun apply(event: SpatialMoveEvent, placement: MonitorPlacement, pixelDensity: PixelDensity): MonitorPlacement {
+        if (event.type == SpatialMoveEventType.Start || startWidth == 0f) {
+            startScale = event.scale.coerceAtLeast(0.01f)
+            startWidth = placement.physicalWidthM
+            startHeight = placement.physicalHeightM
+        }
+        val factor = (event.scale / startScale).coerceIn(0.25f, 4f)
+        return placement.copy(
+            pose = event.workspacePose(pixelDensity),
+            physicalWidthM = (startWidth * factor).coerceIn(0.28f, 2.4f),
+            physicalHeightM = (startHeight * factor).coerceIn(0.16f, 1.5f),
+        )
+    }
+}
+
+private class TwoHandState {
+    var engaged: Boolean = false
+        private set
+
+    private val hands = HashMap<String, FloatArray>()
+    private var baseline: Baseline? = null
+
+    fun onEvent(event: SpatialInputEvent, current: MonitorPlacement, pixelDensity: PixelDensity): MonitorPlacement? {
+        val key = event.pointerType.toString()
+        if (key != "LEFT" && key != "RIGHT") return null
+        when (event.action) {
+            InputEvent.Action.UP, InputEvent.Action.CANCEL -> hands.remove(key)
+            InputEvent.Action.DOWN, InputEvent.Action.MOVE -> {
+                hands[key] = floatArrayOf(
+                    pixelDensity.convertPixelsToMeters(event.origin.x),
+                    pixelDensity.convertPixelsToMeters(event.origin.y),
+                    pixelDensity.convertPixelsToMeters(event.origin.z),
+                )
+            }
+            else -> return null
+        }
+        val left = hands["LEFT"]
+        val right = hands["RIGHT"]
+        if (left == null || right == null) {
+            engaged = false
+            baseline = null
+            return null
+        }
+        val base = baseline ?: Baseline(left.copyOf(), right.copyOf(), current).also {
+            baseline = it
+            engaged = true
+        }
+        if (distance(left, right) < 0.02f) return null
+        val scale = (distance(left, right) / distance(base.left, base.right).coerceAtLeast(0.02f))
+            .coerceIn(0.25f, 4f)
+        val turn = quaternionBetween(subtract(base.right, base.left), subtract(right, left))
+        val mid0 = midpoint(base.left, base.right)
+        val mid1 = midpoint(left, right)
+        return base.placement.copy(
+            pose = Pose(
+                floatArrayOf(
+                    base.placement.pose.position[0] + mid1[0] - mid0[0],
+                    base.placement.pose.position[1] + mid1[1] - mid0[1],
+                    base.placement.pose.position[2] + mid1[2] - mid0[2],
+                ),
+                multiplyQuaternion(turn, base.placement.pose.rotation),
+            ),
+            physicalWidthM = (base.placement.physicalWidthM * scale).coerceIn(0.28f, 2.4f),
+            physicalHeightM = (base.placement.physicalHeightM * scale).coerceIn(0.16f, 1.5f),
+        )
+    }
+
+    private class Baseline(
+        val left: FloatArray,
+        val right: FloatArray,
+        val placement: MonitorPlacement,
+    )
+}
+
 private fun cursorBitmap(cursor: CursorView): Bitmap? {
     val pixels = cursor.pixels ?: return null
     val width = cursor.fragment.bitmapW
@@ -394,4 +593,55 @@ private fun rotateVector(quaternion: FloatArray, x: Float, y: Float, z: Float): 
         y + qw * ty + (qz * tx - qx * tz),
         z + qw * tz + (qx * ty - qy * tx),
     )
+}
+
+private fun subtract(a: FloatArray, b: FloatArray): FloatArray =
+    floatArrayOf(a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+private fun midpoint(a: FloatArray, b: FloatArray): FloatArray =
+    floatArrayOf((a[0] + b[0]) / 2f, (a[1] + b[1]) / 2f, (a[2] + b[2]) / 2f)
+
+private fun distance(a: FloatArray, b: FloatArray): Float {
+    val d = subtract(a, b)
+    return kotlin.math.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2])
+}
+
+private fun quaternionBetween(from: FloatArray, to: FloatArray): FloatArray {
+    val f = normalize3(from)
+    val t = normalize3(to)
+    val dot = f[0] * t[0] + f[1] * t[1] + f[2] * t[2]
+    if (dot > 0.9995f) return floatArrayOf(0f, 0f, 0f, 1f)
+    if (dot < -0.9995f) {
+        val axis = normalize3(floatArrayOf(-f[1], f[0], 0f).let {
+            if (it[0] == 0f && it[1] == 0f) floatArrayOf(1f, 0f, 0f) else it
+        })
+        return floatArrayOf(axis[0], axis[1], axis[2], 0f)
+    }
+    val cross = floatArrayOf(
+        f[1] * t[2] - f[2] * t[1],
+        f[2] * t[0] - f[0] * t[2],
+        f[0] * t[1] - f[1] * t[0],
+    )
+    return normalize4(floatArrayOf(cross[0], cross[1], cross[2], 1f + dot))
+}
+
+private fun multiplyQuaternion(a: FloatArray, b: FloatArray): FloatArray {
+    return floatArrayOf(
+        a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+        a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+        a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+        a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+    )
+}
+
+private fun normalize3(value: FloatArray): FloatArray {
+    val length = kotlin.math.sqrt(value[0] * value[0] + value[1] * value[1] + value[2] * value[2])
+    if (length < 1e-6f) return floatArrayOf(0f, 0f, 1f)
+    return floatArrayOf(value[0] / length, value[1] / length, value[2] / length)
+}
+
+private fun normalize4(value: FloatArray): FloatArray {
+    val length = kotlin.math.sqrt(value[0] * value[0] + value[1] * value[1] + value[2] * value[2] + value[3] * value[3])
+    if (length < 1e-6f) return floatArrayOf(0f, 0f, 0f, 1f)
+    return floatArrayOf(value[0] / length, value[1] / length, value[2] / length, value[3] / length)
 }

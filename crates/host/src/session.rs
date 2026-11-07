@@ -146,9 +146,12 @@ fn run(monitors: &[MonitorRect], opts: &ServeOpts) -> Result<()> {
     }
 
     tracing::info!(listen = %opts.listen, "waiting for a client hello");
-    let mut cursor = X11Cursor::open()?;
-    let mut last_cursor = (i32::MIN, i32::MIN, u64::MAX);
-    let mut seen_cursor_generation = 0u64;
+    let cursor_socket = socket.try_clone()?;
+    let cursor_shared = Arc::clone(&shared);
+    let cursor_monitors = monitors.to_vec();
+    threads.push(thread::spawn(move || {
+        cursor_loop(cursor_shared, cursor_socket, &cursor_monitors);
+    }));
     let mut last_hello = Instant::now() - Duration::from_secs(2);
     let mut last_stats = Instant::now();
     let started = Instant::now();
@@ -173,24 +176,6 @@ fn run(monitors: &[MonitorRect], opts: &ServeOpts) -> Result<()> {
             send_hello(&shared, &socket, &hellos);
             send_beacon(opts.listen.port());
             last_hello = Instant::now();
-        }
-        let cursor_generation = shared
-            .client
-            .read()
-            .unwrap_or_else(|err| err.into_inner())
-            .as_ref()
-            .map(|client| client.generation)
-            .unwrap_or(0);
-        if cursor_generation != seen_cursor_generation {
-            seen_cursor_generation = cursor_generation;
-            last_cursor = (i32::MIN, i32::MIN, u64::MAX);
-        }
-        if let Ok(sample) = cursor.poll() {
-            let moved = (sample.root_x, sample.root_y, sample.serial) != last_cursor;
-            if moved {
-                last_cursor = (sample.root_x, sample.root_y, sample.serial);
-                send_cursor(&shared, &socket, monitors, &sample);
-            }
         }
         if last_stats.elapsed() >= Duration::from_secs(2) {
             tracing::info!(
@@ -233,6 +218,7 @@ fn monitor_thread(
     let mut packetizer = RtpH264Packetizer::new(ssrc);
     let interval = Duration::from_secs_f64(1.0 / f64::from(fps));
     let mut seen_generation = 0u64;
+    let mut last_submit = Instant::now() - Duration::from_secs(1);
     while !shared.stop.load(Ordering::Relaxed) {
         let target = shared
             .client
@@ -253,7 +239,9 @@ fn monitor_thread(
         if rect.index < 6 && shared.keys[rect.index as usize].swap(false, Ordering::Relaxed) {
             force = true;
         }
-        if force {
+        if force || last_submit.elapsed() >= Duration::from_millis(250) {
+            // A picture that was still and then changes is sent as an intra frame,
+            // so the decoder does not keep the old region from a reference it missed.
             encoder.request_keyframe();
         }
         let Some(frame) = capture.poll(interval, force)? else {
@@ -262,6 +250,7 @@ fn monitor_thread(
             continue;
         };
         encoder.submit(&frame)?;
+        last_submit = Instant::now();
         shared.captured.fetch_add(1, Ordering::Relaxed);
         tracing::trace!(
             generation = frame.damage_generation,
@@ -454,6 +443,42 @@ fn send_layout(shared: &Shared, socket: &UdpSocket, hellos: &[MonitorHello]) {
             .collect(),
     };
     let _ = socket.send_to(&packet.encode(), client.control);
+}
+
+fn cursor_loop(shared: Arc<Shared>, socket: UdpSocket, monitors: &[MonitorRect]) {
+    let mut cursor = match X11Cursor::open() {
+        Ok(cursor) => cursor,
+        Err(err) => {
+            tracing::error!("cursor: {err}");
+            return;
+        }
+    };
+    let mut last = (i32::MIN, i32::MIN, u64::MAX);
+    let mut seen_generation = 0u64;
+    while !shared.stop.load(Ordering::Relaxed) {
+        let generation = shared
+            .client
+            .read()
+            .unwrap_or_else(|err| err.into_inner())
+            .as_ref()
+            .map(|client| client.generation)
+            .unwrap_or(0);
+        if generation != seen_generation {
+            seen_generation = generation;
+            last = (i32::MIN, i32::MIN, u64::MAX);
+        }
+        match cursor.poll() {
+            Ok(sample) => {
+                let key = (sample.root_x, sample.root_y, sample.serial);
+                if key != last {
+                    last = key;
+                    send_cursor(&shared, &socket, monitors, &sample);
+                }
+            }
+            Err(err) => tracing::debug!("cursor poll: {err}"),
+        }
+        thread::sleep(Duration::from_millis(2));
+    }
 }
 
 fn send_cursor(

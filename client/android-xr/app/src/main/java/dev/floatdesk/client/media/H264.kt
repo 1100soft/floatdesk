@@ -9,6 +9,8 @@ import java.io.FileOutputStream
 import java.net.DatagramPacket
 import java.net.InetAddress
 import java.nio.ByteBuffer
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
@@ -130,10 +132,16 @@ internal class MonitorDecoder(
 ) {
     private val running = AtomicBoolean(true)
     private val surface = AtomicReference<Surface?>(null)
-    private var thread: Thread? = null
+    private val pending = ArrayBlockingQueue<ByteArray>(3)
+    private val sps = AtomicReference<ByteArray?>(null)
+    private val pps = AtomicReference<ByteArray?>(null)
+    private val awaitingKey = AtomicBoolean(false)
+    private var receiveThread: Thread? = null
+    private var decodeThread: Thread? = null
 
     fun start() {
-        thread = Thread({ loop() }, "floatdesk-decode").also { it.start() }
+        receiveThread = Thread({ receiveLoop() }, "floatdesk-net").also { it.start() }
+        decodeThread = Thread({ decodeLoop() }, "floatdesk-decode").also { it.start() }
     }
 
     fun punch(host: InetAddress) {
@@ -153,22 +161,15 @@ internal class MonitorDecoder(
     fun stop() {
         running.set(false)
         socket.close()
-        thread?.join(500)
+        receiveThread?.join(500)
+        decodeThread?.join(500)
     }
 
-    private fun loop() {
+    private fun receiveLoop() {
         val depacketizer = H264Depacketizer()
         val buffer = ByteArray(2048)
         val packet = java.net.DatagramPacket(buffer, buffer.size)
-        var codec: MediaCodec? = null
-        var codecSurface: Surface? = null
-        var sps: ByteArray? = null
-        var pps: ByteArray? = null
         var packets = 0
-        var accessUnits = 0
-        var rendered = 0
-        var sawKeyframe = false
-        val byteDump = dumpFile != null
         runCatching { socket.receiveBufferSize = 8 * 1024 * 1024 }
         socket.soTimeout = 50
         while (running.get()) {
@@ -180,47 +181,69 @@ internal class MonitorDecoder(
                     Log.i(TAG, "video packets=$packets last=${packet.length} surface=${surface.get() != null}")
                 }
                 val unit = depacketizer.push(buffer, packet.length)
-                if (depacketizer.consumeLoss()) onGap()
+                if (depacketizer.consumeLoss()) {
+                    awaitingKey.set(true)
+                    onGap()
+                }
                 unit
             } catch (_: java.net.SocketTimeoutException) {
-                null
+                continue
             } catch (_: java.net.SocketException) {
                 break
-            }
-            if (accessUnit != null) {
-                accessUnits += 1
-                for (nal in splitAnnexB(accessUnit)) {
-                    when (nalType(nal)) {
-                        7 -> sps = nal
-                        8 -> pps = nal
-                    }
-                }
-                if (accessUnits == 1 || accessUnits % 60 == 0) {
-                    Log.i(TAG, "access units=$accessUnits sps=${sps != null} pps=${pps != null}")
+            } ?: continue
+            for (nal in splitAnnexB(accessUnit)) {
+                when (nalType(nal)) {
+                    7 -> sps.set(nal)
+                    8 -> pps.set(nal)
                 }
             }
+            val keyframe = isKeyframe(accessUnit)
+            if (awaitingKey.get() && !keyframe) continue
+            if (keyframe) awaitingKey.set(false)
+            if (!pending.offer(accessUnit)) {
+                pending.poll()
+                pending.offer(accessUnit)
+                if (!keyframe) {
+                    awaitingKey.set(true)
+                    onGap()
+                }
+            }
+        }
+    }
+
+    private fun decodeLoop() {
+        var codec: MediaCodec? = null
+        var codecSurface: Surface? = null
+        var rendered = 0
+        var sawKeyframe = false
+        val byteDump = dumpFile != null
+        while (running.get()) {
+            val accessUnit = try {
+                pending.poll(30, TimeUnit.MILLISECONDS)
+            } catch (_: InterruptedException) {
+                null
+            } ?: continue
             val target = if (byteDump) null else surface.get()
-            val haveParameters = sps != null && pps != null
+            val parameters = sps.get() to pps.get()
             val surfaceReady = byteDump || target != null
-            if (surfaceReady && haveParameters && (codec == null || (!byteDump && target != codecSurface))) {
+            if (surfaceReady && parameters.first != null && parameters.second != null &&
+                (codec == null || (!byteDump && target != codecSurface))
+            ) {
                 codec?.stop()
                 codec?.release()
                 sawKeyframe = false
-                codec = startCodec(target, sps!!, pps!!)
+                codec = startCodec(target, parameters.first!!, parameters.second!!)
                 codecSurface = target
                 Log.i(TAG, "decoder ${if (codec == null) "failed" else "started"} ${width}x$height")
             }
-            val active = codec
-            val keyframe = accessUnit != null && isKeyframe(accessUnit)
-            if (active != null && keyframe) sawKeyframe = true
-            if (active != null && accessUnit != null && sawKeyframe) {
-                // A live picture should show up as soon as it is decoded. Pacing the
-                // timestamps holds frames back and makes the desktop feel late.
-                queue(active, accessUnit, 0, keyframe)
-                rendered += drain(active, rendered, byteDump)
-            } else if (active != null) {
-                rendered += drain(active, rendered, byteDump)
-            }
+            val active = codec ?: continue
+            val keyframe = isKeyframe(accessUnit)
+            if (awaitingKey.get() && !keyframe) continue
+            if (keyframe) awaitingKey.set(false)
+            if (keyframe) sawKeyframe = true
+            if (!sawKeyframe) continue
+            queue(active, accessUnit, 0, keyframe)
+            rendered += drain(active, rendered, byteDump)
         }
         codec?.stop()
         codec?.release()
@@ -244,10 +267,16 @@ internal class MonitorDecoder(
 
     private fun queue(codec: MediaCodec, accessUnit: ByteArray, ptsUs: Long, keyframe: Boolean) {
         try {
-            // Dropping this frame would leave the headset showing an older picture
-            // until the next keyframe. Wait for a free buffer instead.
-            val index = codec.dequeueInputBuffer(50)
-            if (index < 0) return
+            var index = -1
+            repeat(4) {
+                if (index >= 0) return@repeat
+                index = codec.dequeueInputBuffer(5)
+            }
+            if (index < 0) {
+                awaitingKey.set(true)
+                onGap()
+                return
+            }
             val input = codec.getInputBuffer(index) ?: return
             input.clear()
             if (accessUnit.size > input.remaining()) {

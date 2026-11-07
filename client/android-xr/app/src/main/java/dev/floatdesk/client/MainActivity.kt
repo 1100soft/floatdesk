@@ -164,11 +164,8 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                     .build(),
             )
         }
-        val hands = listOfNotNull(
-            runCatching { Hand.left(current) }.getOrNull(),
-            runCatching { Hand.right(current) }.getOrNull(),
-        )
-        val viewpoint = runCatching { androidx.xr.arcore.RenderViewpoint.mono(current) }.getOrNull()
+        var hands = emptyList<Hand>()
+        var viewpoint = runCatching { androidx.xr.arcore.RenderViewpoint.mono(current) }.getOrNull()
         var pinchHeld = 0
         var pinchArmed = true
         var palmHeld = 0
@@ -180,6 +177,23 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             if (followGeneration != seenGeneration) {
                 followLock = null
                 seenGeneration = followGeneration
+            }
+            if (hands.isEmpty()) {
+                runCatching {
+                    current.configure(
+                        Config.Builder(current.config)
+                            .setHandTracking(HandTrackingMode.BOTH)
+                            .setDeviceTracking(DeviceTrackingMode.SPATIAL)
+                            .build(),
+                    )
+                }
+                hands = listOfNotNull(
+                    runCatching { Hand.left(current) }.getOrNull(),
+                    runCatching { Hand.right(current) }.getOrNull(),
+                )
+                if (viewpoint == null) {
+                    viewpoint = runCatching { androidx.xr.arcore.RenderViewpoint.mono(current) }.getOrNull()
+                }
             }
             val head = viewpoint?.state?.value?.pose
             var anyFist = false
@@ -604,59 +618,128 @@ private class TwoHandState {
     var engaged: Boolean = false
         private set
 
-    private val hands = HashMap<String, FloatArray>()
-    private var baseline: Baseline? = null
+    private val hands = HashMap<String, Grab>()
+    private var localLeft: FloatArray? = null
+    private var localRight: FloatArray? = null
+    private var basePose: Pose? = null
+    private var baseWidth = 0f
+    private var baseHeight = 0f
 
     fun onEvent(event: SpatialInputEvent, current: MonitorPlacement, pixelDensity: PixelDensity): MonitorPlacement? {
         val key = event.pointerType.toString()
         if (key != "LEFT" && key != "RIGHT") return null
+        val hand = floatArrayOf(
+            pixelDensity.convertPixelsToMeters(event.origin.x),
+            pixelDensity.convertPixelsToMeters(event.origin.y),
+            pixelDensity.convertPixelsToMeters(event.origin.z),
+        )
         when (event.action) {
-            InputEvent.Action.UP, InputEvent.Action.CANCEL -> hands.remove(key)
-            InputEvent.Action.DOWN, InputEvent.Action.MOVE -> {
-                hands[key] = floatArrayOf(
-                    pixelDensity.convertPixelsToMeters(event.origin.x),
-                    pixelDensity.convertPixelsToMeters(event.origin.y),
-                    pixelDensity.convertPixelsToMeters(event.origin.z),
-                )
+            InputEvent.Action.UP, InputEvent.Action.CANCEL -> {
+                hands.remove(key)
+                if (hands.size < 2) release()
+                return null
+            }
+            InputEvent.Action.DOWN -> {
+                val local = event.hitPosition?.let { hit ->
+                    floatArrayOf(
+                        pixelDensity.convertPixelsToMeters(hit.x),
+                        pixelDensity.convertPixelsToMeters(hit.y),
+                        pixelDensity.convertPixelsToMeters(hit.z),
+                    )
+                } ?: screenLocal(current.pose, hand)
+                hands[key] = Grab(hand, local)
+                releaseLock()
+            }
+            InputEvent.Action.MOVE -> {
+                val existing = hands[key] ?: return null
+                existing.hand = hand
             }
             else -> return null
         }
         val left = hands["LEFT"]
         val right = hands["RIGHT"]
         if (left == null || right == null) {
-            engaged = false
-            baseline = null
+            release()
             return null
         }
-        val base = baseline ?: Baseline(left.copyOf(), right.copyOf(), current).also {
-            baseline = it
+        if (basePose == null) {
+            // The point of the screen under each hand, at the moment the second hand grabs.
+            // Later motion keeps those two points on the hands.
+            localLeft = screenLocal(current.pose, left.hand)
+            localRight = screenLocal(current.pose, right.hand)
+            basePose = current.pose
+            baseWidth = current.physicalWidthM
+            baseHeight = current.physicalHeightM
             engaged = true
+            return null
         }
-        if (distance(left, right) < 0.02f) return null
-        val scale = (distance(left, right) / distance(base.left, base.right).coerceAtLeast(0.02f))
-            .coerceIn(0.25f, 4f)
-        val turn = quaternionBetween(subtract(base.right, base.left), subtract(right, left))
-        val mid0 = midpoint(base.left, base.right)
-        val mid1 = midpoint(left, right)
-        return base.placement.copy(
-            pose = Pose(
-                floatArrayOf(
-                    base.placement.pose.position[0] + mid1[0] - mid0[0],
-                    base.placement.pose.position[1] + mid1[1] - mid0[1],
-                    base.placement.pose.position[2] + mid1[2] - mid0[2],
-                ),
-                multiplyQuaternion(turn, base.placement.pose.rotation),
-            ),
-            physicalWidthM = (base.placement.physicalWidthM * scale).coerceIn(0.28f, 2.4f),
-            physicalHeightM = (base.placement.physicalHeightM * scale).coerceIn(0.16f, 1.5f),
+        return placeGrabbed(
+            localLeft!!,
+            localRight!!,
+            left.hand,
+            right.hand,
+            basePose!!,
+            baseWidth,
+            baseHeight,
+            current,
         )
     }
 
-    private class Baseline(
-        val left: FloatArray,
-        val right: FloatArray,
-        val placement: MonitorPlacement,
+    private fun release() {
+        engaged = false
+        releaseLock()
+    }
+
+    private fun releaseLock() {
+        localLeft = null
+        localRight = null
+        basePose = null
+    }
+
+    private class Grab(var hand: FloatArray, val local: FloatArray)
+}
+
+/** Keep the two grabbed points of the screen glued to the two hands. */
+private fun placeGrabbed(
+    localLeft: FloatArray,
+    localRight: FloatArray,
+    handLeft: FloatArray,
+    handRight: FloatArray,
+    basePose: Pose,
+    baseWidth: Float,
+    baseHeight: Float,
+    current: MonitorPlacement,
+): MonitorPlacement? {
+    val localSpan = subtract(localRight, localLeft)
+    val handSpan = subtract(handRight, handLeft)
+    val localLength = distance(localLeft, localRight)
+    val handLength = distance(handLeft, handRight)
+    if (localLength < 0.02f || handLength < 0.02f) return null
+    val scale = (handLength / localLength).coerceIn(0.25f, 4f)
+    val initialSpan = rotateVector(basePose.rotation, localSpan[0], localSpan[1], localSpan[2])
+    val turn = quaternionBetween(initialSpan, handSpan)
+    val rotation = multiplyQuaternion(turn, basePose.rotation)
+    val scaledLeft = floatArrayOf(localLeft[0] * scale, localLeft[1] * scale, localLeft[2] * scale)
+    val rotatedLeft = rotateVector(rotation, scaledLeft[0], scaledLeft[1], scaledLeft[2])
+    val center = subtract(handLeft, rotatedLeft)
+    val width = (baseWidth * scale).coerceIn(0.28f, 2.4f)
+    val applied = width / baseWidth
+    return current.copy(
+        pose = Pose(center, rotation),
+        physicalWidthM = width,
+        physicalHeightM = (baseHeight * applied).coerceIn(0.16f, 1.5f),
     )
+}
+
+private fun screenLocal(pose: Pose, world: FloatArray): FloatArray {
+    val delta = subtract(world, pose.position)
+    val inverse = floatArrayOf(
+        -pose.rotation.getOrElse(0) { 0f },
+        -pose.rotation.getOrElse(1) { 0f },
+        -pose.rotation.getOrElse(2) { 0f },
+        pose.rotation.getOrElse(3) { 1f },
+    )
+    return rotateVector(inverse, delta[0], delta[1], delta[2])
 }
 
 private class FollowLock(
@@ -712,8 +795,9 @@ private fun readHand(state: Hand.State, head: Vector3?): HandRead? {
     val palmPose = state.handJoints[HandJointType.PALM] ?: return null
     val wrist = state.handJoints[HandJointType.WRIST]?.translation ?: return null
     val palm = palmPose.translation
-    val bone = distance(wrist, palm)
-    if (bone < 0.015f || bone > 0.12f) return null
+    val middle = state.handJoints[HandJointType.MIDDLE_TIP]?.translation ?: return null
+    val span = distance(wrist, middle)
+    if (span < 0.05f || span > 0.30f) return null
     val tips = listOf(
         HandJointType.INDEX_TIP,
         HandJointType.MIDDLE_TIP,
@@ -722,15 +806,14 @@ private fun readHand(state: Hand.State, head: Vector3?): HandRead? {
     ).mapNotNull { state.handJoints[it]?.translation }
     if (tips.size < 4) return null
     val reach = tips.map { distance(it, palm) }.average().toFloat()
-    if (reach < 0.015f) return null
-    val fist = reach < 0.075f
-    val open = reach > 0.12f
+    if (reach < 0.01f) return null
+    val fist = reach < span * 0.45f
+    val open = reach > span * 0.72f
     val thumb = state.handJoints[HandJointType.THUMB_TIP]?.translation
     val index = state.handJoints[HandJointType.INDEX_TIP]?.translation
-    val middle = state.handJoints[HandJointType.MIDDLE_TIP]?.translation
-    val pinch = thumb != null && index != null && middle != null &&
+    val pinch = thumb != null && index != null &&
         distance(thumb, index) < 0.03f &&
-        distance(middle, palm) > 0.10f &&
+        distance(middle, palm) > span * 0.6f &&
         !fist
     var palmToFace = false
     if (open && head != null) {

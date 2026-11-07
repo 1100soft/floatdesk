@@ -24,6 +24,7 @@ internal object Protocol {
     const val KIND_CURSOR = 3
     const val KIND_KEYFRAME = 4
     const val KIND_GOODBYE = 6
+    const val KIND_BEACON = 7
     private const val CURSOR_FIXED = 38
 
     fun clientHello(name: String, videoPort: Int): ByteArray {
@@ -54,6 +55,7 @@ internal object Protocol {
         return when (kind) {
             KIND_HOST_HELLO -> decodeHostHello(payload)
             KIND_CURSOR -> decodeCursor(payload)
+            KIND_BEACON -> decodeBeacon(payload)
             else -> Packet.Ignored(kind)
         }
     }
@@ -71,6 +73,17 @@ internal object Protocol {
         out.putInt(0)
         out.put(payload)
         return out.array()
+    }
+
+    private fun decodeBeacon(payload: ByteArray): Packet? {
+        if (payload.size < 3) return null
+        val buf = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN)
+        val port = buf.short.toInt() and 0xFFFF
+        val nameLen = buf.get().toInt() and 0xFF
+        if (buf.remaining() < nameLen) return null
+        val nameBytes = ByteArray(nameLen)
+        buf.get(nameBytes)
+        return Packet.Beacon(port, String(nameBytes, Charsets.UTF_8))
     }
 
     private fun decodeHostHello(payload: ByteArray): Packet? {
@@ -149,6 +162,7 @@ internal data class CursorFragment(
 internal sealed interface Packet {
     data class HostHello(val sessionId: Long, val monitors: List<MonitorHello>) : Packet
     data class Cursor(val fragment: CursorFragment) : Packet
+    data class Beacon(val listenPort: Int, val name: String) : Packet
     data class Ignored(val kind: Int) : Packet
 }
 

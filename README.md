@@ -36,9 +36,13 @@ floatdesk restore
 
 `client/android-xr` is a Jetpack XR app. It decodes each RTP stream with `MediaCodec` straight into a `SpatialExternalSurface`, draws the cursor on top of that surface, and keeps monitor poses relative to one persisted ARCore anchor.
 
-Open the project in Android Studio and run it on an Android XR device. Enter the host address, connect, then use the panel to nudge a monitor or save the room anchor. Scene understanding permission is required for the anchor.
+The headset finds the computer on the LAN by itself. `floatdesk serve` announces itself once a second. Open the app and wait until the status says it found the machine. There is no address to type.
 
-The client binds UDP `48000` upward, one port per monitor, and sends hello packets to the host's port `47000`.
+Plasma does not treat a RandR monitor with no physical output as a desktop, so a virtual `Floatdesk-N` region stays empty. Stream the laptop panel instead:
+
+```bash
+./target/release/floatdesk serve --existing
+```
 
 ## Layout
 

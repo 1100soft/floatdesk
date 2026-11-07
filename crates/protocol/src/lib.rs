@@ -14,7 +14,7 @@ pub use bitrate::{allocate_bitrate, MonitorLoad};
 pub use control::{
     cursor_packets, decode_packet, ControlPacket, CursorAssembler, CursorState, LayoutEntry,
     MonitorHello, ProtocolError, KIND_CLIENT_HELLO, KIND_CURSOR, KIND_GOODBYE, KIND_HOST_HELLO,
-    KIND_KEYFRAME_REQUEST, KIND_LAYOUT, MAGIC, MAX_DATAGRAM, VERSION,
+    KIND_KEYFRAME_REQUEST, KIND_LAYOUT, KIND_BEACON, BEACON_PORT, MAGIC, MAX_DATAGRAM, VERSION,
 };
 pub use rtp::{
     rtp_timestamp, split_annex_b, Depacketized, RtpH264Depacketizer, RtpH264Packetizer,

@@ -24,6 +24,8 @@ pub const KIND_CURSOR: u8 = 3;
 pub const KIND_KEYFRAME_REQUEST: u8 = 4;
 pub const KIND_LAYOUT: u8 = 5;
 pub const KIND_GOODBYE: u8 = 6;
+pub const KIND_BEACON: u8 = 7;
+pub const BEACON_PORT: u16 = 47001;
 
 const CURSOR_FIXED: usize = 38;
 const CURSOR_CHUNK: usize = 1024;
@@ -101,6 +103,8 @@ pub enum ControlPacket {
         monitors: Vec<LayoutEntry>,
     },
     Goodbye,
+    /// Broadcast so a headset can learn the host address without typing it.
+    Beacon { listen_port: u16, name: String },
 }
 
 impl ControlPacket {
@@ -125,6 +129,7 @@ impl ControlPacket {
             Self::KeyframeRequest { .. } => KIND_KEYFRAME_REQUEST,
             Self::Layout { .. } => KIND_LAYOUT,
             Self::Goodbye => KIND_GOODBYE,
+            Self::Beacon { .. } => KIND_BEACON,
         }
     }
 
@@ -177,6 +182,10 @@ impl ControlPacket {
                 }
             }
             Self::Goodbye => {}
+            Self::Beacon { listen_port, name } => {
+                w.extend_from_slice(&listen_port.to_le_bytes());
+                write_name(&mut w, name);
+            }
         }
         w
     }
@@ -301,6 +310,17 @@ pub fn decode_packet(bytes: &[u8]) -> Result<ControlPacket, ProtocolError> {
             } else {
                 Err(ProtocolError::Payload(kind))
             }
+        }
+        KIND_BEACON => {
+            if p.len() < 3 {
+                return Err(ProtocolError::Payload(kind));
+            }
+            let listen_port = u16::from_le_bytes(p[0..2].try_into().unwrap());
+            let (name, rest) = read_name(&p[2..]).ok_or(ProtocolError::Payload(kind))?;
+            if !rest.is_empty() {
+                return Err(ProtocolError::Payload(kind));
+            }
+            Ok(ControlPacket::Beacon { listen_port, name })
         }
         other => Err(ProtocolError::Kind(other)),
     }
@@ -451,6 +471,11 @@ mod tests {
             decode_packet(&ControlPacket::Goodbye.encode()).unwrap(),
             ControlPacket::Goodbye
         );
+        let beacon = ControlPacket::Beacon {
+            listen_port: 47000,
+            name: "desk".into(),
+        };
+        assert_eq!(decode_packet(&beacon.encode()).unwrap(), beacon);
     }
 
     #[test]

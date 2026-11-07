@@ -2,6 +2,7 @@ package dev.floatdesk.client
 
 import android.graphics.Bitmap
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -100,10 +101,14 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         store = WorkspaceStore(File(filesDir, "workspace.json"))
-        if (checkSelfPermission("android.permission.HAND_TRACKING") !=
-            android.content.pm.PackageManager.PERMISSION_GRANTED
-        ) {
-            requestPermissions(arrayOf("android.permission.HAND_TRACKING"), 7)
+        val permissions = arrayOf(
+            "android.permission.HAND_TRACKING",
+            "android.permission.HEAD_TRACKING",
+        ).filter {
+            checkSelfPermission(it) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+        if (permissions.isNotEmpty()) {
+            requestPermissions(permissions.toTypedArray(), 7)
         }
         val dump = if (intent.getBooleanExtra("floatdesk_dump", false)) {
             File(getExternalFilesDir(null), "frame.jpg")
@@ -143,6 +148,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     var holdingFist by remember { mutableStateOf(false) }
     var suppressFist by remember { mutableStateOf(false) }
     var followGeneration by remember { mutableIntStateOf(0) }
+    var gestureNote by remember { mutableStateOf("Waiting for hand tracking…") }
     val following = (holdingFist || latchedFollow) && !suppressFist
     val workspaceNow = rememberUpdatedState(workspace)
     fun pinToFixed() {
@@ -156,14 +162,23 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     LaunchedEffect(session) {
         val current = session ?: return@LaunchedEffect
         current.scene.requestFullSpace()
-        runCatching {
+        // Hand tracking and head tracking are separate. One rejection used to
+        // roll the whole config back, which left the hands disabled.
+        val handsConfigured = runCatching {
             current.configure(
                 Config.Builder(current.config)
                     .setHandTracking(HandTrackingMode.BOTH)
+                    .build(),
+            )
+        }
+        val headConfigured = runCatching {
+            current.configure(
+                Config.Builder(current.config)
                     .setDeviceTracking(DeviceTrackingMode.SPATIAL)
                     .build(),
             )
         }
+        Log.i("Floatdesk", "tracking configure hands=$handsConfigured head=$headConfigured")
         var hands = emptyList<Hand>()
         var viewpoint = runCatching { androidx.xr.arcore.RenderViewpoint.mono(current) }.getOrNull()
         var pinchHeld = 0
@@ -172,21 +187,15 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
         var palmArmed = true
         var followLock: FollowLock? = null
         var seenGeneration = followGeneration
+        var tick = 0
         while (isActive) {
             delay(40)
+            tick += 1
             if (followGeneration != seenGeneration) {
                 followLock = null
                 seenGeneration = followGeneration
             }
-            if (hands.isEmpty()) {
-                runCatching {
-                    current.configure(
-                        Config.Builder(current.config)
-                            .setHandTracking(HandTrackingMode.BOTH)
-                            .setDeviceTracking(DeviceTrackingMode.SPATIAL)
-                            .build(),
-                    )
-                }
+            if (hands.size < 2 && tick % 25 == 1) {
                 hands = listOfNotNull(
                     runCatching { Hand.left(current) }.getOrNull(),
                     runCatching { Hand.right(current) }.getOrNull(),
@@ -200,12 +209,35 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             var anyOpen = false
             var anyPinch = false
             var palmShown = false
+            var tracking = 0
             for (hand in hands) {
-                val read = readHand(hand.state.value, head?.translation) ?: continue
+                val read = readHand(hand.state.value, head) ?: continue
+                tracking += 1
                 if (read.fist) anyFist = true
                 if (read.open) anyOpen = true
                 if (read.pinch) anyPinch = true
                 if (read.palmToFace) palmShown = true
+            }
+            if (tick % 50 == 0) {
+                val note = when {
+                    hands.isEmpty() -> "Hand tracking is not running. Allow it if the headset asks."
+                    tracking == 0 -> "Hands are not in view yet."
+                    head == null -> "Head tracking is off, so follow and the palm summon cannot move anything."
+                    else -> ""
+                }
+                if (note.isNotEmpty()) {
+                    gestureNote = note
+                } else if (
+                    gestureNote.startsWith("Hand") ||
+                    gestureNote.startsWith("Waiting") ||
+                    gestureNote.startsWith("Head")
+                ) {
+                    gestureNote = ""
+                }
+                Log.i(
+                    "Floatdesk",
+                    "hands=${hands.size} tracking=$tracking fist=$anyFist pinch=$anyPinch palm=$palmShown head=${head != null}",
+                )
             }
             if (anyOpen && !anyFist) suppressFist = false
             holdingFist = anyFist && !suppressFist
@@ -214,6 +246,12 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 if (pinchHeld == 6 && pinchArmed) {
                     latchedFollow = !latchedFollow
                     pinchArmed = false
+                    gestureNote = if (latchedFollow) {
+                        "Follow is latched. Pinch again to leave it, or grab a panel."
+                    } else {
+                        "Follow is fixed. Close a fist to follow while the hand stays closed."
+                    }
+                    Log.i("Floatdesk", "pinch latch=$latchedFollow")
                 }
             } else {
                 pinchHeld = 0
@@ -229,19 +267,26 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                     followLock = null
                     latchedFollow = false
                     suppressFist = true
+                    gestureNote = "Control panel summoned."
+                    Log.i("Floatdesk", "palm summon")
                 }
             } else {
                 palmHeld = 0
                 palmArmed = true
             }
-            val wantFollow = (holdingFist || latchedFollow) && !suppressFist && head != null
-            if (!wantFollow || head == null) {
+            val wantFollow = head != null && (holdingFist || latchedFollow) && !suppressFist
+            if (!wantFollow) {
                 if (followLock != null) {
                     store.save(workspaceNow.value)
                     followLock = null
                 }
             } else if (followLock == null) {
                 followLock = FollowLock.capture(head, workspaceNow.value)
+                gestureNote = if (latchedFollow) {
+                    "Following, latched. Pinch to stop, or grab a panel."
+                } else {
+                    "Following while the fist stays closed."
+                }
             } else {
                 workspace = followLock.advance(head, workspaceNow.value)
             }
@@ -271,6 +316,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             onReset = { workspace = workspace.reset(monitors, store) },
             headLocked = following,
             latchedFollow = latchedFollow,
+            gestureNote = gestureNote,
             onToggleHead = { latchedFollow = !latchedFollow },
         )
     }
@@ -359,8 +405,9 @@ private fun DeskContent(
                         val file = latest.value
                         val existing = file.monitorAt(index) ?: return
                         val wasEngaged = hands.engaged
-                        val next = hands.onEvent(event, existing, pixelDensity) ?: return
+                        val next = hands.onEvent(event, existing, pixelDensity)
                         if (!wasEngaged && hands.engaged) onManipulate()
+                        if (next == null) return
                         onWorkspace(
                             file.monitorPlaced(
                                 index,
@@ -380,7 +427,7 @@ private fun DeskContent(
                 pixelDensity = pixelDensity,
             ).movable(
                 movePolicy = MovePolicy.custom(scaleWithDistance = false) { event ->
-                    if (hands.engaged) return@custom
+                    if (hands.engaged || hands.bothDown) return@custom
                     if (event.type == SpatialMoveEventType.Start) onManipulate()
                     val existing = latest.value.monitorAt(index) ?: return@custom
                     onWorkspace(
@@ -397,7 +444,7 @@ private fun DeskContent(
                 maximumSize = DpVolumeSize(2.4f.meters(density, pixelDensity), 1.5f.meters(density, pixelDensity), 0.dp),
                 maintainAspectRatio = true,
                 resizePolicy = ResizePolicy.custom { event ->
-                    if (hands.engaged) return@custom
+                    if (hands.engaged || hands.bothDown) return@custom
                     if (event.type == SpatialResizeEventType.Start) onManipulate()
                     val size = event.sizeInMeters(pixelDensity) ?: return@custom
                     val existing = latest.value.monitorAt(index) ?: return@custom
@@ -512,6 +559,7 @@ private fun ControlPanel(
     onReset: () -> Unit,
     headLocked: Boolean,
     latchedFollow: Boolean,
+    gestureNote: String,
     onToggleHead: () -> Unit,
 ) {
     Column(
@@ -535,6 +583,9 @@ private fun ControlPanel(
             },
             color = Color.White,
         )
+        if (gestureNote.isNotEmpty()) {
+            Text(gestureNote, color = Color.White)
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = onDisconnect) { Text("Search again") }
             Button(onClick = onOpenWorkspace) { Text("Open workspace") }
@@ -618,21 +669,18 @@ private class TwoHandState {
     var engaged: Boolean = false
         private set
 
+    val bothDown: Boolean
+        get() = hands.size >= 2
+
     private val hands = HashMap<String, Grab>()
-    private var localLeft: FloatArray? = null
-    private var localRight: FloatArray? = null
-    private var basePose: Pose? = null
+    private var baseRotation: FloatArray? = null
     private var baseWidth = 0f
     private var baseHeight = 0f
 
     fun onEvent(event: SpatialInputEvent, current: MonitorPlacement, pixelDensity: PixelDensity): MonitorPlacement? {
         val key = event.pointerType.toString()
         if (key != "LEFT" && key != "RIGHT") return null
-        val hand = floatArrayOf(
-            pixelDensity.convertPixelsToMeters(event.origin.x),
-            pixelDensity.convertPixelsToMeters(event.origin.y),
-            pixelDensity.convertPixelsToMeters(event.origin.z),
-        )
+        val origin = eventMeters(event.origin, pixelDensity)
         when (event.action) {
             InputEvent.Action.UP, InputEvent.Action.CANCEL -> {
                 hands.remove(key)
@@ -640,19 +688,17 @@ private class TwoHandState {
                 return null
             }
             InputEvent.Action.DOWN -> {
-                val local = event.hitPosition?.let { hit ->
-                    floatArrayOf(
-                        pixelDensity.convertPixelsToMeters(hit.x),
-                        pixelDensity.convertPixelsToMeters(hit.y),
-                        pixelDensity.convertPixelsToMeters(hit.z),
-                    )
-                } ?: screenLocal(current.pose, hand)
-                hands[key] = Grab(hand, local)
+                val hit = event.hitPosition?.let { eventMeters(it, pixelDensity) }
+                    ?: rayOnPanel(current.pose, origin, eventMeters(event.direction, pixelDensity))
+                    ?: return null
+                val local = screenLocal(current.pose, hit)
+                local[2] = 0f
+                hands[key] = Grab(origin, local)
                 releaseLock()
             }
             InputEvent.Action.MOVE -> {
                 val existing = hands[key] ?: return null
-                existing.hand = hand
+                existing.hand = origin
             }
             else -> return null
         }
@@ -662,23 +708,28 @@ private class TwoHandState {
             release()
             return null
         }
-        if (basePose == null) {
-            // The point of the screen under each hand, at the moment the second hand grabs.
-            // Later motion keeps those two points on the hands.
-            localLeft = screenLocal(current.pose, left.hand)
-            localRight = screenLocal(current.pose, right.hand)
-            basePose = current.pose
+        if (baseRotation == null) {
+            // Freeze the glass point under each hand, and the hand position, at
+            // the moment the second hand grabs. Later motion is one transform
+            // from those two pairs, so the pixels stay with the hands.
+            left.capture(current.pose)
+            right.capture(current.pose)
+            baseRotation = current.pose.rotation.copyOf()
             baseWidth = current.physicalWidthM
             baseHeight = current.physicalHeightM
             engaged = true
             return null
         }
+        val leftLock = left.worldAtLock ?: return null
+        val rightLock = right.worldAtLock ?: return null
+        val leftHand = left.handAtLock ?: return null
+        val rightHand = right.handAtLock ?: return null
         return placeGrabbed(
-            localLeft!!,
-            localRight!!,
-            left.hand,
-            right.hand,
-            basePose!!,
+            left.local,
+            right.local,
+            add(leftLock, subtract(left.hand, leftHand)),
+            add(rightLock, subtract(right.hand, rightHand)),
+            baseRotation!!,
             baseWidth,
             baseHeight,
             current,
@@ -691,43 +742,73 @@ private class TwoHandState {
     }
 
     private fun releaseLock() {
-        localLeft = null
-        localRight = null
-        basePose = null
+        baseRotation = null
+        hands.values.forEach { it.clearLock() }
     }
 
-    private class Grab(var hand: FloatArray, val local: FloatArray)
+    private class Grab(var hand: FloatArray, val local: FloatArray) {
+        var handAtLock: FloatArray? = null
+        var worldAtLock: FloatArray? = null
+
+        fun capture(pose: Pose) {
+            handAtLock = hand.copyOf()
+            worldAtLock = transformPoint(pose, local)
+        }
+
+        fun clearLock() {
+            handAtLock = null
+            worldAtLock = null
+        }
+    }
 }
 
-/** Keep the two grabbed points of the screen glued to the two hands. */
+/**
+ * One rigid transform of the screen. The two grabbed pixels are [localLeft]
+ * and [localRight]. [targetLeft] and [targetRight] are where those pixels
+ * have to be. Scale is the ratio of the two spans, rotation is the smallest
+ * turn that maps one span onto the other, and the center is whatever puts
+ * the first pixel on its target.
+ */
 private fun placeGrabbed(
     localLeft: FloatArray,
     localRight: FloatArray,
-    handLeft: FloatArray,
-    handRight: FloatArray,
-    basePose: Pose,
+    targetLeft: FloatArray,
+    targetRight: FloatArray,
+    baseRotation: FloatArray,
     baseWidth: Float,
     baseHeight: Float,
     current: MonitorPlacement,
 ): MonitorPlacement? {
     val localSpan = subtract(localRight, localLeft)
-    val handSpan = subtract(handRight, handLeft)
+    val targetSpan = subtract(targetRight, targetLeft)
     val localLength = distance(localLeft, localRight)
-    val handLength = distance(handLeft, handRight)
-    if (localLength < 0.02f || handLength < 0.02f) return null
-    val scale = (handLength / localLength).coerceIn(0.25f, 4f)
-    val initialSpan = rotateVector(basePose.rotation, localSpan[0], localSpan[1], localSpan[2])
-    val turn = quaternionBetween(initialSpan, handSpan)
-    val rotation = multiplyQuaternion(turn, basePose.rotation)
-    val scaledLeft = floatArrayOf(localLeft[0] * scale, localLeft[1] * scale, localLeft[2] * scale)
-    val rotatedLeft = rotateVector(rotation, scaledLeft[0], scaledLeft[1], scaledLeft[2])
-    val center = subtract(handLeft, rotatedLeft)
+    val targetLength = distance(targetLeft, targetRight)
+    if (localLength < 0.02f || targetLength < 0.02f) return null
+    val scale = (targetLength / localLength).coerceIn(0.25f, 4f)
+    val initialSpan = rotateVector(baseRotation, localSpan[0], localSpan[1], localSpan[2])
+    val turn = quaternionBetween(initialSpan, targetSpan)
+    val rotation = multiplyQuaternion(turn, baseRotation)
+    val rotatedLeft = rotateVector(
+        rotation,
+        localLeft[0] * scale,
+        localLeft[1] * scale,
+        localLeft[2] * scale,
+    )
+    val center = subtract(targetLeft, rotatedLeft)
     val width = (baseWidth * scale).coerceIn(0.28f, 2.4f)
     val applied = width / baseWidth
     return current.copy(
         pose = Pose(center, rotation),
         physicalWidthM = width,
         physicalHeightM = (baseHeight * applied).coerceIn(0.16f, 1.5f),
+    )
+}
+
+private fun eventMeters(point: Vector3, pixelDensity: PixelDensity): FloatArray {
+    return floatArrayOf(
+        pixelDensity.convertPixelsToMeters(point.x),
+        pixelDensity.convertPixelsToMeters(point.y),
+        pixelDensity.convertPixelsToMeters(point.z),
     )
 }
 
@@ -740,6 +821,29 @@ private fun screenLocal(pose: Pose, world: FloatArray): FloatArray {
         pose.rotation.getOrElse(3) { 1f },
     )
     return rotateVector(inverse, delta[0], delta[1], delta[2])
+}
+
+private fun transformPoint(pose: Pose, local: FloatArray, scale: Float = 1f): FloatArray {
+    val rotated = rotateVector(pose.rotation, local[0] * scale, local[1] * scale, local[2] * scale)
+    return floatArrayOf(
+        pose.position.getOrElse(0) { 0f } + rotated[0],
+        pose.position.getOrElse(1) { 0f } + rotated[1],
+        pose.position.getOrElse(2) { 0f } + rotated[2],
+    )
+}
+
+private fun rayOnPanel(pose: Pose, origin: FloatArray, direction: FloatArray): FloatArray? {
+    val normal = rotateVector(pose.rotation, 0f, 0f, 1f)
+    val denom = normal[0] * direction[0] + normal[1] * direction[1] + normal[2] * direction[2]
+    if (kotlin.math.abs(denom) < 1e-5f) return null
+    val toward = subtract(pose.position, origin)
+    val t = (normal[0] * toward[0] + normal[1] * toward[1] + normal[2] * toward[2]) / denom
+    if (t < 0f) return null
+    return floatArrayOf(
+        origin[0] + direction[0] * t,
+        origin[1] + direction[1] * t,
+        origin[2] + direction[2] * t,
+    )
 }
 
 private class FollowLock(
@@ -790,7 +894,7 @@ private data class HandRead(
     val palmToFace: Boolean,
 )
 
-private fun readHand(state: Hand.State, head: Vector3?): HandRead? {
+private fun readHand(state: Hand.State, head: androidx.xr.runtime.math.Pose?): HandRead? {
     if (state.trackingState != TrackingState.TRACKING) return null
     val palmPose = state.handJoints[HandJointType.PALM] ?: return null
     val wrist = state.handJoints[HandJointType.WRIST]?.translation ?: return null
@@ -817,11 +921,15 @@ private fun readHand(state: Hand.State, head: Vector3?): HandRead? {
         !fist
     var palmToFace = false
     if (open && head != null) {
-        val toward = Vector3(head.x - palm.x, head.y - palm.y, head.z - palm.z)
+        val headPoint = head.translation
+        val toward = Vector3(headPoint.x - palm.x, headPoint.y - palm.y, headPoint.z - palm.z)
         val length = kotlin.math.sqrt(toward.x * toward.x + toward.y * toward.y + toward.z * toward.z)
-        if (length in 0.15f..0.65f) {
+        val inFront = dot(Vector3(palm.x - headPoint.x, palm.y - headPoint.y, palm.z - headPoint.z), head.forward) > 0.15f
+        // OpenXR points the palm joint's -Y out of the palm, toward the face
+        // when the palm is shown to the user.
+        if (inFront && length in 0.18f..0.75f) {
             val dir = Vector3(toward.x / length, toward.y / length, toward.z / length)
-            palmToFace = maxOf(dot(palmPose.up, dir), dot(palmPose.forward, dir)) > 0.72f
+            palmToFace = dot(palmPose.down, dir) > 0.6f
         }
     }
     return HandRead(fist, open, pinch, palmToFace)
@@ -883,6 +991,9 @@ private fun rotateVector(quaternion: FloatArray, x: Float, y: Float, z: Float): 
 
 private fun subtract(a: FloatArray, b: FloatArray): FloatArray =
     floatArrayOf(a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+private fun add(a: FloatArray, b: FloatArray): FloatArray =
+    floatArrayOf(a[0] + b[0], a[1] + b[1], a[2] + b[2])
 
 private fun midpoint(a: FloatArray, b: FloatArray): FloatArray =
     floatArrayOf((a[0] + b[0]) / 2f, (a[1] + b[1]) / 2f, (a[2] + b[2]) / 2f)

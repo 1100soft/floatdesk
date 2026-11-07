@@ -183,6 +183,13 @@ impl X11Capture {
         self.rect.x < area_r && mine_r > area_x && self.rect.y < area_b && mine_b > area_y
     }
 
+    /// The cursor is composited after the grab, so a pointer move has to
+    /// request a frame even when the framebuffer itself is unchanged.
+    pub fn note_cursor(&mut self) {
+        self.dirty = true;
+        self.generation = self.generation.wrapping_add(1);
+    }
+
     fn subtract_damage(&self) {
         if self.damage == 0 {
             return;

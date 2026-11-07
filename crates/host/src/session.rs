@@ -58,6 +58,7 @@ struct Shared {
     skipped: AtomicU64,
     bytes: AtomicU64,
     cursor: Mutex<CursorSprite>,
+    cursor_generation: AtomicU64,
 }
 
 pub fn serve(opts: ServeOpts) -> Result<()> {
@@ -145,6 +146,7 @@ fn run(monitors: &[MonitorRect], opts: &ServeOpts) -> Result<()> {
             height: 0,
             pixels: Vec::new(),
         }),
+        cursor_generation: AtomicU64::new(0),
     });
     let stop_flag = Arc::clone(&shared);
     let _ = ctrlc::set_handler(move || {
@@ -237,6 +239,7 @@ fn monitor_thread(
     let mut packetizer = RtpH264Packetizer::new(ssrc);
     let interval = Duration::from_secs_f64(1.0 / f64::from(fps));
     let mut seen_generation = 0u64;
+    let mut seen_cursor = 0u64;
     while !shared.stop.load(Ordering::Relaxed) {
         let target = shared
             .client
@@ -259,6 +262,14 @@ fn monitor_thread(
         }
         if force {
             encoder.request_keyframe();
+        }
+        // The pointer is drawn into the frame, and XDamage does not fire when
+        // only the cursor sprite moves. A cursor change has to schedule a frame
+        // or the pointer freezes until the desktop repaints.
+        let cursor_generation = shared.cursor_generation.load(Ordering::Relaxed);
+        if cursor_generation != seen_cursor {
+            seen_cursor = cursor_generation;
+            capture.note_cursor();
         }
         let Some(mut frame) = capture.poll(interval, force)? else {
             shared.skipped.fetch_add(1, Ordering::Relaxed);
@@ -474,16 +485,24 @@ fn cursor_loop(shared: Arc<Shared>) {
     while !shared.stop.load(Ordering::Relaxed) {
         match cursor.poll() {
             Ok(sample) => {
-                if let Ok(mut slot) = shared.cursor.lock() {
+                let changed = if let Ok(mut slot) = shared.cursor.lock() {
+                    let moved = slot.root_x != sample.root_x || slot.root_y != sample.root_y;
+                    let reshaped = !sample.argb.is_empty();
                     slot.root_x = sample.root_x;
                     slot.root_y = sample.root_y;
-                    if !sample.argb.is_empty() {
+                    if reshaped {
                         slot.hotspot_x = sample.hotspot_x;
                         slot.hotspot_y = sample.hotspot_y;
                         slot.width = sample.width;
                         slot.height = sample.height;
                         slot.pixels = argb_to_bgra(&sample.argb);
                     }
+                    moved || reshaped
+                } else {
+                    false
+                };
+                if changed {
+                    shared.cursor_generation.fetch_add(1, Ordering::Relaxed);
                 }
             }
             Err(err) => tracing::debug!("cursor poll: {err}"),

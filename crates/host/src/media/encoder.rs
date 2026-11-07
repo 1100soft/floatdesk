@@ -28,7 +28,7 @@ const VA: &[(&str, &str)] = &[
     ("b-frames", "0"),
     ("cabac", "false"),
     ("target-usage", "6"),
-    ("cpb-size", "1500"),
+    ("cpb-size", "400"),
     ("ref-frames", "1"),
     ("aud", "true"),
 ];
@@ -161,7 +161,7 @@ impl GstEncoder {
              ! {} name=enc \
              ! h264parse config-interval=-1 \
              ! video/x-h264,stream-format=byte-stream,alignment=au \
-             ! appsink name=sink emit-signals=false sync=false max-buffers=2 drop=false",
+             ! appsink name=sink emit-signals=false sync=false max-buffers=1 drop=false",
             profile.format, profile.element
         );
         let pipeline = Pipeline::launch(&description)?;

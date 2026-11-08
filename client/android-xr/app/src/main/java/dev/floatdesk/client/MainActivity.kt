@@ -63,12 +63,20 @@ import androidx.xr.compose.subspace.StereoMode
 import androidx.xr.compose.subspace.layout.InteractionPolicy
 import androidx.xr.compose.subspace.layout.SpatialInputEvent
 import androidx.xr.compose.subspace.layout.SubspaceModifier
+import androidx.xr.compose.subspace.layout.MovePolicy
+import androidx.xr.compose.subspace.layout.ResizePolicy
+import androidx.xr.compose.subspace.layout.SpatialMoveEvent
+import androidx.xr.compose.subspace.layout.SpatialMoveEventType
+import androidx.xr.compose.subspace.layout.SpatialResizeEvent
+import androidx.xr.compose.subspace.layout.SpatialResizeEventType
+import androidx.xr.compose.subspace.layout.movable
+import androidx.xr.compose.subspace.layout.resizable
+import androidx.xr.compose.unit.DpVolumeSize
 import androidx.xr.compose.subspace.layout.pointerHoverIcon
 import androidx.xr.scenecore.SpatialPointerIcon
 import androidx.xr.compose.subspace.layout.offset as offset3d
 import androidx.xr.compose.subspace.layout.requiredHeight
 import androidx.xr.compose.subspace.layout.requiredWidth
-import androidx.xr.compose.subspace.layout.requiredDepth
 import androidx.xr.compose.subspace.layout.rotate
 import androidx.xr.runtime.Config
 import androidx.xr.runtime.DeviceTrackingMode
@@ -181,6 +189,18 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     var gestureNote by remember { mutableStateOf("Waiting for hand tracking…") }
     val following = latchedFollow || (holdingFist && !suppressFist)
     val grabs = remember { mutableMapOf<Int, TwoHandState>() }
+    DisposableEffect(session) {
+        val current = session
+        val listener = Runnable {
+            Log.w("Floatdesk","XR activity origin changed; cancelling gestures")
+            grabs.values.forEach { it.cancel() }
+            manipulating = false
+            suppressFist = true
+            followGeneration += 1
+        }
+        current?.scene?.activitySpace?.addOriginChangedListener(listener)
+        onDispose { runCatching { current?.scene?.activitySpace?.removeOriginChangedListener(listener) } }
+    }
     val handTracking = remember { GrabTracking() }
     val grips = handTracking.points
     val deskSpace = remember { AtomicReference<Entity?>(null) }
@@ -285,7 +305,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             // stored in the Compose root, so follow must convert into that same space.
             val trackingAvailable = current.lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
                 (deviceState == null || deviceState.trackingState == TrackingState.TRACKING)
-            val perceived = if (trackingAvailable) viewpoint?.state?.value?.pose ?: deviceState?.devicePose else null
+            val perceived = viewpoint?.state?.value?.pose ?: deviceState?.devicePose?.takeIf { trackingAvailable }
             // SpatialExternalSurface is under Compose's recommended root, whose scale/pose
             // are independent of ActivitySpace. Always target the actual surface parent.
             val root = findDeskSpace(current) ?: deskSpace.get()
@@ -300,12 +320,11 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             handTracking.nowMs = SystemClock.uptimeMillis()
             handTracking.pinched.clear()
             val candidateHead = perceived?.let { deskPose(current, root, it) }
-            val reliable = trackingGuard.update(handTracking.nowMs, candidateHead?.translation?.toArray(),
+            val reliable = trackingGuard.update(handTracking.nowMs, candidateHead?.takeIf { trackingAvailable }?.translation?.toArray(),
                 candidateHead?.let { floatArrayOf(it.rotation.x,it.rotation.y,it.rotation.z,it.rotation.w) },unitsPerMeter)
             val head = candidateHead?.takeIf { reliable }
             if (!reliable) {
-                grabs.values.filter { it.busy }.forEach { it.cancel() }
-                if (manipulating) updateManipulation(false)
+                // Head quality controls follow, not availability of independently tracked hands.
                 followLock = null
             }
             var anyFist = false
@@ -324,7 +343,6 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             var tracking = 0
             var rawTracking = 0
             for ((side, hand) in hands) {
-                if (!reliable) continue
                 val state = hand.state.value
                 if (state.trackingState == TrackingState.TRACKING) {
                     val thumb = state.handJoints[HandJointType.THUMB_TIP]?.translation
@@ -497,10 +515,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 onManipulate = { updateManipulation(it) },
             )
         }
-        Subspace(modifier = SubspaceModifier
-            .requiredWidth(100f.meters(density, pixelDensity))
-            .requiredHeight(100f.meters(density, pixelDensity))
-            .requiredDepth(100f.meters(density, pixelDensity))) { desk() }
+        Subspace { desk() }
     } else {
         controls()
     }
@@ -532,6 +547,9 @@ private fun DeskContent(
     }
     layout.forEachIndexed { index, placement ->
         val hands = remember(index) { grabs.getOrPut(index) { TwoHandState() } }
+        val pinch = remember(index) { PinchMemory() }
+        var nativeMove by remember(index) { mutableStateOf(false) }
+        var nativeResize by remember(index) { mutableStateOf(false) }
         val videoSurface = remember(index) { AtomicReference<Surface?>(null) }
         val warp = remember(index, session) { MonitorWarp() }
         LaunchedEffect(index, session) {
@@ -573,25 +591,21 @@ private fun DeskContent(
         }
         frozenMonitor?.let { frozen -> SideEffect { frozen.update(placement) } }
 
-        SpatialExternalSurface(
-            stereoMode = StereoMode.Mono,
-            interactionPolicy = remember(index) {
+        val inputPolicy = remember(index) {
                 object : InteractionPolicy {
                     override val isEnabled: Boolean = true
                     override fun onInputEvent(event: SpatialInputEvent) {
-                        if (event.action == InputEvent.Action.CANCEL && hands.engaged &&
-                            handTracking.pinched.containsAll(listOf("LEFT","RIGHT"))) return
+                        if (event.action == InputEvent.Action.CANCEL && frozenMonitor != null && hands.engaged) return
                         val file = latest.value
                         val existing = file.monitorAt(index) ?: return
                         val wasBusy = hands.busy
                         if (event.action == InputEvent.Action.DOWN || event.action == InputEvent.Action.UP || event.action == InputEvent.Action.CANCEL) {
                             Log.i("Floatdesk", "monitor input index=$index side=${event.pointerType} action=${event.action} hit=${event.hitPosition} busy=${hands.busy}")
                         }
-                        val selected = if (event.action == InputEvent.Action.DOWN) {
-                            val current = session ?: return
-                            warp.hit(current,event,pixelDensity,existing) ?: return
-                        } else null
-                        val next = hands.onEvent(event, existing, pixelDensity, handTracking, warp.mesh, selectedHit = selected)
+                        // The native listener supplies a surface-validated local contact from the
+                        // raw perception-space hit; do not localize it again through ActivitySpace.
+                        val next = hands.onEvent(event, existing, pixelDensity, handTracking, warp.mesh)
+                        if (hands.blocksNative) { nativeMove = false; nativeResize = false }
                         if (wasBusy != hands.busy) onManipulate(hands.busy)
                         if (next == null) return
                         onWorkspace(
@@ -604,18 +618,56 @@ private fun DeskContent(
                         )
                     }
                 }
-            },
+            }
+        SpatialExternalSurface(
+            stereoMode = StereoMode.Mono,
             modifier = placedPanel(
                 pose = placement.pose,
                 widthM = placement.physicalWidthM,
                 heightM = placement.physicalHeightM,
                 density = density,
                 pixelDensity = pixelDensity,
-            ).pointerHoverIcon(SpatialPointerIcon.DEFAULT),
+            ).pointerHoverIcon(SpatialPointerIcon.DEFAULT).movable(
+                movePolicy = MovePolicy.custom(scaleWithDistance = false) { event ->
+                    if (hands.blocksNative) { nativeMove = false; return@custom }
+                    if (event.type == SpatialMoveEventType.Start) { nativeMove = true; onManipulate(true) }
+                    if (!nativeMove) return@custom // Ignore updates from a system gesture we never accepted.
+                    if (event.type == SpatialMoveEventType.End) { nativeMove = false; onManipulate(false) }
+                    val existing = latest.value.monitorAt(index) ?: return@custom
+                    onWorkspace(
+                        latest.value.monitorPlaced(
+                            index,
+                            pinch.apply(event, existing, pixelDensity),
+                            store,
+                            event.type == SpatialMoveEventType.End,
+                        ),
+                    )
+                },
+            ).resizable(
+                minimumSize = DpVolumeSize(0.28f.meters(density, pixelDensity), 0.16f.meters(density, pixelDensity), 0.dp),
+                maximumSize = DpVolumeSize(2.4f.meters(density, pixelDensity), 1.5f.meters(density, pixelDensity), 0.dp),
+                maintainAspectRatio = true,
+                resizePolicy = ResizePolicy.custom { event ->
+                    if (hands.blocksNative) { nativeResize = false; return@custom }
+                    if (event.type == SpatialResizeEventType.Start) { nativeResize = true; onManipulate(true) }
+                    if (!nativeResize) return@custom
+                    if (event.type == SpatialResizeEventType.End) { nativeResize = false; onManipulate(false) }
+                    val size = event.sizeInMeters(pixelDensity) ?: return@custom
+                    val existing = latest.value.monitorAt(index) ?: return@custom
+                    onWorkspace(
+                        latest.value.monitorPlaced(
+                            index,
+                            existing.copy(physicalWidthM = size.first, physicalHeightM = size.second),
+                            store,
+                            event.type == SpatialResizeEventType.End,
+                        ),
+                    )
+                },
+            ),
         ) {
             onSurfaceCreated { surface ->
                 val current = session ?: return@onSurfaceCreated
-                val display = warp.attach(current, surface, latest.value.monitorAt(index) ?: placement)
+                val display = warp.attach(current, surface, latest.value.monitorAt(index) ?: placement, pixelDensity, inputPolicy::onInputEvent)
                 videoSurface.set(display)
                 connection.attachSurface(index, display)
             }
@@ -785,10 +837,56 @@ private fun WorkspaceFile.reset(monitors: List<MonitorHello>, store: WorkspaceSt
     return next
 }
 
+private fun SpatialMoveEvent.workspacePose(pixelDensity: PixelDensity): Pose {
+    val translation = pose.translation
+    val rotation = pose.rotation
+    return Pose(
+        floatArrayOf(
+            pixelDensity.convertPixelsToMeters(translation.x),
+            pixelDensity.convertPixelsToMeters(translation.y),
+            pixelDensity.convertPixelsToMeters(translation.z),
+        ),
+        floatArrayOf(rotation.x, rotation.y, rotation.z, rotation.w),
+    )
+}
+
+private fun SpatialResizeEvent.sizeInMeters(pixelDensity: PixelDensity): Pair<Float, Float>? {
+    val width = pixelDensity.convertPixelsToMeters(size.width.toFloat())
+    val height = pixelDensity.convertPixelsToMeters(size.height.toFloat())
+    if (width < 0.05f || height < 0.05f) return null
+    return width to height
+}
+
 private fun Pose.toQuaternion(): Quaternion = Quaternion(rotation[0], rotation[1], rotation[2], rotation[3])
 
 private fun Float.meters(density: Density, pixelDensity: PixelDensity): Dp {
     return with(density) { pixelDensity.convertMetersToPixels(this@meters).toDp() }
+}
+
+private class PinchMemory {
+    private var previous: Pose? = null
+    private var previousScale = 1f
+
+    fun apply(event: SpatialMoveEvent, placement: MonitorPlacement, pixelDensity: PixelDensity): MonitorPlacement {
+        val sample = event.workspacePose(pixelDensity)
+        val before = previous
+        val scale = event.scale.coerceAtLeast(.01f)
+        val factor = (scale/previousScale).coerceIn(.5f,2f)
+        previous = sample
+        previousScale = scale
+        if (event.type == SpatialMoveEventType.Start || before == null) return placement
+        // Consume discontinuities as a new reference, never replay the jump on a later frame.
+        val rotationDot = kotlin.math.abs(dot4(before.rotation,sample.rotation))
+        if (distance(before.position,sample.position) > .25f || rotationDot < .9f) {
+            Log.w("Floatdesk","native move discontinuity ignored")
+            return placement
+        }
+        return placement.copy(
+            pose = nativeRelativePose(before,sample,placement.pose),
+            physicalWidthM = (placement.physicalWidthM*factor).coerceIn(.28f,2.4f),
+            physicalHeightM = (placement.physicalHeightM*factor).coerceIn(.16f,1.5f),
+        )
+    }
 }
 
 private const val PALM_WIDTH = 0.24f
@@ -936,7 +1034,7 @@ private class TwoHandState {
         private set
     val bothDown get() = hands.size == 2
     val busy get() = hands.isNotEmpty() || engaged
-    val blocksNative get() = busy || needsRelease
+    val blocksNative get() = busy // Rearming the two-point gesture must not disable the handles.
     private data class Grip(val local: FloatArray)
     private val hands = mutableMapOf<String, Grip>()
     private val released = mutableSetOf<String>()
@@ -1030,7 +1128,6 @@ private class TwoHandState {
             if (tracking.nowMs - lastSeen >= 120) cancel()
             return null // Never move using a mixture of fresh and stale hands.
         }
-        val sampleMs = (tracking.nowMs-lastSeen).coerceIn(1,100)
         lastSeen = tracking.nowMs
         if (tracking.nowMs - began >= 100 && required.any { it !in tracking.pinched }) {
             val opened = openSince
@@ -1041,8 +1138,8 @@ private class TwoHandState {
         openSince = null
         if (!engaged || left == null || right == null) return null
         if (distance(left, right) < 0.06f * tracking.unitsPerMeter ||
-            previousLeft?.let { distance(it, left) > (.025f+2.5f*sampleMs/1000f) * tracking.unitsPerMeter } == true ||
-            previousRight?.let { distance(it, right) > (.025f+2.5f*sampleMs/1000f) * tracking.unitsPerMeter } == true) {
+            previousLeft?.let { distance(it, left) > 0.25f * tracking.unitsPerMeter } == true ||
+            previousRight?.let { distance(it, right) > 0.25f * tracking.unitsPerMeter } == true) {
             cancel(); return null
         }
         previousLeft = left.copyOf(); previousRight = right.copyOf()
@@ -1123,6 +1220,15 @@ private fun placeGrabbed(
         physicalHeightM = baseHeight * scale,
     )
 }
+
+/** Apply only the native gesture delta; native Start must not replace a saved monitor pose. */
+private fun nativeRelativePose(before: Pose, after: Pose, held: Pose): Pose {
+    val inverse = floatArrayOf(-before.rotation[0],-before.rotation[1],-before.rotation[2],before.rotation[3])
+    val turn = multiplyQuaternion(after.rotation,inverse)
+    val translation = subtract(after.position,before.position)
+    return Pose(add(held.position,translation),multiplyQuaternion(turn,held.rotation))
+}
+private fun dot4(a: FloatArray,b: FloatArray): Float = (0..3).sumOf { (a[it]*b[it]).toDouble() }.toFloat()
 
 private fun eventMeters(point: Vector3, pixelDensity: PixelDensity): FloatArray {
     return floatArrayOf(

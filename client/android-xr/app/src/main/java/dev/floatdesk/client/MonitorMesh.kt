@@ -97,3 +97,22 @@ internal fun monitorRayHit(origin: FloatArray, direction: FloatArray, width: Flo
     }
     return null
 }
+
+/** Use the collision event's own transform, not a potentially different scene-reference pose. */
+internal fun eventMatrixHit(hit: FloatArray, matrix: FloatArray,
+                            width: Float, height: Float, mesh: MonitorMesh?, inputScale: Float = 1f): FloatArray? {
+    if (!inputScale.isFinite() || inputScale <= 0f) return null
+    val unscaled = FloatArray(3) { hit[it]/inputScale }
+    fun transform(m: FloatArray): FloatArray {
+        val w=m[3]*unscaled[0]+m[7]*unscaled[1]+m[11]*unscaled[2]+m[15]
+        return FloatArray(3) { (m[it]*unscaled[0]+m[4+it]*unscaled[1]+m[8+it]*unscaled[2]+m[12+it])/w }
+    }
+    fun error(p: FloatArray): Float = if (mesh == null) kotlin.math.abs(p[2]) else
+        kotlin.math.abs(kotlin.math.sqrt((0..2).sumOf { val d=p[it]-mesh.eye[it]; (d*d).toDouble() }).toFloat()-mesh.radius)
+    return transform(matrix).takeIf { p ->
+        if (!p.all { it.isFinite() } || error(p) > .015f) false else {
+            val flat = if (mesh == null) p else mesh.unproject(p)
+            flat != null && kotlin.math.abs(flat[0]) <= width*.5f+.001f && kotlin.math.abs(flat[1]) <= height*.5f+.001f
+        }
+    }
+}

@@ -2,6 +2,10 @@ package dev.floatdesk.client
 
 import android.annotation.SuppressLint
 import android.view.Surface
+import android.util.Log
+import androidx.xr.scenecore.Space
+import androidx.xr.scenecore.InteractableComponent
+import androidx.xr.scenecore.InputEvent
 import androidx.xr.compose.subspace.layout.SpatialInputEvent
 import androidx.xr.scenecore.PixelDensity
 import androidx.xr.runtime.Session
@@ -15,7 +19,7 @@ import dev.floatdesk.client.workspace.MonitorPlacement
 import java.nio.FloatBuffer
 import java.nio.IntBuffer
 
-/** Keep input enabled independently of video, with matching geometry for image and ray bounds. */
+/** Deform the original Compose-owned video surface; preserve its proven input and handle ownership. */
 internal class MonitorWarp : AutoCloseable {
     var mesh: MonitorMesh? = null
         private set
@@ -23,50 +27,65 @@ internal class MonitorWarp : AutoCloseable {
     private var live: SurfaceEntity? = null
     private var flatWidth = 0f
     private var flatHeight = 0f
-    private var inputAlpha = 1f
     private var appliedShape: SurfaceEntity.Shape? = null
+    private var interaction: InteractableComponent? = null
+    private val sequences = mutableSetOf<String>()
 
     @SuppressLint("RestrictedApi")
-    fun attach(session: Session, inputSurface: Surface, placement: MonitorPlacement): Surface {
+    fun attach(session: Session, inputSurface: Surface, placement: MonitorPlacement, density: PixelDensity? = null, onEvent: ((SpatialInputEvent) -> Unit)? = null): Surface {
         close()
         val target = session.scene.getEntitiesOfType(SurfaceEntity::class.java)
             .firstOrNull { it.getSurface() === inputSurface }
             ?: error("Could not find monitor input entity")
-        val video = SurfaceEntity.create(session,
-            shape = SurfaceEntity.Shape.Quad(FloatSize2d(placement.physicalWidthM, placement.physicalHeightM)))
-        video.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE
+        target.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE
         input = target
-        live = video
-        inputAlpha = target.getAlpha()
-        // Alpha affects rendering; unlike setEnabled(false), it keeps input components active.
-        target.setAlpha(0f)
+        live = target
         flatWidth = placement.physicalWidthM; flatHeight = placement.physicalHeightM
-        syncPose()
-        return video.getSurface()
-    }
-
-    private fun syncPose() {
-        val target = input ?: return
-        val video = live ?: return
-        video.parent = target.parent
-        video.setPose(target.getPose())
-        video.setScale(target.getScale())
-    }
-
-    fun hit(session: Session, event: SpatialInputEvent, density: PixelDensity, placement: MonitorPlacement): FloatArray? {
-        val target = input ?: return null
-        fun meters(v: Vector3) = Vector3(density.convertPixelsToMeters(v.x),density.convertPixelsToMeters(v.y),density.convertPixelsToMeters(v.z))
-        val origin = session.scene.activitySpace.transformPoseTo(Pose(meters(event.origin)),target).translation
-        val direction = session.scene.activitySpace.transformVectorTo(meters(event.direction),target)
-        return monitorRayHit(floatArrayOf(origin.x,origin.y,origin.z),floatArrayOf(direction.x,direction.y,direction.z),
-            placement.physicalWidthM,placement.physicalHeightM,mesh)
+        if (density != null && onEvent != null) {
+            val component = InteractableComponent.create(session) { event ->
+                val info = event.hitInfoList.firstOrNull()
+                val side = event.pointerType.toString()
+                if (event.action == InputEvent.Action.DOWN) {
+                    if (info?.inputEntity !== target) return@create
+                    sequences.add(side)
+                }
+                if (side !in sequences && (side != "DEFAULT" || sequences.isEmpty())) return@create
+                val hit = info?.hitPosition
+                val inputScale = target.getScale(Space.ACTIVITY)
+                fun onSurface(p: FloatArray): Boolean {
+                    val flat = if (mesh == null) p else mesh?.unproject(p) ?: return false
+                    val depthError = if (mesh == null) kotlin.math.abs(p[2]) else {
+                        val sphere = mesh!!
+                        kotlin.math.abs(kotlin.math.sqrt((0..2).sumOf { val d=p[it]-sphere.eye[it]; (d*d).toDouble() }).toFloat()-sphere.radius)
+                    }
+                    return depthError < .015f && kotlin.math.abs(flat[0]) <= flatWidth*.5f+.001f && kotlin.math.abs(flat[1]) <= flatHeight*.5f+.001f
+                }
+                // Hit position includes the activity root's scale; HitInfo.transform does not.
+                val local = if (info != null && hit != null)
+                    eventMatrixHit(floatArrayOf(hit.x,hit.y,hit.z),info.transform.data,
+                        flatWidth,flatHeight,mesh,inputScale) else null
+                if (event.action == InputEvent.Action.DOWN) {
+                    Log.i("Floatdesk","native event contact=${local?.contentToString()} inputScale=$inputScale hit=$hit matrix=${info?.transform?.data?.contentToString()}")
+                }
+                val legacy = if (local == null && hit != null) session.scene.activitySpace.transformPoseTo(Pose(hit),target).translation
+                    .takeIf { onSurface(floatArrayOf(it.x,it.y,it.z)) } else null
+                fun pixels(v: Vector3) = Vector3(density.convertMetersToPixels(v.x),density.convertMetersToPixels(v.y),density.convertMetersToPixels(v.z))
+                onEvent(SpatialInputEvent(source=event.source,pointerType=event.pointerType,action=event.action,timestamp=event.timestamp,
+                    hitPosition=local?.let { pixels(Vector3(it[0],it[1],it[2])) } ?: legacy?.let { pixels(it) },origin=pixels(event.origin),direction=pixels(event.direction)))
+                if (event.action == InputEvent.Action.UP || event.action == InputEvent.Action.CANCEL) {
+                    if (side == "DEFAULT") sequences.clear() else sequences.remove(side)
+                }
+            }
+            check(target.addComponent(component)) { "Could not attach native monitor input" }
+            interaction = component
+        }
+        return inputSurface
     }
 
     @SuppressLint("RestrictedApi") // CustomMesh is available in the pinned SceneCore 1.0 runtime.
     fun update(session: Session, root: Entity, eye: FloatArray?, placement: MonitorPlacement,
                enabled: Boolean, held: Boolean) {
         val target = live ?: return
-        syncPose()
         // A captured shape must remain rigid while either contact is held.
         if (held) return
         val localEye = eye?.let {
@@ -79,7 +98,6 @@ internal class MonitorWarp : AutoCloseable {
             if (mesh != null || flatWidth != placement.physicalWidthM || flatHeight != placement.physicalHeightM) {
                 val shape = SurfaceEntity.Shape.Quad(FloatSize2d(placement.physicalWidthM, placement.physicalHeightM))
                 target.shape = shape
-                input?.shape = shape
                 appliedShape = shape
                 flatWidth = placement.physicalWidthM; flatHeight = placement.physicalHeightM
                 mesh = null
@@ -95,7 +113,6 @@ internal class MonitorWarp : AutoCloseable {
             val shape = SurfaceEntity.Shape.CustomMesh(SurfaceEntity.Shape.TriangleMesh(
                 FloatBuffer.wrap(next.positions), FloatBuffer.wrap(next.videoTexCoords), IntBuffer.wrap(next.indices)))
             target.shape = shape
-            input?.shape = shape
             appliedShape = shape
             mesh = next
         } else if (input?.shape !== appliedShape) {
@@ -104,9 +121,10 @@ internal class MonitorWarp : AutoCloseable {
     }
 
     override fun close() {
-        live?.parent = null
+        // Compose owns the entity and surface. Never detach, disable or hide them here.
+        interaction?.let { component -> runCatching { input?.removeComponent(component) } }
+        interaction = null; sequences.clear()
         live = null
-        input?.let { target -> runCatching { target.setAlpha(inputAlpha) } }
         input = null
         mesh = null
         appliedShape = null

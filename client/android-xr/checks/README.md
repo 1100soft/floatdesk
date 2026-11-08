@@ -28,12 +28,14 @@ The native guide assets are checked in for packaging. Regenerate them with `pyth
 
 The gesture checks also validate spherical projection at centered and offset viewpoints, constant vertex radius, pixel hit inversion, curved contact capture, the curved guide outline, and the Spherical palm button. Frozen-frame checks cover both flat and spherical snapshot meshes, including radius preservation under monitor scaling. Live custom-mesh support, UV orientation, input hit testing and curvature updates still require headset verification.
 
-Display/input lifecycle checks:
+Display lifecycle checks:
 
 ```sh
 python3 checks/monitor_warp.py /path/to/gradle/lib
 ```
 
-These run the production display controller with SceneCore substitutes to verify that the input target stays enabled and matches the rendered geometry while video curvature updates or its display is hidden for a snapshot. They also check video/PNG UV conventions, pose synchronization, a stable decoder surface and cleanup. Gesture checks exercise planar-input hits projected onto curved pixels, release/regrab, and action-based toggle labels. Actual native ray visibility and transparent-target hit testing still need headset verification.
+These run the production curvature controller with SceneCore substitutes. They verify that video and input retain the original Compose-owned surface, alpha, parent and enabled state, that curvature freezes while held, and that cleanup does not detach Compose's entity. Gesture checks cover native Start identity, relative translation/rotation without orbiting an unrelated native origin, handle availability during two-point rearm, curved contacts and physical release.
 
-Additional regressions cover ray intersection and visible bounds despite invalid SDK hit coordinates, conformal local pixel scale, tracking-loss/relocalization quarantine, timed hand discontinuities and the real display controller's activity-ray conversion. The app cannot guarantee physical world locking while the operating system has lost its spatial map.
+Headset checks remain necessary for native handle visibility, SDK-local DOWN hit coordinates, pointer behavior and system-origin relocalization. The app cannot guarantee physical world locking while the operating system has lost its spatial map.
+
+Native localization regressions include activity-root scale compensation, a recorded device hit/matrix reproducing the offset, and independent left/right DOWN/UP sequences through the production native event bridge. The runtime hit matrix maps unscaled event coordinates into screen-local coordinates.

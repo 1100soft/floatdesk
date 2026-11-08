@@ -106,7 +106,7 @@ fun main() {
     tracking.points.remove("LEFT"); tracking.nowMs = 80
     check(grab.advance(tracking,initial) == null); check(grab.engaged)
     tracking.nowMs = 121; tracking.points["LEFT"] = startL
-    check(grab.advance(tracking,initial) == null); check(!grab.engaged); check(grab.blocksNative); check(grab.guide == null)
+    check(grab.advance(tracking,initial) == null); check(!grab.engaged); check(!grab.blocksNative); check(grab.guide == null)
     grab.onEvent(event("LEFT",InputEvent.Action.MOVE,l),initial,PixelDensity(),tracking); check(!grab.engaged)
     // Both hands must open, followed by a new pair of DOWNs, to rearm after lost tracking.
     tracking.pinched.clear(); grab.advance(tracking,initial); check(!grab.blocksNative)
@@ -118,7 +118,7 @@ fun main() {
     val close = TwoHandState()
     tracking.nowMs = 300; tracking.pinched.addAll(listOf("LEFT","RIGHT"))
     lock(close,initial,floatArrayOf(0f,0f,0f),floatArrayOf(0.03f,0f,0f))
-    check(!close.engaged); check(close.blocksNative); check(close.guide == null)
+    check(!close.engaged); check(!close.blocksNative); check(close.guide == null)
     close.onEvent(event("RIGHT",InputEvent.Action.MOVE,r),initial,PixelDensity(),tracking)
     check(!close.engaged)
     val closeHands = TwoHandState(); tracking.points["RIGHT"] = add(startL,floatArrayOf(0.03f,0f,0f))
@@ -257,6 +257,24 @@ fun main() {
     val dx = subtract(offsetMesh.project(add(mid,floatArrayOf(.001f,0f,0f))),p)
     val dy = subtract(offsetMesh.project(add(mid,floatArrayOf(0f,.001f,0f))),p)
     check(kotlin.math.abs(distance(dx,floatArrayOf(0f,0f,0f))/distance(dy,floatArrayOf(0f,0f,0f))-1f) < .002f)
+    // Native Start may report an unrelated absolute pose; its zero delta must preserve the monitor.
+    val nativeStart = Pose(floatArrayOf(20f,-10f,4f),normalize4(floatArrayOf(.1f,.2f,.3f,.9f)))
+    val identityMove = nativeRelativePose(nativeStart,nativeStart,initial.pose)
+    near(identityMove.position,initial.pose.position)
+    near(identityMove.rotation,initial.pose.rotation)
+    val nativeTurn = nativeStart.copy(rotation=normalize4(floatArrayOf(.2f,.2f,.3f,.9f)))
+    near(nativeRelativePose(nativeStart,nativeTurn,initial.pose).position,initial.pose.position)
+    val nativeNext = nativeStart.copy(position=add(nativeStart.position,floatArrayOf(.03f,-.02f,.01f)))
+    near(nativeRelativePose(nativeStart,nativeNext,initial.pose).position,add(initial.pose.position,floatArrayOf(.03f,-.02f,.01f)))
+    val collisionMatrix = floatArrayOf(2f,0f,0f,0f, 0f,3f,0f,0f, 0f,0f,4f,0f, 10f,-7f,5f,1f)
+    val collisionInverse = floatArrayOf(.5f,0f,0f,0f, 0f,1f/3f,0f,0f, 0f,0f,.25f,0f, -5f,7f/3f,-1.25f,1f)
+    near(eventMatrixHit(floatArrayOf(10.2f,-6.94f,5f),collisionInverse,.8f,.45f,null)!!,floatArrayOf(.1f,.02f,0f))
+    near(eventMatrixHit(floatArrayOf(10.2f,-6.94f,5f),collisionInverse,.8f,.45f,null)!!,floatArrayOf(.1f,.02f,0f))
+    near(eventMatrixHit(floatArrayOf(10.2f*1.785f,-6.94f*1.785f,5f*1.785f),collisionInverse,.8f,.45f,null,1.785f)!!,floatArrayOf(.1f,.02f,0f))
+    // Recorded headset sample: missing root-scale conversion left the hit far off the plane.
+    val recorded = floatArrayOf(.9988924f,.045443997f,-.012190729f,0f, -.046424866f,.99406743f,-.09835988f,0f, .0076485127f,.09881693f,.9950761f,0f, -.044733673f,.05198337f,-.10078907f,1f)
+    val recordedHit = eventMatrixHit(floatArrayOf(-.13956094f,-.11049867f,.16816789f),recorded,.8f,.45f,null,1.7850144f)!!
+    check(kotlin.math.abs(recordedHit[2]) < .0002f)
     val panel = PalmPanelState("LEFT",Pose(floatArrayOf(0f,0f,0f)))
     val poke = PalmPoke()
     check(poke.update(panel,floatArrayOf(-0.06f,0.02f,0.04f)) == null)

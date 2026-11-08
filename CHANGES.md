@@ -87,3 +87,9 @@ Live native-event records isolated the remaining offset: hit positions include t
 ## Device-confirmed coordinate baseline, 8 November 2026
 
 The user confirmed the scale-corrected coordinate path works. Two-point manipulation remains available above the safe minimum contact separation; native handles or Reset are the accepted fallback for smaller monitors. Intermittently disappearing hand rays remain unresolved; an OS limitation is possible but unproven. Future input changes should preserve this state and rerun the recorded-coordinate/native-event regressions, followed by center/edge and handle checks on the headset.
+
+## Equal-angle spherical sampling and persistent hand aiming
+
+The user confirmed that switching Android XR from mixed eye/hand aiming to **Use hand aiming only** makes hand rays stay available. This resolves the reported disappearance without changing the confirmed input controller. The setting is under Settings → Input → Aiming method.
+
+Spherical display now uses an equal-edge angular quadrilateral net centered between the eyes. At every mesh vertex, horizontal and vertical neighboring rays have their respective prescribed central-angle steps, with a shared per-image-pixel angular pitch. A regular longitude/latitude grid was rejected because horizontal neighboring rays converge toward the poles. The image grid can shear as required by spherical geometry. Extreme fields are limited uniformly to avoid mesh folds, preserving angular aspect. Rendering approximates the sphere with triangles, and the inverse mapping uses those same triangles so curved grab contacts preserve their image pixels. The native root-scale hit conversion, monitor ownership, handles and flat manipulation path remain byte-for-byte unchanged from the confirmed baseline.

@@ -251,12 +251,31 @@ fun main() {
     for (t in 360L..640L step 20) guard.update(t,startL,orientation,1f)
     check(guard.update(660,startL,orientation,1f))
     check(!guard.update(680,add(startL,floatArrayOf(1f,0f,0f)),orientation,1f))
-    val offsetMesh = MonitorMesh(1.8f,1.1f,floatArrayOf(.4f,-.3f,.8f))
-    val mid = floatArrayOf(.3f,.2f,0f)
-    val p = offsetMesh.project(mid)
-    val dx = subtract(offsetMesh.project(add(mid,floatArrayOf(.001f,0f,0f))),p)
-    val dy = subtract(offsetMesh.project(add(mid,floatArrayOf(0f,.001f,0f))),p)
-    check(kotlin.math.abs(distance(dx,floatArrayOf(0f,0f,0f))/distance(dy,floatArrayOf(0f,0f,0f))-1f) < .002f)
+    // Measure actual central angles between neighboring rays, not just longitude increments.
+    for (angularEye in listOf(floatArrayOf(0f,0f,1.2f),floatArrayOf(.4f,-.3f,.8f))) {
+        val angularMesh = MonitorMesh(1.8f,1.1f,angularEye)
+        fun pointAt(row: Int,col: Int)=angularMesh.positions.copyOfRange((row*(angularMesh.columns+1)+col)*3,(row*(angularMesh.columns+1)+col)*3+3)
+        val chordX=2f*angularMesh.radius*kotlin.math.sin(angularMesh.width*angularMesh.radiansPerMeter/angularMesh.columns/2f)
+        val chordY=2f*angularMesh.radius*kotlin.math.sin(angularMesh.height*angularMesh.radiansPerMeter/angularMesh.rows/2f)
+        for(row in 0..angularMesh.rows) for(col in 0..angularMesh.columns) {
+            val p=pointAt(row,col)
+            if(col<angularMesh.columns) check(kotlin.math.abs(distance(p,pointAt(row,col+1))-chordX)<.000002f)
+            if(row<angularMesh.rows) check(kotlin.math.abs(distance(p,pointAt(row+1,col))-chordY)<.000002f)
+        }
+    }
+    val wide = MonitorMesh(20f,12.5f,floatArrayOf(0f,0f,.2f))
+    check(kotlin.math.abs((wide.width*wide.radiansPerMeter)/(wide.height*wide.radiansPerMeter)-1.6f) < .000001f)
+    // Actual pixel-sized ray steps remain uniform within finite tessellation/float precision.
+    val pixelMesh = MonitorMesh(1.8f,1.125f,floatArrayOf(0f,0f,1.2f))
+    val pixelStep = pixelMesh.width/2560f
+    val pixelChord = 2f*pixelMesh.radius*kotlin.math.sin(pixelStep*pixelMesh.radiansPerMeter/2f)
+    for(y in listOf(-.53f,-.27f,.001f,.263f,.531f)) for(x in listOf(-.87f,-.453f,.002f,.447f,.861f)) {
+        val pixel = pixelMesh.project(floatArrayOf(x,y,0f))
+        val adjacentX = pixelMesh.project(floatArrayOf(x+pixelStep,y,0f))
+        val adjacentY = pixelMesh.project(floatArrayOf(x,y+pixelStep,0f))
+        check(kotlin.math.abs(distance(pixel,adjacentX)/pixelChord-1f)<.003f)
+        check(kotlin.math.abs(distance(pixel,adjacentY)/pixelChord-1f)<.003f)
+    }
     // Native Start may report an unrelated absolute pose; its zero delta must preserve the monitor.
     val nativeStart = Pose(floatArrayOf(20f,-10f,4f),normalize4(floatArrayOf(.1f,.2f,.3f,.9f)))
     val identityMove = nativeRelativePose(nativeStart,nativeStart,initial.pose)
@@ -287,7 +306,7 @@ fun main() {
     poke.clear()
     check(poke.update(panel,floatArrayOf(0f,-.074f,.04f)) == null)
     check(poke.update(panel,floatArrayOf(0f,-.074f,-.02f)) == PalmAction.WARP)
-    println("Passed: video/PNG orientation separation, planar-input curved grabbing and regrab, action labels, spherical radius/inverse projection, curved grab/guide geometry, spherical palm button, virtual-copy gain, 3D endpoints, depth, close-contact and close-hand rejection, DEFAULT release, physical release without UP, tracking-loss cancellation, rearm, discontinuity rejection, miniature wireframe and endpoint alignment, guide cleanup, view-ray visibility offset, rotation, palm and fist")
+    println("Passed: equal actual neighboring-ray angles and angular aspect, video/PNG orientation separation, planar-input curved grabbing and regrab, action labels, spherical radius/inverse projection, curved grab/guide geometry, spherical palm button, virtual-copy gain, 3D endpoints, depth, close-contact and close-hand rejection, DEFAULT release, physical release without UP, tracking-loss cancellation, rearm, discontinuity rejection, miniature wireframe and endpoint alignment, guide cleanup, view-ray visibility offset, rotation, palm and fist")
 }
 '''
 lib = Path(sys.argv[1])

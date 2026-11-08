@@ -34,7 +34,7 @@ Display lifecycle checks:
 python3 checks/monitor_warp.py /path/to/gradle/lib
 ```
 
-These run the production curvature controller with SceneCore substitutes. They verify that video and input retain the original Compose-owned surface, alpha, parent and enabled state, that curvature freezes while held, and that cleanup does not detach Compose's entity. Gesture checks cover native Start identity, relative translation/rotation without orbiting an unrelated native origin, handle availability during two-point rearm, curved contacts and physical release.
+These run the production curvature controller with SceneCore substitutes. They verify that flat mode retains the original Compose-owned surface, alpha, parent and enabled state; spherical mode uses a separate native video canvas and matching transparent interaction patch; returning to flat mode restores its surface and listener; and cleanup does not detach Compose's entity. Curvature and decoder surface identity remain fixed during a grab and during head-driven mesh updates within the same mode. Gesture checks cover native Start identity, relative translation/rotation without orbiting an unrelated native origin, handle availability during two-point rearm, curved contacts and physical release.
 
 Headset checks remain necessary for native handle visibility, SDK-local DOWN hit coordinates, pointer behavior and system-origin relocalization. The app cannot guarantee physical world locking while the operating system has lost its spatial map.
 
@@ -46,8 +46,12 @@ The user confirmed that two-point manipulation and coordinate alignment work in 
 
 Accepted limitation: two-point control requires sufficiently separated contacts. At small monitor sizes, use the native handle or Reset; do not weaken separation safeguards as an unsolicited fix. Current thresholds are contact span >= max(12 cm in physical units, 18% of monitor width), and hand span >= 9 cm.
 
-Known unresolved issue: system hand rays intermittently disappear and return after moving/waving the hands. An OS limitation is suspected, not confirmed. This acceptance confirms coordinates and usable manipulation, not a general resolution of platform tracking/relocalization jumps.
+Hand-ray availability was subsequently confirmed with Android XR set to hand-only aiming. Mixed eye/hand aiming can switch away from hand rays. This acceptance confirms coordinates and usable manipulation; system tracking loss and relocalization still require device checks.
 
 Before modifying input coordinates, surface ownership, scale conversion or movement arbitration, run the gesture and native-event lifecycle checks and compare with this baseline. Device-check center/edge contact alignment, repeat grab/release, native handles, and the small-monitor fallback.
 
 The equal-angle warp checks measure chord lengths (equivalently central angles at a fixed radius) across every horizontal and vertical neighboring vertex, for both centered and off-axis viewers. They also check projection/inverse texture alignment, constant radius, angular aspect under extreme-field limiting, and flat/curved snapshot geometry. Uniform longitude/elevation alone is deliberately not accepted as proof of equal neighboring-ray angles. Native hand-only aiming was confirmed on the headset by the user; no application pointer override is needed.
+
+### Confirmed spherical rendering and input
+
+On 8 November 2026 the user confirmed that the dedicated native curved video surface matches the native frozen image on grab and that outer-edge two-hand grabs work. Keep the curved video and interaction patch on the same mesh and transform. Flat mode continues to use the original Compose-owned surface and its recorded coordinate conversion.

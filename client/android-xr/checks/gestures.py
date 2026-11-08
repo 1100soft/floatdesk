@@ -294,6 +294,22 @@ fun main() {
     val recorded = floatArrayOf(.9988924f,.045443997f,-.012190729f,0f, -.046424866f,.99406743f,-.09835988f,0f, .0076485127f,.09881693f,.9950761f,0f, -.044733673f,.05198337f,-.10078907f,1f)
     val recordedHit = eventMatrixHit(floatArrayOf(-.13956094f,-.11049867f,.16816789f),recorded,.8f,.45f,null,1.7850144f)!!
     check(kotlin.math.abs(recordedHit[2]) < .0002f)
+    // The actual render center must be the binocular viewer, in the same desk units as monitor size.
+    val viewerRotation=normalize4(floatArrayOf(.2f,-.3f,.1f,.9f))
+    val viewerPosition=floatArrayOf(.4f,-.2f,-1.3f)
+    val expectedEye=floatArrayOf(.1f,.15f,1.4f)
+    val eyeInDesk=add(viewerPosition,rotateVector(viewerRotation,expectedEye[0],expectedEye[1],expectedEye[2]))
+    near(viewerInMonitor(eyeInDesk,viewerPosition,viewerRotation),expectedEye)
+    val verifiedSphere=MonitorMesh(.8f,.5f,viewerInMonitor(eyeInDesk,viewerPosition,viewerRotation))
+    val centerR=distance(eyeInDesk,viewerPosition)
+    for(i in verifiedSphere.positions.indices step 3) {
+        val local=verifiedSphere.positions.copyOfRange(i,i+3)
+        val displayed=add(viewerPosition,rotateVector(viewerRotation,local[0],local[1],local[2]))
+        check(kotlin.math.abs(distance(displayed,eyeInDesk)-centerR)<.00001f)
+    }
+    val centeredSphere=MonitorMesh(.8f,.5f,floatArrayOf(0f,0f,1.4f))
+    check(distance(centeredSphere.project(floatArrayOf(.4f,0f,0f)),floatArrayOf(.4f,0f,0f)) > .01f)
+    check(distance(centeredSphere.project(floatArrayOf(0f,.25f,0f)),floatArrayOf(0f,.25f,0f)) > .01f)
     val panel = PalmPanelState("LEFT",Pose(floatArrayOf(0f,0f,0f)))
     val poke = PalmPoke()
     check(poke.update(panel,floatArrayOf(-0.06f,0.02f,0.04f)) == null)

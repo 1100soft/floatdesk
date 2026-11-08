@@ -20,10 +20,10 @@ png = b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',2,2,8,6,0,0,0))
 png += chunk(b'IDAT',zlib.compress(b'\0\xff\0\0\xff\0\xff\0\xff\0\0\0\xff\xff\xff\xff\0\xff'))+chunk(b'IEND',b'')
 with tempfile.TemporaryDirectory(prefix='floatdesk-snapshot-') as directory:
     folder = Path(directory); (folder/'frame.png').write_bytes(png)
-    harness = 'import java.nio.ByteBuffer\nimport java.nio.ByteOrder\n'+mesh_source+'\n'+writer+'\nfun main(args: Array<String>) { val png = java.io.File(args[0]).readBytes(); java.io.File(args[1]).writeBytes(frozenFrameGlb(png)); java.io.File(args[2]).writeBytes(frozenFrameGlb(png, MonitorMesh(1.8f,1.1f,floatArrayOf(.3f,-.2f,1.2f)))) }\n'
+    harness = 'import java.nio.ByteBuffer\nimport java.nio.ByteOrder\n'+mesh_source+'\n'+writer+'\nfun main(args: Array<String>) { val png = java.io.File(args[0]).readBytes(); java.io.File(args[1]).writeBytes(frozenFrameGlb(png)); java.io.File(args[2]).writeBytes(frozenFrameGlb(png, MonitorMesh(1.8f,1.1f,floatArrayOf(.3f,-.2f,1.2f)))); java.io.File(args[3]).writeBytes(frozenFrameGlb(png, MonitorMesh(1.8f,1.1f,floatArrayOf(.3f,-.2f,1.2f)),true)) }\n'
     test = folder/'FrozenFrameCheck.kt'; test.write_text(harness)
     subprocess.run(['java','-cp',str(lib/'*'),'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler','-no-stdlib','-no-reflect','-classpath',str(stdlib),'-d',directory,str(test)],check=True)
-    subprocess.run(['java','-cp',directory+':'+str(stdlib),'FrozenFrameCheckKt',str(folder/'frame.png'),str(folder/'frame.glb'),str(folder/'curved.glb')],check=True)
+    subprocess.run(['java','-cp',directory+':'+str(stdlib),'FrozenFrameCheckKt',str(folder/'frame.png'),str(folder/'frame.glb'),str(folder/'curved.glb'),str(folder/'input.glb')],check=True)
     data = (folder/'frame.glb').read_bytes()
     assert struct.unpack_from('<III',data)==(0x46546c67,2,len(data))
     json_size,kind = struct.unpack_from('<II',data,12); assert kind==0x4e4f534a and json_size%4==0
@@ -61,3 +61,12 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-snapshot-') as directory:
     indices = struct.unpack_from('<%sH' % mesh_doc['accessors'][3]['count'],mesh_binary,index_view['byteOffset'])
     assert max(indices) < n
     print('Passed: curved snapshot vertices preserve spherical radius after entity scaling, PNG, aligned buffers, valid indices')
+
+    invisible=(folder/'input.glb').read_bytes()
+    size=struct.unpack_from('<I',invisible,12)[0]
+    doc=json.loads(invisible[20:20+size])
+    material=doc['materials'][0]
+    assert material['alphaMode']=='BLEND' and material['doubleSided']
+    assert material['pbrMetallicRoughness']['baseColorFactor'][3]==0
+    assert invisible[28+size:] == mesh_binary
+    print('Passed: invisible interaction patch retains exact spherical vertices, indices and UVs')

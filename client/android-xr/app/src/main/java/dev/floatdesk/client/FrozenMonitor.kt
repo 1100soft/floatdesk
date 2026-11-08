@@ -107,7 +107,7 @@ internal class FrozenMonitor private constructor(
 }
 
 /** Flat or spherical image mesh with an embedded PNG, normalized for monitor entity scaling. */
-internal fun frozenFrameGlb(png: ByteArray, mesh: MonitorMesh? = null): ByteArray {
+internal fun frozenFrameGlb(png: ByteArray, mesh: MonitorMesh? = null, interactionOnly: Boolean = false): ByteArray {
     val positions = mesh?.positions?.mapIndexed { index, v -> v / (if (index % 3 == 1) mesh.height else mesh.width) }?.toFloatArray()
         ?: floatArrayOf(-.5f,-.5f,0f, .5f,-.5f,0f, .5f,.5f,0f, -.5f,.5f,0f)
     val uv = mesh?.texCoords ?: floatArrayOf(0f,1f, 1f,1f, 1f,0f, 0f,0f)
@@ -127,10 +127,12 @@ internal fun frozenFrameGlb(png: ByteArray, mesh: MonitorMesh? = null): ByteArra
     binary.put(png)
     val minimum = (0..2).map { axis -> positions.indices.filter { it % 3 == axis }.minOf { positions[it] } }
     val maximum = (0..2).map { axis -> positions.indices.filter { it % 3 == axis }.maxOf { positions[it] } }
+    val color = if (interactionOnly) ",\"baseColorFactor\":[1,1,1,0]" else ""
+    val alpha = if (interactionOnly) "BLEND" else "OPAQUE"
     val json = """{"asset":{"version":"2.0"},"extensionsUsed":["KHR_materials_unlit"],
       "scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],
       "meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2},"indices":3,"material":0}]}],
-      "materials":[{"extensions":{"KHR_materials_unlit":{}},"pbrMetallicRoughness":{"baseColorTexture":{"index":0},"metallicFactor":0,"roughnessFactor":1},"alphaMode":"OPAQUE","doubleSided":true}],
+      "materials":[{"extensions":{"KHR_materials_unlit":{}},"pbrMetallicRoughness":{"baseColorTexture":{"index":0}$color,"metallicFactor":0,"roughnessFactor":1},"alphaMode":"$alpha","doubleSided":true}],
       "textures":[{"source":0,"sampler":0}],"images":[{"bufferView":4,"mimeType":"image/png"}],
       "samplers":[{"magFilter":9729,"minFilter":9729,"wrapS":33071,"wrapT":33071}],
       "buffers":[{"byteLength":$rawLength}],

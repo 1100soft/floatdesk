@@ -44,52 +44,37 @@ The guides are native glTF meshes (points and tethers) parented to the desk root
 
 ## Spherical monitor display
 
-The palm panel's Enable spherical / Disable spherical button saves a workspace-wide setting, off by default. When enabled, the live video uses a rectangular mesh projected radially onto a sphere centered between the viewer's eyes. The radius is the distance to each monitor's center. Both axes curve, and the center and viewing directions stay fixed. The mesh updates as the viewer moves; unsupported viewpoints behind or too close to the monitor use the flat display.
+The palm panel's Enable spherical / Disable spherical button saves a workspace-wide setting, off by default. The mesh lies on a sphere centered between the eyes, with radius equal to the distance to the monitor center. An equal-edge angular quadrilateral net gives horizontal and vertical neighboring grid rays their prescribed central-angle steps at a shared angular pitch per image pixel. The grid can shear as required by spherical geometry. Extreme fields are limited uniformly to avoid folds. Invalid viewpoints freeze the last valid geometry; viewer-coordinate changes above 1 cm refit it.
 
-The live video is rendered on a separate, non-interactive sibling surface. The original flat Compose quad stays enabled as an invisible input target, so mesh changes and grab snapshots cannot cancel its input sequence. Its logical pixel hits are projected onto the curved screen for grabbing. The decoder surface stays the same when toggling curvature. The curved geometry freezes at the first grab contact so the contact points, frozen image and miniature outline remain rigid throughout manipulation. It refits to the viewer on release. The new geometry checks run on the JVM; live mesh rendering and interaction still need device verification.
+Curved video uses a dedicated native SurfaceEntity created with its mesh and supersampling disabled, outside Compose's rectangular canvas sizing. A transparent alpha mask hides the retained flat video buffer without hiding its entity or standard handles. A transparent native glTF interaction patch shares the curved video's mesh and transform. Resizing updates the bounds used to validate contacts. Mode switches route the decoder to the appropriate surface; head-driven curved updates reuse the same decoder surface.
 
-## Checks
+Raw pinch state freezes geometry before platform DOWN acquisition. The frozen image, contact markers and miniature outline use that same geometry throughout a grab. The hidden video continues receiving frames and reappears immediately on release.
+
+## Coordinates, tracking and hand aiming
+
+Native contact positions include the activity-root scale, while the event's hit-localization matrix does not. The listener computes `local = hitInfo.transform * (rawHit / activityRootScale)` and validates the result against the actual surface. Recorded-contact regressions cover this conversion, including independent left/right sequences. Native move/resize handles use relative gesture deltas and consume large discontinuities as new references without moving the monitor. Rearming a rejected two-point grab does not disable handles.
+
+Head-quality checks gate follow independently of raw hand tracking. Tracking gaps and discontinuities suspend follow until 300 ms of stable samples, then follow rebases. Space-origin changes cancel gestures and reset follow. A visible activity stays awake and reapplies tracking configuration on resume. Physical boundaries and sensor availability remain system-controlled.
+
+The user confirmed that Settings → Input → Aiming method → Use hand aiming only keeps hand rays available without waving. Mixed eye/hand aiming can switch away from the hand pointer. Independent app-level eye gaze alongside hand aiming remains a future feature requiring permission and device verification.
+
+## Streaming recovery
+
+`scripts/serve-existing.sh` starts the existing-desktop host as the `floatdesk-live` user service, with restart on failure, journal output and an unlimited regular-file size limit. The packaged unit uses the same logging and limit settings. This avoids tying the host to a terminal/tool lifetime or regular-file log limit. Restart recovery was verified on the headset.
+
+The receiver resets reorder/depacketizer state when the RTP source changes or sequence numbers restart backwards after downtime, then requests a keyframe. Capture-thread retries retain packetizer sequence numbers within one host process. The other agent's existing host capture/encoder fixes are preserved.
+
+## Checks and confirmed regression baseline
 
 From `client/android-xr`, with a directory of Kotlin compiler jars:
 
-```sh
+```bash
 python3 checks/gestures.py /path/to/gradle/lib
+python3 checks/monitor_warp.py /path/to/gradle/lib
 python3 checks/frozen_frame.py /path/to/gradle/lib
 python3 checks/rtp.py /path/to/gradle/lib
 ```
 
-`gestures.py` checks the grab mapping, fist and palm thresholds, and the guide geometry. `frozen_frame.py` checks the snapshot mesh. `rtp.py` checks depacketizing and reordering. None of them run on the headset.
+These cover grab transforms, gesture thresholds, spherical radius and angular sampling, pixel inversion, mode-switch surface ownership, curved interaction routing, snapshot geometry/materials, native coordinate conversion, tracking guards and RTP recovery. `python3 scripts/check-serve-existing.py` checks launcher arguments without changing a service. JVM checks cannot validate physical placement or native rendering; those need the headset.
 
-## Host process disappearance, 8 November 2026
-
-A later complete stop had no host process and no listener on UDP 47000. The old `/tmp/floatdesk-va.log` ended mid-line at exactly 262,144 bytes. That is consistent with a file-size limit killing the background process; its exit signal was not retained, so the precise termination reason cannot be proven. This was different from the earlier live-process encoder deadlock.
-
-`scripts/serve-existing.sh` starts the existing-desktop host as the `floatdesk-live` user service, with automatic restart on failure, journal output and an unlimited regular-file size limit. The packaged unit uses the same logging and limit settings. Host recovery was verified by observing client reconnection and fresh video packets on the headset after restarting the service.
-
-Restart recovery also resets the headset reorder/depacketizer state when the RTP source changes, or when sequence numbers restart backwards after downtime, and requests a fresh keyframe. Capture-thread retries retain their packetizer sequence within one host process. The RTP regression checks cover host source changes, duplicate rejection, backwards sequence restart after idle and partial-frame cleanup.
-
-## Grab, projection and tracking consistency
-
-Device DOWN events reported local hit positions with more than a meter of plane depth, causing the old bounds check to reject actual monitor pinches. The controller now transforms the event's activity-space ray into the monitor input entity and intersects the actual flat or spherical surface. Input and video use identical geometry outside an active grab. Native move/resize callbacks were removed so they cannot write a second, inconsistent monitor transform. Shape-generated CANCEL events do not end an active grab while both raw pinches remain held; physical release and tracking loss remain authoritative.
-
-Spherical mapping now uses a conformal stereographic parameterization so local horizontal and vertical pixel scales match at off-center viewpoints. Source aspect ratios are reconciled when connecting. The app uses a large explicit Subspace volume rather than the recommended content box. Tracking is gated by lifecycle and device tracking state; gaps and sudden pose changes suspend movement until 300 ms of stable samples, then follow rebases rather than applying accumulated displacement. A visible activity keeps the screen on and reapplies hand/head configuration on resume. Physical safety boundaries and OS tracking suspension remain system-controlled.
-
-## Restore the confirmed interaction path
-
-The later invisible proxy surface, mandatory ray-intersection gate and head-quality filtering of hand data regressed grabbing. Restore the original Compose-owned video/input surface and SDK-local DOWN hits from checkpoint `dbe8b36`, while keeping the spherical toggle and stream-recovery fixes. Restore native move/resize handles, with relative native gesture deltas so an absolute Start pose cannot snap a saved monitor position. Consume large native pose discontinuities as new references without replaying their displacement. Two-point rearm does not disable normal handles. Raw tracked hands remain available independently of the head-quality filter. Space-origin changes cancel gestures and rebase follow; they are logged for distinguishing system relocalization from app movement. The speculative 100 m Subspace override was removed.
-
-The external commits after the working checkpoint changed host capture/encoding and documentation; they did not change Android grab or handle code. Those host changes are preserved.
-
-A live test of the restored surface confirmed one successful lock but several rejected attempts with both hands tracked. SDK-reported local hits still had large plane depth. Ray resolution now explicitly inverts `getPose(Space.ACTIVITY)` and `getScale(Space.ACTIVITY)` instead of calling the SDK localization conversion used by the earlier failed ray gate. This is optional, retaining the checkpoint path when no intersection resolves. Diagnostic records include the event origin/direction, rendered pose/scale and resolved contact for device validation.
-
-Live native-event records isolated the remaining offset: hit positions include the activity-root scale (about1.785 in the recorded session), but the hit-localization matrix does not. Applying the event matrix after removing that scale puts all62 recorded flat contacts on the screen plane (maximum residual below0.001mm). The native input listener now performs that conversion directly, tracks left/right action sequences independently, and forwards local contacts to the existing two-point controller. Contacts are validated against the actual surface; the known offset fallback is not accepted unless it independently lies on the surface. The earlier manual-ray and perception-space hypotheses were not validated and are not the active conversion. Tests include the recorded hit/matrix and a scaled native-event lifecycle case.
-
-## Device-confirmed coordinate baseline, 8 November 2026
-
-The user confirmed the scale-corrected coordinate path works. Two-point manipulation remains available above the safe minimum contact separation; native handles or Reset are the accepted fallback for smaller monitors. Intermittently disappearing hand rays remain unresolved; an OS limitation is possible but unproven. Future input changes should preserve this state and rerun the recorded-coordinate/native-event regressions, followed by center/edge and handle checks on the headset.
-
-## Equal-angle spherical sampling and persistent hand aiming
-
-The user confirmed that switching Android XR from mixed eye/hand aiming to **Use hand aiming only** makes hand rays stay available. This resolves the reported disappearance without changing the confirmed input controller. The setting is under Settings → Input → Aiming method.
-
-Spherical display now uses an equal-edge angular quadrilateral net centered between the eyes. At every mesh vertex, horizontal and vertical neighboring rays have their respective prescribed central-angle steps, with a shared per-image-pixel angular pitch. A regular longitude/latitude grid was rejected because horizontal neighboring rays converge toward the poles. The image grid can shear as required by spherical geometry. Extreme fields are limited uniformly to avoid mesh folds, preserving angular aspect. Rendering approximates the sphere with triangles, and the inverse mapping uses those same triangles so curved grab contacts preserve their image pixels. The native root-scale hit conversion, monitor ownership, handles and flat manipulation path remain byte-for-byte unchanged from the confirmed baseline.
+On 8 November 2026 the user confirmed flat coordinate alignment, matching live/frozen spherical shape, and successful spherical grabs near both outer edges. Preserve the separate native curved video canvas, matching interaction patch, resized contact bounds, and event-matrix/root-scale conversion. Native handles or Reset remain the accepted fallback below the minimum safe contact separation. Future interaction changes must rerun the regressions and verify center/edge grabs, live/frozen agreement, mode toggling, and native handles on the headset. Local APK/source backups preserve both confirmed baselines and are excluded from Git.

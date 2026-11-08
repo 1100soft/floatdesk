@@ -8,8 +8,9 @@ import tempfile
 folder = Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client'
 mesh = (folder/'MonitorMesh.kt').read_text().split('\n', 1)[1]
 warp = (folder/'MonitorWarp.kt').read_text()
-warp = warp[warp.index('/** Deform the original Compose-owned'):].replace('@SuppressLint("RestrictedApi")', '')
+warp = warp[warp.index('internal class MonitorWarp'):].replace('@SuppressLint("RestrictedApi")', '')
 stubs = '''
+internal class Texture { fun close() {}; companion object { suspend fun create(session: Session,path: java.nio.file.Path)=Texture() } }
 internal class Surface
 internal data class Vector3(val x: Float, val y: Float, val z: Float) {
     val length get() = kotlin.math.sqrt(x*x+y*y+z*z)
@@ -19,12 +20,16 @@ internal data class Pose(val translation: Vector3 = Vector3(0f,0f,0f),val rotati
 internal enum class Space { PARENT, ACTIVITY }
 internal object Log { fun i(tag: String,message: String) {} }
 internal data class FloatSize2d(val width: Float, val height: Float)
-internal data class MonitorPlacement(val physicalWidthM: Float, val physicalHeightM: Float)
+internal data class WorkspacePose(val position: FloatArray=floatArrayOf(.1f,0f,-1f),val rotation: FloatArray=floatArrayOf(0f,0f,0f,1f))
+internal data class MonitorPlacement(val physicalWidthM: Float, val physicalHeightM: Float,val pose: WorkspacePose=WorkspacePose(),val pixelWidth: Int=2560,val pixelHeight: Int=1600)
+internal class NativeHit(val hitPosition: Vector3,val distance: Float)
 internal open class Entity {
+    suspend fun hitTest(origin: Vector3,direction: Vector3): NativeHit? = null
+    var colliderAttachments = 0
     var parent: Entity? = null
     var enabled = true
     var component: InteractableComponent? = null
-    fun addComponent(value: InteractableComponent): Boolean { component=value; return true }
+    fun addComponent(value: InteractableComponent): Boolean { component=value; colliderAttachments++; return true }
     fun removeComponent(value: InteractableComponent) { if(component === value) component=null }
     private var opacity = 1f
     private var pose = Pose()
@@ -62,20 +67,35 @@ internal class Scene {
 internal class SurfaceEntity(var shape: Shape): Entity() {
     private val surface = Surface()
     fun getSurface() = surface
+    var primaryAlphaMaskTexture: Texture? = null
     var mediaBlendingMode = MediaBlendingMode.TRANSPARENT
+    enum class SuperSampling { NONE }
     enum class MediaBlendingMode { TRANSPARENT, OPAQUE }
     interface Shape {
         class Quad(val extents: FloatSize2d): Shape
-        class TriangleMesh(val positions: java.nio.FloatBuffer, val texCoords: java.nio.FloatBuffer, val indices: java.nio.IntBuffer)
-        class CustomMesh(val mesh: TriangleMesh): Shape
+        class TriangleMesh(val positions: java.nio.FloatBuffer, val texCoords: java.nio.FloatBuffer, val indices: java.nio.IntBuffer? = null)
+        class CustomMesh(val mesh: TriangleMesh, val rightEye: TriangleMesh? = null): Shape
     }
     companion object {
-        fun create(session: Session, shape: Shape) = SurfaceEntity(shape).also { session.scene.entities.add(it) }
+        fun create(session: Session, shape: Shape,pose: Pose=Pose(),parent: Entity?=null,superSampling: SuperSampling=SuperSampling.NONE) = SurfaceEntity(shape).also { it.setPose(pose); it.parent=parent; session.scene.entities.add(it) }
     }
 }
 '''
+stubs += """
+internal class CurvedMonitorInput(val mesh: MonitorMesh,val entity: Entity) {
+    fun close() { entity.parent=null }
+    companion object {
+        var last: CurvedMonitorInput? = null
+        suspend fun create(session: Session,parent: Entity,mesh: MonitorMesh,listener: (InputEvent)->Unit): CurvedMonitorInput {
+            val entity=Entity(); entity.parent=parent
+            entity.addComponent(InteractableComponent.create(session,listener))
+            return CurvedMonitorInput(mesh,entity).also { last=it }
+        }
+    }
+}
+"""
 checks = '''
-fun main() {
+suspend fun main() {
     val session = Session(); val root = Entity(); val screen = MonitorPlacement(.8f,.45f)
     val input = SurfaceEntity.create(session,SurfaceEntity.Shape.Quad(FloatSize2d(.8f,.45f)))
     input.parent = root; input.setPose(Pose(Vector3(.1f,0f,-1f))); input.setAlpha(.8f)
@@ -85,15 +105,18 @@ fun main() {
     check(video === input && output === input.getSurface())
     check(input.enabled && input.getAlpha() == .8f)
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false)
-    val curved = video.shape as SurfaceEntity.Shape.CustomMesh
+    val curvedVideo=session.scene.entities.last()
+    check(curvedVideo !== input && input.shape is SurfaceEntity.Shape.Quad)
+    check(warp.outputSurface === curvedVideo.getSurface())
+    val curved = curvedVideo.shape as SurfaceEntity.Shape.CustomMesh
     check(curved.mesh.texCoords[1] == 1f)
     check(warp.mesh != null && input.enabled)
     warp.update(session,root,floatArrayOf(.3f,0f,0f),screen,true,true)
-    check(video.shape === curved && input.enabled)
+    check(curvedVideo.shape === curved && input.enabled)
     warp.update(session,root,floatArrayOf(.3f,0f,0f),screen,true,false)
-    check(video.shape !== curved && video.getSurface() === output)
+    check(curvedVideo.shape !== curved && warp.outputSurface === curvedVideo.getSurface())
     warp.update(session,root,floatArrayOf(.3f,0f,0f),screen,false,false)
-    check(video.shape is SurfaceEntity.Shape.Quad && warp.mesh == null)
+    check(input.shape is SurfaceEntity.Shape.Quad && warp.mesh == null && curvedVideo.parent == null && warp.outputSurface === output)
     warp.close(); warp.close()
     check(input.enabled && input.getAlpha() == .8f && input.parent === root)
     session.scene.activitySpace.setPose(Pose(Vector3(.3f,-.5f,1.2f)))
@@ -111,8 +134,20 @@ fun main() {
     emit("LEFT",InputEvent.Action.UP); emit("RIGHT",InputEvent.Action.UP)
     check(events.map { it.pointerType } == listOf("LEFT","RIGHT","LEFT","RIGHT"))
     check(kotlin.math.abs(events[0].hitPosition!!.x+200f) < .001f && kotlin.math.abs(events[1].hitPosition!!.x-200f) < .001f)
+    warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false)
+    warp.syncCurvedInput(session)
+    val patch=CurvedMonitorInput.last!!
+    check(patch.entity.parent === session.scene.entities.last())
+    check(input.primaryAlphaMaskTexture != null && input.component == null)
+    val p=warp.mesh!!.project(floatArrayOf(-.2f,0f,0f))
+    patch.entity.component!!.listener(InputEvent(InputEvent.Action.DOWN,0,"LEFT",0,Vector3(0f,0f,1f),Vector3(0f,0f,-1f),
+        listOf(InputEvent.HitInfo(patch.entity,Vector3((ip.x+p[0])*1.785f,(ip.y+p[1])*1.785f,(ip.z+p[2])*1.785f),matrix))))
+    check(events.size == 5 && events.last().hitPosition != null)
+    warp.update(session,root,floatArrayOf(0f,0f,0f),screen,false,false)
+    warp.syncCurvedInput(session)
+    check(patch.entity.parent == null && input.primaryAlphaMaskTexture == null && input.component === component)
     warp.close(); check(input.component == null && input.parent === root && input.enabled)
-    println("Passed: native matrix localization and independent left/right sequences, original Compose surface/input/alpha/parent preserved, curvature freezes while held, unchanged decoder surface, video UVs, cleanup")
+    println("Passed: native matrix localization and independent left/right sequences, flat Compose surface/input/alpha/parent preserved, separate curved video and interaction ownership, mode-switch surface restoration, curvature freezes while held, video UVs, cleanup")
 }
 '''
 code = 'import java.nio.FloatBuffer\nimport java.nio.IntBuffer\n' + mesh + stubs + warp + checks

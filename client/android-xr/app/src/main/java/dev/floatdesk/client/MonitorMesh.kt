@@ -2,6 +2,14 @@ package dev.floatdesk.client
 
 import kotlin.math.sqrt
 
+/** Desk poses and image dimensions share units; do not send an already-local eye through another scene space. */
+internal fun viewerInMonitor(viewer: FloatArray, position: FloatArray, rotation: FloatArray): FloatArray {
+    val x=viewer[0]-position[0]; val y=viewer[1]-position[1]; val z=viewer[2]-position[2]
+    val qx=-rotation[0]; val qy=-rotation[1]; val qz=-rotation[2]; val qw=rotation[3]
+    val tx=2f*(qy*z-qz*y); val ty=2f*(qz*x-qx*z); val tz=2f*(qx*y-qy*x)
+    return floatArrayOf(x+qw*tx+qy*tz-qz*ty,y+qw*ty+qz*tx-qx*tz,z+qw*tz+qx*ty-qy*tx)
+}
+
 /** Equal adjacent-ray angular steps on a viewer-centered sphere (a spherical quadrilateral net). */
 internal class MonitorMesh(
     val width: Float,

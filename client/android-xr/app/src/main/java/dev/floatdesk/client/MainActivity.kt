@@ -561,7 +561,17 @@ private fun DeskContent(
                 val file = latest.value
                 val screen = file.monitorAt(index) ?: continue
                 try {
-                    warp.update(current, root, handTracking.points["VIEWER"] ?: handTracking.points["HEAD"], screen, file.sphericalWarp, hands.busy)
+                    // Freeze before the platform DOWN arrives: replacing a native canvas while
+                    // the user starts pinching can cancel its input acquisition.
+                    warp.update(current, root, handTracking.points["VIEWER"] ?: handTracking.points["HEAD"], screen, file.sphericalWarp,
+                        hands.busy || (file.sphericalWarp && handTracking.pinched.isNotEmpty()))
+                    warp.syncCurvedInput(current)
+                    warp.outputSurface?.let { display ->
+                        if (videoSurface.get() !== display) {
+                            videoSurface.set(display)
+                            connection.attachSurface(index, display)
+                        }
+                    }
                 } catch (failure: Exception) {
                     Log.e("Floatdesk", "Could not update spherical monitor", failure)
                     return@LaunchedEffect

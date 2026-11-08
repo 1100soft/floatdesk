@@ -14,12 +14,13 @@ import androidx.xr.runtime.math.FloatSize2d
 import androidx.xr.runtime.math.Vector3
 import androidx.xr.scenecore.Entity
 import androidx.xr.scenecore.SurfaceEntity
+import androidx.xr.scenecore.Texture
 import androidx.xr.scenecore.scene
 import dev.floatdesk.client.workspace.MonitorPlacement
 import java.nio.FloatBuffer
 import java.nio.IntBuffer
 
-/** Deform the original Compose-owned video surface; preserve its proven input and handle ownership. */
+/** Keep Compose's flat surface/handles; give curved video an independently owned native canvas. */
 internal class MonitorWarp : AutoCloseable {
     var mesh: MonitorMesh? = null
         private set
@@ -30,6 +31,45 @@ internal class MonitorWarp : AutoCloseable {
     private var appliedShape: SurfaceEntity.Shape? = null
     private var interaction: InteractableComponent? = null
     private val sequences = mutableSetOf<String>()
+    private var curvedInput: CurvedMonitorInput? = null
+    private var inputListener: ((InputEvent) -> Unit)? = null
+    private var mask: Texture? = null
+    private var directInteraction = false
+    val outputSurface: Surface? get() = live?.getSurface()
+
+    @SuppressLint("RestrictedApi")
+    suspend fun syncCurvedInput(session: Session) {
+        val sphere = mesh
+        if (sphere == null) {
+            curvedInput?.close(); curvedInput = null
+            input?.primaryAlphaMaskTexture = null
+            input?.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE
+            if (!directInteraction) interaction?.let { component ->
+                check(input?.addComponent(component) == true)
+                directInteraction = true
+            }
+            return
+        }
+        if (mask == null) mask = Texture.create(session, java.nio.file.Paths.get("transparent-monitor-mask.png"))
+        input?.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.TRANSPARENT
+        input?.primaryAlphaMaskTexture = mask
+        if (directInteraction) {
+            interaction?.let { input?.removeComponent(it) }
+            directInteraction = false
+        }
+        if (curvedInput?.mesh === sphere) return
+        val target = live ?: return
+        val listener = inputListener ?: return
+        val next = CurvedMonitorInput.create(session, target, sphere, listener)
+        val old = curvedInput
+        curvedInput = next
+        old?.close()
+    }
+
+    private fun applyShape(target: SurfaceEntity, shape: SurfaceEntity.Shape) {
+        target.shape = shape
+        appliedShape = shape
+    }
 
     @SuppressLint("RestrictedApi")
     fun attach(session: Session, inputSurface: Surface, placement: MonitorPlacement, density: PixelDensity? = null, onEvent: ((SpatialInputEvent) -> Unit)? = null): Surface {
@@ -42,14 +82,15 @@ internal class MonitorWarp : AutoCloseable {
         live = target
         flatWidth = placement.physicalWidthM; flatHeight = placement.physicalHeightM
         if (density != null && onEvent != null) {
-            val component = InteractableComponent.create(session) { event ->
+            val listener: (InputEvent) -> Unit = listener@ { event ->
                 val info = event.hitInfoList.firstOrNull()
                 val side = event.pointerType.toString()
                 if (event.action == InputEvent.Action.DOWN) {
-                    if (info?.inputEntity !== target) return@create
+                    val expected = if (mesh != null) curvedInput?.entity else target
+                    if (info?.inputEntity !== expected || expected == null) return@listener
                     sequences.add(side)
                 }
-                if (side !in sequences && (side != "DEFAULT" || sequences.isEmpty())) return@create
+                if (side !in sequences && (side != "DEFAULT" || sequences.isEmpty())) return@listener
                 val hit = info?.hitPosition
                 val inputScale = target.getScale(Space.ACTIVITY)
                 fun onSurface(p: FloatArray): Boolean {
@@ -76,8 +117,11 @@ internal class MonitorWarp : AutoCloseable {
                     if (side == "DEFAULT") sequences.clear() else sequences.remove(side)
                 }
             }
+            inputListener = listener
+            val component = InteractableComponent.create(session, listener)
             check(target.addComponent(component)) { "Could not attach native monitor input" }
             interaction = component
+            directInteraction = true
         }
         return inputSurface
     }
@@ -85,45 +129,71 @@ internal class MonitorWarp : AutoCloseable {
     @SuppressLint("RestrictedApi") // CustomMesh is available in the pinned SceneCore 1.0 runtime.
     fun update(session: Session, root: Entity, eye: FloatArray?, placement: MonitorPlacement,
                enabled: Boolean, held: Boolean) {
-        val target = live ?: return
+        val original = input ?: return
+        if (live !== original) live?.let {
+            it.parent = original.parent
+            it.setPose(original.getPose())
+            it.setScale(original.getScale())
+        }
         // A captured shape must remain rigid while either contact is held.
         if (held) return
-        val localEye = eye?.let {
-            root.transformPoseTo(Pose(Vector3(it[0], it[1], it[2])), target).translation
-        }
+        val viewer = eye?.let { viewerInMonitor(it,placement.pose.position,placement.pose.rotation) }
+        val localEye = viewer?.let { Vector3(it[0],it[1],it[2]) }
         // Freeze the last valid curvature during tracking gaps; never switch shape on a stale pose.
         if (enabled && (localEye == null || localEye.z <= .10f || localEye.length <= .15f)) return
         val usable = enabled
         if (!usable) {
+            if (live !== original) { live?.parent = null; live = original }
             if (mesh != null || flatWidth != placement.physicalWidthM || flatHeight != placement.physicalHeightM) {
                 val shape = SurfaceEntity.Shape.Quad(FloatSize2d(placement.physicalWidthM, placement.physicalHeightM))
-                target.shape = shape
-                appliedShape = shape
+                applyShape(original, shape)
                 flatWidth = placement.physicalWidthM; flatHeight = placement.physicalHeightM
                 mesh = null
             }
             return
         }
-        val viewer = floatArrayOf(localEye!!.x, localEye.y, localEye.z)
+        if (viewer == null) return
         val previous = mesh
         val changed = previous == null || previous.width != placement.physicalWidthM || previous.height != placement.physicalHeightM ||
-            viewer.indices.any { kotlin.math.abs(viewer[it] - previous.eye[it]) > 0.001f }
+            viewer.indices.any { kotlin.math.abs(viewer[it] - previous.eye[it]) > 0.01f }
         if (changed) {
             val next = MonitorMesh(placement.physicalWidthM, placement.physicalHeightM, viewer)
+            if (previous == null || previous.width != next.width || previous.height != next.height) {
+                val sdkEye = eye?.let { root.transformPoseTo(Pose(Vector3(it[0],it[1],it[2])),original).translation }
+                val h=next.project(floatArrayOf(next.width*.5f,0f,0f))
+                val v=next.project(floatArrayOf(0f,next.height*.5f,0f))
+                fun sag(point: FloatArray) = (0..2).sumOf { (point[it]*viewer[it]/next.radius).toDouble() }.toFloat()
+                Log.i("Floatdesk","warp geometry viewer=${viewer.contentToString()} sdkViewer=$sdkEye radius=${next.radius} image=${placement.pixelWidth}x${placement.pixelHeight} extent=${next.width}x${next.height} horizontalSag=${sag(h)} verticalSag=${sag(v)}")
+            }
             val shape = SurfaceEntity.Shape.CustomMesh(SurfaceEntity.Shape.TriangleMesh(
                 FloatBuffer.wrap(next.positions), FloatBuffer.wrap(next.videoTexCoords), IntBuffer.wrap(next.indices)))
-            target.shape = shape
-            appliedShape = shape
+            val target = if (live === original) SurfaceEntity.create(session,
+                shape = shape, pose = original.getPose(), parent = original.parent,
+                superSampling = SurfaceEntity.SuperSampling.NONE).also {
+                it.setScale(original.getScale())
+                it.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE
+                live = it
+            } else live!!
+            applyShape(target, shape)
+            flatWidth = next.width; flatHeight = next.height
             mesh = next
-        } else if (input?.shape !== appliedShape) {
-            appliedShape?.let { input?.shape = it }
+        } else if (live?.shape !== appliedShape) {
+            appliedShape?.let { applyShape(live!!, it) }
         }
     }
 
+    @SuppressLint("RestrictedApi")
     override fun close() {
         // Compose owns the entity and surface. Never detach, disable or hide them here.
+        curvedInput?.close(); curvedInput = null
+        if (live !== input) live?.parent = null
+        input?.primaryAlphaMaskTexture = null
+        input?.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE
+        mask?.close(); mask = null
+        inputListener = null
         interaction?.let { component -> runCatching { input?.removeComponent(component) } }
         interaction = null; sequences.clear()
+        directInteraction = false
         live = null
         input = null
         mesh = null

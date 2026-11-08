@@ -1,0 +1,27 @@
+{
+  "date": "2026-11-08",
+  "git_head": "7af1ef43174fd4f8c647ec975940cf05e124f1e1",
+  "confirmation": "User confirmed coordinate alignment and two-point control; small-monitor fallback accepted; disappearing hand rays unresolved.",
+  "apk_sha256": "e67b09a46321a604792c9f8c4315b798ff1254684dd7d29e1e4e5724ee762a71",
+  "source_sha256": {
+    "CHANGES.md": "e9ca65b5c5a90be19f9ac502cf3899d1b5f91967df864f8d1f10b7445e703e34",
+    "README.md": "29bbc210bee1048a8e1c1d50e4ec9554e0c7d75c09de8f68eff31ae62b430567",
+    "client/android-xr/app/src/main/java/dev/floatdesk/client/FrozenMonitor.kt": "5788d0321f0807bfbec2a2f9e94e9844a18ed8ffd87135085a30ff9f81331daf",
+    "client/android-xr/app/src/main/java/dev/floatdesk/client/GrabGuideRenderer.kt": "68c0063da6e6450265d9ca1e5ca68363416c0681425f7aefb893de71ab3e09e9",
+    "client/android-xr/app/src/main/java/dev/floatdesk/client/MainActivity.kt": "e636b8d4ef95522fe1a7cbb0cdba2d08b26942196d9e2f5267ce7964b4dc80aa",
+    "client/android-xr/app/src/main/java/dev/floatdesk/client/MonitorMesh.kt": "f50868ef149fc2d80f9d3169147f7006f484a736f32448d59c006e8c4dc8d4c3",
+    "client/android-xr/app/src/main/java/dev/floatdesk/client/MonitorWarp.kt": "3b991051e9f4d45c9e48eaa9ba4e7855b4bb1e3d51541250e8bb05219d58527d",
+    "client/android-xr/app/src/main/java/dev/floatdesk/client/TrackingGuard.kt": "1ebe1d1c984fc2ab40d0eea07e1f17b8d9f5135b80203b6beee5854123d34c0d",
+    "client/android-xr/app/src/main/java/dev/floatdesk/client/media/H264.kt": "bd8d7208a2283b79303a17b5cc7dba8ff3889dd4687636ed9a6ee80e018ae3fa",
+    "client/android-xr/app/src/main/java/dev/floatdesk/client/workspace/Workspace.kt": "66ff6b56e3b2f555e3cab97850ecdb151dc6d9cd3a59fe0573ce80af08119f13",
+    "client/android-xr/checks/README.md": "6acf7deb844110cd07bdbff8905bdee19c1d44405131b46476ccf149297b7714",
+    "client/android-xr/checks/frozen_frame.py": "63982b19eea917b700e10fb98868e300b6c8ed8fc8296d3676c6b732b3a4a06a",
+    "client/android-xr/checks/gestures.py": "58e8aab6ee8ef4a21f5b4346b0380ebb3b2215fea68d8c4b1ba8753fcf80f0f7",
+    "client/android-xr/checks/monitor_warp.py": "75752a33de4e676dcfb5fcaf1be271bc0e4b74fdd9aa378ceca28be3c7b20201",
+    "client/android-xr/checks/rtp.py": "e1a0c0f537a3ef18bf7bd3693e0f4dc71e924cdf7568dc5a88722d5b56d99a80",
+    "crates/host/src/session.rs": "9ef2b1f358c95a9318f666e5641403ea484f933a941b9409c3e942230613630d",
+    "packaging/floatdesk.service": "3f3119bb893fea28eb38a6a18bdea206d8b6c23d3c4effcab43a15745a580850",
+    "scripts/check-serve-existing.py": "6fb95cfa27bd67854fa11e683df8026347dffeb61ea2f69ef16d75b87de00654",
+    "scripts/serve-existing.sh": "1f66e3951fac10ee5c9b99678c9ed6926539a77ec3d82605dc1e68c30d81d791"
+  }
+}

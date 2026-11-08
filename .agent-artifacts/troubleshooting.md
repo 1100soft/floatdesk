@@ -115,3 +115,15 @@ Confirmed coordinate cause from raw native input (2026-11-08):
 - Raw InputEvent.HitInfo.transform matches inverse monitor pose in unscaled activity coordinates. HitInfo.hitPosition includes activity-root scale. Measured root scale1.7850144. Compute local = HitInfo.transform * (hitPosition / target.getScale(Space.ACTIVITY)), NOT matrix.inverse or activitySpace.transformPoseTo. Replayed62 recorded raw contacts with this conversion: max absolute plane Z error0.0007mm, mean0.0002mm. This numerically confirms missing scale, and explains successful-but-offset grabs and out-of-bounds rejection.
 - Native InteractableComponent attaches to the same Compose-owned SurfaceEntity, replacing only Compose's faulty localization adapter. Native move/resize components stay intact. Raw per-pointer left/right sequences preserved independently; local converted to Compose pixels only for controller event compatibility. Invalid off-surface fallback rejected. Curved points validated against sphere/inverse image bounds.
 - SDK surface ownership tests, native event lifecycle/scaled matrix tests, recorded geometry regression and Android build/lint pass. Final scale-corrected APK awaiting/under installation; device user must reopen for visual contact alignment confirmation. Do not claim older matrix-only/perception builds fixed the offset.
+
+Confirmed device baseline — 2026-11-08:
+
+The user confirmed that two-point manipulation and coordinate alignment work in the installed scale-corrected build. Preserve this as the reference for future interaction changes. The conversion is `local = hitInfo.transform * (rawHit / activityRootScale)`, using the original Compose-owned surface and native input listener. Native move/resize handles must remain available.
+
+Accepted limitation: two-point control requires sufficiently separated contacts. At small monitor sizes, use the native handle or Reset; do not weaken separation safeguards as an unsolicited fix. Current thresholds are contact span >= max(12 cm in physical units, 18% of monitor width), and hand span >= 9 cm.
+
+Known unresolved issue: system hand rays intermittently disappear and return after moving/waving the hands. An OS limitation is suspected, not confirmed. This acceptance confirms coordinates and usable manipulation, not a general resolution of platform tracking/relocalization jumps.
+
+Before modifying input coordinates, surface ownership, scale conversion or movement arbitration, run the gesture and native-event lifecycle checks and compare with this baseline. Device-check center/edge contact alignment, repeat grab/release, native handles, and the small-monitor fallback.
+
+Saved the exact accepted APK and source overlay under confirmed-coordinate-2026-11-08, with a SHA-256 manifest. No commit/push requested or performed.

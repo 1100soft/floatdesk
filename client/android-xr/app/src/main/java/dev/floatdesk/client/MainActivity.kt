@@ -551,19 +551,14 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                         val grip=grips[side] ?: continue
                         val end=transformPoint(placement.pose,contact.local)
                         marks.add(contact.u); marks.add(contact.v)
-                        var before: PointerTarget?=null
-                        // Project the physical beam onto this monitor from the viewer. The native
-                        // beam remains outside its silhouette; these pixels cover the overlapping part.
-                        for(step in 0..8) {
-                            val point=FloatArray(3) { grip[it]+(end[it]-grip[it])*step/8f }
-                            val projected=gazePointerTarget(eye,subtract(point,eye),workspace,pointerControl.meshes)?.takeIf { it.monitor==index }
-                            val previous=before
-                            if(previous!=null && projected!=null) segments.addAll(listOf(previous.u,previous.v,projected.u,projected.v))
-                            before=projected
-                        }
+                        segments.addAll(projectedAimBeam(grip,end,floatArrayOf(contact.u,contact.v)) { point ->
+                            gazePointerTarget(eye,subtract(point,eye),workspace,pointerControl.meshes)
+                                ?.takeIf { it.monitor==index }?.let { floatArrayOf(it.u,it.v) }
+                        }.toList())
                     }
                 }
-                connection.aimOverlay(index,dev.floatdesk.client.media.VideoAim(segments.toFloatArray(),marks.toFloatArray()))
+                connection.aimOverlay(index,dev.floatdesk.client.media.VideoAim(segments.toFloatArray(),marks.toFloatArray(),
+                    .0009f*handTracking.unitsPerMeter/placement.physicalWidthM*placement.pixelWidth,if(dimPointer) .18f else .4f))
             }
             val previews = if (choice.mode == PointerMode.PREVIEW) hoverHands.values.groupBy { it.monitor }.mapNotNull { (index,points) ->
                 val left=hoverHands["LEFT"]?.takeIf { it.monitor == index }

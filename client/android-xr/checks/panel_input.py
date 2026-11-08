@@ -5,11 +5,20 @@ import subprocess
 import sys
 import tempfile
 folder=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
-source='\n'.join((folder/name).read_text().split('\n',1)[1] for name in ['PanelGazeInput.kt'])
+source='\n'.join((folder/name).read_text().split('\n',1)[1] for name in ['PanelGazeInput.kt','AimProjection.kt'])
 checks='''
 internal data class PointerTarget(val monitor:Int,val u:Float,val v:Float,val local:FloatArray)
 fun main() {
     val target=PointerTarget(0,.5f,.5f,floatArrayOf(0f,0f,0f))
+    val beam=projectedAimBeam(floatArrayOf(-.4f,.5f,0f),floatArrayOf(.8f,.5f,0f),floatArrayOf(.8f,.5f)) { point ->
+        if(point[0] in 0f..1f) floatArrayOf(point[0],point[1]) else null
+    }
+    check(beam.isNotEmpty() && beam[0] in 0f..0.00002f) // No missing piece at the screen edge.
+    check(beam[beam.size-2]==.8f && beam[beam.size-1]==.5f)
+    val narrow=projectedAimBeam(floatArrayOf(-10f,.5f,0f),floatArrayOf(.01f,.5f,0f),floatArrayOf(.01f,.5f)) { point ->
+        if(point[0] in 0f..1f) floatArrayOf(point[0],point[1]) else null
+    }
+    check(narrow[0] in 0f..0.0001f) // Even when only the last coarse sample is visible.
     val panel=PanelGazeInput(listOf(PanelButtonArea(0,0f,0f,.45f,1f),PanelButtonArea(1,.55f,0f,.45f,1f)))
     fun p(t:Long,x:Float?=.2f,thumb:Float=.07f,side:String?="LEFT")=
         panel.update(t,side,x?.let {floatArrayOf(it,.5f)},thumb)

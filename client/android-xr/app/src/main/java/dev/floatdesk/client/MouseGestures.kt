@@ -70,9 +70,13 @@ internal class MouseGestures {
             val closed=current.side in (when(current.button) { 1->indexClosed; 2->chordClosed; else->middleClosed })
             if(closed) {
                 val sample=samples.getValue(current.side)
-                if(current.button==3 && !scrolling && nowMs-current.began>=350 && sample.position!=null) {
-                    scrolling=true; scrollOrigin=sample.position.copyOf(); scrollPrevious=sample.position.copyOf()
-                    scrollRight=sample.right.copyOf(); scrollUp=sample.up.copyOf()
+                if(current.button==3 && !scrolling && sample.position!=null && scrollOrigin!=null) {
+                    val delta=FloatArray(3) { sample.position[it]-scrollOrigin!![it] }
+                    val dx=(0..2).sumOf { (delta[it]*scrollRight[it]).toDouble() }.toFloat()
+                    val dy=(0..2).sumOf { (delta[it]*scrollUp[it]).toDouble() }.toFloat()
+                    // Movement, rather than a hold timer, distinguishes scrolling from a click.
+                    if(hypot(dx,dy)>=.008f) scrolling=true
+                    if(!scrolling) scrollPrevious=sample.position.copyOf()
                 }
                 if(scrolling) {
                     val position=sample.position
@@ -98,6 +102,7 @@ internal class MouseGestures {
             hold=null
             if(scrolling) return MouseGestureOutput(current.target,scroll=endScroll())
             if(dragging) { dragging=false; return MouseGestureOutput(target ?: lastTarget) }
+            if(current.button==3 && nowMs-current.began>350) return MouseGestureOutput(target)
             if(nowMs-current.began<35) return MouseGestureOutput(target)
             var clicked=current.target
             val previous=lastClick
@@ -115,6 +120,11 @@ internal class MouseGestures {
             armed.remove(side)
             if(startTarget == null) continue
             hold=Hold(side,button,nowMs,startTarget)
+            if(button==3) {
+                val sample=samples.getValue(side)
+                scrollOrigin=sample.position?.copyOf(); scrollPrevious=sample.position?.copyOf()
+                scrollRight=sample.right.copyOf(); scrollUp=sample.up.copyOf()
+            }
             return MouseGestureOutput(startTarget)
         }
         return MouseGestureOutput(target)

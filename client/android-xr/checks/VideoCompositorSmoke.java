@@ -41,14 +41,14 @@ public final class VideoCompositorSmoke {
                 require(top[0]>220 && top[2]<20,"Video top is flipped or corrupt");
                 require(bottom[2]>220 && bottom[0]<20,"Video bottom is flipped or corrupt");
             }
-            compositor.overlay(new VideoAim(new float[]{.1f,.25f,.9f,.25f},new float[]{.5f,.5f}));
+            compositor.overlay(new VideoAim(new float[]{.1f,.25f,.9f,.25f},new float[]{.5f,.5f},2f,.18f));
             SystemClock.sleep(40);
             try(Image image=frame(first)) {
                 int[] line=pixel(image,16,12), ring=pixel(image,37,24);
                 require(line[1]>25 && line[2]>25,"Projected ray is missing from video pixels");
                 require(ring[1]>25,"Contact ring is missing from video pixels");
             }
-            compositor.overlay(new VideoAim(new float[0],new float[0]));
+            compositor.overlay(new VideoAim(new float[0],new float[0],2f,.18f));
             SystemClock.sleep(40);
             try(Image image=frame(first)) { require(pixel(image,16,12)[1]<20,"Cleared ray left a ghost"); }
             compositor.output(second.getSurface());

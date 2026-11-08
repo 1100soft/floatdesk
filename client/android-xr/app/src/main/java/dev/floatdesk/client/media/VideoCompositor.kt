@@ -15,7 +15,8 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** Normalized top-left video coordinates. At most sixteen projected ray segments and two contacts. */
-internal data class VideoAim(val segments: FloatArray = floatArrayOf(), val contacts: FloatArray = floatArrayOf())
+internal data class VideoAim(val segments: FloatArray = floatArrayOf(), val contacts: FloatArray = floatArrayOf(),
+                             val thickness: Float = 2f, val opacity: Float = .18f)
 
 /** One GPU pass keeps aiming decorations and live video in the same compositor layer. */
 internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
@@ -141,7 +142,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         }
         for(i in 0 until minOf(16,overlay.segments.size/4)) {
             val n=i*4; line(overlay.segments[n]*width,overlay.segments[n+1]*height,
-                overlay.segments[n+2]*width,overlay.segments[n+3]*height,2f,.24f)
+                overlay.segments[n+2]*width,overlay.segments[n+3]*height,overlay.thickness,overlay.opacity)
         }
         for(i in 0 until minOf(2,overlay.contacts.size/2)) {
             val x=overlay.contacts[i*2]*width; val y=overlay.contacts[i*2+1]*height
@@ -223,7 +224,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         private const val INK_FRAGMENT="""
             precision mediump float;
             varying float opacity;
-            void main() { gl_FragColor=vec4(0.25,0.85,1.0,opacity); }
+            void main() { gl_FragColor=vec4(0.4236,0.9777,1.0,opacity); }
         """
     }
 }

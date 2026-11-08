@@ -543,21 +543,16 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             }
             for((index,placement) in workspace.layouts[workspace.activeLayout].orEmpty().withIndex()) {
                 val contacts=hoverHands.filterValues { it.monitor==index }
-                val segments=mutableListOf<Float>()
                 val marks=mutableListOf<Float>()
                 val eye=grips["VIEWER"] ?: grips["HEAD"]
                 if(choice.mode!=PointerMode.GRAB && palmPanel==null && eye!=null) {
                     for((side,contact) in contacts) {
-                        val grip=grips[side] ?: continue
-                        val end=transformPoint(placement.pose,contact.local)
+                        if(grips[side]==null) continue
                         marks.add(contact.u); marks.add(contact.v)
-                        segments.addAll(projectedAimBeam(grip,end,floatArrayOf(contact.u,contact.v)) { point ->
-                            gazePointerTarget(eye,subtract(point,eye),workspace,pointerControl.meshes)
-                                ?.takeIf { it.monitor==index }?.let { floatArrayOf(it.u,it.v) }
-                        }.toList())
+
                     }
                 }
-                connection.aimOverlay(index,dev.floatdesk.client.media.VideoAim(segments.toFloatArray(),marks.toFloatArray(),
+                connection.aimOverlay(index,dev.floatdesk.client.media.VideoAim(floatArrayOf(),marks.toFloatArray(),
                     .0009f*handTracking.unitsPerMeter/placement.physicalWidthM*placement.pixelWidth,if(dimPointer) .18f else .4f))
             }
             val previews = if (choice.mode == PointerMode.PREVIEW) hoverHands.values.groupBy { it.monitor }.mapNotNull { (index,points) ->
@@ -576,7 +571,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                     renderer.updateRays(root,hoverHands.mapNotNull { (side,hit) ->
                         val origin=grips[side]; val placement=workspace.monitorAt(hit.monitor)
                         if(origin==null || placement==null) null else origin to transformPoint(placement.pose,hit.local)
-                    },handTracking.unitsPerMeter,choice.mode==PointerMode.HAND) }.onFailure {
+                    },handTracking.points["VIEWER"] ?: handTracking.points["HEAD"],handTracking.unitsPerMeter,choice.mode==PointerMode.HAND) }.onFailure {
                     Log.e("Floatdesk", "Could not update grab guides", it)
                     guideRenderer = null
                     renderer.close()

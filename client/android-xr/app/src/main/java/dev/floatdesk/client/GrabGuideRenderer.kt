@@ -5,6 +5,9 @@ import androidx.xr.runtime.math.Pose
 import androidx.xr.runtime.math.Quaternion
 import androidx.xr.runtime.math.Vector3
 import androidx.xr.scenecore.Entity
+import androidx.xr.scenecore.SurfaceEntity
+import androidx.xr.runtime.math.FloatSize2d
+import androidx.xr.runtime.math.IntSize2d
 import androidx.xr.scenecore.GltfModel
 import androidx.xr.scenecore.GltfModelEntity
 import java.nio.file.Paths
@@ -37,7 +40,7 @@ internal class GrabGuideRenderer private constructor(
     private val groups = mutableListOf<Group>()
     private var closed = false
     private var pointerPoint: GltfModelEntity? = null
-    private val aimBeams=mutableListOf<GltfModelEntity>()
+    private val aimBeams=mutableListOf<SurfaceEntity>()
 
     private fun newGroup(edgeCount: Int): Group {
         val root = Entity.create(session, name = "Floatdesk grab guide")
@@ -79,15 +82,37 @@ internal class GrabGuideRenderer private constructor(
         point(entity,visibleGrabContact(position,eye,unitsPerMeter),.003f*unitsPerMeter)
     }
 
-    fun updateRays(parent: Entity,rays: List<Pair<FloatArray,FloatArray>>,unitsPerMeter: Float,dimmed: Boolean) {
+    @android.annotation.SuppressLint("RestrictedApi")
+    @OptIn(androidx.xr.scenecore.ExperimentalSurfaceEntityPixelDimensionsApi::class)
+    fun updateRays(parent: Entity,rays: List<Pair<FloatArray,FloatArray>>,eye: FloatArray?,unitsPerMeter: Float,dimmed: Boolean) {
         if(closed) return
-        while(aimBeams.size<rays.size) aimBeams.add(GltfModelEntity.create(session,models[0]))
+        while(aimBeams.size<rays.size) {
+            val surface=SurfaceEntity.create(session,shape=SurfaceEntity.Shape.Quad(FloatSize2d(1f,.001f)),
+                parent=null,superSampling=SurfaceEntity.SuperSampling.NONE)
+            surface.setSurfacePixelDimensions(IntSize2d(128,4))
+            surface.mediaBlendingMode=SurfaceEntity.MediaBlendingMode.TRANSPARENT
+            // A plain native surface has no Compose input policy or InteractableComponent.
+            // The entire beam shares one compositor layer, including where it overlaps video.
+            val canvas=surface.getSurface().lockCanvas(null)
+            canvas.drawColor(android.graphics.Color.rgb(108,249,255))
+            surface.getSurface().unlockCanvasAndPost(canvas)
+            aimBeams.add(surface)
+        }
         for((index,entity) in aimBeams.withIndex()) {
             val ray=rays.getOrNull(index)
-            if(ray==null) { entity.setEnabled(false); continue }
-            entity.parent=parent
+            if(ray==null || eye==null) { entity.setEnabled(false); continue }
+            val a=vector(ray.first); val b=vector(ray.second); val delta=b-a
+            if(delta.length<.00001f) { entity.setEnabled(false); continue }
+            val along=delta.toNormalized(); val middle=(a+b)*.5f
+            val toward=vector(eye)-middle
+            val dot=toward.x*along.x+toward.y*along.y+toward.z*along.z
+            val normal=toward-along*dot
+            if(normal.length<.00001f) { entity.setEnabled(false); continue }
+            val up=Vector3(normal.y*along.z-normal.z*along.y,normal.z*along.x-normal.x*along.z,normal.x*along.y-normal.y*along.x)
+            entity.shape=SurfaceEntity.Shape.Quad(FloatSize2d(delta.length,.0009f*unitsPerMeter))
+            entity.setPose(Pose(middle,Quaternion.fromLookTowards(normal,up)))
             entity.setAlpha(if(dimmed) .18f else .4f)
-            beam(entity,ray.first,ray.second,.0009f*unitsPerMeter)
+            entity.parent=parent; entity.setEnabled(true)
         }
     }
 

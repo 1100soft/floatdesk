@@ -51,6 +51,9 @@ internal class MonitorWarp : AutoCloseable {
             }
             return
         }
+        // The masked owner must not leave a flat hit plane in front of an off-axis
+        // curved patch. It still owns Compose lifecycle/resize, but shares curved bounds.
+        appliedShape?.let { if(input?.shape !== it) input?.shape=it }
         if (mask == null) mask = Texture.create(session, java.nio.file.Paths.get("transparent-monitor-mask.png"))
         input?.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.TRANSPARENT
         input?.primaryAlphaMaskTexture = mask
@@ -200,6 +203,7 @@ internal class MonitorWarp : AutoCloseable {
                 live = it
             } else live!!
             applyShape(target, shape)
+            original.shape=shape
             flatWidth = next.width; flatHeight = next.height
             mesh = next
         } else if (live?.shape !== appliedShape) {

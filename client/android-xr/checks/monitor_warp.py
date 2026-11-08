@@ -111,8 +111,9 @@ suspend fun main() {
     check(input.enabled && input.getAlpha() == .8f)
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false)
     val curvedVideo=session.scene.entities.last()
-    check(curvedVideo !== input && input.shape is SurfaceEntity.Shape.Quad)
+    check(curvedVideo !== input && input.shape is SurfaceEntity.Shape.CustomMesh)
     check(warp.outputSurface === curvedVideo.getSurface())
+    check(input.shape === curvedVideo.shape) // No masked flat hit plane in front of the curved input.
     val curved = curvedVideo.shape as SurfaceEntity.Shape.CustomMesh
     check(curved.mesh.texCoords[1] == 1f)
     check(warp.mesh != null && input.enabled)
@@ -149,6 +150,8 @@ suspend fun main() {
     val patch=CurvedMonitorInput.last!!
     check(patch.entity.parent === session.scene.entities.last())
     check(input.primaryAlphaMaskTexture != null && input.component == null)
+    val offAxis=MonitorMesh(1.4094946f,.8809341f,floatArrayOf(-.3641987f,-.037884656f,1.4811001f))
+    check(offAxis.project(floatArrayOf(-.25f,0f,0f))[2]<0f) // Previously occluded left-middle area lies behind the old flat owner.
     val p=warp.mesh!!.project(floatArrayOf(-.2f,0f,0f))
     patch.entity.component!!.listener(InputEvent(InputEvent.Action.DOWN,0,"LEFT",0,Vector3(0f,0f,1f),Vector3(0f,0f,-1f),
         listOf(InputEvent.HitInfo(input,Vector3(99f,99f,99f),matrix), InputEvent.HitInfo(patch.entity,Vector3((ip.x+p[0])*1.785f,(ip.y+p[1])*1.785f,(ip.z+p[2])*1.785f),matrix))))

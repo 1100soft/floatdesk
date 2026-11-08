@@ -10,6 +10,7 @@ import android.os.Looper
 import android.view.Surface
 import androidx.compose.runtime.mutableStateOf
 import dev.floatdesk.client.media.MonitorDecoder
+import dev.floatdesk.client.media.VideoAim
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
@@ -116,6 +117,8 @@ internal class DeskConnection(
         decoders[index]?.attach(surface)
         send(Protocol.keyframeRequest(index))
     }
+
+    fun aimOverlay(index: Int,value: VideoAim) { decoders[index]?.overlay(value) }
 
     fun detachSurface(index: Int) {
         decoders[index]?.detach()

@@ -10,12 +10,12 @@ internal class PanelGazeInput(private val buttons: List<PanelButtonArea>) {
     private var candidate: Int?=null
     private var candidateSince=0L
     private var lastGaze=0L
-    private var thumbArmed=false
+    private var pinchArmed=false
     private var foldedSince: Long?=null
 
-    fun clear() { focused=null; hand=null; candidate=null; thumbArmed=false; foldedSince=null }
+    fun clear() { focused=null; hand=null; candidate=null; pinchArmed=false; foldedSince=null }
 
-    fun update(now: Long,side: String?,gaze: FloatArray?,thumbRatio: Float?): Int? {
+    fun update(now: Long,side: String?,gaze: FloatArray?,pinchMetres: Float?): Int? {
         if(side==null) { clear(); return null }
         if(side!=hand) { clear(); hand=side }
         fun contains(button: PanelButtonArea,padding: Float)=gaze!=null &&
@@ -31,16 +31,16 @@ internal class PanelGazeInput(private val buttons: List<PanelButtonArea>) {
             candidate=null
             if(now-lastGaze>160) focused=null
         }
-        if(thumbRatio==null || !thumbRatio.isFinite()) { thumbArmed=false; foldedSince=null; return null }
-        if(thumbRatio>1.05f) { thumbArmed=true; foldedSince=null }
-        if(thumbRatio<.75f && thumbArmed) {
+        if(pinchMetres==null || !pinchMetres.isFinite()) { pinchArmed=false; foldedSince=null; return null }
+        if(pinchMetres>.035f) { pinchArmed=true; foldedSince=null }
+        if(pinchMetres<.023f && pinchArmed) {
             val began=foldedSince
             if(began==null) foldedSince=now
             else if(now-began>=60) {
-                thumbArmed=false; foldedSince=null
+                pinchArmed=false; foldedSince=null
                 if(now-lastGaze<=80 && focused!=null && hit?.id==focused) return focused
             }
-        } else if(thumbRatio>.9f) foldedSince=null
+        } else if(pinchMetres>.03f) foldedSince=null
         return null
     }
 }

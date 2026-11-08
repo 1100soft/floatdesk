@@ -186,7 +186,6 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     val pointerControl = remember { PointerControl() }
     val gazeStabilizer = remember { GazeStabilizer() }
     val mouseGestures = remember { MouseGestures() }
-    val airSwipe = remember { AirSwipe() }
     val panelInput = remember { PanelGazeInput(palmButtons.map { PanelButtonArea(it.action.ordinal,it.x,it.y,it.w,it.h) }) }
     var panelFocused by remember { mutableStateOf<PalmAction?>(null) }
     var panelPressed by remember { mutableStateOf<PalmAction?>(null) }
@@ -394,8 +393,6 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             val palmCandidates = mutableMapOf<String, PalmPanelState>()
             val fingerTips = mutableMapOf<String, FloatArray>()
             val mouseSamples = mutableMapOf<String,FingerPinch>()
-            val airHands=mutableMapOf<String,AirHand>()
-            val thumbRatios=mutableMapOf<String,Float>()
             grips.clear()
             head?.let { grips["HEAD"] = it.translation.toArray() }
             // A sphere can be equidistant from one point: use the midpoint between the eyes.
@@ -412,32 +409,18 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                     val thumb = state.handJoints[HandJointType.THUMB_TIP]?.translation
                     val index = state.handJoints[HandJointType.INDEX_TIP]?.translation
                     val middle = state.handJoints[HandJointType.MIDDLE_TIP]?.translation
-                    val rawPalm=state.handJoints[HandJointType.PALM]?.translation
-                    val wrist=state.handJoints[HandJointType.WRIST]?.translation
-                    val indexBase=state.handJoints[HandJointType.INDEX_PROXIMAL]?.translation
-                    val littleBase=state.handJoints[HandJointType.LITTLE_PROXIMAL]?.translation
-                    val middleBase=state.handJoints[HandJointType.MIDDLE_PROXIMAL]?.translation
-                    if(thumb!=null && rawPalm!=null && wrist!=null && indexBase!=null && littleBase!=null && middleBase!=null) {
-                        val width=distance(indexBase,littleBase)
-                        if(width>.015f) {
-                            val ratio=distance(thumb,rawPalm)/width
-                            thumbRatios[side]=ratio
-                            val span=distance(wrist,middleBase)
-                            val fingers=listOf(HandJointType.INDEX_TIP,HandJointType.MIDDLE_TIP,HandJointType.RING_TIP,HandJointType.LITTLE_TIP)
-                                .count { state.handJoints[it]?.translation?.let { tip -> distance(tip,wrist)>span*1.55f } == true }
-                            val q=perceived?.rotation
-                            val quaternion=if(q==null) floatArrayOf(0f,0f,0f,1f) else floatArrayOf(q.x,q.y,q.z,q.w)
-                            airHands[side]=AirHand(fingers,ratio<.75f,rawPalm.toArray(),rotateVector(quaternion,1f,0f,0f),rotateVector(quaternion,0f,1f,0f))
-                        }
+                    if(thumb != null && index != null && middle != null) {
+                        val q=perceived?.rotation
+                        val quaternion=if(q==null) floatArrayOf(0f,0f,0f,1f) else floatArrayOf(q.x,q.y,q.z,q.w)
+                        mouseSamples[side]=FingerPinch(distance(thumb,index),distance(thumb,middle),
+                            ((thumb+middle)*.5f).toArray(),rotateVector(quaternion,1f,0f,0f),rotateVector(quaternion,0f,1f,0f))
                     }
-                    if(thumb != null && index != null && middle != null)
-                        mouseSamples[side]=FingerPinch(distance(thumb,index),distance(thumb,middle))
                     if (thumb != null && index != null) {
                         if (distance(thumb, index) < 0.04f) handTracking.pinched.add(side)
                         grips[side] = deskPose(current, root, androidx.xr.runtime.math.Pose((thumb + index) * 0.5f)).translation.toArray()
                         fingerTips[side] = deskPose(current, root, androidx.xr.runtime.math.Pose(index)).translation.toArray()
                     }
-                    palmControls(state, perceived, side, tick % 100 == 0)?.let { palmCandidates[side] = it.copy(pose = deskPose(current, root, it.pose.toRuntimePose()).toWorkspacePose(), unitsPerMeter = unitsPerMeter) }
+                    palmControls(state, perceived, side, tick % 100 == 0, panelHand==side)?.let { palmCandidates[side] = it.copy(pose = deskPose(current, root, it.pose.toRuntimePose()).toWorkspacePose(), unitsPerMeter = unitsPerMeter) }
                 }
                 if (hand.state.value.trackingState == TrackingState.TRACKING) rawTracking += 1
                 val read = readHand(hand.state.value)
@@ -527,7 +510,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             val panel=palmPanel
             val panelHits=if(panel==null) emptyList() else eyeRays.mapNotNull { (origin,direction) -> palmRayPoint(panel,origin,direction) }
             val panelGaze=if(panelHits.isEmpty()) null else floatArrayOf(panelHits.map {it[0]}.average().toFloat(),panelHits.map {it[1]}.average().toFloat())
-            val activate=panelInput.update(handTracking.nowMs,panel?.side,panelGaze,panel?.let { thumbRatios[it.side] })
+            val activate=panelInput.update(handTracking.nowMs,panel?.side,panelGaze,panel?.let { mouseSamples[it.side]?.middleMetres })
             panelFocused=panelInput.focused?.let { PalmAction.entries.getOrNull(it) }
             if(activate!=null) PalmAction.entries.getOrNull(activate)?.let { palmActionNow.value(it) }
             val gazeTargets=if(workspace.eyeAiming) eyeRays.mapNotNull { (origin,direction) -> gazePointerTarget(origin,direction,workspace,pointerControl.meshes) } else emptyList()
@@ -546,11 +529,9 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             }
             dimPointer = choice.mode == PointerMode.HAND
             val gestureBlocked=choice.mode==PointerMode.PREVIEW || choice.mode==PointerMode.GRAB || palmPanel!=null
-            val air=airSwipe.update(handTracking.nowMs,workspace.mouseGestures && trackingAvailable,
-                gestureBlocked || mouseGestures.active,airHands,choice.target)
-            air.frame?.let { connection.touchpad(it.fingers,it.x,it.y) }
             val mouse=mouseGestures.update(handTracking.nowMs,workspace.mouseGestures && trackingAvailable,
-                gestureBlocked || air.active,mouseSamples,if(air.active) air.target else choice.target)
+                gestureBlocked,mouseSamples,choice.target)
+            mouse.scroll?.let { connection.touchpad(it.fingers,it.x,it.y) }
             if(mouse.dragging != lastMouseDragging) {
                 Log.i("Floatdesk","mouse drag=${mouse.dragging}")
                 lastMouseDragging=mouse.dragging
@@ -559,6 +540,30 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             mouse.click?.let {
                 Log.i("Floatdesk","mouse click button=${it.button}")
                 connection.clickPointer(it.target.monitor,it.target.u,it.target.v,it.button)
+            }
+            for((index,placement) in workspace.layouts[workspace.activeLayout].orEmpty().withIndex()) {
+                val contacts=hoverHands.filterValues { it.monitor==index }
+                val segments=mutableListOf<Float>()
+                val marks=mutableListOf<Float>()
+                val eye=grips["VIEWER"] ?: grips["HEAD"]
+                if(choice.mode!=PointerMode.GRAB && palmPanel==null && eye!=null) {
+                    for((side,contact) in contacts) {
+                        val grip=grips[side] ?: continue
+                        val end=transformPoint(placement.pose,contact.local)
+                        marks.add(contact.u); marks.add(contact.v)
+                        var before: PointerTarget?=null
+                        // Project the physical beam onto this monitor from the viewer. The native
+                        // beam remains outside its silhouette; these pixels cover the overlapping part.
+                        for(step in 0..8) {
+                            val point=FloatArray(3) { grip[it]+(end[it]-grip[it])*step/8f }
+                            val projected=gazePointerTarget(eye,subtract(point,eye),workspace,pointerControl.meshes)?.takeIf { it.monitor==index }
+                            val previous=before
+                            if(previous!=null && projected!=null) segments.addAll(listOf(previous.u,previous.v,projected.u,projected.v))
+                            before=projected
+                        }
+                    }
+                }
+                connection.aimOverlay(index,dev.floatdesk.client.media.VideoAim(segments.toFloatArray(),marks.toFloatArray()))
             }
             val previews = if (choice.mode == PointerMode.PREVIEW) hoverHands.values.groupBy { it.monitor }.mapNotNull { (index,points) ->
                 val left=hoverHands["LEFT"]?.takeIf { it.monitor == index }
@@ -1065,7 +1070,7 @@ private fun PalmControls(latched: Boolean, warped: Boolean, eyes: Boolean, gestu
     BoxWithConstraints(Modifier.fillMaxSize().background(Color(0xF01C2430))) {
         Text("Floatdesk", color = Color.White, fontSize = 14.sp,
             modifier = Modifier.offset(maxWidth * 0.06f, maxHeight * 0.04f))
-        Text("Look + fold thumb",color=Color(0xFFB8D9EA),fontSize=8.sp,modifier=Modifier.offset(maxWidth*.06f,maxHeight*.105f))
+        Text("Look + middle pinch",color=Color(0xFFB8D9EA),fontSize=8.sp,modifier=Modifier.offset(maxWidth*.06f,maxHeight*.105f))
         for (button in palmButtons) {
             Button(onClick = { onAction(button.action) },
                 colors=ButtonDefaults.buttonColors(containerColor=when(button.action) { pressed -> Color(0xFF237E59); focused -> Color(0xFF315B82); else -> Color(0xFF354356) }),
@@ -1090,7 +1095,7 @@ private fun PalmControls(latched: Boolean, warped: Boolean, eyes: Boolean, gestu
 
 private fun Vector3.toArray() = floatArrayOf(x, y, z)
 
-private fun palmControls(state: Hand.State, head: androidx.xr.runtime.math.Pose?, side: String, diagnostics: Boolean = false): PalmPanelState? {
+private fun palmControls(state: Hand.State, head: androidx.xr.runtime.math.Pose?, side: String, diagnostics: Boolean = false, allowMiddlePinch: Boolean = false): PalmPanelState? {
     if (state.trackingState != TrackingState.TRACKING || head == null) return null
     val palm = state.handJoints[HandJointType.PALM] ?: return null
     val wrist = state.handJoints[HandJointType.WRIST]?.translation ?: return null
@@ -1105,7 +1110,11 @@ private fun palmControls(state: Hand.State, head: androidx.xr.runtime.math.Pose?
     val span = distance(wrist, knuckle)
     val tips = listOf(HandJointType.INDEX_TIP, HandJointType.MIDDLE_TIP, HandJointType.RING_TIP, HandJointType.LITTLE_TIP)
         .mapNotNull { state.handJoints[it]?.translation?.toArray() }
-    val open = openPalm(wrist.toArray(), tips, span)
+    val otherTips=listOf(HandJointType.INDEX_TIP,HandJointType.RING_TIP,HandJointType.LITTLE_TIP)
+        .mapNotNull { state.handJoints[it]?.translation?.toArray() }
+    val panelPinch=allowMiddlePinch &&
+        otherTips.size==3 && otherTips.all { distance(it,wrist.toArray())>span*1.55f }
+    val open = openPalm(wrist.toArray(), tips, span) || panelPinch
     val facing = dot(normal, toward.toNormalized())
     val inFront = dot(palm.translation - head.translation, head.forward)
     if (diagnostics) Log.i("Floatdesk", "palm $side open=$open facing=$facing distance=${toward.length} front=$inFront")

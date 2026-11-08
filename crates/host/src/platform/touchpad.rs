@@ -155,7 +155,7 @@ impl VirtualTouchpad {
     }
 
     pub fn update(&mut self, fingers: u8, x: f32, y: f32) -> Result<()> {
-        if !matches!(fingers, 0 | 2 | 3 | 4) || !x.is_finite() || !y.is_finite() {
+        if !matches!(fingers, 0 | 2) || !x.is_finite() || !y.is_finite() {
             return Err(Error::Msg("invalid touchpad frame".into()));
         }
         if fingers != self.fingers {

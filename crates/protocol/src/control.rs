@@ -407,7 +407,7 @@ pub fn decode_packet(bytes: &[u8]) -> Result<ControlPacket, ProtocolError> {
             })
         }
         KIND_TOUCHPAD_STATE => {
-            if p.len() != 13 || !matches!(p[0], 0 | 2 | 3 | 4) {
+            if p.len() != 13 || !matches!(p[0], 0 | 2) {
                 return Err(ProtocolError::Payload(kind));
             }
             let x = f32::from_le_bytes(p[1..5].try_into().unwrap());
@@ -700,7 +700,7 @@ mod pointer_tests {
     }
     #[test]
     fn touchpad_wire_validation() {
-        for fingers in [0, 2, 3, 4] {
+        for fingers in [0, 2] {
             let packet = ControlPacket::TouchpadState {
                 fingers,
                 x: 0.25,

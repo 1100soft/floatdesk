@@ -209,6 +209,8 @@ internal class MonitorDecoder(
     private val sps = AtomicReference<ByteArray?>(null)
     private val pps = AtomicReference<ByteArray?>(null)
     private val awaitingKey = AtomicBoolean(true)
+    @Volatile private var compositor: VideoCompositor? = null
+    private val aim = AtomicReference(VideoAim())
     private var receiveThread: Thread? = null
     private var decodeThread: Thread? = null
 
@@ -222,6 +224,8 @@ internal class MonitorDecoder(
             socket.send(DatagramPacket(byteArrayOf(0), 1, host, 47000))
         }
     }
+
+    fun overlay(value: VideoAim) { aim.set(value); compositor?.overlay(value) }
 
     fun attach(next: Surface) {
         surface.set(next)
@@ -303,13 +307,20 @@ internal class MonitorDecoder(
         var rendered = 0
         var sawKeyframe = false
         val byteDump = dumpFile != null
+        val renderer=if(byteDump) null else runCatching { VideoCompositor(width,height) }
+            .onFailure { Log.e(TAG,"Live video compositor unavailable; using direct decode",it) }.getOrNull()
+        compositor=renderer
+        renderer?.overlay(aim.get())
+        var displayedSurface: Surface?=null
         while (running.get()) {
             val accessUnit = try {
                 pending.poll(30, TimeUnit.MILLISECONDS)
             } catch (_: InterruptedException) {
                 null
             } ?: continue
-            val target = if (byteDump) null else surface.get()
+            val display=surface.get()
+            if(display !== displayedSurface) { renderer?.output(display); displayedSurface=display }
+            val target = if (byteDump || display==null) null else renderer?.input ?: display
             val parameters = sps.get() to pps.get()
             val surfaceReady = byteDump || target != null
             if (surfaceReady && parameters.first != null && parameters.second != null &&
@@ -337,6 +348,8 @@ internal class MonitorDecoder(
         }
         codec?.stop()
         codec?.release()
+        compositor=null
+        renderer?.close()
     }
 
     private fun startCodec(target: Surface?, sps: ByteArray, pps: ByteArray): MediaCodec? {

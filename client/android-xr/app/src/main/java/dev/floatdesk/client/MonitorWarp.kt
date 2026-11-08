@@ -21,6 +21,7 @@ import java.nio.FloatBuffer
 import java.nio.IntBuffer
 
 /** Keep Compose's flat surface/handles; give curved video an independently owned native canvas. */
+@OptIn(androidx.xr.scenecore.ExperimentalSurfaceEntityPixelDimensionsApi::class)
 internal class MonitorWarp : AutoCloseable {
     var mesh: MonitorMesh? = null
         private set
@@ -79,6 +80,7 @@ internal class MonitorWarp : AutoCloseable {
         val target = session.scene.getEntitiesOfType(SurfaceEntity::class.java)
             .firstOrNull { it.getSurface() === inputSurface }
             ?: error("Could not find monitor input entity")
+        target.setSurfacePixelDimensions(androidx.xr.runtime.math.IntSize2d(placement.pixelWidth,placement.pixelHeight))
         target.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE
         input = target
         live = target
@@ -189,6 +191,7 @@ internal class MonitorWarp : AutoCloseable {
                 shape = shape, pose = original.getPose(), parent = original.parent,
                 superSampling = SurfaceEntity.SuperSampling.NONE).also {
                 it.setScale(original.getScale())
+                it.setSurfacePixelDimensions(androidx.xr.runtime.math.IntSize2d(placement.pixelWidth,placement.pixelHeight))
                 it.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE
                 live = it
             } else live!!

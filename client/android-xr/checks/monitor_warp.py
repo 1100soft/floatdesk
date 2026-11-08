@@ -8,7 +8,7 @@ import tempfile
 folder = Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client'
 mesh = (folder/'MonitorMesh.kt').read_text().split('\n', 1)[1]
 warp = (folder/'MonitorWarp.kt').read_text()
-warp = warp[warp.index('internal class MonitorWarp'):].replace('@SuppressLint("RestrictedApi")', '')
+warp = warp[warp.index('internal class MonitorWarp'):].replace('@SuppressLint("RestrictedApi")', '').replace('androidx.xr.runtime.math.IntSize2d','IntSize2d')
 stubs = '''
 internal class Texture { fun close() {}; companion object { suspend fun create(session: Session,path: java.nio.file.Path)=Texture() } }
 internal class Surface
@@ -19,6 +19,7 @@ internal data class Quaternion(val x: Float=0f,val y: Float=0f,val z: Float=0f,v
 internal data class Pose(val translation: Vector3 = Vector3(0f,0f,0f),val rotation: Quaternion=Quaternion())
 internal enum class Space { PARENT, ACTIVITY }
 internal object Log { fun i(tag: String,message: String) {} }
+internal data class IntSize2d(val width: Int,val height: Int)
 internal data class FloatSize2d(val width: Float, val height: Float)
 internal data class WorkspacePose(val position: FloatArray=floatArrayOf(.1f,0f,-1f),val rotation: FloatArray=floatArrayOf(0f,0f,0f,1f))
 internal data class MonitorPlacement(val physicalWidthM: Float, val physicalHeightM: Float,val pose: WorkspacePose=WorkspacePose(),val pixelWidth: Int=2560,val pixelHeight: Int=1600)
@@ -66,6 +67,8 @@ internal class Scene {
     fun getEntitiesOfType(type: Class<SurfaceEntity>) = entities.toList()
 }
 internal class SurfaceEntity(var shape: Shape): Entity() {
+    var pixelDimensions=IntSize2d(0,0)
+    fun setSurfacePixelDimensions(value: IntSize2d) { pixelDimensions=value }
     private val surface = Surface()
     fun getSurface() = surface
     var primaryAlphaMaskTexture: Texture? = null

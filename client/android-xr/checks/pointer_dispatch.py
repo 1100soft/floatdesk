@@ -108,15 +108,15 @@ fun main() {
         receiver.soTimeout=3000
         val sender=Sender(receiver.localPort)
         try {
-            sender.touchpad(3,.6f,.5f)
-            repeat(1000) { sender.touchpad(3,.6f,.6f) }
+            sender.touchpad(2,.6f,.5f)
+            repeat(1000) { sender.touchpad(2,.6f,.6f) }
             sender.touchpad(0,.6f,.6f)
             sender.outgoing.gate.countDown()
             repeat(4) { n ->
                 val packet=java.net.DatagramPacket(ByteArray(256),256)
                 receiver.receive(packet)
                 check(packet.data[5].toInt()==10)
-                check(packet.data[16].toInt()==if(n==0) 3 else 0)
+                check(packet.data[16].toInt()==if(n==0) 2 else 0)
             }
         } finally { sender.running=false; sender.control.close(); sender.outgoing.pool.shutdownNow() }
     }

@@ -56,7 +56,7 @@ internal object Protocol {
     }
 
     fun touchpad(fingers: Int,x: Float,y: Float,sequence: Int): ByteArray {
-        require(fingers in listOf(0,2,3,4) && x.isFinite() && y.isFinite() && x in 0f..1f && y in 0f..1f)
+        require(fingers in listOf(0,2) && x.isFinite() && y.isFinite() && x in 0f..1f && y in 0f..1f)
         val payload=ByteBuffer.allocate(13).order(ByteOrder.LITTLE_ENDIAN)
         payload.put(fingers.toByte()).putFloat(x).putFloat(y).putInt(sequence)
         return frame(KIND_TOUCHPAD_STATE,payload.array())

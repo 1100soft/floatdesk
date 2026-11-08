@@ -21,6 +21,7 @@ private class TestState<T>(var value: T) {
 private fun <T> mutableStateOf(value: T) = TestState(value)
 private data class Pose(val position: FloatArray, val rotation: FloatArray = floatArrayOf(0f,0f,0f,1f))
 private data class MonitorPlacement(val pose: Pose, val physicalWidthM: Float = 0.8f, val physicalHeightM: Float = 0.45f)
+private data class WorkspaceFile(val activeLayout: String="Desk",val layouts: Map<String,List<MonitorPlacement>> = emptyMap())
 private data class Vector3(val x: Float, val y: Float, val z: Float)
 private class PixelDensity { fun convertPixelsToMeters(x: Float) = x / 1000f }
 private class InputEvent { enum class Action { DOWN, MOVE, UP, CANCEL }; enum class Source { HANDS, GAZE_AND_GESTURE } }
@@ -31,7 +32,8 @@ guide_source = (Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/cli
 stub += guide_source[guide_source.index('internal data class GrabGuide'):guide_source.index('/** Native meshes')]
 mesh_source = (Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client/MonitorMesh.kt').read_text().split('\n', 1)[1]
 guard_source = (Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client/TrackingGuard.kt').read_text().split('\n',1)[1]
-code = mesh_source + guard_source + stub + section('private const val PALM_WIDTH', '@Composable\nprivate fun PalmControls')
+pointer_source = (Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client/PointerControl.kt').read_text().split('\n',1)[1]
+code = mesh_source + guard_source + stub + pointer_source + section('private const val PALM_WIDTH', '@Composable\nprivate fun PalmControls')
 code += section('private class PalmPoke', '/** Find the parent')
 code += section('private class GrabTracking', 'private class FollowLock(')
 code += section('private fun palmNormal(', 'private fun openViewpoint(')
@@ -70,7 +72,43 @@ fun main() {
         grab.onEvent(event("LEFT",InputEvent.Action.DOWN,localL),screen,PixelDensity(),tracking)
         grab.onEvent(event("RIGHT",InputEvent.Action.DOWN,localR),screen,PixelDensity(),tracking)
     }
+    val control=PointerControl()
+    val gaze=PointerTarget(0,.9f,.9f,floatArrayOf(.3f,-.1f,0f))
+    check(control.choose(false,gaze,emptyMap(),false).mode == PointerMode.OFF)
+    check(control.choose(true,gaze,emptyMap(),false).target === gaze)
+    control.hover(0,"LEFT",l,l,.8f,.45f)
+    val one=control.hands(setOf("LEFT","RIGHT"))
+    check(control.choose(true,gaze,one,false).mode == PointerMode.HAND)
+    check(control.choose(true,gaze,one,false).target!!.u != gaze.u)
+    control.hover(0,"RIGHT",r,r,.8f,.45f)
+    val two=control.hands(setOf("LEFT","RIGHT"))
+    check(control.choose(true,gaze,two,false) == PointerChoice(PointerMode.PREVIEW))
+    check(control.choose(true,gaze,one,true) == PointerChoice(PointerMode.GRAB))
+    check(control.choose(true,gaze,one,false,10).target == null)
+    check(control.choose(true,gaze,one,false,200).mode == PointerMode.HAND)
+    control.hover(0,"LEFT",null,null,.8f,.45f,10)
+    check(control.hands(setOf("LEFT","RIGHT"),50).size == 2)
+    check(control.hands(setOf("LEFT","RIGHT"),100).size == 1)
+    check(control.hands(setOf("RIGHT"),100).size == 1)
+    control.hover(1,"RIGHT",r,r,.8f,.45f)
+    control.hover(0,"RIGHT",null,null,.8f,.45f)
+    check(control.hands(setOf("RIGHT")).getValue("RIGHT").monitor == 1)
+    control.hover(1,"RIGHT",floatArrayOf(Float.NaN,0f,0f),floatArrayOf(Float.NaN,0f,0f),.8f,.45f)
+    check(control.hands(setOf("RIGHT")).isEmpty())
+    check(control.choose(true,null,emptyMap(),false).target == null)
+    control.hover(0,"LEFT",l,l,.8f,.45f,200)
+    check(control.hands(emptySet(),220).size == 1)
+    check(control.hands(emptySet(),300).isEmpty())
+    val rayScreen=MonitorPlacement(Pose(floatArrayOf(0f,0f,-1f)))
+    val rayWorkspace=WorkspaceFile(layouts=mapOf("Desk" to listOf(rayScreen)))
+    val gazeCenter=gazePointerTarget(floatArrayOf(0f,0f,0f),floatArrayOf(0f,0f,-1f),rayWorkspace,emptyMap())!!
+    check(kotlin.math.abs(gazeCenter.u-.5f)<.00001f && kotlin.math.abs(gazeCenter.v-.5f)<.00001f)
+    check(gazePointerTarget(floatArrayOf(0f,0f,0f),floatArrayOf(1f,0f,-1f),rayWorkspace,emptyMap()) == null)
+    val preview=previewGrabGuide(initial,l,r,tracking,null)!!
+    near(preview.pinches[0],startL); near(preview.pinches[1],startR)
     val grab = TwoHandState(); lock(grab); check(grab.engaged)
+    for(i in preview.corners.indices) near(preview.corners[i],grab.guide!!.corners[i])
+    check(previewGrabGuide(initial,l,l,tracking,null) == null)
     val locked = grab.advance(tracking,initial)!!
     near(locked.pose.position,initial.pose.position)
     near(point(locked,l),point(initial,l)); near(point(locked,r),point(initial,r))
@@ -320,9 +358,12 @@ fun main() {
     check(poke.update(scaledPanel,floatArrayOf(-0.3f,0.1f,0.2f)) == null)
     check(poke.update(scaledPanel,floatArrayOf(-0.3f,0.1f,-0.1f)) == PalmAction.FOLLOW)
     poke.clear()
-    check(poke.update(panel,floatArrayOf(0f,-.074f,.04f)) == null)
-    check(poke.update(panel,floatArrayOf(0f,-.074f,-.02f)) == PalmAction.WARP)
-    println("Passed: equal actual neighboring-ray angles and angular aspect, video/PNG orientation separation, planar-input curved grabbing and regrab, action labels, spherical radius/inverse projection, curved grab/guide geometry, spherical palm button, virtual-copy gain, 3D endpoints, depth, close-contact and close-hand rejection, DEFAULT release, physical release without UP, tracking-loss cancellation, rearm, discontinuity rejection, miniature wireframe and endpoint alignment, guide cleanup, view-ray visibility offset, rotation, palm and fist")
+    check(poke.update(panel,floatArrayOf(-.06f,-.074f,.04f)) == null)
+    check(poke.update(panel,floatArrayOf(-.06f,-.074f,-.02f)) == PalmAction.WARP)
+    poke.clear()
+    check(poke.update(panel,floatArrayOf(.06f,-.074f,.04f)) == null)
+    check(poke.update(panel,floatArrayOf(.06f,-.074f,-.02f)) == PalmAction.MOUSE)
+    println("Passed: mouse priority/off/tracking loss, gaze hit bounds, observational grab preview, mouse palm toggle, equal actual neighboring-ray angles and angular aspect, video/PNG orientation separation, planar-input curved grabbing and regrab, action labels, spherical radius/inverse projection, curved grab/guide geometry, spherical palm button, virtual-copy gain, 3D endpoints, depth, close-contact and close-hand rejection, DEFAULT release, physical release without UP, tracking-loss cancellation, rearm, discontinuity rejection, miniature wireframe and endpoint alignment, guide cleanup, view-ray visibility offset, rotation, palm and fist")
 }
 '''
 lib = Path(sys.argv[1])

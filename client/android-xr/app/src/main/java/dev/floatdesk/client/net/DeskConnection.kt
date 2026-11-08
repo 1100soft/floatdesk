@@ -2,6 +2,9 @@ package dev.floatdesk.client.net
 
 import android.content.Context
 import android.net.wifi.WifiManager
+import android.os.HandlerThread
+import android.util.Log
+import java.util.concurrent.atomic.AtomicReference
 import android.os.Handler
 import android.os.Looper
 import android.view.Surface
@@ -27,6 +30,11 @@ internal class DeskConnection(
     private val decoders = HashMap<Int, MonitorDecoder>()
     private val pendingCursors = ConcurrentHashMap<Int, CursorView>()
     private val cursorSeq = AtomicInteger()
+    private val pointerSeq = AtomicInteger()
+    private val pendingPointer = AtomicReference<ByteArray?>(null)
+    private val pointerFlushPosted = AtomicBoolean(false)
+    @Volatile private var outgoing: Handler? = null
+    private var outgoingThread: HandlerThread? = null
     private val cursorFlushPosted = AtomicBoolean(false)
     private var lastGapAsk = 0L
     private var control: DatagramSocket? = null
@@ -63,6 +71,7 @@ internal class DeskConnection(
             acquire()
         }
         running = true
+        outgoingThread = HandlerThread("floatdesk-input").also { it.start(); outgoing = Handler(it.looper) }
         status.value = "Looking for your computer…"
         thread = Thread({ controlLoop() }, "floatdesk-control").also { it.start() }
     }
@@ -71,6 +80,12 @@ internal class DeskConnection(
         running = false
         control?.close()
         beacon?.close()
+        pendingPointer.set(null)
+        outgoing = null
+        outgoingThread?.quitSafely()
+        outgoingThread?.join(500)
+        outgoingThread = null
+        pointerFlushPosted.set(false)
         decoders.values.forEach { it.stop() }
         decoders.clear()
         videos.forEach { runCatching { it.close() } }
@@ -210,9 +225,34 @@ internal class DeskConnection(
         send(Protocol.keyframeRequest(0xff))
     }
 
+    fun movePointer(monitor: Int,x: Float,y: Float) {
+        if (monitors.value.none { it.index == monitor }) return
+        pendingPointer.set(Protocol.pointerMove(monitor,x,y,pointerSeq.incrementAndGet()))
+        schedulePointerFlush()
+    }
+
+    private fun schedulePointerFlush() {
+        val handler = outgoing ?: return
+        if (pointerFlushPosted.compareAndSet(false,true)) handler.post { flushPointer() }
+    }
+
+    private fun flushPointer() {
+        while (running) {
+            val packet = pendingPointer.getAndSet(null) ?: break
+            send(packet)
+        }
+        pointerFlushPosted.set(false)
+        if (pendingPointer.get() != null) schedulePointerFlush()
+    }
+
     private fun send(bytes: ByteArray) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            outgoing?.post { send(bytes) }
+            return
+        }
         val socket = control ?: return
         val address = pendingRemote ?: return
         runCatching { socket.send(DatagramPacket(bytes, bytes.size, address)) }
+            .onFailure { if (running) Log.w("Floatdesk","Control datagram send failed",it) }
     }
 }

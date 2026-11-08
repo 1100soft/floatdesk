@@ -66,13 +66,15 @@ internal class MonitorWarp : AutoCloseable {
         old?.close()
     }
 
+    fun setPointerDimmed(dimmed: Boolean) { curvedInput?.setPointerDimmed(dimmed) }
+
     private fun applyShape(target: SurfaceEntity, shape: SurfaceEntity.Shape) {
         target.shape = shape
         appliedShape = shape
     }
 
     @SuppressLint("RestrictedApi")
-    fun attach(session: Session, inputSurface: Surface, placement: MonitorPlacement, density: PixelDensity? = null, onEvent: ((SpatialInputEvent) -> Unit)? = null): Surface {
+    fun attach(session: Session, inputSurface: Surface, placement: MonitorPlacement, density: PixelDensity? = null, onEvent: ((SpatialInputEvent) -> Unit)? = null, onHover: ((String, FloatArray?, FloatArray?, Float, Float) -> Unit)? = null): Surface {
         close()
         val target = session.scene.getEntitiesOfType(SurfaceEntity::class.java)
             .firstOrNull { it.getSurface() === inputSurface }
@@ -85,6 +87,18 @@ internal class MonitorWarp : AutoCloseable {
             val listener: (InputEvent) -> Unit = listener@ { event ->
                 val info = event.hitInfoList.firstOrNull()
                 val side = event.pointerType.toString()
+                if (event.action == InputEvent.Action.HOVER_ENTER || event.action == InputEvent.Action.HOVER_MOVE || event.action == InputEvent.Action.HOVER_EXIT) {
+                    if (event.source == InputEvent.Source.HANDS) {
+                        val expected = if (mesh != null) curvedInput?.entity else target
+                        if (event.action == InputEvent.Action.HOVER_EXIT && info != null && info.inputEntity !== expected) return@listener
+                        val hoverHit = info?.hitPosition
+                        val point = if (event.action != InputEvent.Action.HOVER_EXIT && info?.inputEntity === expected && hoverHit != null)
+                            eventMatrixHit(floatArrayOf(hoverHit.x,hoverHit.y,hoverHit.z),info.transform.data,flatWidth,flatHeight,mesh,target.getScale(Space.ACTIVITY)) else null
+                        val flat = point?.let { mesh?.unproject(it) ?: it }
+                        onHover?.invoke(side,point,flat,flatWidth,flatHeight)
+                    }
+                    return@listener
+                }
                 if (event.action == InputEvent.Action.DOWN) {
                     val expected = if (mesh != null) curvedInput?.entity else target
                     if (info?.inputEntity !== expected || expected == null) return@listener

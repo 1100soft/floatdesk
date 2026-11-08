@@ -36,6 +36,17 @@ impl X11Link {
         })
     }
 
+    pub fn move_pointer(&self, x: i32, y: i32) -> Result<()> {
+        let x = i16::try_from(x).map_err(|_| Error::Msg("pointer x outside X11 range".into()))?;
+        let y = i16::try_from(y).map_err(|_| Error::Msg("pointer y outside X11 range".into()))?;
+        self.conn
+            .warp_pointer(x11rb::NONE, self.root, 0, 0, 0, 0, x, y)
+            .map_err(Error::x11)?
+            .check()
+            .map_err(Error::x11)?;
+        self.conn.flush().map_err(Error::x11)
+    }
+
     pub fn roundtrip(&self) -> Result<()> {
         self.conn
             .get_input_focus()

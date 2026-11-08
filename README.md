@@ -54,6 +54,10 @@ Pinch two well-separated points on a monitor to manipulate it in 3D. Hand transl
 
 Use **Enable spherical / Disable spherical** on the palm panel to curve each monitor horizontally and vertically onto a sphere centered between your eyes. The screen center stays in place and an equal-edge angular mesh keeps neighboring grid rays uniformly spaced in both axes as you move your head. The setting is saved with the workspace. During a grab, the curved shape freezes with the image to keep the contact points rigid; it refits to your viewpoint on release.
 
+Use **Enable mouse / Disable mouse** on the palm panel for direct pointer movement. With no hand ray on a monitor, valid eye gaze aims the mouse. One hand ray takes priority and replaces the bright system reticle with a small faint marker. Two hand rays stop mouse movement and preview the miniature grab guides before pinching; an actual grab still uses the confirmed two-point controller. Previewing does not move the monitor. The toggle is saved and defaults off. It controls movement only, without sending clicks.
+
+Grant eye-tracking permission when enabling mouse control. Keep Android XR's aiming method on **Use hand aiming only**: the app reads gaze separately while native hand hover remains available. If eye tracking is denied or unavailable, hand pointing still works. Missing gaze holds the cursor, and loss of hand tracking removes stale hand targets. There is no head-direction fallback. Android XR controls the ray beam itself; the app customizes its contact marker.
+
 What changed after the first LAN proof of concept is recorded in [CHANGES.md](CHANGES.md). Regression checks and the limits of those checks are in [the Android checks README](client/android-xr/checks/README.md).
 
 Plasma does not treat a RandR monitor with no physical output as a desktop, so a virtual `Floatdesk-N` region stays empty. Stream the laptop panel instead:

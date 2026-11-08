@@ -25,6 +25,7 @@ internal object Protocol {
     const val KIND_KEYFRAME = 4
     const val KIND_GOODBYE = 6
     const val KIND_BEACON = 7
+    const val KIND_POINTER_MOVE = 8
     private const val CURSOR_FIXED = 38
 
     fun clientHello(name: String, videoPort: Int): ByteArray {
@@ -37,6 +38,13 @@ internal object Protocol {
     }
 
     fun keyframeRequest(monitor: Int): ByteArray = frame(KIND_KEYFRAME, byteArrayOf(monitor.toByte()))
+
+    fun pointerMove(monitor: Int, x: Float, y: Float, sequence: Int): ByteArray {
+        require(x.isFinite() && y.isFinite() && x in 0f..1f && y in 0f..1f)
+        val payload = ByteBuffer.allocate(13).order(ByteOrder.LITTLE_ENDIAN)
+        payload.put(monitor.toByte()).putFloat(x).putFloat(y).putInt(sequence)
+        return frame(KIND_POINTER_MOVE,payload.array())
+    }
 
     fun goodbye(): ByteArray = frame(KIND_GOODBYE, ByteArray(0))
 

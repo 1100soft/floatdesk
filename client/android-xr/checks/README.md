@@ -55,3 +55,21 @@ The equal-angle warp checks measure chord lengths (equivalently central angles a
 ### Confirmed spherical rendering and input
 
 On 8 November 2026 the user confirmed that the dedicated native curved video surface matches the native frozen image on grab and that outer-edge two-hand grabs work. Keep the curved video and interaction patch on the same mesh and transform. Flat mode continues to use the original Compose-owned surface and its recorded coordinate conversion.
+
+### Direct pointer control
+
+`gestures.py` additionally checks off/gaze/one-hand/two-hand/grab arbitration, hover handoff and post-grab protection, loss of hand tracking, gaze bounds, preview endpoints matching an actual grab and both bottom-row palm buttons. `monitor_warp.py` verifies that hover updates are observational and do not enter the pinch event sequence.
+
+```sh
+python3 checks/pointer_protocol.py /path/to/gradle/lib
+```
+
+This checks the production Android encoder against the Rust pointer packet fixture, including unsigned sequence values and rejection of non-finite/out-of-bounds targets. Rust tests check that only the active peer can move the pointer, sequence wrap works and monitor offsets map correctly.
+
+On the headset, enable mouse control and grant eye permission with hand-only system aiming. Check gaze-only motion, immediate one-hand takeover, a faint contact marker, cursor freeze with both hands, a preview without a pinch, and actual grab/release in flat and spherical modes. Also verify toggle-off, looking away, tracking loss, permission denial and return to the standard handles.
+
+```sh
+python3 checks/pointer_dispatch.py /path/to/gradle/lib
+```
+
+This extracts the production outgoing methods and uses real loopback UDP with a socket that rejects UI-thread sends. It verifies background pointer/keyframe delivery, coalescing a burst into the latest target and a bounded pending queue. The Android runtime itself still requires device testing.

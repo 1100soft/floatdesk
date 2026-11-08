@@ -36,6 +36,7 @@ internal class GrabGuideRenderer private constructor(
     private class Group(val root: Entity, val parts: List<GltfModelEntity>)
     private val groups = mutableListOf<Group>()
     private var closed = false
+    private var pointerPoint: GltfModelEntity? = null
 
     private fun newGroup(edgeCount: Int): Group {
         val root = Entity.create(session, name = "Floatdesk grab guide")
@@ -68,6 +69,15 @@ internal class GrabGuideRenderer private constructor(
         for (index in guides.size until groups.size) groups[index].root.setEnabled(false)
     }
 
+    fun updatePointer(parent: Entity, position: FloatArray?, eye: FloatArray?, unitsPerMeter: Float) {
+        if (closed) return
+        if (position == null) { pointerPoint?.setEnabled(false); return }
+        val entity = pointerPoint ?: GltfModelEntity.create(session,models[2]).also { pointerPoint=it; it.setAlpha(.2f) }
+        entity.parent=parent
+        entity.setEnabled(true)
+        point(entity,visibleGrabContact(position,eye,unitsPerMeter),.003f*unitsPerMeter)
+    }
+
     private fun vector(value: FloatArray) = Vector3(value[0], value[1], value[2])
 
     private fun beam(entity: GltfModelEntity, from: FloatArray, to: FloatArray, width: Float) {
@@ -93,6 +103,7 @@ internal class GrabGuideRenderer private constructor(
             group.parts.forEach { it.parent = null }
             group.root.parent = null
         }
+        pointerPoint?.parent = null; pointerPoint = null
         groups.clear()
         models.forEach { it.close() }
     }

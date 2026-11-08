@@ -36,6 +36,7 @@ struct ClientTarget {
     control: SocketAddr,
     video_port: u16,
     generation: u64,
+    pointer_sequence: Option<u32>,
 }
 
 struct CursorSprite {
@@ -102,6 +103,7 @@ pub fn trial() -> Result<()> {
 }
 
 fn run(monitors: &[MonitorRect], opts: &ServeOpts) -> Result<()> {
+    let pointer = crate::platform::x11::X11Link::open()?;
     let socket = UdpSocket::bind(opts.listen)?;
     socket.set_nonblocking(true)?;
     let session_id = monotonic_ns();
@@ -206,9 +208,15 @@ fn run(monitors: &[MonitorRect], opts: &ServeOpts) -> Result<()> {
         }
         loop {
             match socket.recv_from(&mut scratch) {
-                Ok((size, from)) => {
-                    handle_datagram(&shared, &socket, &hellos, &scratch[..size], from)
-                }
+                Ok((size, from)) => handle_datagram(
+                    &shared,
+                    &socket,
+                    &hellos,
+                    &scratch[..size],
+                    from,
+                    monitors,
+                    &pointer,
+                ),
                 Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(err) => return Err(err.into()),
             }
@@ -419,6 +427,8 @@ fn handle_datagram(
     hellos: &[MonitorHello],
     bytes: &[u8],
     from: SocketAddr,
+    monitors: &[MonitorRect],
+    pointer: &crate::platform::x11::X11Link,
 ) {
     let packet = match floatdesk_protocol::decode_packet(bytes) {
         Ok(packet) => packet,
@@ -446,10 +456,37 @@ fn handle_datagram(
                 control: from,
                 video_port,
                 generation,
+                pointer_sequence: None,
             });
             drop(client);
             send_hello(shared, socket, hellos);
             send_layout(shared, socket, hellos);
+        }
+        ControlPacket::PointerMove {
+            monitor_index,
+            norm_x,
+            norm_y,
+            sequence,
+        } => {
+            let mut client = shared.client.write().unwrap_or_else(|err| err.into_inner());
+            let first = client
+                .as_ref()
+                .is_some_and(|client| client.pointer_sequence.is_none());
+            if let Some((x, y)) = pointer_position(
+                &mut client,
+                monitors,
+                from,
+                monitor_index,
+                norm_x,
+                norm_y,
+                sequence,
+            ) {
+                match pointer.move_pointer(x, y) {
+                    Ok(()) if first => tracing::info!("remote pointer control active"),
+                    Err(error) => tracing::warn!(%error,"pointer move failed"),
+                    _ => {}
+                }
+            }
         }
         ControlPacket::KeyframeRequest { monitor_index } => {
             if monitor_index == 0xff {
@@ -466,6 +503,36 @@ fn handle_datagram(
         }
         _ => {}
     }
+}
+
+fn pointer_position(
+    client: &mut Option<ClientTarget>,
+    monitors: &[MonitorRect],
+    from: SocketAddr,
+    index: u8,
+    x: f32,
+    y: f32,
+    sequence: u32,
+) -> Option<(i32, i32)> {
+    if !x.is_finite() || !y.is_finite() || !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) {
+        return None;
+    }
+    let client = client.as_mut().filter(|client| client.control == from)?;
+    if client
+        .pointer_sequence
+        .is_some_and(|last| (sequence.wrapping_sub(last) as i32) <= 0)
+    {
+        return None;
+    }
+    let rect = monitors
+        .iter()
+        .find(|rect| rect.index == index && rect.width > 0 && rect.height > 0)?;
+    let point = (
+        rect.x + (x * (rect.width - 1) as f32).round() as i32,
+        rect.y + (y * (rect.height - 1) as f32).round() as i32,
+    );
+    client.pointer_sequence = Some(sequence);
+    Some(point)
 }
 
 fn send_beacon(listen_port: u16) {
@@ -750,4 +817,66 @@ pub fn receive(host: SocketAddr, output: &std::path::Path, seconds: u64) -> Resu
         return Err(Error::Msg("received no video access units".into()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod pointer_tests {
+    use super::*;
+    #[test]
+    fn pointer_requires_active_peer_and_fresh_sequence_and_maps_monitor_bounds() {
+        let peer: SocketAddr = "127.0.0.1:4000".parse().unwrap();
+        let mut client = Some(ClientTarget {
+            control: peer,
+            video_port: 48000,
+            generation: 1,
+            pointer_sequence: None,
+        });
+        let monitors = [MonitorRect {
+            index: 2,
+            x: 2560,
+            y: 100,
+            width: 1920,
+            height: 1080,
+        }];
+        assert_eq!(
+            pointer_position(&mut None, &monitors, peer, 2, 0.0, 0.0, 1),
+            None
+        );
+        assert_eq!(
+            pointer_position(
+                &mut client,
+                &monitors,
+                "127.0.0.1:4001".parse().unwrap(),
+                2,
+                0.0,
+                0.0,
+                1
+            ),
+            None
+        );
+        assert_eq!(
+            pointer_position(&mut client, &monitors, peer, 0, 0.0, 0.0, 1),
+            None
+        );
+        assert_eq!(
+            pointer_position(&mut client, &monitors, peer, 2, f32::NAN, 0.0, 1),
+            None
+        );
+        assert_eq!(
+            pointer_position(&mut client, &monitors, peer, 2, 0.0, 0.0, u32::MAX),
+            Some((2560, 100))
+        );
+        assert_eq!(
+            pointer_position(&mut client, &monitors, peer, 2, 1.0, 1.0, 0),
+            Some((4479, 1179))
+        );
+        assert_eq!(
+            pointer_position(&mut client, &monitors, peer, 2, 0.5, 0.5, 0),
+            None
+        );
+        assert_eq!(
+            pointer_position(&mut client, &monitors, peer, 2, 0.5, 0.5, u32::MAX),
+            None
+        );
+    }
 }

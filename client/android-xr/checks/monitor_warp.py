@@ -52,7 +52,8 @@ internal class PixelDensity { fun convertPixelsToMeters(v: Float) = v/1000f; fun
 internal class SpatialInputEvent(val origin: Vector3,val direction: Vector3,val source: Int=0,val pointerType: String="LEFT",val action: InputEvent.Action=InputEvent.Action.DOWN,val timestamp: Long=0,val hitPosition: Vector3?=null)
 internal class Matrix4(val data: FloatArray) { val inverse get() = this }
 internal class InputEvent(val action: Action,val source: Int,val pointerType: String,val timestamp: Long,val origin: Vector3,val direction: Vector3,val hitInfoList: List<HitInfo>) {
-    enum class Action { DOWN, UP, CANCEL, MOVE }
+    enum class Action { DOWN, UP, CANCEL, MOVE, HOVER_ENTER, HOVER_MOVE, HOVER_EXIT }
+    object Source { const val HANDS = 0 }
     class HitInfo(val inputEntity: Entity,val hitPosition: Vector3?,val transform: Matrix4)
 }
 internal class InteractableComponent(val listener: (InputEvent)->Unit) {
@@ -84,6 +85,7 @@ internal class SurfaceEntity(var shape: Shape): Entity() {
 stubs += """
 internal class CurvedMonitorInput(val mesh: MonitorMesh,val entity: Entity) {
     fun close() { entity.parent=null }
+    fun setPointerDimmed(dimmed: Boolean) {}
     companion object {
         var last: CurvedMonitorInput? = null
         suspend fun create(session: Session,parent: Entity,mesh: MonitorMesh,listener: (InputEvent)->Unit): CurvedMonitorInput {
@@ -121,7 +123,8 @@ suspend fun main() {
     check(input.enabled && input.getAlpha() == .8f && input.parent === root)
     session.scene.activitySpace.setPose(Pose(Vector3(.3f,-.5f,1.2f)))
     val events = mutableListOf<SpatialInputEvent>()
-    warp.attach(session,input.getSurface(),screen,PixelDensity()) { events.add(it) }
+    val hovering=mutableListOf<Pair<String,FloatArray?>>()
+    warp.attach(session,input.getSurface(),screen,PixelDensity(),onEvent={ events.add(it) },onHover={ side,point,flat,w,h -> hovering.add(side to flat) })
     val component = input.component!!
     input.setScale(1.785f)
     val ip = input.getPose().translation
@@ -130,6 +133,10 @@ suspend fun main() {
         component.listener(InputEvent(action,0,side,0,Vector3(0f,0f,1f),Vector3(0f,0f,-1f),
             listOf(InputEvent.HitInfo(input,Vector3((ip.x+(if(side=="LEFT") -.2f else .2f))*1.785f,ip.y*1.785f,ip.z*1.785f),matrix))))
     }
+    emit("LEFT",InputEvent.Action.HOVER_ENTER)
+    check(hovering.size == 1 && kotlin.math.abs(hovering.last().second!![0]+.2f)<.00001f && events.isEmpty())
+    emit("LEFT",InputEvent.Action.HOVER_EXIT)
+    check(hovering.last().second == null && events.isEmpty())
     emit("LEFT",InputEvent.Action.DOWN); emit("RIGHT",InputEvent.Action.DOWN)
     emit("LEFT",InputEvent.Action.UP); emit("RIGHT",InputEvent.Action.UP)
     check(events.map { it.pointerType } == listOf("LEFT","RIGHT","LEFT","RIGHT"))

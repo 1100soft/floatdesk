@@ -23,7 +23,15 @@ const NVENC: &[(&str, &str)] = &[
     ("zerolatency", "true"),
     ("bframes", "0"),
 ];
-const VA: &[(&str, &str)] = &[("rate-control", "cbr")];
+const VA: &[(&str, &str)] = &[
+    ("rate-control", "cbr"),
+    ("b-frames", "0"),
+    ("cabac", "false"),
+    ("target-usage", "6"),
+    ("cpb-size", "400"),
+    ("ref-frames", "1"),
+    ("aud", "true"),
+];
 const X264: &[(&str, &str)] = &[
     ("tune", "zerolatency"),
     ("speed-preset", "ultrafast"),
@@ -31,7 +39,10 @@ const X264: &[(&str, &str)] = &[
     ("bframes", "0"),
     ("byte-stream", "true"),
     ("aud", "true"),
-    ("vbv-buf-capacity", "80"),
+    ("vbv-buf-capacity", "60"),
+    ("rc-lookahead", "0"),
+    ("sync-lookahead", "0"),
+    ("sliced-threads", "true"),
     ("threads", "4"),
 ];
 const OPENH264: &[(&str, &str)] = &[
@@ -145,12 +156,12 @@ impl GstEncoder {
     fn start(profile: Profile, config: EncoderConfig) -> Result<Self> {
         let max_bytes = (config.width as u64 * config.height as u64 * 4).saturating_mul(2);
         let description = format!(
-            "appsrc name=src is-live=true format=time do-timestamp=true block=true max-bytes={max_bytes} \
+            "appsrc name=src is-live=true format=time do-timestamp=true block=false max-bytes={max_bytes} \
              ! videoconvert ! video/x-raw,format={} \
              ! {} name=enc \
              ! h264parse config-interval=-1 \
              ! video/x-h264,stream-format=byte-stream,alignment=au \
-             ! appsink name=sink emit-signals=false sync=false max-buffers=3 drop=true",
+             ! appsink name=sink emit-signals=false sync=false max-buffers=1 drop=false",
             profile.format, profile.element
         );
         let pipeline = Pipeline::launch(&description)?;
@@ -164,6 +175,7 @@ impl GstEncoder {
         for (name, value) in profile.props {
             pipeline.set_arg(Element::Encoder, name, value)?;
         }
+        // Bound recovery time even if the client's IDR request is lost.
         let gop = config.fps.max(1).to_string();
         let _ = pipeline.set_arg(Element::Encoder, "key-int-max", &gop);
         let _ = pipeline.set_arg(Element::Encoder, "gop-size", &gop);

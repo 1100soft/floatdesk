@@ -183,6 +183,13 @@ impl X11Capture {
         self.rect.x < area_r && mine_r > area_x && self.rect.y < area_b && mine_b > area_y
     }
 
+    /// The cursor is composited after the grab, so a pointer move has to
+    /// request a frame even when the framebuffer itself is unchanged.
+    pub fn note_cursor(&mut self) {
+        self.dirty = true;
+        self.generation = self.generation.wrapping_add(1);
+    }
+
     fn subtract_damage(&self) {
         if self.damage == 0 {
             return;
@@ -215,9 +222,15 @@ impl CaptureBackend for X11Capture {
         if !self.dirty && !force {
             return Ok(None);
         }
-        let frame = self.grab()?;
+        // Clear the damage region before reading pixels. A change that lands
+        // during the grab then produces a new notification, instead of being
+        // erased with the region we already decided to read.
         self.subtract_damage();
+        let frame = self.grab()?;
         self.dirty = false;
+        if self.damage_ok {
+            self.drain_damage();
+        }
         self.last = Some(Instant::now());
         Ok(Some(frame))
     }

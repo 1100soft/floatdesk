@@ -27,11 +27,18 @@ internal data class MonitorPlacement(
     val preferredRefreshHz: Int,
 )
 
+internal data class PanelPlacement(
+    val pose: Pose = Pose(floatArrayOf(0f, -0.55f, -1.0f)),
+    val widthM: Float = 0.80f,
+    val heightM: Float = 0.48f,
+)
+
 internal data class WorkspaceFile(
     val schemaVersion: Int = 1,
     val activeLayout: String = "Desk",
     var anchorUuid: String? = null,
     val layouts: MutableMap<String, MutableList<MonitorPlacement>> = mutableMapOf(),
+    val control: PanelPlacement = PanelPlacement(),
 )
 
 internal class WorkspaceStore(private val file: File) {
@@ -73,12 +80,31 @@ internal fun deskLayout(monitors: List<Triple<String, Int, Int>>): MutableList<M
     }.toMutableList()
 }
 
-internal fun nudge(placement: MonitorPlacement, dx: Float, dy: Float, dz: Float): MonitorPlacement {
-    val position = placement.pose.position.copyOf()
-    position[0] += dx
-    position[1] += dy
-    position[2] += dz
-    return placement.copy(pose = placement.pose.copy(position = position))
+internal fun WorkspaceFile.monitorPlaced(
+    index: Int,
+    placement: MonitorPlacement,
+    store: WorkspaceStore,
+    persist: Boolean,
+): WorkspaceFile {
+    val current = layouts[activeLayout] ?: return this
+    if (index !in current.indices) return this
+    val updated = current.toMutableList()
+    updated[index] = placement
+    val nextLayouts = layouts.toMutableMap()
+    nextLayouts[activeLayout] = updated
+    val next = copy(layouts = nextLayouts)
+    if (persist) store.save(next)
+    return next
+}
+
+internal fun WorkspaceFile.controlPlaced(
+    panel: PanelPlacement,
+    store: WorkspaceStore,
+    persist: Boolean,
+): WorkspaceFile {
+    val next = copy(control = panel)
+    if (persist) store.save(next)
+    return next
 }
 
 private fun encode(workspace: WorkspaceFile): JSONObject {
@@ -93,6 +119,7 @@ private fun encode(workspace: WorkspaceFile): JSONObject {
         .put("active_layout", workspace.activeLayout)
         .put("anchor_uuid", workspace.anchorUuid)
         .put("layouts", layouts)
+        .put("control", encodePanel(workspace.control))
 }
 
 private fun encodeMonitor(monitor: MonitorPlacement): JSONObject {
@@ -129,6 +156,28 @@ private fun decode(json: JSONObject): WorkspaceFile {
         activeLayout = json.optString("active_layout", "Desk"),
         anchorUuid = json.optString("anchor_uuid").ifEmpty { null },
         layouts = layouts,
+        control = json.optJSONObject("control")?.let { decodePanel(it) } ?: PanelPlacement(),
+    )
+}
+
+private fun encodePanel(panel: PanelPlacement): JSONObject {
+    return JSONObject()
+        .put(
+            "pose_in_workspace",
+            JSONObject()
+                .put("position", JSONArray(panel.pose.position.toList()))
+                .put("rotation", JSONArray(panel.pose.rotation.toList())),
+        )
+        .put("physical_width_m", panel.widthM.toDouble())
+        .put("physical_height_m", panel.heightM.toDouble())
+}
+
+private fun decodePanel(json: JSONObject): PanelPlacement {
+    val pose = json.optJSONObject("pose_in_workspace") ?: JSONObject()
+    return PanelPlacement(
+        pose = Pose(floatArray(pose, "position", 3), floatArray(pose, "rotation", 4)),
+        widthM = json.optDouble("physical_width_m", 0.8).toFloat(),
+        heightM = json.optDouble("physical_height_m", 0.48).toFloat(),
     )
 }
 

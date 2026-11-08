@@ -1,0 +1,108 @@
+package dev.floatdesk.client
+
+import androidx.xr.runtime.Session
+import androidx.xr.runtime.math.Pose
+import androidx.xr.runtime.math.Quaternion
+import androidx.xr.runtime.math.Vector3
+import androidx.xr.scenecore.Entity
+import androidx.xr.scenecore.GltfModel
+import androidx.xr.scenecore.GltfModelEntity
+import java.nio.file.Paths
+
+internal data class GrabGuide(
+    val corners: List<FloatArray>,
+    val contacts: List<FloatArray>,
+    val pinches: List<FloatArray>,
+    val unitsPerMeter: Float,
+    val eye: FloatArray? = null,
+)
+
+/** Lift only the visible decoration, along its view ray, without moving the logical held pixel. */
+internal fun visibleGrabContact(contact: FloatArray, eye: FloatArray?, unitsPerMeter: Float): FloatArray {
+    if (eye == null) return contact
+    val delta = FloatArray(3) { eye[it] - contact[it] }
+    val range = kotlin.math.sqrt(delta.sumOf { (it * it).toDouble() }).toFloat()
+    if (range < 1e-6f) return contact
+    val offset = minOf(0.008f * unitsPerMeter, range * 0.01f)
+    return FloatArray(3) { contact[it] + delta[it] * offset / range }
+}
+
+/** Native meshes without Interactable/Movable components: guides must not capture hand input. */
+internal class GrabGuideRenderer private constructor(
+    private val session: Session,
+    private val models: List<GltfModel>,
+) : AutoCloseable {
+    private class Group(val root: Entity, val parts: List<GltfModelEntity>)
+    private val groups = mutableListOf<Group>()
+    private var closed = false
+
+    private fun newGroup(): Group {
+        val root = Entity.create(session, name = "Floatdesk grab guide")
+        // Four frame edges, two tethers, then matching contact/pinch spheres.
+        val indices = listOf(0, 0, 0, 0, 0, 1, 2, 3, 2, 3)
+        val parts = indices.map { GltfModelEntity.create(session, models[it], parent = root) }
+        return Group(root, parts).also { groups.add(it) }
+    }
+
+    fun update(parent: Entity, guides: List<GrabGuide>) {
+        if (closed) return
+        for ((index, guide) in guides.withIndex()) {
+            val group = groups.getOrNull(index) ?: newGroup()
+            group.root.parent = parent
+            group.root.setEnabled(true)
+            val unit = guide.unitsPerMeter
+            for (edge in 0..3) beam(group.parts[edge], guide.corners[edge], guide.corners[(edge + 1) % 4], 0.0025f * unit)
+            for (hand in 0..1) {
+                val contact = visibleGrabContact(guide.contacts[hand], guide.eye, unit)
+                beam(group.parts[4 + hand], contact, guide.pinches[hand], 0.0015f * unit)
+                point(group.parts[6 + hand], contact, 0.006f * unit)
+                point(group.parts[8 + hand], guide.pinches[hand], 0.004f * unit)
+            }
+        }
+        for (index in guides.size until groups.size) groups[index].root.setEnabled(false)
+    }
+
+    private fun vector(value: FloatArray) = Vector3(value[0], value[1], value[2])
+
+    private fun beam(entity: GltfModelEntity, from: FloatArray, to: FloatArray, width: Float) {
+        val a = vector(from)
+        val b = vector(to)
+        val delta = b - a
+        if (delta.length < 1e-6f) { entity.setEnabled(false); return }
+        entity.setEnabled(true)
+        entity.setPose(Pose((a + b) * 0.5f, Quaternion.fromRotation(Vector3.Right, delta)))
+        // A glTF node's public localScale supports nonuniform scale without restricted entity APIs.
+        entity.nodes.first().localScale = Vector3(delta.length, width, width)
+    }
+
+    private fun point(entity: GltfModelEntity, position: FloatArray, radius: Float) {
+        entity.setPose(Pose(vector(position)))
+        entity.setScale(radius)
+    }
+
+    override fun close() {
+        if (closed) return
+        closed = true
+        groups.forEach { group ->
+            group.parts.forEach { it.parent = null }
+            group.root.parent = null
+        }
+        groups.clear()
+        models.forEach { it.close() }
+    }
+
+    companion object {
+        suspend fun create(session: Session): GrabGuideRenderer {
+            val loaded = mutableListOf<GltfModel>()
+            try {
+                for (asset in listOf("cyan-beam", "amber-beam", "cyan-point", "amber-point")) {
+                    loaded.add(GltfModel.create(session, Paths.get("grab-guides/$asset.glb")))
+                }
+                return GrabGuideRenderer(session, loaded)
+            } catch (failure: Throwable) {
+                loaded.forEach { it.close() }
+                throw failure
+            }
+        }
+    }
+}

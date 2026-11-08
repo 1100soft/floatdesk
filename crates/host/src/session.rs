@@ -1,6 +1,6 @@
 //! Session loop. Each monitor has its own capture thread, encoder, and RTP
-//! stream. Cursor updates travel on the control socket and do not wait for a
-//! video frame. Nothing is encoded until a client hello arrives.
+//! stream. The cursor is polled independently and composited into captured frames.
+//! Nothing is encoded until a client hello arrives.
 
 use crate::core::{
     epoch_ns, monotonic_ns, CaptureBackend, CursorBackend, DisplayBackend, EncodeBackend,
@@ -10,12 +10,12 @@ use crate::error::{Error, Result};
 use crate::media::GstEncoder;
 use crate::platform::x11::{X11Capture, X11Cursor, X11Display};
 use floatdesk_protocol::{
-    allocate_bitrate, cursor_packets, rtp_timestamp, BEACON_PORT, ControlPacket, CursorState,
-    LayoutEntry, MonitorHello, MonitorLoad, RtpH264Packetizer,
+    allocate_bitrate, rtp_timestamp, ControlPacket, LayoutEntry, MonitorHello, MonitorLoad,
+    RtpH264Packetizer, BEACON_PORT,
 };
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -38,6 +38,17 @@ struct ClientTarget {
     generation: u64,
 }
 
+struct CursorSprite {
+    root_x: i32,
+    root_y: i32,
+    hotspot_x: i16,
+    hotspot_y: i16,
+    width: u16,
+    height: u16,
+    /// BGRA, length width * height * 4. Empty until the first shape arrives.
+    pixels: Vec<u8>,
+}
+
 struct Shared {
     stop: AtomicBool,
     client: RwLock<Option<ClientTarget>>,
@@ -46,6 +57,8 @@ struct Shared {
     captured: AtomicU64,
     skipped: AtomicU64,
     bytes: AtomicU64,
+    cursor: Mutex<CursorSprite>,
+    cursor_generation: AtomicU64,
 }
 
 pub fn serve(opts: ServeOpts) -> Result<()> {
@@ -124,6 +137,16 @@ fn run(monitors: &[MonitorRect], opts: &ServeOpts) -> Result<()> {
         captured: AtomicU64::new(0),
         skipped: AtomicU64::new(0),
         bytes: AtomicU64::new(0),
+        cursor: Mutex::new(CursorSprite {
+            root_x: 0,
+            root_y: 0,
+            hotspot_x: 0,
+            hotspot_y: 0,
+            width: 0,
+            height: 0,
+            pixels: Vec::new(),
+        }),
+        cursor_generation: AtomicU64::new(0),
     });
     let stop_flag = Arc::clone(&shared);
     let _ = ctrlc::set_handler(move || {
@@ -146,8 +169,10 @@ fn run(monitors: &[MonitorRect], opts: &ServeOpts) -> Result<()> {
     }
 
     tracing::info!(listen = %opts.listen, "waiting for a client hello");
-    let mut cursor = X11Cursor::open()?;
-    let mut last_cursor = (i32::MIN, i32::MIN, u64::MAX);
+    let cursor_shared = Arc::clone(&shared);
+    threads.push(thread::spawn(move || {
+        cursor_loop(cursor_shared);
+    }));
     let mut last_hello = Instant::now() - Duration::from_secs(2);
     let mut last_stats = Instant::now();
     let started = Instant::now();
@@ -172,13 +197,6 @@ fn run(monitors: &[MonitorRect], opts: &ServeOpts) -> Result<()> {
             send_hello(&shared, &socket, &hellos);
             send_beacon(opts.listen.port());
             last_hello = Instant::now();
-        }
-        if let Ok(sample) = cursor.poll() {
-            let moved = (sample.root_x, sample.root_y, sample.serial) != last_cursor;
-            if moved {
-                last_cursor = (sample.root_x, sample.root_y, sample.serial);
-                send_cursor(&shared, &socket, monitors, &sample);
-            }
         }
         if last_stats.elapsed() >= Duration::from_secs(2) {
             tracing::info!(
@@ -221,6 +239,7 @@ fn monitor_thread(
     let mut packetizer = RtpH264Packetizer::new(ssrc);
     let interval = Duration::from_secs_f64(1.0 / f64::from(fps));
     let mut seen_generation = 0u64;
+    let mut seen_cursor = 0u64;
     while !shared.stop.load(Ordering::Relaxed) {
         let target = shared
             .client
@@ -244,12 +263,28 @@ fn monitor_thread(
         if force {
             encoder.request_keyframe();
         }
-        let Some(frame) = capture.poll(interval, force)? else {
+        // The pointer is drawn into the frame, and XDamage does not fire when
+        // only the cursor sprite moves. A cursor change has to schedule a frame
+        // or the pointer freezes until the desktop repaints.
+        let cursor_generation = shared.cursor_generation.load(Ordering::Relaxed);
+        if cursor_generation != seen_cursor {
+            seen_cursor = cursor_generation;
+            capture.note_cursor();
+        }
+        let Some(mut frame) = capture.poll(interval, force)? else {
             shared.skipped.fetch_add(1, Ordering::Relaxed);
             thread::sleep(Duration::from_millis(2));
             continue;
         };
-        encoder.submit(&frame)?;
+        if let Ok(cursor) = shared.cursor.lock() {
+            paint_cursor(&mut frame, rect.x, rect.y, &cursor);
+        }
+        if let Err(err) = encoder.submit(&frame) {
+            // The encoder is still busy with the previous frame. Dropping this
+            // one keeps the capture thread from freezing the stream.
+            tracing::debug!("skipped a frame the encoder could not take: {err}");
+            continue;
+        }
         shared.captured.fetch_add(1, Ordering::Relaxed);
         tracing::trace!(
             generation = frame.damage_generation,
@@ -359,7 +394,10 @@ fn host_name() -> String {
     if rc != 0 {
         return "floatdesk".into();
     }
-    let end = buffer.iter().position(|byte| *byte == 0).unwrap_or(buffer.len());
+    let end = buffer
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(buffer.len());
     String::from_utf8_lossy(&buffer[..end]).into_owned()
 }
 
@@ -444,67 +482,94 @@ fn send_layout(shared: &Shared, socket: &UdpSocket, hellos: &[MonitorHello]) {
     let _ = socket.send_to(&packet.encode(), client.control);
 }
 
-fn send_cursor(
-    shared: &Shared,
-    socket: &UdpSocket,
-    monitors: &[MonitorRect],
-    sample: &crate::core::CursorSample,
-) {
-    let Some(client) = shared
-        .client
-        .read()
-        .unwrap_or_else(|err| err.into_inner())
-        .as_ref()
-        .cloned()
-    else {
-        return;
-    };
-    let hit = monitors
-        .iter()
-        .find(|monitor| monitor.contains(sample.root_x, sample.root_y));
-    let (index, visible, norm_x, norm_y) = match hit {
-        Some(monitor) => (
-            monitor.index,
-            true,
-            (sample.root_x - monitor.x) as f32 / monitor.width as f32,
-            (sample.root_y - monitor.y) as f32 / monitor.height as f32,
-        ),
-        None => (0, false, 0.0, 0.0),
-    };
-    let pixels = if sample.width > 0
-        && sample.height > 0
-        && sample.width <= 256
-        && sample.height <= 256
-        && sample.argb.len() == sample.width as usize * sample.height as usize
-    {
-        argb_to_bgra(&sample.argb)
-    } else {
-        Vec::new()
-    };
-    let state = CursorState {
-        monitor_index: index,
-        visible,
-        hotspot_x: sample.hotspot_x,
-        hotspot_y: sample.hotspot_y,
-        norm_x,
-        norm_y,
-        shape_id: sample.serial,
-        timestamp_ns: monotonic_ns(),
-        bitmap_w: sample.width,
-        bitmap_h: sample.height,
-        frag_index: 0,
-        frag_count: 0,
-        pixels,
-    };
-    let packets = match cursor_packets(&state) {
-        Ok(packets) => packets,
+fn cursor_loop(shared: Arc<Shared>) {
+    let mut cursor = match X11Cursor::open() {
+        Ok(cursor) => cursor,
         Err(err) => {
-            tracing::debug!("cursor packet: {err}");
+            tracing::error!("cursor: {err}");
             return;
         }
     };
-    for packet in packets {
-        let _ = socket.send_to(&packet.encode(), client.control);
+    while !shared.stop.load(Ordering::Relaxed) {
+        match cursor.poll() {
+            Ok(sample) => {
+                let changed = if let Ok(mut slot) = shared.cursor.lock() {
+                    let moved = slot.root_x != sample.root_x || slot.root_y != sample.root_y;
+                    let reshaped = !sample.argb.is_empty();
+                    slot.root_x = sample.root_x;
+                    slot.root_y = sample.root_y;
+                    if reshaped {
+                        slot.hotspot_x = sample.hotspot_x;
+                        slot.hotspot_y = sample.hotspot_y;
+                        slot.width = sample.width;
+                        slot.height = sample.height;
+                        slot.pixels = argb_to_bgra(&sample.argb);
+                    }
+                    moved || reshaped
+                } else {
+                    false
+                };
+                if changed {
+                    shared.cursor_generation.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            Err(err) => tracing::debug!("cursor poll: {err}"),
+        }
+        thread::sleep(Duration::from_millis(2));
+    }
+}
+
+fn paint_cursor(
+    frame: &mut crate::core::CapturedFrame,
+    origin_x: i32,
+    origin_y: i32,
+    cursor: &CursorSprite,
+) {
+    let width = cursor.width as i32;
+    let height = cursor.height as i32;
+    if width <= 0 || height <= 0 {
+        return;
+    }
+    let expected = cursor.width as usize * cursor.height as usize * 4;
+    if cursor.pixels.len() < expected {
+        return;
+    }
+    let left = cursor.root_x - i32::from(cursor.hotspot_x) - origin_x;
+    let top = cursor.root_y - i32::from(cursor.hotspot_y) - origin_y;
+    let frame_w = frame.width as i32;
+    let frame_h = frame.height as i32;
+    let stride = frame.stride as usize;
+    for row in 0..height {
+        let dst_y = top + row;
+        if dst_y < 0 || dst_y >= frame_h {
+            continue;
+        }
+        for col in 0..width {
+            let dst_x = left + col;
+            if dst_x < 0 || dst_x >= frame_w {
+                continue;
+            }
+            let src = ((row as usize * cursor.width as usize) + col as usize) * 4;
+            let alpha = cursor.pixels[src + 3] as u32;
+            if alpha == 0 {
+                continue;
+            }
+            let dst = dst_y as usize * stride + dst_x as usize * 4;
+            if dst + 2 >= frame.bgra.len() {
+                continue;
+            }
+            if alpha == 255 {
+                frame.bgra[dst] = cursor.pixels[src];
+                frame.bgra[dst + 1] = cursor.pixels[src + 1];
+                frame.bgra[dst + 2] = cursor.pixels[src + 2];
+            } else {
+                for channel in 0..3 {
+                    let blended = cursor.pixels[src + channel] as u32 * alpha
+                        + frame.bgra[dst + channel] as u32 * (255 - alpha);
+                    frame.bgra[dst + channel] = (blended / 255) as u8;
+                }
+            }
+        }
     }
 }
 

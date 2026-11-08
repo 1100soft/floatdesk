@@ -20,13 +20,6 @@ pub struct MonitorRect {
 }
 
 impl MonitorRect {
-    pub fn contains(&self, x: i32, y: i32) -> bool {
-        x >= self.x
-            && y >= self.y
-            && x < self.x + self.width as i32
-            && y < self.y + self.height as i32
-    }
-
     pub fn name(&self) -> String {
         format!("Floatdesk-{}", self.index + 1)
     }
@@ -53,7 +46,6 @@ pub struct CursorSample {
     pub root_y: i32,
     pub hotspot_x: i16,
     pub hotspot_y: i16,
-    pub serial: u64,
     pub width: u16,
     pub height: u16,
     /// Host-endian 0xAARRGGBB pixels. Empty when the pointer shape is unchanged

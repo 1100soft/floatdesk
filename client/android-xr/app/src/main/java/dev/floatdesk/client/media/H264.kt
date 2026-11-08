@@ -9,6 +9,8 @@ import java.io.FileOutputStream
 import java.net.DatagramPacket
 import java.net.InetAddress
 import java.nio.ByteBuffer
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
@@ -20,6 +22,10 @@ internal class H264Depacketizer {
     private var fu = ByteArray(0)
     private var fuSize = 0
     private var fuOpen = false
+    private var lost = false
+    private var damaged = false
+
+    fun consumeLoss(): Boolean = lost.also { lost = false }
 
     fun push(packet: ByteArray, length: Int): ByteArray? {
         if (length < 12) return null
@@ -34,6 +40,12 @@ internal class H264Depacketizer {
         expectedSeq = (seq + 1) and 0xFFFF
         if (expected != null && seq != expected) {
             reset()
+            lost = true
+            damaged = true
+        }
+        if (damaged) {
+            if (marker) damaged = false
+            return null
         }
         if (length <= 12) return null
         val nalType = packet[12].toInt() and 0x1F
@@ -117,18 +129,70 @@ internal class H264Depacketizer {
     }
 }
 
+/**
+ * Wi-Fi delivers RTP a packet or two out of order. Treating that as a lost
+ * frame makes the decoder drop everything until the next keyframe, which
+ * freezes the picture and the pointer with it.
+ */
+private class RtpReorder {
+    private val held = HashMap<Int, ByteArray>()
+    private var nextSeq = -1
+    private var holeSince = 0L
+
+    fun push(packet: ByteArray, length: Int, nowMs: Long): List<ByteArray> {
+        if (length < 4) return emptyList()
+        val seq = ((packet[2].toInt() and 0xFF) shl 8) or (packet[3].toInt() and 0xFF)
+        if (nextSeq < 0) nextSeq = seq
+        val ahead = (seq - nextSeq) and 0xFFFF
+        if (ahead > 0x8000) return flush(nowMs)
+        if (ahead > 48) {
+            held.clear()
+            nextSeq = seq
+            holeSince = 0L
+        }
+        held[seq] = packet.copyOf(length)
+        return flush(nowMs)
+    }
+
+    fun flush(nowMs: Long): List<ByteArray> {
+        val out = ArrayList<ByteArray>()
+        while (true) {
+            val ready = held.remove(nextSeq)
+            if (ready != null) {
+                out.add(ready)
+                nextSeq = (nextSeq + 1) and 0xFFFF
+                holeSince = 0L
+                continue
+            }
+            if (held.isEmpty() || nextSeq < 0) break
+            if (holeSince == 0L) holeSince = nowMs
+            if (nowMs - holeSince < 40 && held.size < 24) break
+            nextSeq = (nextSeq + 1) and 0xFFFF
+            holeSince = nowMs
+        }
+        return out
+    }
+}
+
 internal class MonitorDecoder(
     private val socket: java.net.DatagramSocket,
     private val width: Int,
     private val height: Int,
     private val dumpFile: File? = null,
+    private val onGap: () -> Unit = {},
 ) {
     private val running = AtomicBoolean(true)
     private val surface = AtomicReference<Surface?>(null)
-    private var thread: Thread? = null
+    private val pending = ArrayBlockingQueue<ByteArray>(4)
+    private val sps = AtomicReference<ByteArray?>(null)
+    private val pps = AtomicReference<ByteArray?>(null)
+    private val awaitingKey = AtomicBoolean(true)
+    private var receiveThread: Thread? = null
+    private var decodeThread: Thread? = null
 
     fun start() {
-        thread = Thread({ loop() }, "floatdesk-decode").also { it.start() }
+        receiveThread = Thread({ receiveLoop() }, "floatdesk-net").also { it.start() }
+        decodeThread = Thread({ decodeLoop() }, "floatdesk-decode").also { it.start() }
     }
 
     fun punch(host: InetAddress) {
@@ -148,72 +212,102 @@ internal class MonitorDecoder(
     fun stop() {
         running.set(false)
         socket.close()
-        thread?.join(500)
+        receiveThread?.join(500)
+        decodeThread?.join(500)
     }
 
-    private fun loop() {
+    private fun receiveLoop() {
         val depacketizer = H264Depacketizer()
+        val reorder = RtpReorder()
         val buffer = ByteArray(2048)
         val packet = java.net.DatagramPacket(buffer, buffer.size)
-        var codec: MediaCodec? = null
-        var codecSurface: Surface? = null
-        var sps: ByteArray? = null
-        var pps: ByteArray? = null
         var packets = 0
-        var accessUnits = 0
-        var rendered = 0
-        var ptsUs = 0L
-        var sawKeyframe = false
-        val byteDump = dumpFile != null
         runCatching { socket.receiveBufferSize = 8 * 1024 * 1024 }
         socket.soTimeout = 50
         while (running.get()) {
-            val accessUnit = try {
+            val ready = try {
                 packet.setLength(buffer.size)
                 socket.receive(packet)
                 packets += 1
-                if (packets == 1 || packets % 120 == 0) {
+                if (packets == 1 || packets % 600 == 0) {
                     Log.i(TAG, "video packets=$packets last=${packet.length} surface=${surface.get() != null}")
                 }
-                depacketizer.push(buffer, packet.length)
+                reorder.push(buffer, packet.length, System.currentTimeMillis())
             } catch (_: java.net.SocketTimeoutException) {
-                null
+                reorder.flush(System.currentTimeMillis())
             } catch (_: java.net.SocketException) {
                 break
             }
-            if (accessUnit != null) {
-                accessUnits += 1
+            for (copy in ready) {
+                val accessUnit = depacketizer.push(copy, copy.size)
+                if (depacketizer.consumeLoss()) recover("RTP packet loss")
+                if (accessUnit == null) continue
                 for (nal in splitAnnexB(accessUnit)) {
                     when (nalType(nal)) {
-                        7 -> sps = nal
-                        8 -> pps = nal
+                        7 -> sps.set(nal)
+                        8 -> pps.set(nal)
                     }
                 }
-                if (accessUnits == 1 || accessUnits % 60 == 0) {
-                    Log.i(TAG, "access units=$accessUnits sps=${sps != null} pps=${pps != null}")
+                val keyframe = isKeyframe(accessUnit)
+                if (awaitingKey.get() && !keyframe) {
+                    onGap()
+                    continue
+                }
+                if (keyframe) awaitingKey.set(false)
+                if (!pending.offer(accessUnit)) {
+                    recover("compressed queue overflow")
+                    if (keyframe) {
+                        awaitingKey.set(false)
+                        pending.offer(accessUnit)
+                    }
                 }
             }
+        }
+    }
+
+    private fun recover(reason: String) {
+        if (!awaitingKey.getAndSet(true)) Log.w(TAG, "requesting IDR: $reason")
+        pending.clear()
+        onGap()
+    }
+
+    private fun decodeLoop() {
+        var codec: MediaCodec? = null
+        var codecSurface: Surface? = null
+        var rendered = 0
+        var sawKeyframe = false
+        val byteDump = dumpFile != null
+        while (running.get()) {
+            val accessUnit = try {
+                pending.poll(30, TimeUnit.MILLISECONDS)
+            } catch (_: InterruptedException) {
+                null
+            } ?: continue
             val target = if (byteDump) null else surface.get()
-            val haveParameters = sps != null && pps != null
+            val parameters = sps.get() to pps.get()
             val surfaceReady = byteDump || target != null
-            if (surfaceReady && haveParameters && (codec == null || (!byteDump && target != codecSurface))) {
+            if (surfaceReady && parameters.first != null && parameters.second != null &&
+                (codec == null || (!byteDump && target != codecSurface))
+            ) {
                 codec?.stop()
                 codec?.release()
                 sawKeyframe = false
-                codec = startCodec(target, sps!!, pps!!)
+                codec = startCodec(target, parameters.first!!, parameters.second!!)
                 codecSurface = target
                 Log.i(TAG, "decoder ${if (codec == null) "failed" else "started"} ${width}x$height")
             }
-            val active = codec
-            val keyframe = accessUnit != null && isKeyframe(accessUnit)
-            if (active != null && keyframe) sawKeyframe = true
-            if (active != null && accessUnit != null && sawKeyframe) {
-                ptsUs += 33_333
-                queue(active, accessUnit, ptsUs, keyframe)
-                rendered += drain(active, rendered, byteDump)
-            } else if (active != null) {
-                rendered += drain(active, rendered, byteDump)
+            val active = codec ?: continue
+            val keyframe = isKeyframe(accessUnit)
+            if (keyframe) sawKeyframe = true
+            if (!sawKeyframe) {
+                onGap()
+                continue
             }
+            if (!queue(active, accessUnit, System.nanoTime() / 1000, keyframe, byteDump)) {
+                sawKeyframe = false
+                recover("decoder rejected access unit")
+            }
+            rendered += drain(active, rendered, byteDump)
         }
         codec?.stop()
         codec?.release()
@@ -224,6 +318,7 @@ internal class MonitorDecoder(
         // This decoder ignores csd-1, so SPS and PPS both have to live in csd-0.
         // The access units stay Annex-B, matching the stream ffmpeg already decodes.
         format.setByteBuffer("csd-0", ByteBuffer.wrap(annexBParameterSets(sps, pps)))
+        format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
         return try {
             val codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
             codec.configure(format, target, null, 0)
@@ -235,21 +330,31 @@ internal class MonitorDecoder(
         }
     }
 
-    private fun queue(codec: MediaCodec, accessUnit: ByteArray, ptsUs: Long, keyframe: Boolean) {
+    private fun queue(
+        codec: MediaCodec, accessUnit: ByteArray, ptsUs: Long, keyframe: Boolean, byteDump: Boolean,
+    ): Boolean {
         try {
-            val index = codec.dequeueInputBuffer(0)
-            if (index < 0) return
-            val input = codec.getInputBuffer(index) ?: return
-            input.clear()
-            if (accessUnit.size > input.remaining()) {
-                Log.w(TAG, "access unit ${accessUnit.size} exceeds input buffer ${input.remaining()}")
-                return
+            // Never silently discard a reference picture while the codec is busy.
+            var index = -1
+            while (running.get() && index < 0) {
+                index = codec.dequeueInputBuffer(10_000)
+                if (index < 0) drain(codec, 0, byteDump)
             }
+            if (index < 0) return false
+            val input = codec.getInputBuffer(index)
+            if (input == null || accessUnit.size > input.capacity()) {
+                codec.queueInputBuffer(index, 0, 0, ptsUs, 0)
+                Log.w(TAG, "access unit ${accessUnit.size} exceeds decoder input capacity")
+                return false
+            }
+            input.clear()
             input.put(accessUnit)
             val flags = if (keyframe) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
             codec.queueInputBuffer(index, 0, accessUnit.size, ptsUs, flags)
+            return true
         } catch (err: Exception) {
             Log.e(TAG, "queue failed", err)
+            return false
         }
     }
 

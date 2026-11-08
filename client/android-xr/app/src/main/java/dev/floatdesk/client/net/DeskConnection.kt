@@ -33,6 +33,10 @@ internal class DeskConnection(
     private val pointerSeq = AtomicInteger()
     private val clickSeq = AtomicInteger()
     private var pointerDragging = false
+    private val padSeq=AtomicInteger()
+    private val pendingPad=AtomicReference<ByteArray?>(null)
+    private val padFlushPosted=AtomicBoolean(false)
+    private var padFingers=0
     private val pendingPointer = AtomicReference<ByteArray?>(null)
     private val pointerFlushPosted = AtomicBoolean(false)
     @Volatile private var outgoing: Handler? = null
@@ -84,6 +88,7 @@ internal class DeskConnection(
         beacon?.close()
         pendingPointer.set(null)
         pointerDragging = false
+        pendingPad.set(null); padFingers=0; padFlushPosted.set(false)
         outgoing = null
         outgoingThread?.quitSafely()
         outgoingThread?.join(500)
@@ -250,6 +255,28 @@ internal class DeskConnection(
         handler.post { send(packet) }
         handler.postDelayed({ send(packet) },20)
         handler.postDelayed({ send(packet) },60)
+    }
+
+    fun touchpad(fingers: Int,x: Float,y: Float) {
+        val packet=Protocol.touchpad(fingers,x,y,padSeq.incrementAndGet())
+        val handler=outgoing ?: return
+        if(fingers!=padFingers) {
+            padFingers=fingers; pendingPad.set(null)
+            handler.post { send(packet) }
+            if(fingers==0) { handler.postDelayed({ send(packet) },20); handler.postDelayed({ send(packet) },60) }
+        } else {
+            pendingPad.set(packet)
+            schedulePadFlush()
+        }
+    }
+
+    private fun schedulePadFlush() {
+        val handler=outgoing ?: return
+        if(padFlushPosted.compareAndSet(false,true)) handler.post {
+            if(running) pendingPad.getAndSet(null)?.let { send(it) }
+            padFlushPosted.set(false)
+            if(pendingPad.get()!=null) schedulePadFlush()
+        }
     }
 
     private fun schedulePointerFlush() {

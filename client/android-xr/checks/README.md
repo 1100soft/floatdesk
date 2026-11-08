@@ -66,7 +66,7 @@ python3 checks/pointer_protocol.py /path/to/gradle/lib
 
 This checks the production Android encoder against the Rust pointer packet fixture, including unsigned sequence values and rejection of non-finite/out-of-bounds targets. Rust tests check that only the active peer can move the pointer, sequence wrap works and monitor offsets map correctly.
 
-On the headset, enable mouse control and grant eye permission with hand-only system aiming. Check gaze-only motion, immediate one-hand takeover, a faint contact marker, cursor freeze with both hands, a preview without a pinch, and actual grab/release in flat and spherical modes. Also verify toggle-off, looking away, tracking loss, permission denial and return to the standard handles.
+On the headset, enable eye mouse aiming and grant eye permission with hand-only system aiming. Check gaze-only motion, immediate one-hand takeover, a faint contact marker, cursor freeze with both hands, a preview without a pinch, and actual grab/release in flat and spherical modes. Also verify toggle-off, looking away, tracking loss, permission denial and return to the standard handles.
 
 ```sh
 python3 checks/pointer_dispatch.py /path/to/gradle/lib
@@ -85,3 +85,10 @@ These run the actual filter and gesture state machines: reduced fixation jitter,
 From the repository root, `python3 scripts/check-mouse-x11.py` starts a private Xvfb display and runs the ignored real-XTest integration test. It verifies button edges, pointer coordinates, dragging, the timeout lease and cleanup; it never targets the user's display.
 
 The current eye toggle controls only gaze; hand aiming remains active. The separate gesture toggle defaults off. Device-check short and double pinches, hold/release, middle-finger right-click, opposite-hand clicks, cancellation during two-hand grab/preview, gesture disable during a drag, gaze smoothing and lack of normal one-hand body movement. Explicit resize handles are retained; the old standard movement behavior was intentionally disabled at the user's request.
+
+
+`python3 checks/air_panel.py /path/to/gradle/lib` checks deliberate 2/3/4-finger air poses, planar movement thresholds, target freeze, tracking jumps/rearm, panel gaze dwell/stickiness, fresh thumb-fold activation and stale gaze rejection. Pointer protocol and dispatch checks cover virtual touchpad frames, contact transitions and retried release packets; mouse checks cover combined index/middle middle-click.
+
+`FLOATDESK_UINPUT_TEST=1 cargo test --offline -p floatdesk platform::touchpad::tests::creates_classified_touchpad_without_emitting_touches -- --ignored --exact` creates and removes a passive virtual device, asserting udev classifies it as a touchpad. It never emits touches. Do not automatically exercise native swipes on the user's desktop: configured bindings can minimize or close windows. Device-check two-finger scrolling and deliberate three/four-finger swipes, ending on thumb release, tracking loss and gesture disable.
+
+With desktop eye aiming disabled, open the palm panel, grant eye permission, look for a stable button highlight and extend/fold that hand's thumb. Check one activation per fold, press feedback, direct taps and cancellation on gaze loss. Hold an aiming hand still for 30 seconds to check the app beam; native contact/tracking availability still requires device verification.

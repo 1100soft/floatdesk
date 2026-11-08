@@ -37,6 +37,7 @@ internal class GrabGuideRenderer private constructor(
     private val groups = mutableListOf<Group>()
     private var closed = false
     private var pointerPoint: GltfModelEntity? = null
+    private val aimBeams=mutableListOf<GltfModelEntity>()
 
     private fun newGroup(edgeCount: Int): Group {
         val root = Entity.create(session, name = "Floatdesk grab guide")
@@ -78,6 +79,18 @@ internal class GrabGuideRenderer private constructor(
         point(entity,visibleGrabContact(position,eye,unitsPerMeter),.003f*unitsPerMeter)
     }
 
+    fun updateRays(parent: Entity,rays: List<Pair<FloatArray,FloatArray>>,unitsPerMeter: Float,dimmed: Boolean) {
+        if(closed) return
+        while(aimBeams.size<rays.size) aimBeams.add(GltfModelEntity.create(session,models[0]))
+        for((index,entity) in aimBeams.withIndex()) {
+            val ray=rays.getOrNull(index)
+            if(ray==null) { entity.setEnabled(false); continue }
+            entity.parent=parent
+            entity.setAlpha(if(dimmed) .18f else .4f)
+            beam(entity,ray.first,ray.second,.0009f*unitsPerMeter)
+        }
+    }
+
     private fun vector(value: FloatArray) = Vector3(value[0], value[1], value[2])
 
     private fun beam(entity: GltfModelEntity, from: FloatArray, to: FloatArray, width: Float) {
@@ -103,6 +116,7 @@ internal class GrabGuideRenderer private constructor(
             group.parts.forEach { it.parent = null }
             group.root.parent = null
         }
+        aimBeams.forEach { it.parent=null }; aimBeams.clear()
         pointerPoint?.parent = null; pointerPoint = null
         groups.clear()
         models.forEach { it.close() }

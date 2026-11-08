@@ -52,6 +52,14 @@ fun main() {
     cross.update(20,true,false,mapOf("RIGHT" to index),target.copy(u=.2f))
     check(cross.update(100,true,false,mapOf("RIGHT" to open),target.copy(u=.8f)).click!!.target.u==.2f)
 
+    val chord=MouseGestures()
+    chord.update(0,true,false,mapOf("RIGHT" to open),target)
+    chord.update(20,true,false,mapOf("RIGHT" to index),target)
+    chord.update(60,true,false,mapOf("RIGHT" to FingerPinch(.015f,.015f)),target)
+    check(chord.update(120,true,false,mapOf("RIGHT" to open),target).click!!.button==2)
+    chord.update(200,true,false,mapOf("RIGHT" to FingerPinch(.015f,.015f)),target)
+    check(!chord.update(600,true,false,mapOf("RIGHT" to FingerPinch(.015f,.015f)),target).dragging)
+    check(chord.update(650,true,false,mapOf("RIGHT" to open),target).click!!.button==2)
     val filter=GazeStabilizer()
     filter.update(target,0)
     var maximum=0f

@@ -27,6 +27,7 @@ pub const KIND_GOODBYE: u8 = 6;
 pub const KIND_BEACON: u8 = 7;
 pub const KIND_POINTER_MOVE: u8 = 8;
 pub const KIND_POINTER_CLICK: u8 = 9;
+pub const KIND_TOUCHPAD_STATE: u8 = 10;
 pub const BEACON_PORT: u16 = 47001;
 
 const CURSOR_FIXED: usize = 38;
@@ -112,6 +113,12 @@ pub enum ControlPacket {
         button: u8,
         sequence: u32,
     },
+    TouchpadState {
+        fingers: u8,
+        x: f32,
+        y: f32,
+        sequence: u32,
+    },
     KeyframeRequest {
         monitor_index: u8,
     },
@@ -147,6 +154,7 @@ impl ControlPacket {
             Self::Cursor(_) => KIND_CURSOR,
             Self::PointerMove { .. } => KIND_POINTER_MOVE,
             Self::PointerClick { .. } => KIND_POINTER_CLICK,
+            Self::TouchpadState { .. } => KIND_TOUCHPAD_STATE,
             Self::KeyframeRequest { .. } => KIND_KEYFRAME_REQUEST,
             Self::Layout { .. } => KIND_LAYOUT,
             Self::Goodbye => KIND_GOODBYE,
@@ -215,6 +223,17 @@ impl ControlPacket {
                 w.extend_from_slice(&norm_x.to_le_bytes());
                 w.extend_from_slice(&norm_y.to_le_bytes());
                 w.push(*button);
+                w.extend_from_slice(&sequence.to_le_bytes());
+            }
+            Self::TouchpadState {
+                fingers,
+                x,
+                y,
+                sequence,
+            } => {
+                w.push(*fingers);
+                w.extend_from_slice(&x.to_le_bytes());
+                w.extend_from_slice(&y.to_le_bytes());
                 w.extend_from_slice(&sequence.to_le_bytes());
             }
             Self::KeyframeRequest { monitor_index } => w.push(*monitor_index),
@@ -367,7 +386,7 @@ pub fn decode_packet(bytes: &[u8]) -> Result<ControlPacket, ProtocolError> {
             })
         }
         KIND_POINTER_CLICK => {
-            if p.len() != 14 || !matches!(p[9], 1 | 3) {
+            if p.len() != 14 || !matches!(p[9], 1 | 2 | 3) {
                 return Err(ProtocolError::Payload(kind));
             }
             let norm_x = f32::from_le_bytes(p[1..5].try_into().unwrap());
@@ -385,6 +404,26 @@ pub fn decode_packet(bytes: &[u8]) -> Result<ControlPacket, ProtocolError> {
                 norm_y,
                 button: p[9],
                 sequence: u32::from_le_bytes(p[10..14].try_into().unwrap()),
+            })
+        }
+        KIND_TOUCHPAD_STATE => {
+            if p.len() != 13 || !matches!(p[0], 0 | 2 | 3 | 4) {
+                return Err(ProtocolError::Payload(kind));
+            }
+            let x = f32::from_le_bytes(p[1..5].try_into().unwrap());
+            let y = f32::from_le_bytes(p[5..9].try_into().unwrap());
+            if !x.is_finite()
+                || !y.is_finite()
+                || !(0.0..=1.0).contains(&x)
+                || !(0.0..=1.0).contains(&y)
+            {
+                return Err(ProtocolError::Payload(kind));
+            }
+            Ok(ControlPacket::TouchpadState {
+                fingers: p[0],
+                x,
+                y,
+                sequence: u32::from_le_bytes(p[9..13].try_into().unwrap()),
             })
         }
         KIND_KEYFRAME_REQUEST => {
@@ -660,8 +699,42 @@ mod pointer_tests {
         }
     }
     #[test]
+    fn touchpad_wire_validation() {
+        for fingers in [0, 2, 3, 4] {
+            let packet = ControlPacket::TouchpadState {
+                fingers,
+                x: 0.25,
+                y: 1.0,
+                sequence: u32::MAX,
+            };
+            let bytes = packet.encode();
+            assert_eq!(bytes.len(), HEADER_LEN + 13);
+            assert_eq!(bytes[5], KIND_TOUCHPAD_STATE);
+            assert_eq!(decode_packet(&bytes), Ok(packet));
+        }
+        for (fingers, x, y) in [
+            (1, 0.5, 0.5),
+            (5, 0.5, 0.5),
+            (2, f32::NAN, 0.5),
+            (3, 0.5, f32::INFINITY),
+            (4, -0.01, 0.5),
+            (2, 0.5, 1.01),
+        ] {
+            let packet = ControlPacket::TouchpadState {
+                fingers,
+                x,
+                y,
+                sequence: 0,
+            };
+            assert_eq!(
+                decode_packet(&packet.encode()),
+                Err(ProtocolError::Payload(KIND_TOUCHPAD_STATE))
+            );
+        }
+    }
+    #[test]
     fn click_and_drag_wire_validation() {
-        for button in [1, 3] {
+        for button in [1, 2, 3] {
             let packet = ControlPacket::PointerClick {
                 monitor_index: 0,
                 norm_x: 0.5,
@@ -675,7 +748,7 @@ mod pointer_tests {
             monitor_index: 0,
             norm_x: 0.5,
             norm_y: 0.5,
-            button: 2,
+            button: 8,
             sequence: 1,
         };
         assert!(decode_packet(&bad.encode()).is_err());

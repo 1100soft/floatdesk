@@ -41,6 +41,10 @@ private class Sender(port: Int) {
     val pointerSeq = java.util.concurrent.atomic.AtomicInteger()
     val pendingPointer = java.util.concurrent.atomic.AtomicReference<ByteArray?>(null)
     val pointerFlushPosted = java.util.concurrent.atomic.AtomicBoolean(false)
+    val padSeq=java.util.concurrent.atomic.AtomicInteger()
+    val pendingPad=java.util.concurrent.atomic.AtomicReference<ByteArray?>(null)
+    val padFlushPosted=java.util.concurrent.atomic.AtomicBoolean(false)
+    var padFingers=0
     var running = true
     fun requestKeyframe() { send(Protocol.keyframeRequest(0)) }
 '''
@@ -99,6 +103,22 @@ fun main() {
         } finally {
             sender.running=false; sender.control.close(); sender.outgoing.pool.shutdownNow()
         }
+    }
+    java.net.DatagramSocket(0).use { receiver ->
+        receiver.soTimeout=3000
+        val sender=Sender(receiver.localPort)
+        try {
+            sender.touchpad(3,.6f,.5f)
+            repeat(1000) { sender.touchpad(3,.6f,.6f) }
+            sender.touchpad(0,.6f,.6f)
+            sender.outgoing.gate.countDown()
+            repeat(4) { n ->
+                val packet=java.net.DatagramPacket(ByteArray(256),256)
+                receiver.receive(packet)
+                check(packet.data[5].toInt()==10)
+                check(packet.data[16].toInt()==if(n==0) 3 else 0)
+            }
+        } finally { sender.running=false; sender.control.close(); sender.outgoing.pool.shutdownNow() }
     }
     println("Passed: real UDP pointer/keyframe dispatch off UI thread, bounded coalescing, latest target delivery, uncoalesced drag edges, atomic click retries")
 }

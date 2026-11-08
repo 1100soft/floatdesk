@@ -38,6 +38,48 @@ struct ClientTarget {
     generation: u64,
     pointer_sequence: Option<u32>,
     click_sequence: Option<u32>,
+    touchpad_sequence: Option<u32>,
+}
+
+struct InputDevices {
+    mouse: crate::platform::x11::X11Mouse,
+    touchpad: Option<crate::platform::touchpad::VirtualTouchpad>,
+}
+impl InputDevices {
+    fn open() -> Result<Self> {
+        let touchpad = match crate::platform::touchpad::VirtualTouchpad::open() {
+            Ok(device) => {
+                tracing::info!(syspath=?device.syspath(),"native virtual touchpad ready");
+                Some(device)
+            }
+            Err(error) => {
+                tracing::warn!(%error,"native touchpad unavailable; mouse input remains available");
+                None
+            }
+        };
+        Ok(Self {
+            mouse: crate::platform::x11::X11Mouse::open()?,
+            touchpad,
+        })
+    }
+    fn move_pointer(&mut self, x: i32, y: i32, down: bool) -> Result<()> {
+        self.mouse.move_pointer(x, y, down)
+    }
+    fn click(&mut self, x: i32, y: i32, button: u8) -> Result<()> {
+        self.mouse.click(x, y, button)
+    }
+    fn release(&mut self) {
+        let _ = self.mouse.release();
+        if let Some(pad) = &mut self.touchpad {
+            let _ = pad.release();
+        }
+    }
+    fn expire(&mut self) {
+        self.mouse.expire();
+        if let Some(pad) = &mut self.touchpad {
+            pad.expire();
+        }
+    }
 }
 
 struct CursorSprite {
@@ -104,7 +146,7 @@ pub fn trial() -> Result<()> {
 }
 
 fn run(monitors: &[MonitorRect], opts: &ServeOpts) -> Result<()> {
-    let mut pointer = crate::platform::x11::X11Mouse::open()?;
+    let mut pointer = InputDevices::open()?;
     let socket = UdpSocket::bind(opts.listen)?;
     socket.set_nonblocking(true)?;
     let session_id = monotonic_ns();
@@ -431,7 +473,7 @@ fn handle_datagram(
     bytes: &[u8],
     from: SocketAddr,
     monitors: &[MonitorRect],
-    pointer: &mut crate::platform::x11::X11Mouse,
+    pointer: &mut InputDevices,
 ) {
     let packet = match floatdesk_protocol::decode_packet(bytes) {
         Ok(packet) => packet,
@@ -462,6 +504,7 @@ fn handle_datagram(
                 generation,
                 pointer_sequence: None,
                 click_sequence: None,
+                touchpad_sequence: None,
             });
             drop(client);
             send_hello(shared, socket, hellos);
@@ -513,6 +556,29 @@ fn handle_datagram(
             ) {
                 if let Err(error) = pointer.click(x, y, button) {
                     tracing::warn!(%error,"mouse click failed");
+                }
+            }
+        }
+        ControlPacket::TouchpadState {
+            fingers,
+            x,
+            y,
+            sequence,
+        } => {
+            let mut client = shared.client.write().unwrap_or_else(|err| err.into_inner());
+            let Some(client) = client.as_mut().filter(|client| client.control == from) else {
+                return;
+            };
+            if client
+                .touchpad_sequence
+                .is_some_and(|last| (sequence.wrapping_sub(last) as i32) <= 0)
+            {
+                return;
+            }
+            client.touchpad_sequence = Some(sequence);
+            if let Some(pad) = &mut pointer.touchpad {
+                if let Err(error) = pad.update(fingers, x, y) {
+                    tracing::warn!(%error,"touchpad input failed");
                 }
             }
         }
@@ -898,6 +964,7 @@ mod pointer_tests {
             generation: 1,
             pointer_sequence: None,
             click_sequence: None,
+            touchpad_sequence: None,
         });
         let monitors = [MonitorRect {
             index: 2,
@@ -956,6 +1023,7 @@ mod pointer_tests {
             generation: 1,
             pointer_sequence: Some(900),
             click_sequence: None,
+            touchpad_sequence: None,
         });
         let monitors = [MonitorRect {
             index: 0,

@@ -27,6 +27,7 @@ internal object Protocol {
     const val KIND_BEACON = 7
     const val KIND_POINTER_MOVE = 8
     const val KIND_POINTER_CLICK = 9
+    const val KIND_TOUCHPAD_STATE = 10
     private const val CURSOR_FIXED = 38
 
     fun clientHello(name: String, videoPort: Int): ByteArray {
@@ -48,10 +49,17 @@ internal object Protocol {
     }
 
     fun pointerClick(monitor: Int,x: Float,y: Float,button: Int,sequence: Int): ByteArray {
-        require(x.isFinite() && y.isFinite() && x in 0f..1f && y in 0f..1f && button in listOf(1,3))
+        require(x.isFinite() && y.isFinite() && x in 0f..1f && y in 0f..1f && button in listOf(1,2,3))
         val payload=ByteBuffer.allocate(14).order(ByteOrder.LITTLE_ENDIAN)
         payload.put(monitor.toByte()).putFloat(x).putFloat(y).put(button.toByte()).putInt(sequence)
         return frame(KIND_POINTER_CLICK,payload.array())
+    }
+
+    fun touchpad(fingers: Int,x: Float,y: Float,sequence: Int): ByteArray {
+        require(fingers in listOf(0,2,3,4) && x.isFinite() && y.isFinite() && x in 0f..1f && y in 0f..1f)
+        val payload=ByteBuffer.allocate(13).order(ByteOrder.LITTLE_ENDIAN)
+        payload.put(fingers.toByte()).putFloat(x).putFloat(y).putInt(sequence)
+        return frame(KIND_TOUCHPAD_STATE,payload.array())
     }
 
     fun goodbye(): ByteArray = frame(KIND_GOODBYE, ByteArray(0))

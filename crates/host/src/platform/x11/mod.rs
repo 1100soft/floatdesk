@@ -230,6 +230,7 @@ mod pointer_device_tests {
         };
         let mut mouse = X11Mouse::open().unwrap();
         mouse.click(120, 160, 1).unwrap();
+        mouse.click(120, 160, 2).unwrap();
         watcher.roundtrip().unwrap();
         let mut edges = Vec::new();
         while let Some(event) = watcher.conn.poll_for_event().unwrap() {
@@ -239,7 +240,7 @@ mod pointer_device_tests {
                 _ => {}
             }
         }
-        assert_eq!(edges, vec![(1, true), (1, false)]);
+        assert_eq!(edges, vec![(1, true), (1, false), (2, true), (2, false)]);
         mouse.move_pointer(200, 200, true).unwrap();
         assert!(held());
         mouse.move_pointer(240, 220, true).unwrap();

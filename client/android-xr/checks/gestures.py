@@ -34,6 +34,7 @@ mesh_source = (Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/clie
 guard_source = (Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client/TrackingGuard.kt').read_text().split('\n',1)[1]
 pointer_source = (Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client/PointerControl.kt').read_text().split('\n',1)[1]
 code = mesh_source + guard_source + stub + pointer_source + section('private const val PALM_WIDTH', '@Composable\nprivate fun PalmControls')
+code += section('private fun palmRayPoint(', '/** Direct fingertip contact')
 code += section('private class PalmPoke', '/** Find the parent')
 code += section('private class GrabTracking', 'private class FollowLock(')
 code += section('private fun palmNormal(', 'private fun openViewpoint(')
@@ -350,6 +351,11 @@ fun main() {
     check(distance(centeredSphere.project(floatArrayOf(.4f,0f,0f)),floatArrayOf(.4f,0f,0f)) > .01f)
     check(distance(centeredSphere.project(floatArrayOf(0f,.25f,0f)),floatArrayOf(0f,.25f,0f)) > .01f)
     val panel = PalmPanelState("LEFT",Pose(floatArrayOf(0f,0f,0f)))
+    val panelRay=palmRayPoint(panel,floatArrayOf(-.06f,.06f,1f),floatArrayOf(0f,0f,-1f))!!
+    check(kotlin.math.abs(panelRay[0]-.25f)<.00001f && kotlin.math.abs(panelRay[1]-.25f)<.00001f)
+    check(palmRayPoint(panel,floatArrayOf(0f,0f,-1f),floatArrayOf(0f,0f,1f))==null)
+    val scaledRay=palmRayPoint(panel.copy(unitsPerMeter=5f),floatArrayOf(-.3f,.3f,1f),floatArrayOf(0f,0f,-1f))!!
+    check(kotlin.math.abs(scaledRay[0]-.25f)<.00001f)
     val poke = PalmPoke()
     check(poke.update(panel,floatArrayOf(-.06f,.06f,.04f)) == null)
     check(poke.update(panel,floatArrayOf(-.06f,.06f,-.02f)) == PalmAction.FOLLOW)

@@ -12,6 +12,7 @@ internal class MouseGestures {
     private data class Hold(val side: String, val button: Int, val began: Long, val target: PointerTarget)
     private val indexClosed=mutableSetOf<String>()
     private val middleClosed=mutableSetOf<String>()
+    private val chordClosed=mutableSetOf<String>()
     private val armed=mutableSetOf<String>()
     private var hold: Hold? = null
     private var dragging=false
@@ -21,14 +22,17 @@ internal class MouseGestures {
     private var lastClick: MouseClick? = null
     private var lastClickAt=0L
 
+    val active: Boolean get() = hold != null
+
     fun update(nowMs: Long, enabled: Boolean, blocked: Boolean, samples: Map<String,FingerPinch>,
                target: PointerTarget?): MouseGestureOutput {
-        indexClosed.retainAll(samples.keys); middleClosed.retainAll(samples.keys); armed.retainAll(samples.keys)
+        indexClosed.retainAll(samples.keys); middleClosed.retainAll(samples.keys); chordClosed.retainAll(samples.keys); armed.retainAll(samples.keys)
         for((side,sample) in samples) {
             fun gate(set: MutableSet<String>,distance: Float) {
                 if(!distance.isFinite() || distance>.035f) set.remove(side)
                 else if(distance<.023f) set.add(side)
             }
+            gate(chordClosed,maxOf(sample.indexMetres,sample.middleMetres))
             gate(indexClosed,sample.indexMetres)
             gate(middleClosed,sample.middleMetres)
             // A middle pinch is distinct only when the index finger remains open.
@@ -41,7 +45,7 @@ internal class MouseGestures {
         }
         if(target != null) { lastTarget=target; lastTargetAt=nowMs }
         for(side in samples.keys) if(side !in indexClosed && side !in middleClosed) armed.add(side)
-        val current=hold
+        var current=hold
         if(current != null) {
             for(side in samples.keys) if(side != current.side && (side in indexClosed || side in middleClosed)) armed.remove(side)
             if(current.side !in samples) {
@@ -49,7 +53,10 @@ internal class MouseGestures {
                 hold=null; dragging=false; armed.remove(current.side)
                 return MouseGestureOutput(release)
             }
-            val closed=current.side in (if(current.button==1) indexClosed else middleClosed)
+            if(current.button!=2 && !dragging && nowMs-current.began<=150 && current.side in chordClosed) {
+                current=current.copy(button=2); hold=current
+            }
+            val closed=current.side in (when(current.button) { 1->indexClosed; 2->chordClosed; else->middleClosed })
             if(closed) {
                 if(current.button==1 && !dragging && nowMs-current.began>=350) {
                     dragging=true
@@ -74,7 +81,7 @@ internal class MouseGestures {
         val startTarget=target ?: lastTarget?.takeIf { nowMs-lastTargetAt<=120 }
         for(side in samples.keys.sorted()) {
             if(side !in armed) continue
-            val button=when(side) { in indexClosed -> 1; in middleClosed -> 3; else -> continue }
+            val button=when(side) { in chordClosed -> 2; in indexClosed -> 1; in middleClosed -> 3; else -> continue }
             armed.remove(side)
             if(startTarget == null) continue
             hold=Hold(side,button,nowMs,startTarget)

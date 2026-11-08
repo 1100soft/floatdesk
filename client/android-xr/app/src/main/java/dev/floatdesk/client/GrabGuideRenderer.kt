@@ -6,7 +6,6 @@ import androidx.xr.runtime.math.Quaternion
 import androidx.xr.runtime.math.Vector3
 import androidx.xr.scenecore.Entity
 import androidx.xr.scenecore.SurfaceEntity
-import androidx.xr.runtime.math.FloatSize2d
 import androidx.xr.runtime.math.IntSize2d
 import androidx.xr.scenecore.GltfModel
 import androidx.xr.scenecore.GltfModelEntity
@@ -101,7 +100,7 @@ internal class GrabGuideRenderer private constructor(
                             surfaces: MutableList<SurfaceEntity>,alternating: Boolean) {
         if(closed) return
         while(surfaces.size<rays.size) {
-            val surface=SurfaceEntity.create(session,shape=SurfaceEntity.Shape.Quad(FloatSize2d(1f,.001f)),
+            val surface=SurfaceEntity.create(session,shape=decorationShape(1f,.001f),
                 parent=null,superSampling=SurfaceEntity.SuperSampling.NONE)
             surface.setSurfacePixelDimensions(IntSize2d(128,4))
             surface.mediaBlendingMode=SurfaceEntity.MediaBlendingMode.TRANSPARENT
@@ -123,7 +122,7 @@ internal class GrabGuideRenderer private constructor(
             val normal=toward-along*dot
             if(normal.length<.00001f) { entity.setEnabled(false); continue }
             val up=Vector3(normal.y*along.z-normal.z*along.y,normal.z*along.x-normal.x*along.z,normal.x*along.y-normal.y*along.x)
-            entity.shape=SurfaceEntity.Shape.Quad(FloatSize2d(delta.length,width))
+            entity.shape=decorationShape(delta.length,width)
             entity.setPose(Pose(middle,Quaternion.fromLookTowards(normal,up)))
             entity.setAlpha(alpha)
             entity.parent=parent; entity.setEnabled(true)
@@ -134,7 +133,7 @@ internal class GrabGuideRenderer private constructor(
     @OptIn(androidx.xr.scenecore.ExperimentalSurfaceEntityPixelDimensionsApi::class)
     private fun surfacePoints(parent: Entity,points: List<FloatArray>,eye: FloatArray?,diameter: Float) {
         while(grabPoints.size<points.size) {
-            val entity=SurfaceEntity.create(session,shape=SurfaceEntity.Shape.Quad(FloatSize2d(diameter,diameter)),
+            val entity=SurfaceEntity.create(session,shape=decorationShape(diameter,diameter),
                 parent=null,superSampling=SurfaceEntity.SuperSampling.NONE)
             entity.setSurfacePixelDimensions(IntSize2d(32,32))
             entity.mediaBlendingMode=SurfaceEntity.MediaBlendingMode.TRANSPARENT
@@ -149,10 +148,21 @@ internal class GrabGuideRenderer private constructor(
         for((index,entity) in grabPoints.withIndex()) {
             val position=points.getOrNull(index)
             if(position==null || eye==null) { entity.setEnabled(false); continue }
-            entity.shape=SurfaceEntity.Shape.Quad(FloatSize2d(diameter,diameter))
+            entity.shape=decorationShape(diameter,diameter)
             entity.setPose(Pose(vector(position),Quaternion.fromLookTowards(vector(eye)-vector(position),Vector3.Up)))
             entity.parent=parent; entity.setEnabled(true)
         }
+    }
+
+    @android.annotation.SuppressLint("RestrictedApi")
+    private fun decorationShape(width: Float,height: Float): SurfaceEntity.Shape.CustomMesh {
+        val x=width*.5f; val y=height*.5f
+        // Quad canvases create rectangular native hit regions even without an input
+        // component. Custom mesh canvases render the decoration without that quad target.
+        return SurfaceEntity.Shape.CustomMesh(SurfaceEntity.Shape.TriangleMesh(
+            java.nio.FloatBuffer.wrap(floatArrayOf(-x,-y,0f,x,-y,0f,x,y,0f,-x,y,0f)),
+            java.nio.FloatBuffer.wrap(floatArrayOf(0f,1f,1f,1f,1f,0f,0f,0f)),
+            java.nio.IntBuffer.wrap(intArrayOf(0,1,2,0,2,3))))
     }
 
     private fun vector(value: FloatArray) = Vector3(value[0], value[1], value[2])

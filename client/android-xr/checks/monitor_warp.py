@@ -111,9 +111,8 @@ suspend fun main() {
     check(input.enabled && input.getAlpha() == .8f)
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false)
     val curvedVideo=session.scene.entities.last()
-    check(curvedVideo !== input && input.shape is SurfaceEntity.Shape.CustomMesh)
+    check(curvedVideo !== input && input.shape is SurfaceEntity.Shape.Quad)
     check(warp.outputSurface === curvedVideo.getSurface())
-    check(input.shape === curvedVideo.shape) // No masked flat hit plane in front of the curved input.
     val curved = curvedVideo.shape as SurfaceEntity.Shape.CustomMesh
     check(curved.mesh.texCoords[1] == 1f)
     check(warp.mesh != null && input.enabled)

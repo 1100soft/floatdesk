@@ -39,13 +39,14 @@ internal class MouseGestures {
                target: PointerTarget?): MouseGestureOutput {
         indexClosed.retainAll(samples.keys); middleClosed.retainAll(samples.keys); chordClosed.retainAll(samples.keys); armed.retainAll(samples.keys)
         for((side,sample) in samples) {
-            fun gate(set: MutableSet<String>,distance: Float) {
-                if(!distance.isFinite() || distance>.023f) set.remove(side)
-                else if(distance<=.018f) set.add(side)
+            fun gate(set: MutableSet<String>,distance: Float,close: Float,open: Float) {
+                if(!distance.isFinite() || distance>open) set.remove(side)
+                else if(distance<=close) set.add(side)
             }
-            gate(chordClosed,maxOf(sample.indexMetres,sample.middleMetres))
-            gate(indexClosed,sample.indexMetres)
-            gate(middleClosed,sample.middleMetres)
+            gate(indexClosed,sample.indexMetres,.017f,.022f)
+            gate(middleClosed,sample.middleMetres,.022f,.028f)
+            if(!sample.indexMetres.isFinite() || !sample.middleMetres.isFinite() || sample.indexMetres>.022f || sample.middleMetres>.028f) chordClosed.remove(side)
+            else if(sample.indexMetres<=.017f && sample.middleMetres<=.022f) chordClosed.add(side)
             // A middle pinch is distinct only when the index finger remains open.
             if(sample.indexMetres<.045f) middleClosed.remove(side)
         }

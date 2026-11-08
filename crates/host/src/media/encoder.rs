@@ -161,7 +161,7 @@ impl GstEncoder {
              ! {} name=enc \
              ! h264parse config-interval=-1 \
              ! video/x-h264,stream-format=byte-stream,alignment=au \
-             ! appsink name=sink emit-signals=false sync=false max-buffers=1 drop=false",
+             ! appsink name=sink emit-signals=false sync=false max-buffers=2 leaky-type=upstream",
             profile.format, profile.element
         );
         let pipeline = Pipeline::launch(&description)?;

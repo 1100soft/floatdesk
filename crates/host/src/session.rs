@@ -14,7 +14,7 @@ use floatdesk_protocol::{
     RtpH264Packetizer, BEACON_PORT,
 };
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -59,6 +59,8 @@ struct Shared {
     bytes: AtomicU64,
     cursor: Mutex<CursorSprite>,
     cursor_generation: AtomicU64,
+    /// X11 socket of the capture thread. -1 when capture is not connected.
+    capture_fd: AtomicI32,
 }
 
 pub fn serve(opts: ServeOpts) -> Result<()> {
@@ -147,6 +149,7 @@ fn run(monitors: &[MonitorRect], opts: &ServeOpts) -> Result<()> {
             pixels: Vec::new(),
         }),
         cursor_generation: AtomicU64::new(0),
+        capture_fd: AtomicI32::new(-1),
     });
     let stop_flag = Arc::clone(&shared);
     let _ = ctrlc::set_handler(move || {
@@ -162,8 +165,21 @@ fn run(monitors: &[MonitorRect], opts: &ServeOpts) -> Result<()> {
         let fps = opts.fps.max(1);
         let bitrate = *bitrate;
         threads.push(thread::spawn(move || {
-            if let Err(err) = monitor_thread(shared, rect, ssrc, encoder_name, fps, bitrate) {
-                tracing::error!(monitor = rect.index, "{err}");
+            while !shared.stop.load(Ordering::Relaxed) {
+                if let Err(err) = monitor_thread(
+                    Arc::clone(&shared),
+                    rect,
+                    ssrc,
+                    encoder_name.clone(),
+                    fps,
+                    bitrate,
+                ) {
+                    tracing::error!(monitor = rect.index, "capture stopped, reconnecting: {err}");
+                }
+                if shared.stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(200));
             }
         }));
     }
@@ -175,6 +191,8 @@ fn run(monitors: &[MonitorRect], opts: &ServeOpts) -> Result<()> {
     }));
     let mut last_hello = Instant::now() - Duration::from_secs(2);
     let mut last_stats = Instant::now();
+    let mut last_progress = 0u64;
+    let mut stalled_checks = 0u32;
     let started = Instant::now();
     let mut scratch = [0u8; 2048];
     while !shared.stop.load(Ordering::Relaxed) {
@@ -199,12 +217,35 @@ fn run(monitors: &[MonitorRect], opts: &ServeOpts) -> Result<()> {
             last_hello = Instant::now();
         }
         if last_stats.elapsed() >= Duration::from_secs(2) {
-            tracing::info!(
-                frames = shared.captured.load(Ordering::Relaxed),
-                skipped = shared.skipped.load(Ordering::Relaxed),
-                bytes = shared.bytes.load(Ordering::Relaxed),
-                "session"
-            );
+            let frames = shared.captured.load(Ordering::Relaxed);
+            let skipped = shared.skipped.load(Ordering::Relaxed);
+            let bytes = shared.bytes.load(Ordering::Relaxed);
+            let progress = frames.wrapping_add(skipped);
+            let client_waiting = shared
+                .client
+                .read()
+                .unwrap_or_else(|err| err.into_inner())
+                .is_some();
+            if progress == last_progress && client_waiting {
+                stalled_checks = stalled_checks.saturating_add(1);
+            } else {
+                stalled_checks = 0;
+                last_progress = progress;
+            }
+            // One unchanged interval is two seconds. A grab or a keyframe is
+            // much shorter than that. Closing the X11 socket unblocks a reply
+            // wait; the capture thread then opens a new connection. The encoder
+            // queue itself is drained so it does not need this reset.
+            if stalled_checks >= 1 {
+                let fd = shared.capture_fd.load(Ordering::Relaxed);
+                if fd >= 0 {
+                    tracing::error!("capture made no progress, resetting the X11 connection");
+                    unsafe {
+                        libc::shutdown(fd, libc::SHUT_RDWR);
+                    }
+                }
+            }
+            tracing::info!(frames, skipped, bytes, "session");
             last_stats = Instant::now();
         }
         thread::sleep(Duration::from_millis(8));
@@ -216,6 +257,44 @@ fn run(monitors: &[MonitorRect], opts: &ServeOpts) -> Result<()> {
     Ok(())
 }
 
+fn send_ready(
+    encoder: &mut crate::media::GstEncoder,
+    packetizer: &mut RtpH264Packetizer,
+    socket: &UdpSocket,
+    dest: SocketAddr,
+    shared: &Shared,
+    timestamp: u32,
+    wait_first: bool,
+) -> Result<()> {
+    let mut waited = !wait_first;
+    loop {
+        let unit = if !waited {
+            waited = true;
+            encoder.pull_wait(8_000_000)?
+        } else {
+            encoder.pull()?
+        };
+        let Some(unit) = unit else { break };
+        for packet in packetizer.packetize(&unit.bytes, timestamp) {
+            match socket.send_to(&packet, dest) {
+                Ok(sent) => {
+                    shared.bytes.fetch_add(sent as u64, Ordering::Relaxed);
+                }
+                Err(err) => tracing::debug!("video send: {err}"),
+            }
+        }
+    }
+    Ok(())
+}
+
+struct ClearCaptureFd<'a>(&'a AtomicI32);
+
+impl Drop for ClearCaptureFd<'_> {
+    fn drop(&mut self) {
+        self.0.store(-1, Ordering::Relaxed);
+    }
+}
+
 fn monitor_thread(
     shared: Arc<Shared>,
     rect: MonitorRect,
@@ -225,6 +304,10 @@ fn monitor_thread(
     bitrate: u32,
 ) -> Result<()> {
     let mut capture = X11Capture::open(rect)?;
+    shared
+        .capture_fd
+        .store(capture.connection_fd(), Ordering::Relaxed);
+    let _clear_fd = ClearCaptureFd(&shared.capture_fd);
     let mut encoder = GstEncoder::open(
         &encoder_name,
         crate::core::EncoderConfig {
@@ -279,10 +362,35 @@ fn monitor_thread(
         if let Ok(cursor) = shared.cursor.lock() {
             paint_cursor(&mut frame, rect.x, rect.y, &cursor);
         }
+        let timestamp = rtp_timestamp(frame.monotonic_ns, epoch_ns());
+        let dest = SocketAddr::new(
+            target.control.ip(),
+            target.video_port + u16::from(rect.index),
+        );
+        // Pull before pushing. The encoder stops accepting input once its
+        // output queue is full, and skipping the pull on that failure left
+        // both sides waiting on each other.
+        send_ready(
+            &mut encoder,
+            &mut packetizer,
+            &socket,
+            dest,
+            &shared,
+            timestamp,
+            false,
+        )?;
         if let Err(err) = encoder.submit(&frame) {
-            // The encoder is still busy with the previous frame. Dropping this
-            // one keeps the capture thread from freezing the stream.
-            tracing::debug!("skipped a frame the encoder could not take: {err}");
+            tracing::debug!("encoder busy, frame dropped: {err}");
+            encoder.request_keyframe();
+            send_ready(
+                &mut encoder,
+                &mut packetizer,
+                &socket,
+                dest,
+                &shared,
+                timestamp,
+                true,
+            )?;
             continue;
         }
         shared.captured.fetch_add(1, Ordering::Relaxed);
@@ -291,29 +399,15 @@ fn monitor_thread(
             monitor = rect.index,
             "captured"
         );
-        let timestamp = rtp_timestamp(frame.monotonic_ns, epoch_ns());
-        let mut waited = false;
-        loop {
-            let unit = if !waited {
-                waited = true;
-                encoder.pull_wait(8_000_000)?
-            } else {
-                encoder.pull()?
-            };
-            let Some(unit) = unit else { break };
-            let dest = SocketAddr::new(
-                target.control.ip(),
-                target.video_port + u16::from(rect.index),
-            );
-            for packet in packetizer.packetize(&unit.bytes, timestamp) {
-                match socket.send_to(&packet, dest) {
-                    Ok(sent) => {
-                        shared.bytes.fetch_add(sent as u64, Ordering::Relaxed);
-                    }
-                    Err(err) => tracing::debug!("video send: {err}"),
-                }
-            }
-        }
+        send_ready(
+            &mut encoder,
+            &mut packetizer,
+            &socket,
+            dest,
+            &shared,
+            timestamp,
+            true,
+        )?;
     }
     Ok(())
 }

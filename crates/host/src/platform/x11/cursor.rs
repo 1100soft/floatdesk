@@ -1,4 +1,4 @@
-//! XFixes cursor image and hotspot. The pointer is not composited into the video.
+//! XFixes cursor image and hotspot for composition into captured frames.
 //!
 //! Position comes from `QueryPointer`. The cursor image is read only when the
 //! shape changes, so a moving pointer does not wait on a full image round-trip.
@@ -75,7 +75,6 @@ impl CursorBackend for X11Cursor {
             .reply()
             .map_err(Error::x11)?;
         let mut argb = Vec::new();
-        let mut serial = self.last_serial;
         if self.shape_pending {
             let image = self
                 .link
@@ -84,7 +83,7 @@ impl CursorBackend for X11Cursor {
                 .map_err(Error::x11)?
                 .reply()
                 .map_err(Error::x11)?;
-            serial = u64::from(image.cursor_serial);
+            let serial = u64::from(image.cursor_serial);
             self.last_serial = serial;
             self.hotspot_x = image.xhot as i16;
             self.hotspot_y = image.yhot as i16;
@@ -98,7 +97,6 @@ impl CursorBackend for X11Cursor {
             root_y: i32::from(pointer.root_y),
             hotspot_x: self.hotspot_x,
             hotspot_y: self.hotspot_y,
-            serial,
             width: self.width,
             height: self.height,
             argb,

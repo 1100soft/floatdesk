@@ -23,6 +23,7 @@ internal class H264Depacketizer {
     private var fuSize = 0
     private var fuOpen = false
     private var lost = false
+    private var damaged = false
 
     fun consumeLoss(): Boolean = lost.also { lost = false }
 
@@ -40,6 +41,11 @@ internal class H264Depacketizer {
         if (expected != null && seq != expected) {
             reset()
             lost = true
+            damaged = true
+        }
+        if (damaged) {
+            if (marker) damaged = false
+            return null
         }
         if (length <= 12) return null
         val nalType = packet[12].toInt() and 0x1F
@@ -160,7 +166,7 @@ private class RtpReorder {
             }
             if (held.isEmpty() || nextSeq < 0) break
             if (holeSince == 0L) holeSince = nowMs
-            if (nowMs - holeSince < 20 && held.size < 16) break
+            if (nowMs - holeSince < 40 && held.size < 24) break
             nextSeq = (nextSeq + 1) and 0xFFFF
             holeSince = nowMs
         }
@@ -180,7 +186,7 @@ internal class MonitorDecoder(
     private val pending = ArrayBlockingQueue<ByteArray>(4)
     private val sps = AtomicReference<ByteArray?>(null)
     private val pps = AtomicReference<ByteArray?>(null)
-    private val awaitingKey = AtomicBoolean(false)
+    private val awaitingKey = AtomicBoolean(true)
     private var receiveThread: Thread? = null
     private var decodeThread: Thread? = null
 
@@ -234,10 +240,7 @@ internal class MonitorDecoder(
             }
             for (copy in ready) {
                 val accessUnit = depacketizer.push(copy, copy.size)
-                if (depacketizer.consumeLoss()) {
-                    awaitingKey.set(true)
-                    onGap()
-                }
+                if (depacketizer.consumeLoss()) recover("RTP packet loss")
                 if (accessUnit == null) continue
                 for (nal in splitAnnexB(accessUnit)) {
                     when (nalType(nal)) {
@@ -246,14 +249,26 @@ internal class MonitorDecoder(
                     }
                 }
                 val keyframe = isKeyframe(accessUnit)
-                if (awaitingKey.get() && !keyframe) continue
+                if (awaitingKey.get() && !keyframe) {
+                    onGap()
+                    continue
+                }
                 if (keyframe) awaitingKey.set(false)
                 if (!pending.offer(accessUnit)) {
-                    pending.poll()
-                    pending.offer(accessUnit)
+                    recover("compressed queue overflow")
+                    if (keyframe) {
+                        awaitingKey.set(false)
+                        pending.offer(accessUnit)
+                    }
                 }
             }
         }
+    }
+
+    private fun recover(reason: String) {
+        if (!awaitingKey.getAndSet(true)) Log.w(TAG, "requesting IDR: $reason")
+        pending.clear()
+        onGap()
     }
 
     private fun decodeLoop() {
@@ -283,11 +298,15 @@ internal class MonitorDecoder(
             }
             val active = codec ?: continue
             val keyframe = isKeyframe(accessUnit)
-            if (awaitingKey.get() && !keyframe) continue
-            if (keyframe) awaitingKey.set(false)
             if (keyframe) sawKeyframe = true
-            if (!sawKeyframe) continue
-            queue(active, accessUnit, 0, keyframe)
+            if (!sawKeyframe) {
+                onGap()
+                continue
+            }
+            if (!queue(active, accessUnit, System.nanoTime() / 1000, keyframe, byteDump)) {
+                sawKeyframe = false
+                recover("decoder rejected access unit")
+            }
             rendered += drain(active, rendered, byteDump)
         }
         codec?.stop()
@@ -311,25 +330,31 @@ internal class MonitorDecoder(
         }
     }
 
-    private fun queue(codec: MediaCodec, accessUnit: ByteArray, ptsUs: Long, keyframe: Boolean) {
+    private fun queue(
+        codec: MediaCodec, accessUnit: ByteArray, ptsUs: Long, keyframe: Boolean, byteDump: Boolean,
+    ): Boolean {
         try {
-            var index = codec.dequeueInputBuffer(0)
-            if (index < 0) {
-                drain(codec, 0, false)
-                index = codec.dequeueInputBuffer(2)
+            // Never silently discard a reference picture while the codec is busy.
+            var index = -1
+            while (running.get() && index < 0) {
+                index = codec.dequeueInputBuffer(10_000)
+                if (index < 0) drain(codec, 0, byteDump)
             }
-            if (index < 0) return
-            val input = codec.getInputBuffer(index) ?: return
+            if (index < 0) return false
+            val input = codec.getInputBuffer(index)
+            if (input == null || accessUnit.size > input.capacity()) {
+                codec.queueInputBuffer(index, 0, 0, ptsUs, 0)
+                Log.w(TAG, "access unit ${accessUnit.size} exceeds decoder input capacity")
+                return false
+            }
             input.clear()
-            if (accessUnit.size > input.remaining()) {
-                Log.w(TAG, "access unit ${accessUnit.size} exceeds input buffer ${input.remaining()}")
-                return
-            }
             input.put(accessUnit)
             val flags = if (keyframe) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
             codec.queueInputBuffer(index, 0, accessUnit.size, ptsUs, flags)
+            return true
         } catch (err: Exception) {
             Log.e(TAG, "queue failed", err)
+            return false
         }
     }
 

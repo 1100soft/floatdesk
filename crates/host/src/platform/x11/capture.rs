@@ -183,6 +183,13 @@ impl X11Capture {
         self.rect.x < area_r && mine_r > area_x && self.rect.y < area_b && mine_b > area_y
     }
 
+    /// Socket the X server replies on. Closing it unblocks a grab that would
+    /// otherwise wait forever.
+    pub fn connection_fd(&self) -> i32 {
+        use std::os::unix::io::AsRawFd;
+        self.link.conn.stream().as_raw_fd()
+    }
+
     /// The cursor is composited after the grab, so a pointer move has to
     /// request a frame even when the framebuffer itself is unchanged.
     pub fn note_cursor(&mut self) {

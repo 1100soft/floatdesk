@@ -39,6 +39,7 @@ internal data class WorkspaceFile(
     var anchorUuid: String? = null,
     val layouts: MutableMap<String, MutableList<MonitorPlacement>> = mutableMapOf(),
     val control: PanelPlacement = PanelPlacement(),
+    val sphericalWarp: Boolean = false,
 )
 
 internal class WorkspaceStore(private val file: File) {
@@ -120,6 +121,7 @@ private fun encode(workspace: WorkspaceFile): JSONObject {
         .put("anchor_uuid", workspace.anchorUuid)
         .put("layouts", layouts)
         .put("control", encodePanel(workspace.control))
+        .put("spherical_warp", workspace.sphericalWarp)
 }
 
 private fun encodeMonitor(monitor: MonitorPlacement): JSONObject {
@@ -157,6 +159,7 @@ private fun decode(json: JSONObject): WorkspaceFile {
         anchorUuid = json.optString("anchor_uuid").ifEmpty { null },
         layouts = layouts,
         control = json.optJSONObject("control")?.let { decodePanel(it) } ?: PanelPlacement(),
+        sphericalWarp = json.optBoolean("spherical_warp", false),
     )
 }
 

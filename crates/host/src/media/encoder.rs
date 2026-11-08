@@ -156,12 +156,12 @@ impl GstEncoder {
     fn start(profile: Profile, config: EncoderConfig) -> Result<Self> {
         let max_bytes = (config.width as u64 * config.height as u64 * 4).saturating_mul(2);
         let description = format!(
-            "appsrc name=src is-live=true format=time do-timestamp=true block=true max-bytes={max_bytes} \
+            "appsrc name=src is-live=true format=time do-timestamp=true block=false max-bytes={max_bytes} \
              ! videoconvert ! video/x-raw,format={} \
              ! {} name=enc \
              ! h264parse config-interval=-1 \
              ! video/x-h264,stream-format=byte-stream,alignment=au \
-             ! appsink name=sink emit-signals=false sync=false max-buffers=1 drop=false",
+             ! appsink name=sink emit-signals=false sync=false max-buffers=2 leaky-type=upstream",
             profile.format, profile.element
         );
         let pipeline = Pipeline::launch(&description)?;
@@ -175,6 +175,7 @@ impl GstEncoder {
         for (name, value) in profile.props {
             pipeline.set_arg(Element::Encoder, name, value)?;
         }
+        // Bound recovery time even if the client's IDR request is lost.
         let gop = config.fps.max(1).to_string();
         let _ = pipeline.set_arg(Element::Encoder, "key-int-max", &gop);
         let _ = pipeline.set_arg(Element::Encoder, "gop-size", &gop);

@@ -36,7 +36,23 @@ fun main() {
     check(ready.size == 2)
     val ordered = H264Depacketizer()
     ready.forEach { ordered.accept(it) }; check(!ordered.consumeLoss())
-    println("RTP checks passed: AU assembly, sequence wrap, fragment loss, partial-AU rejection, reorder")
+    // A restarted host uses a new SSRC and may reset sequence numbers backwards.
+    fun sourced(seq: Int, id: Int): ByteArray = packet(seq,true,0x65,1).also { it[11] = id.toByte() }
+    val restart = RtpReorder()
+    check(restart.push(sourced(30000,1),14,1000).size == 1)
+    check(!restart.consumeRestart())
+    check(restart.push(sourced(0,2),14,1001).size == 1)
+    check(restart.consumeRestart()); check(!restart.consumeRestart())
+    check(restart.push(sourced(0,2),14,1002).isEmpty()) // A duplicate is still discarded.
+    check(restart.push(sourced(20000,2),14,1003).size == 1)
+    check(restart.push(sourced(0,2),14,3004).size == 1) // Same source, reset after downtime.
+    check(restart.consumeRestart())
+    val partial = H264Depacketizer()
+    check(partial.accept(packet(15000,false,0x7c,0x85,1)) == null)
+    partial.restart()
+    check(partial.accept(packet(0,true,0x65,2)) != null)
+    check(!partial.consumeLoss())
+    println("RTP checks passed: host source/sequence restart, duplicate rejection, partial-frame reset,  AU assembly, sequence wrap, fragment loss, partial-AU rejection, reorder")
 }
 '''
 lib = Path(sys.argv[1])

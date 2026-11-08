@@ -2,7 +2,7 @@ package dev.floatdesk.client
 
 import kotlin.math.sqrt
 
-/** A rectangular image projected radially onto a viewer-centered sphere, in monitor-local units. */
+/** Conformal stereographic image projection: equal local pixel scale on both spherical axes. */
 internal class MonitorMesh(
     val width: Float,
     val height: Float,
@@ -11,8 +11,14 @@ internal class MonitorMesh(
     val rows: Int = 40,
 ) {
     val radius = sqrt(eye.sumOf { (it * it).toDouble() }).toFloat()
+    private val normal = FloatArray(3) { eye[it] / radius }
+    private val tangentX = floatArrayOf(1f-normal[0]*normal[0]/(1f+normal[2]), -normal[0]*normal[1]/(1f+normal[2]), -normal[0])
+    private val tangentY = floatArrayOf(-normal[0]*normal[1]/(1f+normal[2]), 1f-normal[1]*normal[1]/(1f+normal[2]), -normal[1])
     val positions = FloatArray((columns + 1) * (rows + 1) * 3)
     val texCoords = FloatArray((columns + 1) * (rows + 1) * 2)
+    // SurfaceEntity video sampling uses bottom-left UVs. Embedded PNG/glTF uses top-left UVs.
+    val videoTexCoords: FloatArray
+        get() = FloatArray(texCoords.size) { if (it % 2 == 1) 1f - texCoords[it] else texCoords[it] }
     val indices = IntArray(columns * rows * 6)
     val outline: List<FloatArray>
 
@@ -22,14 +28,9 @@ internal class MonitorMesh(
         for (row in 0..rows) for (col in 0..columns) {
             val u = col.toFloat() / columns
             val v = row.toFloat() / rows
-            val dx = (u - .5f) * width - eye[0]
-            val dy = (.5f - v) * height - eye[1]
-            val dz = -eye[2]
-            val factor = radius / sqrt(dx * dx + dy * dy + dz * dz)
+            val point = project(floatArrayOf((u-.5f)*width,(.5f-v)*height,0f))
             val vertex = row * (columns + 1) + col
-            positions[vertex * 3] = eye[0] + dx * factor
-            positions[vertex * 3 + 1] = eye[1] + dy * factor
-            positions[vertex * 3 + 2] = eye[2] + dz * factor
+            point.copyInto(positions, vertex * 3)
             texCoords[vertex * 2] = u
             texCoords[vertex * 2 + 1] = v
         }
@@ -54,17 +55,45 @@ internal class MonitorMesh(
     }
 
     fun project(flat: FloatArray): FloatArray {
-        val delta = FloatArray(3) { flat[it] - eye[it] }
-        val distance = sqrt(delta.sumOf { (it * it).toDouble() }).toFloat()
-        return FloatArray(3) { eye[it] + delta[it] * radius / distance }
+        val r2 = (flat[0]*flat[0] + flat[1]*flat[1]) / (4f*radius*radius)
+        val k = 1f / (1f+r2)
+        return FloatArray(3) { (flat[0]*tangentX[it] + flat[1]*tangentY[it] + 2f*radius*r2*normal[it])*k }
     }
 
-    /** Recover the image-plane pixel location from a hit on the curved mesh. */
+    /** Inverse stereographic projection, used for image bounds and precise curved-ray hits. */
     fun unproject(hit: FloatArray): FloatArray? {
-        val dz = hit[2] - eye[2]
-        if (kotlin.math.abs(dz) < 1e-6f) return null
-        val t = -eye[2] / dz
-        if (t <= 0f) return null
-        return floatArrayOf(eye[0] + (hit[0] - eye[0]) * t, eye[1] + (hit[1] - eye[1]) * t, 0f)
+        val z = hit.indices.sumOf { (hit[it]*normal[it]).toDouble() }.toFloat()
+        val denominator = 1f - z/(2f*radius)
+        if (denominator < 1e-5f) return null
+        fun along(axis: FloatArray) = (0..2).sumOf { (hit[it]*axis[it]).toDouble() }.toFloat()/denominator
+        return floatArrayOf(along(tangentX),along(tangentY),0f)
     }
+}
+
+/** Select the visible image using a ray in monitor-local coordinates, never SDK-localized hits. */
+internal fun monitorRayHit(origin: FloatArray, direction: FloatArray, width: Float, height: Float, mesh: MonitorMesh?): FloatArray? {
+    fun inside(hit: FloatArray): Boolean {
+        val flat = if (mesh != null) mesh.unproject(hit) ?: return false else hit
+        return kotlin.math.abs(flat[0]) <= width*.5f+.001f && kotlin.math.abs(flat[1]) <= height*.5f+.001f
+    }
+    if (mesh == null) {
+        if (kotlin.math.abs(direction[2]) < 1e-6f) return null
+        val t = -origin[2]/direction[2]
+        if (t <= 0f) return null
+        return FloatArray(3) { origin[it]+direction[it]*t }.takeIf { inside(it) }
+    }
+    val delta = FloatArray(3) { origin[it]-mesh.eye[it] }
+    fun dot(a: FloatArray,b: FloatArray) = (0..2).sumOf { (a[it]*b[it]).toDouble() }.toFloat()
+    val a = dot(direction,direction)
+    if (a < 1e-10f) return null
+    val b = dot(delta,direction)
+    val c = dot(delta,delta)-mesh.radius*mesh.radius
+    val discriminant = b*b-a*c
+    if (discriminant < 0f) return null
+    for (t in listOf((-b-sqrt(discriminant))/a,(-b+sqrt(discriminant))/a)) {
+        if (t <= 0f) continue
+        val hit = FloatArray(3) { origin[it]+direction[it]*t }
+        if (inside(hit)) return hit
+    }
+    return null
 }

@@ -30,8 +30,9 @@ private object Log { fun i(tag: String, message: String) {} }
 guide_source = (Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client/GrabGuideRenderer.kt').read_text()
 stub += guide_source[guide_source.index('internal data class GrabGuide'):guide_source.index('/** Native meshes')]
 mesh_source = (Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client/MonitorMesh.kt').read_text().split('\n', 1)[1]
-code = mesh_source + stub + section('private const val PALM_WIDTH', '@Composable\nprivate fun PalmControls')
-code += section('private class PalmPoke', '/** The pinned SceneCore')
+guard_source = (Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client/TrackingGuard.kt').read_text().split('\n',1)[1]
+code = mesh_source + guard_source + stub + section('private const val PALM_WIDTH', '@Composable\nprivate fun PalmControls')
+code += section('private class PalmPoke', '/** Find the parent')
 code += section('private class GrabTracking', 'private class FollowLock(')
 code += section('private fun palmNormal(', 'private fun openViewpoint(')
 code += section('private fun openPalm(', 'private fun readHand(')
@@ -78,6 +79,7 @@ fun main() {
     val align = quaternionBetween(subtract(startR,startL),subtract(point(initial,r),point(initial,l)))
     val delta = floatArrayOf(0.05f,-0.04f,-0.08f)
     tracking.points["LEFT"] = add(startL,delta); tracking.points["RIGHT"] = add(startR,delta)
+    tracking.nowMs = 60
     val moved = grab.advance(tracking,locked)!!
     val expectedDelta = rotateVector(align,delta[0]*gain,delta[1]*gain,delta[2]*gain)
     near(moved.pose.position,add(initial.pose.position,expectedDelta))
@@ -86,6 +88,7 @@ fun main() {
     // Independent depth on either hand maps both corresponding pixels exactly, not just the center.
     val dl = floatArrayOf(-0.03f,0.04f,-0.1f); val dr = floatArrayOf(0.04f,-0.02f,0.08f)
     tracking.points["LEFT"] = add(startL,dl); tracking.points["RIGHT"] = add(startR,dr)
+    tracking.nowMs = 120
     val tilted = grab.advance(tracking,moved)!!
     val scale = tilted.physicalWidthM / initial.physicalWidthM
     guides(grab,tilted)
@@ -97,6 +100,7 @@ fun main() {
     grab.onEvent(event("LEFT",InputEvent.Action.MOVE,l),initial,PixelDensity(),tracking)
     check(!grab.engaged)
     tracking.points["LEFT"] = startL; tracking.points["RIGHT"] = startR
+    tracking.nowMs = 0
     lock(grab); check(grab.engaged)
     // Missing raw joints freezes immediately and permanently cancels after 120ms.
     tracking.points.remove("LEFT"); tracking.nowMs = 80
@@ -183,6 +187,10 @@ fun main() {
             val flat = mesh.unproject(p)!!
             near(flat,floatArrayOf((mesh.texCoords[i/3*2]-.5f)*mesh.width,(.5f-mesh.texCoords[i/3*2+1])*mesh.height,0f))
         }
+        val videoUV = mesh.videoTexCoords
+        check(videoUV[0] == 0f && videoUV[1] == 1f) // video top-left
+        check(videoUV[videoUV.size-2] == 1f && videoUV.last() == 0f) // video bottom-right
+        check(mesh.texCoords[1] == 0f && mesh.texCoords.last() == 1f) // PNG orientation unchanged
         near(mesh.project(floatArrayOf(0f,0f,0f)),floatArrayOf(0f,0f,0f))
         check(mesh.indices.all { it in 0 until mesh.positions.size/3 })
         check(mesh.outline.size == 2*(mesh.columns+mesh.rows)/4)
@@ -193,6 +201,19 @@ fun main() {
     val curved = MonitorMesh(initial.physicalWidthM,initial.physicalHeightM,floatArrayOf(0f,0f,.6f))
     val curvedL = curved.project(l); val curvedR = curved.project(r)
     fun curvedEvent(side: String, hit: FloatArray) = SpatialInputEvent(side, InputEvent.Action.DOWN,Vector3(hit[0]*1000,hit[1]*1000,hit[2]*1000))
+    val planarGrab = TwoHandState()
+    planarGrab.onEvent(event("LEFT",InputEvent.Action.DOWN,l),initial,PixelDensity(),tracking,curved,planarInput=true)
+    planarGrab.onEvent(event("RIGHT",InputEvent.Action.DOWN,r),initial,PixelDensity(),tracking,curved,planarInput=true)
+    check(planarGrab.engaged)
+    near(planarGrab.guide!!.contacts[0],point(initial,curvedL))
+    near(planarGrab.guide!!.contacts[1],point(initial,curvedR))
+    planarGrab.onEvent(event("LEFT",InputEvent.Action.UP),initial,PixelDensity(),tracking,curved,planarInput=true)
+    check(!planarGrab.engaged && planarGrab.guide == null)
+    planarGrab.onEvent(event("RIGHT",InputEvent.Action.UP),initial,PixelDensity(),tracking,curved,planarInput=true)
+    planarGrab.onEvent(event("LEFT",InputEvent.Action.DOWN,l),initial,PixelDensity(),tracking,curved,planarInput=true)
+    planarGrab.onEvent(event("RIGHT",InputEvent.Action.DOWN,r),initial,PixelDensity(),tracking,curved,planarInput=true)
+    check(planarGrab.engaged)
+    planarGrab.cancel()
     val curvedGrab = TwoHandState()
     curvedGrab.onEvent(curvedEvent("LEFT",curvedL),initial,PixelDensity(),tracking,curved)
     curvedGrab.onEvent(curvedEvent("RIGHT",curvedR),initial,PixelDensity(),tracking,curved)
@@ -207,6 +228,35 @@ fun main() {
     check(curvedMoved.pose.position[2] != initial.pose.position[2])
     near(curvedGrab.guide!!.contacts[0],point(curvedMoved,curvedL,curvedMoved.physicalWidthM/initial.physicalWidthM))
     curvedGrab.cancel(); check(curvedGrab.frozenMesh == null)
+    check(sphericalActionLabel(false) == "Enable spherical")
+    check(sphericalActionLabel(true) == "Disable spherical")
+    // Ray contacts ignore incorrect SDK-localized coordinates and stay on actual visible bounds.
+    near(monitorRayHit(floatArrayOf(0f,0f,1f),floatArrayOf(.1f,0f,-1f),.8f,.45f,null)!!,floatArrayOf(.1f,0f,0f))
+    check(monitorRayHit(floatArrayOf(0f,0f,1f),floatArrayOf(1f,0f,-1f),.8f,.45f,null) == null)
+    val desired = curved.project(l)
+    val rayOrigin = floatArrayOf(.1f,.02f,.5f)
+    near(monitorRayHit(rayOrigin,subtract(desired,rayOrigin),curved.width,curved.height,curved)!!,desired)
+    val badSdkHit = event("LEFT",InputEvent.Action.DOWN,floatArrayOf(10f,10f,-5f))
+    val fromRay = TwoHandState()
+    fromRay.onEvent(badSdkHit,initial,PixelDensity(),tracking,curved,selectedHit=curvedL)
+    fromRay.onEvent(event("RIGHT",InputEvent.Action.DOWN,r),initial,PixelDensity(),tracking,curved,selectedHit=curvedR)
+    check(fromRay.engaged)
+    val guard = TrackingGuard()
+    val orientation = floatArrayOf(0f,0f,0f,1f)
+    check(!guard.update(0,startL,orientation,1f))
+    for (t in 20L..280L step 20) check(!guard.update(t,startL,orientation,1f))
+    check(guard.update(300,startL,orientation,1f))
+    check(!guard.update(320,null,null,1f))
+    check(!guard.update(340,startL,orientation,1f))
+    for (t in 360L..640L step 20) guard.update(t,startL,orientation,1f)
+    check(guard.update(660,startL,orientation,1f))
+    check(!guard.update(680,add(startL,floatArrayOf(1f,0f,0f)),orientation,1f))
+    val offsetMesh = MonitorMesh(1.8f,1.1f,floatArrayOf(.4f,-.3f,.8f))
+    val mid = floatArrayOf(.3f,.2f,0f)
+    val p = offsetMesh.project(mid)
+    val dx = subtract(offsetMesh.project(add(mid,floatArrayOf(.001f,0f,0f))),p)
+    val dy = subtract(offsetMesh.project(add(mid,floatArrayOf(0f,.001f,0f))),p)
+    check(kotlin.math.abs(distance(dx,floatArrayOf(0f,0f,0f))/distance(dy,floatArrayOf(0f,0f,0f))-1f) < .002f)
     val panel = PalmPanelState("LEFT",Pose(floatArrayOf(0f,0f,0f)))
     val poke = PalmPoke()
     check(poke.update(panel,floatArrayOf(-0.06f,0.02f,0.04f)) == null)
@@ -219,7 +269,7 @@ fun main() {
     poke.clear()
     check(poke.update(panel,floatArrayOf(0f,-.074f,.04f)) == null)
     check(poke.update(panel,floatArrayOf(0f,-.074f,-.02f)) == PalmAction.WARP)
-    println("Passed: spherical radius/inverse projection, curved grab/guide geometry, spherical palm button, virtual-copy gain, 3D endpoints, depth, close-contact and close-hand rejection, DEFAULT release, physical release without UP, tracking-loss cancellation, rearm, discontinuity rejection, miniature wireframe and endpoint alignment, guide cleanup, view-ray visibility offset, rotation, palm and fist")
+    println("Passed: video/PNG orientation separation, planar-input curved grabbing and regrab, action labels, spherical radius/inverse projection, curved grab/guide geometry, spherical palm button, virtual-copy gain, 3D endpoints, depth, close-contact and close-hand rejection, DEFAULT release, physical release without UP, tracking-loss cancellation, rearm, discontinuity rejection, miniature wireframe and endpoint alignment, guide cleanup, view-ray visibility offset, rotation, palm and fist")
 }
 '''
 lib = Path(sys.argv[1])

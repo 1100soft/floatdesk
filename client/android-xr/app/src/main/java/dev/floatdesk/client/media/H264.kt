@@ -27,6 +27,13 @@ internal class H264Depacketizer {
 
     fun consumeLoss(): Boolean = lost.also { lost = false }
 
+    fun restart() {
+        reset()
+        expectedSeq = null
+        damaged = false
+        lost = false
+    }
+
     fun push(packet: ByteArray, length: Int): ByteArray? {
         if (length < 12) return null
         // Byte.toInt() sign-extends. 0x80 is a normal RTP version-2 header, and an
@@ -138,10 +145,25 @@ private class RtpReorder {
     private val held = HashMap<Int, ByteArray>()
     private var nextSeq = -1
     private var holeSince = 0L
+    private var source: Int? = null
+    private var lastPacketMs = 0L
+    private var restarted = false
+
+    fun consumeRestart(): Boolean = restarted.also { restarted = false }
 
     fun push(packet: ByteArray, length: Int, nowMs: Long): List<ByteArray> {
-        if (length < 4) return emptyList()
+        if (length < 12) return emptyList()
         val seq = ((packet[2].toInt() and 0xFF) shl 8) or (packet[3].toInt() and 0xFF)
+        val ssrc = (8..11).fold(0) { value, index -> (value shl 8) or (packet[index].toInt() and 0xFF) }
+        val behindAfterIdle = nextSeq >= 0 && ((seq - nextSeq) and 0xFFFF) > 0x8000 && nowMs - lastPacketMs >= 1000
+        if (source != ssrc || behindAfterIdle) {
+            if (source != null) restarted = true
+            source = ssrc
+            held.clear()
+            nextSeq = seq
+            holeSince = 0L
+        }
+        lastPacketMs = nowMs
         if (nextSeq < 0) nextSeq = seq
         val ahead = (seq - nextSeq) and 0xFFFF
         if (ahead > 0x8000) return flush(nowMs)
@@ -237,6 +259,10 @@ internal class MonitorDecoder(
                 reorder.flush(System.currentTimeMillis())
             } catch (_: java.net.SocketException) {
                 break
+            }
+            if (reorder.consumeRestart()) {
+                depacketizer.restart()
+                recover("RTP source restarted")
             }
             for (copy in ready) {
                 val accessUnit = depacketizer.push(copy, copy.size)

@@ -32,7 +32,7 @@ Monitor and control-panel poses are stored in the workspace file and applied in 
 
 Follow keeps each panel fixed relative to the head by applying `headNow * inverse(headAtLock)` to the pose captured when follow started. A closed fist has to stay closed (about a third of a second) before follow starts, and opening the hand stops it. The Follow button latches follow until Unlock, until a grab starts, or until the workspace is reset. Follow does not run during a two-hand grab.
 
-Turning an open palm toward the face shows a small control panel in front of that hand. The other hand's index fingertip pokes its buttons: Follow, Reset desk, Reconnect, Workspace, and Spherical on/off. The panel hides when that hand turns away.
+Turning an open palm toward the face shows a small control panel in front of that hand. The other hand's index fingertip pokes its buttons: Follow, Reset desk, Reconnect, Workspace, and Enable spherical / Disable spherical. The panel hides when that hand turns away.
 
 ## Two-hand monitor grab
 
@@ -44,9 +44,9 @@ The guides are native glTF meshes (points and tethers) parented to the desk root
 
 ## Spherical monitor display
 
-The palm panel's Spherical on/off button saves a workspace-wide setting, off by default. When enabled, the live video uses a rectangular mesh projected radially onto a sphere centered between the viewer's eyes. The radius is the distance to each monitor's center. Both axes curve, and the center and viewing directions stay fixed. The mesh updates as the viewer moves; unsupported viewpoints behind or too close to the monitor use the flat display.
+The palm panel's Enable spherical / Disable spherical button saves a workspace-wide setting, off by default. When enabled, the live video uses a rectangular mesh projected radially onto a sphere centered between the viewer's eyes. The radius is the distance to each monitor's center. Both axes curve, and the center and viewing directions stay fixed. The mesh updates as the viewer moves; unsupported viewpoints behind or too close to the monitor use the flat display.
 
-The same decoder surface and input target are retained. The curved geometry freezes at the first grab contact so the contact points, frozen image and miniature outline remain rigid throughout manipulation. It refits to the viewer on release. The new geometry checks run on the JVM; live mesh rendering and interaction still need device verification.
+The live video is rendered on a separate, non-interactive sibling surface. The original flat Compose quad stays enabled as an invisible input target, so mesh changes and grab snapshots cannot cancel its input sequence. Its logical pixel hits are projected onto the curved screen for grabbing. The decoder surface stays the same when toggling curvature. The curved geometry freezes at the first grab contact so the contact points, frozen image and miniature outline remain rigid throughout manipulation. It refits to the viewer on release. The new geometry checks run on the JVM; live mesh rendering and interaction still need device verification.
 
 ## Checks
 
@@ -59,3 +59,17 @@ python3 checks/rtp.py /path/to/gradle/lib
 ```
 
 `gestures.py` checks the grab mapping, fist and palm thresholds, and the guide geometry. `frozen_frame.py` checks the snapshot mesh. `rtp.py` checks depacketizing and reordering. None of them run on the headset.
+
+## Host process disappearance, 8 November 2026
+
+A later complete stop had no host process and no listener on UDP 47000. The old `/tmp/floatdesk-va.log` ended mid-line at exactly 262,144 bytes. That is consistent with a file-size limit killing the background process; its exit signal was not retained, so the precise termination reason cannot be proven. This was different from the earlier live-process encoder deadlock.
+
+`scripts/serve-existing.sh` starts the existing-desktop host as the `floatdesk-live` user service, with automatic restart on failure, journal output and an unlimited regular-file size limit. The packaged unit uses the same logging and limit settings. Host recovery was verified by observing client reconnection and fresh video packets on the headset after restarting the service.
+
+Restart recovery also resets the headset reorder/depacketizer state when the RTP source changes, or when sequence numbers restart backwards after downtime, and requests a fresh keyframe. Capture-thread retries retain their packetizer sequence within one host process. The RTP regression checks cover host source changes, duplicate rejection, backwards sequence restart after idle and partial-frame cleanup.
+
+## Grab, projection and tracking consistency
+
+Device DOWN events reported local hit positions with more than a meter of plane depth, causing the old bounds check to reject actual monitor pinches. The controller now transforms the event's activity-space ray into the monitor input entity and intersects the actual flat or spherical surface. Input and video use identical geometry outside an active grab. Native move/resize callbacks were removed so they cannot write a second, inconsistent monitor transform. Shape-generated CANCEL events do not end an active grab while both raw pinches remain held; physical release and tracking loss remain authoritative.
+
+Spherical mapping now uses a conformal stereographic parameterization so local horizontal and vertical pixel scales match at off-center viewpoints. Source aspect ratios are reconciled when connecting. The app uses a large explicit Subspace volume rather than the recommended content box. Tracking is gated by lifecycle and device tracking state; gaps and sudden pose changes suspend movement until 300 ms of stable samples, then follow rebases rather than applying accumulated displacement. A visible activity keeps the screen on and reapplies hand/head configuration on resume. Physical safety boundaries and OS tracking suspension remain system-controlled.

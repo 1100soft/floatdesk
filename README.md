@@ -24,6 +24,16 @@ cargo build --release
 ./target/release/floatdesk serve --existing --duration 4 --encoder x264enc --fps 15
 ```
 
+For long-running headset use, run the existing-desktop host under your user service manager instead of leaving a background process attached to a terminal or coding tool:
+
+```bash
+cargo build --release
+./scripts/serve-existing.sh --encoder vah264enc --fps 60
+journalctl --user -u floatdesk-live -f
+```
+
+This session service restarts the host after a crash, sends logs to the journal, and removes inherited regular-file size limits. Omit `--encoder` to select an available encoder automatically. It uses the current X11 `DISPLAY` and `XAUTHORITY`. Stop it with `systemctl --user stop floatdesk-live`; use `systemctl --user restart floatdesk-live` to restart the running service. To change launch arguments, stop it and rerun the script. `FLOATDESK_BIN` can select a different executable.
+
 Ctrl-C restores a virtual framebuffer. If the process is killed first, the saved size is in `$XDG_STATE_HOME/floatdesk/x11-screen.json` (or `~/.local/state/floatdesk/`). Put it back with:
 
 ```bash
@@ -42,7 +52,7 @@ Face an open palm toward yourself to show the control panel, and touch its butto
 
 Pinch two well-separated points on a monitor to manipulate it in 3D. Hand translation, depth, rotation, and separation move and scale a miniature monitor held between your hands; the real monitor mirrors that transformation. A wireframe, fixed contact markers, and tethers show the mapping. Closely spaced contacts are rejected, and releasing either pinch or losing tracking ends the grab. During manipulation a frozen snapshot replaces the video visually so the guides stay visible. The hidden video surface continues receiving frames and reappears on release.
 
-Use **Spherical on/off** on the palm panel to curve each monitor horizontally and vertically onto a sphere centered between your eyes. The screen center stays in place and the curvature adapts as you move your head. The setting is saved with the workspace. During a grab, the curved shape freezes with the image to keep the contact points rigid; it refits to your viewpoint on release.
+Use **Enable spherical / Disable spherical** on the palm panel to curve each monitor horizontally and vertically onto a sphere centered between your eyes. The screen center stays in place and a conformal projection keeps local horizontal and vertical pixel scales equal as you move your head. The setting is saved with the workspace. During a grab, the curved shape freezes with the image to keep the contact points rigid; it refits to your viewpoint on release.
 
 What changed after the first LAN proof of concept is recorded in [CHANGES.md](CHANGES.md). Regression checks and the limits of those checks are in [the Android checks README](client/android-xr/checks/README.md).
 
@@ -61,3 +71,5 @@ client/android-xr  Jetpack XR receiver
 benchmarks         netem helper for latency, jitter, and loss
 packaging          systemd unit
 ```
+
+The two-point controller is the sole monitor movement path. Contacts are selected by ray intersections with the displayed geometry, rather than SDK-localized hit coordinates. App layout bounds are expanded beyond the default XR content box. Tracking gaps, implausible pose changes and rapid hand discontinuities cancel manipulation; head-driven movement waits for 300 ms of stable tracking and rebases after recovery. Visible app use prevents idle screen sleep and reapplies tracking configuration on resume. Android XR still controls sensor availability, focus-related tracking suspension and physical safety boundaries.

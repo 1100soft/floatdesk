@@ -1,10 +1,12 @@
 package dev.floatdesk.client
 
-import android.annotation.SuppressLint
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.util.Log
 import android.view.Surface
+import android.view.WindowManager
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -29,6 +31,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -57,24 +60,24 @@ import androidx.xr.compose.spatial.Subspace
 import androidx.xr.compose.subspace.SpatialExternalSurface
 import androidx.xr.compose.subspace.SpatialPanel
 import androidx.xr.compose.subspace.StereoMode
-import androidx.xr.compose.subspace.layout.MovePolicy
-import androidx.xr.compose.subspace.layout.ResizePolicy
 import androidx.xr.compose.subspace.layout.InteractionPolicy
 import androidx.xr.compose.subspace.layout.SpatialInputEvent
+import androidx.xr.compose.subspace.layout.SubspaceModifier
+import androidx.xr.compose.subspace.layout.MovePolicy
+import androidx.xr.compose.subspace.layout.ResizePolicy
 import androidx.xr.compose.subspace.layout.SpatialMoveEvent
 import androidx.xr.compose.subspace.layout.SpatialMoveEventType
 import androidx.xr.compose.subspace.layout.SpatialResizeEvent
 import androidx.xr.compose.subspace.layout.SpatialResizeEventType
-import androidx.xr.compose.subspace.layout.SubspaceModifier
+import androidx.xr.compose.subspace.layout.movable
+import androidx.xr.compose.subspace.layout.resizable
+import androidx.xr.compose.unit.DpVolumeSize
 import androidx.xr.compose.subspace.layout.pointerHoverIcon
 import androidx.xr.scenecore.SpatialPointerIcon
-import androidx.xr.compose.subspace.layout.movable
 import androidx.xr.compose.subspace.layout.offset as offset3d
 import androidx.xr.compose.subspace.layout.requiredHeight
 import androidx.xr.compose.subspace.layout.requiredWidth
-import androidx.xr.compose.subspace.layout.resizable
 import androidx.xr.compose.subspace.layout.rotate
-import androidx.xr.compose.unit.DpVolumeSize
 import androidx.xr.runtime.Config
 import androidx.xr.runtime.DeviceTrackingMode
 import androidx.xr.runtime.HandTrackingMode
@@ -122,6 +125,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         store = WorkspaceStore(File(filesDir, "workspace.json"))
         val permissions = arrayOf(
             "android.permission.HAND_TRACKING",
@@ -161,6 +165,17 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     LaunchedEffect(connection) { connection.start(context) }
     val session = LocalSession.current
     SessionHolder.session = session
+    DisposableEffect(session) {
+        val current = session
+        val observer = LifecycleEventObserver { _, event ->
+            if (current != null && event == Lifecycle.Event.ON_RESUME) {
+                runCatching { current.configure(Config.Builder(current.config).setHandTracking(HandTrackingMode.BOTH).build()) }
+                runCatching { current.configure(Config.Builder(current.config).setDeviceTracking(DeviceTrackingMode.SPATIAL).build()) }
+            }
+        }
+        current?.lifecycleOwner?.lifecycle?.addObserver(observer)
+        onDispose { current?.lifecycleOwner?.lifecycle?.removeObserver(observer) }
+    }
     var workspace by remember { mutableStateOf(store.load()) }
     val monitors by connection.monitors
     val status by connection.status
@@ -174,6 +189,18 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     var gestureNote by remember { mutableStateOf("Waiting for hand tracking…") }
     val following = latchedFollow || (holdingFist && !suppressFist)
     val grabs = remember { mutableMapOf<Int, TwoHandState>() }
+    DisposableEffect(session) {
+        val current = session
+        val listener = Runnable {
+            Log.w("Floatdesk","XR activity origin changed; cancelling gestures")
+            grabs.values.forEach { it.cancel() }
+            manipulating = false
+            suppressFist = true
+            followGeneration += 1
+        }
+        current?.scene?.activitySpace?.addOriginChangedListener(listener)
+        onDispose { runCatching { current?.scene?.activitySpace?.removeOriginChangedListener(listener) } }
+    }
     val handTracking = remember { GrabTracking() }
     val grips = handTracking.points
     val deskSpace = remember { AtomicReference<Entity?>(null) }
@@ -205,6 +232,13 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 PalmAction.RESET -> { workspace = workspace.reset(monitors, store); followGeneration += 1 }
                 PalmAction.SEARCH -> { connection.disconnect(); connection.start(context) }
                 PalmAction.SPACE -> session?.scene?.requestFullSpace()
+                PalmAction.WARP -> {
+                    grabs.values.forEach { it.cancel() }
+                    manipulating = false
+                    followGeneration += 1
+                    workspace = workspace.copy(sphericalWarp = !workspace.sphericalWarp)
+                    store.save(workspace)
+                }
             }
         }
     }
@@ -241,8 +275,10 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
         // This headset is stereo, so the mono viewpoint is not created. The left
         // eye, then the device pose, is the head.
         var viewpoint = openViewpoint(current)
+        val rightViewpoint = runCatching { RenderViewpoint.right(current) }.getOrNull()
         var device = runCatching { ArDevice.getInstance(current) }.getOrNull()
         Log.i("Floatdesk", "head source view=${viewpoint != null} device=${device != null}")
+        val trackingGuard = TrackingGuard()
         var fistHeld = 0
         var panelHand: String? = null
         var lastPalmSeen = 0L
@@ -267,8 +303,9 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             val deviceState = device?.state?.value
             // Joints and the raw viewpoint live in perception space. The desk is
             // stored in the Compose root, so follow must convert into that same space.
-            val perceived = viewpoint?.state?.value?.pose
-                ?: deviceState?.devicePose?.takeIf { deviceState.trackingState == TrackingState.TRACKING }
+            val trackingAvailable = current.lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
+                (deviceState == null || deviceState.trackingState == TrackingState.TRACKING)
+            val perceived = viewpoint?.state?.value?.pose ?: deviceState?.devicePose?.takeIf { trackingAvailable }
             // SpatialExternalSurface is under Compose's recommended root, whose scale/pose
             // are independent of ActivitySpace. Always target the actual surface parent.
             val root = findDeskSpace(current) ?: deskSpace.get()
@@ -282,7 +319,14 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             handTracking.unitsPerMeter = unitsPerMeter
             handTracking.nowMs = SystemClock.uptimeMillis()
             handTracking.pinched.clear()
-            val head = perceived?.let { deskPose(current, root, it) }
+            val candidateHead = perceived?.let { deskPose(current, root, it) }
+            val reliable = trackingGuard.update(handTracking.nowMs, candidateHead?.takeIf { trackingAvailable }?.translation?.toArray(),
+                candidateHead?.let { floatArrayOf(it.rotation.x,it.rotation.y,it.rotation.z,it.rotation.w) },unitsPerMeter)
+            val head = candidateHead?.takeIf { reliable }
+            if (!reliable) {
+                // Head quality controls follow, not availability of independently tracked hands.
+                followLock = null
+            }
             var anyFist = false
             var anyOpen = false
             var palmShown = false
@@ -290,6 +334,12 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             val fingerTips = mutableMapOf<String, FloatArray>()
             grips.clear()
             head?.let { grips["HEAD"] = it.translation.toArray() }
+            // A sphere can be equidistant from one point: use the midpoint between the eyes.
+            val rightEye = rightViewpoint?.state?.value?.pose
+            val viewer = if (perceived != null && rightEye != null) {
+                androidx.xr.runtime.math.Pose((perceived.translation + rightEye.translation) * 0.5f)
+            } else perceived
+            viewer?.takeIf { reliable }?.let { grips["VIEWER"] = deskPose(current, root, it).translation.toArray() }
             var tracking = 0
             var rawTracking = 0
             for ((side, hand) in hands) {
@@ -402,6 +452,15 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     LaunchedEffect(monitors) {
         if (monitors.isNotEmpty() && workspace.layouts[workspace.activeLayout]?.size != monitors.size) {
             workspace = workspace.reset(monitors, store)
+        } else if (monitors.isNotEmpty()) {
+            val saved = workspace.layouts[workspace.activeLayout].orEmpty()
+            val matched = saved.mapIndexed { index, placement ->
+                val source = monitors[index]
+                placement.copy(pixelWidth=source.width,pixelHeight=source.height,
+                    physicalHeightM=placement.physicalWidthM*source.height/source.width.coerceAtLeast(1))
+            }.toMutableList()
+            workspace = workspace.copy(layouts=workspace.layouts.toMutableMap().apply { put(workspace.activeLayout,matched) })
+            store.save(workspace)
         }
     }
 
@@ -453,7 +512,6 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 onPalmAction = palmAction,
                 grabs = grabs,
                 handTracking = handTracking,
-                guidesReady = guideRenderer != null,
                 onManipulate = { updateManipulation(it) },
             )
         }
@@ -477,7 +535,6 @@ private fun DeskContent(
     onPalmAction: (PalmAction) -> Unit,
     grabs: MutableMap<Int, TwoHandState>,
     handTracking: GrabTracking,
-    guidesReady: Boolean,
     onManipulate: (Boolean) -> Unit,
 ) {
     val session = LocalSession.current
@@ -485,7 +542,7 @@ private fun DeskContent(
     val layout = layoutFor(workspace, monitors)
     palmPanel?.let { panel ->
         SpatialPanel(modifier = placedPanel(panel.pose, PALM_WIDTH * panel.unitsPerMeter, PALM_HEIGHT * panel.unitsPerMeter, density, pixelDensity)) {
-            PalmControls(latchedFollow, onPalmAction)
+            PalmControls(latchedFollow, workspace.sphericalWarp, onPalmAction)
         }
     }
     layout.forEachIndexed { index, placement ->
@@ -494,6 +551,33 @@ private fun DeskContent(
         var nativeMove by remember(index) { mutableStateOf(false) }
         var nativeResize by remember(index) { mutableStateOf(false) }
         val videoSurface = remember(index) { AtomicReference<Surface?>(null) }
+        val warp = remember(index, session) { MonitorWarp() }
+        LaunchedEffect(index, session) {
+            val current = session ?: return@LaunchedEffect
+            while (isActive) {
+                delay(20)
+                if (videoSurface.get() == null) continue
+                val root = findDeskSpace(current) ?: continue
+                val file = latest.value
+                val screen = file.monitorAt(index) ?: continue
+                try {
+                    // Freeze before the platform DOWN arrives: replacing a native canvas while
+                    // the user starts pinching can cancel its input acquisition.
+                    warp.update(current, root, handTracking.points["VIEWER"] ?: handTracking.points["HEAD"], screen, file.sphericalWarp,
+                        hands.busy || (file.sphericalWarp && handTracking.pinched.isNotEmpty()))
+                    warp.syncCurvedInput(current)
+                    warp.outputSurface?.let { display ->
+                        if (videoSurface.get() !== display) {
+                            videoSurface.set(display)
+                            connection.attachSurface(index, display)
+                        }
+                    }
+                } catch (failure: Exception) {
+                    Log.e("Floatdesk", "Could not update spherical monitor", failure)
+                    return@LaunchedEffect
+                }
+            }
+        }
         var frozenMonitor by remember(index) { mutableStateOf<FrozenMonitor?>(null) }
         LaunchedEffect(hands.engaged, session) {
             val current = session ?: return@LaunchedEffect
@@ -501,7 +585,7 @@ private fun DeskContent(
             val surface = videoSurface.get() ?: return@LaunchedEffect
             var frozen: FrozenMonitor? = null
             try {
-                frozen = FrozenMonitor.create(current, surface, placement.pixelWidth, placement.pixelHeight)
+                frozen = FrozenMonitor.create(current, surface, placement.pixelWidth, placement.pixelHeight, hands.frozenMesh)
                 val latestPlacement = latest.value.monitorAt(index) ?: return@LaunchedEffect
                 frozen.update(latestPlacement)
                 frozenMonitor = frozen
@@ -517,19 +601,20 @@ private fun DeskContent(
         }
         frozenMonitor?.let { frozen -> SideEffect { frozen.update(placement) } }
 
-        SpatialExternalSurface(
-            stereoMode = StereoMode.Mono,
-            interactionPolicy = remember(index) {
+        val inputPolicy = remember(index) {
                 object : InteractionPolicy {
                     override val isEnabled: Boolean = true
                     override fun onInputEvent(event: SpatialInputEvent) {
-                        // Hiding the video layer can cancel its system ray sequence. Joint pinch
-                        // release/tracking loss still ends the active physical-hand manipulation.
-                        if (frozenMonitor != null && hands.engaged && event.action == InputEvent.Action.CANCEL) return
+                        if (event.action == InputEvent.Action.CANCEL && frozenMonitor != null && hands.engaged) return
                         val file = latest.value
                         val existing = file.monitorAt(index) ?: return
                         val wasBusy = hands.busy
-                        val next = hands.onEvent(event, existing, pixelDensity, handTracking)
+                        if (event.action == InputEvent.Action.DOWN || event.action == InputEvent.Action.UP || event.action == InputEvent.Action.CANCEL) {
+                            Log.i("Floatdesk", "monitor input index=$index side=${event.pointerType} action=${event.action} hit=${event.hitPosition} busy=${hands.busy}")
+                        }
+                        // The native listener supplies a surface-validated local contact from the
+                        // raw perception-space hit; do not localize it again through ActivitySpace.
+                        val next = hands.onEvent(event, existing, pixelDensity, handTracking, warp.mesh)
                         if (hands.blocksNative) { nativeMove = false; nativeResize = false }
                         if (wasBusy != hands.busy) onManipulate(hands.busy)
                         if (next == null) return
@@ -543,14 +628,16 @@ private fun DeskContent(
                         )
                     }
                 }
-            },
+            }
+        SpatialExternalSurface(
+            stereoMode = StereoMode.Mono,
             modifier = placedPanel(
                 pose = placement.pose,
                 widthM = placement.physicalWidthM,
                 heightM = placement.physicalHeightM,
                 density = density,
                 pixelDensity = pixelDensity,
-            ).pointerHoverIcon(if (hands.engaged && guidesReady) SpatialPointerIcon.NONE else SpatialPointerIcon.DEFAULT).movable(
+            ).pointerHoverIcon(SpatialPointerIcon.DEFAULT).movable(
                 movePolicy = MovePolicy.custom(scaleWithDistance = false) { event ->
                     if (hands.blocksNative) { nativeMove = false; return@custom }
                     if (event.type == SpatialMoveEventType.Start) { nativeMove = true; onManipulate(true) }
@@ -589,13 +676,16 @@ private fun DeskContent(
             ),
         ) {
             onSurfaceCreated { surface ->
-                session?.let { configureVideoDepth(it) }
-                videoSurface.set(surface)
-                connection.attachSurface(index, surface)
+                val current = session ?: return@onSurfaceCreated
+                val display = warp.attach(current, surface, latest.value.monitorAt(index) ?: placement, pixelDensity, inputPolicy::onInputEvent)
+                videoSurface.set(display)
+                connection.attachSurface(index, display)
             }
             onSurfaceDestroyed {
                 videoSurface.set(null)
                 connection.detachSurface(index)
+                hands.cancel()
+                warp.close()
             }
         }
         // Debug SpatialPanels intercept the system rays. Keep the video as the only hit target.
@@ -784,37 +874,46 @@ private fun Float.meters(density: Density, pixelDensity: PixelDensity): Dp {
 }
 
 private class PinchMemory {
-    private var startScale = 1f
-    private var startWidth = 0f
-    private var startHeight = 0f
+    private var previous: Pose? = null
+    private var previousScale = 1f
 
     fun apply(event: SpatialMoveEvent, placement: MonitorPlacement, pixelDensity: PixelDensity): MonitorPlacement {
-        if (event.type == SpatialMoveEventType.Start || startWidth == 0f) {
-            startScale = event.scale.coerceAtLeast(0.01f)
-            startWidth = placement.physicalWidthM
-            startHeight = placement.physicalHeightM
+        val sample = event.workspacePose(pixelDensity)
+        val before = previous
+        val scale = event.scale.coerceAtLeast(.01f)
+        val factor = (scale/previousScale).coerceIn(.5f,2f)
+        previous = sample
+        previousScale = scale
+        if (event.type == SpatialMoveEventType.Start || before == null) return placement
+        // Consume discontinuities as a new reference, never replay the jump on a later frame.
+        val rotationDot = kotlin.math.abs(dot4(before.rotation,sample.rotation))
+        if (distance(before.position,sample.position) > .25f || rotationDot < .9f) {
+            Log.w("Floatdesk","native move discontinuity ignored")
+            return placement
         }
-        val factor = (event.scale / startScale).coerceIn(0.25f, 4f)
         return placement.copy(
-            pose = event.workspacePose(pixelDensity),
-            physicalWidthM = (startWidth * factor).coerceIn(0.28f, 2.4f),
-            physicalHeightM = (startHeight * factor).coerceIn(0.16f, 1.5f),
+            pose = nativeRelativePose(before,sample,placement.pose),
+            physicalWidthM = (placement.physicalWidthM*factor).coerceIn(.28f,2.4f),
+            physicalHeightM = (placement.physicalHeightM*factor).coerceIn(.16f,1.5f),
         )
     }
 }
 
 private const val PALM_WIDTH = 0.24f
 private const val PALM_HEIGHT = 0.20f
-private enum class PalmAction { FOLLOW, RESET, SEARCH, SPACE }
+private enum class PalmAction { FOLLOW, RESET, SEARCH, SPACE, WARP }
 private data class PalmPanelState(val side: String, val pose: Pose, val unitsPerMeter: Float = 1f)
-private data class PalmButton(val action: PalmAction, val x: Float, val y: Float, val w: Float = 0.44f, val h: Float = 0.32f)
+private data class PalmButton(val action: PalmAction, val x: Float, val y: Float, val w: Float = 0.44f, val h: Float = 0.22f)
 private val palmButtons = listOf(
-    PalmButton(PalmAction.FOLLOW, 0.04f, 0.24f), PalmButton(PalmAction.RESET, 0.52f, 0.24f),
-    PalmButton(PalmAction.SEARCH, 0.04f, 0.62f), PalmButton(PalmAction.SPACE, 0.52f, 0.62f),
+    PalmButton(PalmAction.FOLLOW, 0.04f, 0.20f), PalmButton(PalmAction.RESET, 0.52f, 0.20f),
+    PalmButton(PalmAction.SEARCH, 0.04f, 0.49f), PalmButton(PalmAction.SPACE, 0.52f, 0.49f),
+    PalmButton(PalmAction.WARP, 0.04f, 0.78f, w = 0.92f, h = 0.18f),
 )
 
+private fun sphericalActionLabel(enabled: Boolean): String = if (enabled) "Disable spherical" else "Enable spherical"
+
 @Composable
-private fun PalmControls(latched: Boolean, onAction: (PalmAction) -> Unit) {
+private fun PalmControls(latched: Boolean, warped: Boolean, onAction: (PalmAction) -> Unit) {
     BoxWithConstraints(Modifier.fillMaxSize().background(Color(0xF01C2430))) {
         Text("Floatdesk", color = Color.White, fontSize = 14.sp,
             modifier = Modifier.offset(maxWidth * 0.06f, maxHeight * 0.04f))
@@ -828,6 +927,7 @@ private fun PalmControls(latched: Boolean, onAction: (PalmAction) -> Unit) {
                     PalmAction.RESET -> "Reset desk"
                     PalmAction.SEARCH -> "Reconnect"
                     PalmAction.SPACE -> "Workspace"
+                    PalmAction.WARP -> sphericalActionLabel(warped)
                 }, style = TextStyle(color = Color.White), maxLines = 1, softWrap = false,
                     autoSize = TextAutoSize.StepBased(minFontSize = 4.sp, maxFontSize = 14.sp, stepSize = 0.25.sp))
             }
@@ -887,18 +987,6 @@ private class PalmPoke {
     }
 }
 
-/** The pinned SceneCore 1.0 API exposes this mode but has not yet made it unrestricted. */
-@SuppressLint("RestrictedApi")
-private fun configureVideoDepth(session: androidx.xr.runtime.Session) {
-    for (surface in session.scene.getEntitiesOfType(SurfaceEntity::class.java)) {
-        runCatching {
-            // Desktop frames are fully opaque. Transparent media composition can paint over
-            // the native guide pass even when its meshes are physically in front of the glass.
-            surface.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE
-        }.onFailure { Log.e("Floatdesk", "Could not enable depth-aware desktop composition", it) }
-    }
-}
-
 /** Find the parent the video is actually rendered in; never infer it from a saved pose. */
 private fun findDeskSpace(session: androidx.xr.runtime.Session): Entity? {
     val activity = session.scene.activitySpace
@@ -952,9 +1040,11 @@ private class TwoHandState {
         private set
     var guide: GrabGuide? = null
         private set
+    var frozenMesh: MonitorMesh? = null
+        private set
     val bothDown get() = hands.size == 2
     val busy get() = hands.isNotEmpty() || engaged
-    val blocksNative get() = busy || needsRelease
+    val blocksNative get() = busy // Rearming the two-point gesture must not disable the handles.
     private data class Grip(val local: FloatArray)
     private val hands = mutableMapOf<String, Grip>()
     private val released = mutableSetOf<String>()
@@ -974,7 +1064,7 @@ private class TwoHandState {
     private var previousRight: FloatArray? = null
 
     fun cancel() {
-        hands.clear(); engaged = false; base = null; guide = null
+        hands.clear(); engaged = false; base = null; guide = null; frozenMesh = null
         needsRelease = true; released.clear(); openSince = null
     }
 
@@ -985,13 +1075,13 @@ private class TwoHandState {
     }
 
     fun onEvent(event: SpatialInputEvent, current: MonitorPlacement, density: PixelDensity,
-                tracking: GrabTracking): MonitorPlacement? {
+                tracking: GrabTracking, mesh: MonitorMesh? = null, planarInput: Boolean = false, selectedHit: FloatArray? = null): MonitorPlacement? {
         val side = event.pointerType.toString()
         // Some runtimes end a two-hand sequence with DEFAULT, not LEFT/RIGHT.
         if (event.action == InputEvent.Action.UP || event.action == InputEvent.Action.CANCEL) {
             val result = if (engaged) last else null
             if (!needsRelease) cancel()
-            else { hands.clear(); engaged = false; base = null; guide = null }
+            else { hands.clear(); engaged = false; base = null; guide = null; frozenMesh = null }
             if (side == "LEFT" || side == "RIGHT") released.add(side)
             else released.addAll(listOf("LEFT", "RIGHT"))
             if (released.size == 2) needsRelease = false
@@ -1001,11 +1091,13 @@ private class TwoHandState {
         rearm(tracking)
         if (needsRelease || engaged || tracking.points[side] == null) return null
         // Only fresh DOWN hits select pixels. MOVE can never turn a rejected/pending pair into a grab.
-        val local = event.hitPosition?.let { eventMeters(it, density) } ?: return null
-        if (kotlin.math.abs(local[0]) > current.physicalWidthM * 0.5f ||
-            kotlin.math.abs(local[1]) > current.physicalHeightM * 0.5f) return null
-        local[2] = 0f
-        if (hands.isEmpty()) { began = tracking.nowMs; lastSeen = tracking.nowMs }
+        val hit = selectedHit ?: event.hitPosition?.let { eventMeters(it, density) } ?: return null
+        val flat = if (mesh != null && !planarInput) mesh.unproject(hit) ?: return null else hit
+        val local = if (mesh != null && planarInput) mesh.project(flat) else hit
+        if (kotlin.math.abs(flat[0]) > current.physicalWidthM * 0.5f + 0.001f ||
+            kotlin.math.abs(flat[1]) > current.physicalHeightM * 0.5f + 0.001f) return null
+        if (mesh == null) local[2] = 0f
+        if (hands.isEmpty()) { began = tracking.nowMs; lastSeen = tracking.nowMs; frozenMesh = mesh }
         hands[side] = Grip(local)
         if (hands.size != 2) return null
         val left = tracking.points["LEFT"]
@@ -1091,11 +1183,12 @@ private class TwoHandState {
         }
         val halfW = current.physicalWidthM / 2f
         val halfH = current.physicalHeightM / 2f
+        val outline = frozenMesh?.outline?.map { miniature(transformPoint(current.pose, it, scale)) }
         val corners = listOf(
             floatArrayOf(-halfW, halfH, 0f), floatArrayOf(halfW, halfH, 0f),
             floatArrayOf(halfW, -halfH, 0f), floatArrayOf(-halfW, -halfH, 0f),
         ).map { miniature(transformPoint(current.pose, it)) }
-        guide = GrabGuide(corners, contacts, contacts.map { miniature(it) }, tracking.unitsPerMeter, tracking.points["HEAD"]?.copyOf())
+        guide = GrabGuide(corners, contacts, contacts.map { miniature(it) }, tracking.unitsPerMeter, tracking.points["HEAD"]?.copyOf(), outline ?: corners)
     }
 }
 
@@ -1137,6 +1230,15 @@ private fun placeGrabbed(
         physicalHeightM = baseHeight * scale,
     )
 }
+
+/** Apply only the native gesture delta; native Start must not replace a saved monitor pose. */
+private fun nativeRelativePose(before: Pose, after: Pose, held: Pose): Pose {
+    val inverse = floatArrayOf(-before.rotation[0],-before.rotation[1],-before.rotation[2],before.rotation[3])
+    val turn = multiplyQuaternion(after.rotation,inverse)
+    val translation = subtract(after.position,before.position)
+    return Pose(add(held.position,translation),multiplyQuaternion(turn,held.rotation))
+}
+private fun dot4(a: FloatArray,b: FloatArray): Float = (0..3).sumOf { (a[it]*b[it]).toDouble() }.toFloat()
 
 private fun eventMeters(point: Vector3, pixelDensity: PixelDensity): FloatArray {
     return floatArrayOf(

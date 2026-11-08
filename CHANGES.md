@@ -32,7 +32,7 @@ Monitor and control-panel poses are stored in the workspace file and applied in 
 
 Follow keeps each panel fixed relative to the head by applying `headNow * inverse(headAtLock)` to the pose captured when follow started. A closed fist has to stay closed (about a third of a second) before follow starts, and opening the hand stops it. The Follow button latches follow until Unlock, until a grab starts, or until the workspace is reset. Follow does not run during a two-hand grab.
 
-Turning an open palm toward the face shows a small control panel in front of that hand. The other hand's index fingertip pokes its buttons: follow, reset, and disconnect. The panel hides when that hand turns away.
+Turning an open palm toward the face shows a small control panel in front of that hand. The other hand's index fingertip pokes its buttons: Follow, Reset desk, Reconnect, Workspace, and Enable spherical / Disable spherical. The panel hides when that hand turns away.
 
 ## Two-hand monitor grab
 
@@ -42,14 +42,39 @@ While the grab lasts, the live video surface is hidden and a frozen snapshot of 
 
 The guides are native glTF meshes (points and tethers) parented to the desk root. They are not interactable panels, so they do not take the hand rays. Regenerate the meshes with `python3 tools/generate_grab_guides.py` from `client/android-xr`.
 
-## Checks
+## Spherical monitor display
+
+The palm panel's Enable spherical / Disable spherical button saves a workspace-wide setting, off by default. The mesh lies on a sphere centered between the eyes, with radius equal to the distance to the monitor center. An equal-edge angular quadrilateral net gives horizontal and vertical neighboring grid rays their prescribed central-angle steps at a shared angular pitch per image pixel. The grid can shear as required by spherical geometry. Extreme fields are limited uniformly to avoid folds. Invalid viewpoints freeze the last valid geometry; viewer-coordinate changes above 1 cm refit it.
+
+Curved video uses a dedicated native SurfaceEntity created with its mesh and supersampling disabled, outside Compose's rectangular canvas sizing. A transparent alpha mask hides the retained flat video buffer without hiding its entity or standard handles. A transparent native glTF interaction patch shares the curved video's mesh and transform. Resizing updates the bounds used to validate contacts. Mode switches route the decoder to the appropriate surface; head-driven curved updates reuse the same decoder surface.
+
+Raw pinch state freezes geometry before platform DOWN acquisition. The frozen image, contact markers and miniature outline use that same geometry throughout a grab. The hidden video continues receiving frames and reappears immediately on release.
+
+## Coordinates, tracking and hand aiming
+
+Native contact positions include the activity-root scale, while the event's hit-localization matrix does not. The listener computes `local = hitInfo.transform * (rawHit / activityRootScale)` and validates the result against the actual surface. Recorded-contact regressions cover this conversion, including independent left/right sequences. Native move/resize handles use relative gesture deltas and consume large discontinuities as new references without moving the monitor. Rearming a rejected two-point grab does not disable handles.
+
+Head-quality checks gate follow independently of raw hand tracking. Tracking gaps and discontinuities suspend follow until 300 ms of stable samples, then follow rebases. Space-origin changes cancel gestures and reset follow. A visible activity stays awake and reapplies tracking configuration on resume. Physical boundaries and sensor availability remain system-controlled.
+
+The user confirmed that Settings → Input → Aiming method → Use hand aiming only keeps hand rays available without waving. Mixed eye/hand aiming can switch away from the hand pointer. Independent app-level eye gaze alongside hand aiming remains a future feature requiring permission and device verification.
+
+## Streaming recovery
+
+`scripts/serve-existing.sh` starts the existing-desktop host as the `floatdesk-live` user service, with restart on failure, journal output and an unlimited regular-file size limit. The packaged unit uses the same logging and limit settings. This avoids tying the host to a terminal/tool lifetime or regular-file log limit. Restart recovery was verified on the headset.
+
+The receiver resets reorder/depacketizer state when the RTP source changes or sequence numbers restart backwards after downtime, then requests a keyframe. Capture-thread retries retain packetizer sequence numbers within one host process. The other agent's existing host capture/encoder fixes are preserved.
+
+## Checks and confirmed regression baseline
 
 From `client/android-xr`, with a directory of Kotlin compiler jars:
 
-```sh
+```bash
 python3 checks/gestures.py /path/to/gradle/lib
+python3 checks/monitor_warp.py /path/to/gradle/lib
 python3 checks/frozen_frame.py /path/to/gradle/lib
 python3 checks/rtp.py /path/to/gradle/lib
 ```
 
-`gestures.py` checks the grab mapping, fist and palm thresholds, and the guide geometry. `frozen_frame.py` checks the snapshot mesh. `rtp.py` checks depacketizing and reordering. None of them run on the headset.
+These cover grab transforms, gesture thresholds, spherical radius and angular sampling, pixel inversion, mode-switch surface ownership, curved interaction routing, snapshot geometry/materials, native coordinate conversion, tracking guards and RTP recovery. `python3 scripts/check-serve-existing.py` checks launcher arguments without changing a service. JVM checks cannot validate physical placement or native rendering; those need the headset.
+
+On 8 November 2026 the user confirmed flat coordinate alignment, matching live/frozen spherical shape, and successful spherical grabs near both outer edges. Preserve the separate native curved video canvas, matching interaction patch, resized contact bounds, and event-matrix/root-scale conversion. Native handles or Reset remain the accepted fallback below the minimum safe contact separation. Future interaction changes must rerun the regressions and verify center/edge grabs, live/frozen agreement, mode toggling, and native handles on the headset. Local APK/source backups preserve both confirmed baselines and are excluded from Git.

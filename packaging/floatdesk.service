@@ -7,6 +7,9 @@ Type=simple
 ExecStart=/usr/local/bin/floatdesk serve --listen 0.0.0.0:47000 --monitors 1 --width 1920 --height 1080
 Restart=on-failure
 RestartSec=2
+LimitFSIZE=infinity
+StandardOutput=journal
+StandardError=journal
 Environment=DISPLAY=:0
 
 [Install]

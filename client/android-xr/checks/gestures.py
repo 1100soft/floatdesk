@@ -29,8 +29,10 @@ private object Log { fun i(tag: String, message: String) {} }
 '''
 guide_source = (Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client/GrabGuideRenderer.kt').read_text()
 stub += guide_source[guide_source.index('internal data class GrabGuide'):guide_source.index('/** Native meshes')]
-code = stub + section('private const val PALM_WIDTH', '@Composable\nprivate fun PalmControls')
-code += section('private class PalmPoke', '/** The pinned SceneCore')
+mesh_source = (Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client/MonitorMesh.kt').read_text().split('\n', 1)[1]
+guard_source = (Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client/TrackingGuard.kt').read_text().split('\n',1)[1]
+code = mesh_source + guard_source + stub + section('private const val PALM_WIDTH', '@Composable\nprivate fun PalmControls')
+code += section('private class PalmPoke', '/** Find the parent')
 code += section('private class GrabTracking', 'private class FollowLock(')
 code += section('private fun palmNormal(', 'private fun openViewpoint(')
 code += section('private fun openPalm(', 'private fun readHand(')
@@ -77,6 +79,7 @@ fun main() {
     val align = quaternionBetween(subtract(startR,startL),subtract(point(initial,r),point(initial,l)))
     val delta = floatArrayOf(0.05f,-0.04f,-0.08f)
     tracking.points["LEFT"] = add(startL,delta); tracking.points["RIGHT"] = add(startR,delta)
+    tracking.nowMs = 60
     val moved = grab.advance(tracking,locked)!!
     val expectedDelta = rotateVector(align,delta[0]*gain,delta[1]*gain,delta[2]*gain)
     near(moved.pose.position,add(initial.pose.position,expectedDelta))
@@ -85,6 +88,7 @@ fun main() {
     // Independent depth on either hand maps both corresponding pixels exactly, not just the center.
     val dl = floatArrayOf(-0.03f,0.04f,-0.1f); val dr = floatArrayOf(0.04f,-0.02f,0.08f)
     tracking.points["LEFT"] = add(startL,dl); tracking.points["RIGHT"] = add(startR,dr)
+    tracking.nowMs = 120
     val tilted = grab.advance(tracking,moved)!!
     val scale = tilted.physicalWidthM / initial.physicalWidthM
     guides(grab,tilted)
@@ -96,12 +100,13 @@ fun main() {
     grab.onEvent(event("LEFT",InputEvent.Action.MOVE,l),initial,PixelDensity(),tracking)
     check(!grab.engaged)
     tracking.points["LEFT"] = startL; tracking.points["RIGHT"] = startR
+    tracking.nowMs = 0
     lock(grab); check(grab.engaged)
     // Missing raw joints freezes immediately and permanently cancels after 120ms.
     tracking.points.remove("LEFT"); tracking.nowMs = 80
     check(grab.advance(tracking,initial) == null); check(grab.engaged)
     tracking.nowMs = 121; tracking.points["LEFT"] = startL
-    check(grab.advance(tracking,initial) == null); check(!grab.engaged); check(grab.blocksNative); check(grab.guide == null)
+    check(grab.advance(tracking,initial) == null); check(!grab.engaged); check(!grab.blocksNative); check(grab.guide == null)
     grab.onEvent(event("LEFT",InputEvent.Action.MOVE,l),initial,PixelDensity(),tracking); check(!grab.engaged)
     // Both hands must open, followed by a new pair of DOWNs, to rearm after lost tracking.
     tracking.pinched.clear(); grab.advance(tracking,initial); check(!grab.blocksNative)
@@ -113,7 +118,7 @@ fun main() {
     val close = TwoHandState()
     tracking.nowMs = 300; tracking.pinched.addAll(listOf("LEFT","RIGHT"))
     lock(close,initial,floatArrayOf(0f,0f,0f),floatArrayOf(0.03f,0f,0f))
-    check(!close.engaged); check(close.blocksNative); check(close.guide == null)
+    check(!close.engaged); check(!close.blocksNative); check(close.guide == null)
     close.onEvent(event("RIGHT",InputEvent.Action.MOVE,r),initial,PixelDensity(),tracking)
     check(!close.engaged)
     val closeHands = TwoHandState(); tracking.points["RIGHT"] = add(startL,floatArrayOf(0.03f,0f,0f))
@@ -173,6 +178,138 @@ fun main() {
     near(normalize3(subtract(visible,eye)),normalize3(subtract(contact,eye)))
     check(distance(visible,eye) < distance(contact,eye))
     near(visibleGrabContact(contact,null,1f),contact)
+    // Every sampled point is on a viewer-centered sphere; image pixels remain invertible.
+    for (eye in listOf(floatArrayOf(0f,0f,1.2f), floatArrayOf(.4f,-.3f,.8f), floatArrayOf(-.7f,.2f,2.4f))) {
+        val mesh = MonitorMesh(1.8f,1.1f,eye)
+        for (i in mesh.positions.indices step 3) {
+            val p = mesh.positions.copyOfRange(i,i+3)
+            check(kotlin.math.abs(distance(p,eye) - mesh.radius) < .00001f)
+            val flat = mesh.unproject(p)!!
+            near(flat,floatArrayOf((mesh.texCoords[i/3*2]-.5f)*mesh.width,(.5f-mesh.texCoords[i/3*2+1])*mesh.height,0f))
+        }
+        val videoUV = mesh.videoTexCoords
+        check(videoUV[0] == 0f && videoUV[1] == 1f) // video top-left
+        check(videoUV[videoUV.size-2] == 1f && videoUV.last() == 0f) // video bottom-right
+        check(mesh.texCoords[1] == 0f && mesh.texCoords.last() == 1f) // PNG orientation unchanged
+        near(mesh.project(floatArrayOf(0f,0f,0f)),floatArrayOf(0f,0f,0f))
+        check(mesh.indices.all { it in 0 until mesh.positions.size/3 })
+        check(mesh.outline.size == 2*(mesh.columns+mesh.rows)/4)
+    }
+    // Curved contact depth survives capture and obeys the same endpoint constraints.
+    tracking.points["LEFT"] = startL.copyOf(); tracking.points["RIGHT"] = startR.copyOf()
+    tracking.pinched.addAll(listOf("LEFT","RIGHT")); tracking.nowMs = 5000
+    val curved = MonitorMesh(initial.physicalWidthM,initial.physicalHeightM,floatArrayOf(0f,0f,.6f))
+    val curvedL = curved.project(l); val curvedR = curved.project(r)
+    fun curvedEvent(side: String, hit: FloatArray) = SpatialInputEvent(side, InputEvent.Action.DOWN,Vector3(hit[0]*1000,hit[1]*1000,hit[2]*1000))
+    val planarGrab = TwoHandState()
+    planarGrab.onEvent(event("LEFT",InputEvent.Action.DOWN,l),initial,PixelDensity(),tracking,curved,planarInput=true)
+    planarGrab.onEvent(event("RIGHT",InputEvent.Action.DOWN,r),initial,PixelDensity(),tracking,curved,planarInput=true)
+    check(planarGrab.engaged)
+    near(planarGrab.guide!!.contacts[0],point(initial,curvedL))
+    near(planarGrab.guide!!.contacts[1],point(initial,curvedR))
+    planarGrab.onEvent(event("LEFT",InputEvent.Action.UP),initial,PixelDensity(),tracking,curved,planarInput=true)
+    check(!planarGrab.engaged && planarGrab.guide == null)
+    planarGrab.onEvent(event("RIGHT",InputEvent.Action.UP),initial,PixelDensity(),tracking,curved,planarInput=true)
+    planarGrab.onEvent(event("LEFT",InputEvent.Action.DOWN,l),initial,PixelDensity(),tracking,curved,planarInput=true)
+    planarGrab.onEvent(event("RIGHT",InputEvent.Action.DOWN,r),initial,PixelDensity(),tracking,curved,planarInput=true)
+    check(planarGrab.engaged)
+    planarGrab.cancel()
+    val curvedGrab = TwoHandState()
+    curvedGrab.onEvent(curvedEvent("LEFT",curvedL),initial,PixelDensity(),tracking,curved)
+    curvedGrab.onEvent(curvedEvent("RIGHT",curvedR),initial,PixelDensity(),tracking,curved)
+    check(curvedGrab.engaged && curvedGrab.frozenMesh === curved)
+    val curvedGuide = curvedGrab.guide!!
+    near(curvedGuide.contacts[0],point(initial,curvedL)); near(curvedGuide.contacts[1],point(initial,curvedR))
+    check(curvedGuide.outline.size > 4)
+    val shift = floatArrayOf(.02f,.01f,-.04f)
+    tracking.points["LEFT"] = add(startL,shift); tracking.points["RIGHT"] = add(startR,shift)
+    tracking.nowMs += 20
+    val curvedMoved = curvedGrab.advance(tracking,initial)!!
+    check(curvedMoved.pose.position[2] != initial.pose.position[2])
+    near(curvedGrab.guide!!.contacts[0],point(curvedMoved,curvedL,curvedMoved.physicalWidthM/initial.physicalWidthM))
+    curvedGrab.cancel(); check(curvedGrab.frozenMesh == null)
+    check(sphericalActionLabel(false) == "Enable spherical")
+    check(sphericalActionLabel(true) == "Disable spherical")
+    // Ray contacts ignore incorrect SDK-localized coordinates and stay on actual visible bounds.
+    near(monitorRayHit(floatArrayOf(0f,0f,1f),floatArrayOf(.1f,0f,-1f),.8f,.45f,null)!!,floatArrayOf(.1f,0f,0f))
+    check(monitorRayHit(floatArrayOf(0f,0f,1f),floatArrayOf(1f,0f,-1f),.8f,.45f,null) == null)
+    val desired = curved.project(l)
+    val rayOrigin = floatArrayOf(.1f,.02f,.5f)
+    near(monitorRayHit(rayOrigin,subtract(desired,rayOrigin),curved.width,curved.height,curved)!!,desired)
+    val badSdkHit = event("LEFT",InputEvent.Action.DOWN,floatArrayOf(10f,10f,-5f))
+    val fromRay = TwoHandState()
+    fromRay.onEvent(badSdkHit,initial,PixelDensity(),tracking,curved,selectedHit=curvedL)
+    fromRay.onEvent(event("RIGHT",InputEvent.Action.DOWN,r),initial,PixelDensity(),tracking,curved,selectedHit=curvedR)
+    check(fromRay.engaged)
+    val guard = TrackingGuard()
+    val orientation = floatArrayOf(0f,0f,0f,1f)
+    check(!guard.update(0,startL,orientation,1f))
+    for (t in 20L..280L step 20) check(!guard.update(t,startL,orientation,1f))
+    check(guard.update(300,startL,orientation,1f))
+    check(!guard.update(320,null,null,1f))
+    check(!guard.update(340,startL,orientation,1f))
+    for (t in 360L..640L step 20) guard.update(t,startL,orientation,1f)
+    check(guard.update(660,startL,orientation,1f))
+    check(!guard.update(680,add(startL,floatArrayOf(1f,0f,0f)),orientation,1f))
+    // Measure actual central angles between neighboring rays, not just longitude increments.
+    for (angularEye in listOf(floatArrayOf(0f,0f,1.2f),floatArrayOf(.4f,-.3f,.8f))) {
+        val angularMesh = MonitorMesh(1.8f,1.1f,angularEye)
+        fun pointAt(row: Int,col: Int)=angularMesh.positions.copyOfRange((row*(angularMesh.columns+1)+col)*3,(row*(angularMesh.columns+1)+col)*3+3)
+        val chordX=2f*angularMesh.radius*kotlin.math.sin(angularMesh.width*angularMesh.radiansPerMeter/angularMesh.columns/2f)
+        val chordY=2f*angularMesh.radius*kotlin.math.sin(angularMesh.height*angularMesh.radiansPerMeter/angularMesh.rows/2f)
+        for(row in 0..angularMesh.rows) for(col in 0..angularMesh.columns) {
+            val p=pointAt(row,col)
+            if(col<angularMesh.columns) check(kotlin.math.abs(distance(p,pointAt(row,col+1))-chordX)<.000002f)
+            if(row<angularMesh.rows) check(kotlin.math.abs(distance(p,pointAt(row+1,col))-chordY)<.000002f)
+        }
+    }
+    val wide = MonitorMesh(20f,12.5f,floatArrayOf(0f,0f,.2f))
+    check(kotlin.math.abs((wide.width*wide.radiansPerMeter)/(wide.height*wide.radiansPerMeter)-1.6f) < .000001f)
+    // Actual pixel-sized ray steps remain uniform within finite tessellation/float precision.
+    val pixelMesh = MonitorMesh(1.8f,1.125f,floatArrayOf(0f,0f,1.2f))
+    val pixelStep = pixelMesh.width/2560f
+    val pixelChord = 2f*pixelMesh.radius*kotlin.math.sin(pixelStep*pixelMesh.radiansPerMeter/2f)
+    for(y in listOf(-.53f,-.27f,.001f,.263f,.531f)) for(x in listOf(-.87f,-.453f,.002f,.447f,.861f)) {
+        val pixel = pixelMesh.project(floatArrayOf(x,y,0f))
+        val adjacentX = pixelMesh.project(floatArrayOf(x+pixelStep,y,0f))
+        val adjacentY = pixelMesh.project(floatArrayOf(x,y+pixelStep,0f))
+        check(kotlin.math.abs(distance(pixel,adjacentX)/pixelChord-1f)<.003f)
+        check(kotlin.math.abs(distance(pixel,adjacentY)/pixelChord-1f)<.003f)
+    }
+    // Native Start may report an unrelated absolute pose; its zero delta must preserve the monitor.
+    val nativeStart = Pose(floatArrayOf(20f,-10f,4f),normalize4(floatArrayOf(.1f,.2f,.3f,.9f)))
+    val identityMove = nativeRelativePose(nativeStart,nativeStart,initial.pose)
+    near(identityMove.position,initial.pose.position)
+    near(identityMove.rotation,initial.pose.rotation)
+    val nativeTurn = nativeStart.copy(rotation=normalize4(floatArrayOf(.2f,.2f,.3f,.9f)))
+    near(nativeRelativePose(nativeStart,nativeTurn,initial.pose).position,initial.pose.position)
+    val nativeNext = nativeStart.copy(position=add(nativeStart.position,floatArrayOf(.03f,-.02f,.01f)))
+    near(nativeRelativePose(nativeStart,nativeNext,initial.pose).position,add(initial.pose.position,floatArrayOf(.03f,-.02f,.01f)))
+    val collisionMatrix = floatArrayOf(2f,0f,0f,0f, 0f,3f,0f,0f, 0f,0f,4f,0f, 10f,-7f,5f,1f)
+    val collisionInverse = floatArrayOf(.5f,0f,0f,0f, 0f,1f/3f,0f,0f, 0f,0f,.25f,0f, -5f,7f/3f,-1.25f,1f)
+    near(eventMatrixHit(floatArrayOf(10.2f,-6.94f,5f),collisionInverse,.8f,.45f,null)!!,floatArrayOf(.1f,.02f,0f))
+    near(eventMatrixHit(floatArrayOf(10.2f,-6.94f,5f),collisionInverse,.8f,.45f,null)!!,floatArrayOf(.1f,.02f,0f))
+    near(eventMatrixHit(floatArrayOf(10.2f*1.785f,-6.94f*1.785f,5f*1.785f),collisionInverse,.8f,.45f,null,1.785f)!!,floatArrayOf(.1f,.02f,0f))
+    // Recorded headset sample: missing root-scale conversion left the hit far off the plane.
+    val recorded = floatArrayOf(.9988924f,.045443997f,-.012190729f,0f, -.046424866f,.99406743f,-.09835988f,0f, .0076485127f,.09881693f,.9950761f,0f, -.044733673f,.05198337f,-.10078907f,1f)
+    val recordedHit = eventMatrixHit(floatArrayOf(-.13956094f,-.11049867f,.16816789f),recorded,.8f,.45f,null,1.7850144f)!!
+    check(kotlin.math.abs(recordedHit[2]) < .0002f)
+    // The actual render center must be the binocular viewer, in the same desk units as monitor size.
+    val viewerRotation=normalize4(floatArrayOf(.2f,-.3f,.1f,.9f))
+    val viewerPosition=floatArrayOf(.4f,-.2f,-1.3f)
+    val expectedEye=floatArrayOf(.1f,.15f,1.4f)
+    val eyeInDesk=add(viewerPosition,rotateVector(viewerRotation,expectedEye[0],expectedEye[1],expectedEye[2]))
+    near(viewerInMonitor(eyeInDesk,viewerPosition,viewerRotation),expectedEye)
+    val verifiedSphere=MonitorMesh(.8f,.5f,viewerInMonitor(eyeInDesk,viewerPosition,viewerRotation))
+    val centerR=distance(eyeInDesk,viewerPosition)
+    for(i in verifiedSphere.positions.indices step 3) {
+        val local=verifiedSphere.positions.copyOfRange(i,i+3)
+        val displayed=add(viewerPosition,rotateVector(viewerRotation,local[0],local[1],local[2]))
+        check(kotlin.math.abs(distance(displayed,eyeInDesk)-centerR)<.00001f)
+    }
+    val centeredSphere=MonitorMesh(.8f,.5f,floatArrayOf(0f,0f,1.4f))
+    check(distance(centeredSphere.project(floatArrayOf(.4f,0f,0f)),floatArrayOf(.4f,0f,0f)) > .01f)
+    check(distance(centeredSphere.project(floatArrayOf(0f,.25f,0f)),floatArrayOf(0f,.25f,0f)) > .01f)
     val panel = PalmPanelState("LEFT",Pose(floatArrayOf(0f,0f,0f)))
     val poke = PalmPoke()
     check(poke.update(panel,floatArrayOf(-0.06f,0.02f,0.04f)) == null)
@@ -182,7 +319,10 @@ fun main() {
     val scaledPanel = panel.copy(unitsPerMeter = 5f)
     check(poke.update(scaledPanel,floatArrayOf(-0.3f,0.1f,0.2f)) == null)
     check(poke.update(scaledPanel,floatArrayOf(-0.3f,0.1f,-0.1f)) == PalmAction.FOLLOW)
-    println("Passed: virtual-copy gain, 3D endpoints, depth, close-contact and close-hand rejection, DEFAULT release, physical release without UP, tracking-loss cancellation, rearm, discontinuity rejection, miniature wireframe and endpoint alignment, guide cleanup, view-ray visibility offset, rotation, palm and fist")
+    poke.clear()
+    check(poke.update(panel,floatArrayOf(0f,-.074f,.04f)) == null)
+    check(poke.update(panel,floatArrayOf(0f,-.074f,-.02f)) == PalmAction.WARP)
+    println("Passed: equal actual neighboring-ray angles and angular aspect, video/PNG orientation separation, planar-input curved grabbing and regrab, action labels, spherical radius/inverse projection, curved grab/guide geometry, spherical palm button, virtual-copy gain, 3D endpoints, depth, close-contact and close-hand rejection, DEFAULT release, physical release without UP, tracking-loss cancellation, rearm, discontinuity rejection, miniature wireframe and endpoint alignment, guide cleanup, view-ray visibility offset, rotation, palm and fist")
 }
 '''
 lib = Path(sys.argv[1])

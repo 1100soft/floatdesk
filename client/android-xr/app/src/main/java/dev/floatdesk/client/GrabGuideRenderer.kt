@@ -15,6 +15,7 @@ internal data class GrabGuide(
     val pinches: List<FloatArray>,
     val unitsPerMeter: Float,
     val eye: FloatArray? = null,
+    val outline: List<FloatArray> = corners,
 )
 
 /** Lift only the visible decoration, along its view ray, without moving the logical held pixel. */
@@ -36,27 +37,32 @@ internal class GrabGuideRenderer private constructor(
     private val groups = mutableListOf<Group>()
     private var closed = false
 
-    private fun newGroup(): Group {
+    private fun newGroup(edgeCount: Int): Group {
         val root = Entity.create(session, name = "Floatdesk grab guide")
-        // Four frame edges, two tethers, then matching contact/pinch spheres.
-        val indices = listOf(0, 0, 0, 0, 0, 1, 2, 3, 2, 3)
+        // Outline segments, two tethers, then matching contact/pinch spheres.
+        val indices = List(edgeCount) { 0 } + listOf(0, 1, 2, 3, 2, 3)
         val parts = indices.map { GltfModelEntity.create(session, models[it], parent = root) }
-        return Group(root, parts).also { groups.add(it) }
+        return Group(root, parts)
     }
 
     fun update(parent: Entity, guides: List<GrabGuide>) {
         if (closed) return
         for ((index, guide) in guides.withIndex()) {
-            val group = groups.getOrNull(index) ?: newGroup()
+            val edgeCount = guide.outline.size
+            val previous = groups.getOrNull(index)
+            val group = if (previous?.parts?.size == edgeCount + 6) previous else {
+                previous?.let { old -> old.parts.forEach { it.parent = null }; old.root.parent = null }
+                newGroup(edgeCount).also { if (index < groups.size) groups[index] = it else groups.add(it) }
+            }
             group.root.parent = parent
             group.root.setEnabled(true)
             val unit = guide.unitsPerMeter
-            for (edge in 0..3) beam(group.parts[edge], guide.corners[edge], guide.corners[(edge + 1) % 4], 0.0025f * unit)
+            for (edge in 0 until edgeCount) beam(group.parts[edge], guide.outline[edge], guide.outline[(edge + 1) % edgeCount], 0.0025f * unit)
             for (hand in 0..1) {
                 val contact = visibleGrabContact(guide.contacts[hand], guide.eye, unit)
-                beam(group.parts[4 + hand], contact, guide.pinches[hand], 0.0015f * unit)
-                point(group.parts[6 + hand], contact, 0.006f * unit)
-                point(group.parts[8 + hand], guide.pinches[hand], 0.004f * unit)
+                beam(group.parts[edgeCount + hand], contact, guide.pinches[hand], 0.0015f * unit)
+                point(group.parts[edgeCount + 2 + hand], contact, 0.006f * unit)
+                point(group.parts[edgeCount + 4 + hand], guide.pinches[hand], 0.004f * unit)
             }
         }
         for (index in guides.size until groups.size) groups[index].root.setEnabled(false)

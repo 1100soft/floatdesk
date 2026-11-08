@@ -165,11 +165,13 @@ fn run(monitors: &[MonitorRect], opts: &ServeOpts) -> Result<()> {
         let fps = opts.fps.max(1);
         let bitrate = *bitrate;
         threads.push(thread::spawn(move || {
+            // Preserve RTP sequence numbers across capture/encoder reconnections.
+            let mut packetizer = RtpH264Packetizer::new(ssrc);
             while !shared.stop.load(Ordering::Relaxed) {
                 if let Err(err) = monitor_thread(
                     Arc::clone(&shared),
                     rect,
-                    ssrc,
+                    &mut packetizer,
                     encoder_name.clone(),
                     fps,
                     bitrate,
@@ -298,7 +300,7 @@ impl Drop for ClearCaptureFd<'_> {
 fn monitor_thread(
     shared: Arc<Shared>,
     rect: MonitorRect,
-    ssrc: u32,
+    packetizer: &mut RtpH264Packetizer,
     encoder_name: String,
     fps: u32,
     bitrate: u32,
@@ -319,7 +321,6 @@ fn monitor_thread(
     )?;
     let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))?;
     encoder.set_bitrate(bitrate.max(400_000))?;
-    let mut packetizer = RtpH264Packetizer::new(ssrc);
     let interval = Duration::from_secs_f64(1.0 / f64::from(fps));
     let mut seen_generation = 0u64;
     let mut seen_cursor = 0u64;
@@ -372,7 +373,7 @@ fn monitor_thread(
         // both sides waiting on each other.
         send_ready(
             &mut encoder,
-            &mut packetizer,
+            packetizer,
             &socket,
             dest,
             &shared,
@@ -384,7 +385,7 @@ fn monitor_thread(
             encoder.request_keyframe();
             send_ready(
                 &mut encoder,
-                &mut packetizer,
+                packetizer,
                 &socket,
                 dest,
                 &shared,
@@ -401,7 +402,7 @@ fn monitor_thread(
         );
         send_ready(
             &mut encoder,
-            &mut packetizer,
+            packetizer,
             &socket,
             dest,
             &shared,

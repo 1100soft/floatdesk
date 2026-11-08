@@ -21,6 +21,7 @@ private class Handler {
     val gate = java.util.concurrent.CountDownLatch(1)
     val pool = java.util.concurrent.ThreadPoolExecutor(1,1,0,java.util.concurrent.TimeUnit.SECONDS,
         java.util.concurrent.LinkedBlockingQueue<Runnable>())
+    fun postDelayed(block: ()->Unit,delay: Long) { post(block) }
     fun post(block: ()->Unit) { pool.execute { gate.await(); block() } }
 }
 private class CheckedSocket: java.net.DatagramSocket() {
@@ -35,6 +36,8 @@ private class Sender(port: Int) {
     val monitors = Box(listOf(MonitorHello(0,2560,1600,48000,1,"test")))
     val control: java.net.DatagramSocket = CheckedSocket()
     val pendingRemote = java.net.InetSocketAddress("127.0.0.1",port)
+    var pointerDragging=false
+    val clickSeq=java.util.concurrent.atomic.AtomicInteger()
     val pointerSeq = java.util.concurrent.atomic.AtomicInteger()
     val pendingPointer = java.util.concurrent.atomic.AtomicReference<ByteArray?>(null)
     val pointerFlushPosted = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -71,7 +74,33 @@ fun main() {
             sender.outgoing.pool.shutdownNow()
         }
     }
-    println("Passed: real UDP pointer/keyframe dispatch off UI thread, bounded coalescing, latest target delivery")
+    java.net.DatagramSocket(0).use { receiver ->
+        receiver.soTimeout=3000
+        val sender=Sender(receiver.localPort)
+        try {
+            sender.movePointer(0,.2f,.3f,true)
+            repeat(1000) { sender.movePointer(0,it/1000f,.5f,true) }
+            sender.movePointer(0,.8f,.7f,false)
+            sender.outgoing.gate.countDown()
+            for((index,down) in listOf(1,0).withIndex()) {
+                val datagram=java.net.DatagramPacket(ByteArray(256),256)
+                receiver.receive(datagram)
+                check(datagram.data[29].toInt()==down)
+                val u=java.nio.ByteBuffer.wrap(datagram.data).order(java.nio.ByteOrder.LITTLE_ENDIAN).getFloat(17)
+                check(kotlin.math.abs(u-(if(index==0) .2f else .8f))<.00001f)
+            }
+            sender.clickPointer(0,.1f,.2f,3)
+            repeat(3) {
+                val datagram=java.net.DatagramPacket(ByteArray(256),256)
+                receiver.receive(datagram)
+                check(datagram.data[5].toInt()==9 && datagram.data[25].toInt()==3)
+                check(java.nio.ByteBuffer.wrap(datagram.data).order(java.nio.ByteOrder.LITTLE_ENDIAN).getInt(26)==1)
+            }
+        } finally {
+            sender.running=false; sender.control.close(); sender.outgoing.pool.shutdownNow()
+        }
+    }
+    println("Passed: real UDP pointer/keyframe dispatch off UI thread, bounded coalescing, latest target delivery, uncoalesced drag edges, atomic click retries")
 }
 '''
 lib = Path(sys.argv[1])

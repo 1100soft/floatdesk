@@ -48,7 +48,6 @@ internal class PointerControl {
     }
 
     fun choose(enabled: Boolean, gaze: PointerTarget?, hands: Map<String, PointerTarget>, grabbing: Boolean, nowMs: Long = 0): PointerChoice {
-        if (!enabled) { resumeAfterGrab = 0; return PointerChoice(PointerMode.OFF) }
         if (grabbing) resumeAfterGrab = nowMs+120
         // Restoring the live surface restarts its native hover sequence. Let both hands
         // repopulate before allowing gaze to take over after releasing a monitor.
@@ -56,7 +55,8 @@ internal class PointerControl {
             grabbing || nowMs < resumeAfterGrab -> PointerChoice(PointerMode.GRAB)
             hands.size >= 2 -> PointerChoice(PointerMode.PREVIEW)
             hands.size == 1 -> PointerChoice(PointerMode.HAND,hands.values.single())
-            else -> PointerChoice(PointerMode.GAZE,gaze)
+            enabled -> PointerChoice(PointerMode.GAZE,gaze)
+            else -> PointerChoice(PointerMode.OFF)
         }
     }
 }

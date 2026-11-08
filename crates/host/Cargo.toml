@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 floatdesk-protocol = { path = "../protocol" }
-x11rb = { version = "0.13.2", default-features = false, features = ["randr", "shm", "damage", "xfixes"] }
+x11rb = { version = "0.13.2", default-features = false, features = ["randr", "shm", "damage", "xfixes", "xtest"] }
 libc = "0.2"
 clap = { version = "4.5", features = ["derive"] }
 tracing = "0.1"

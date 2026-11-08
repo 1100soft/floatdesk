@@ -37,6 +37,7 @@ struct ClientTarget {
     video_port: u16,
     generation: u64,
     pointer_sequence: Option<u32>,
+    click_sequence: Option<u32>,
 }
 
 struct CursorSprite {
@@ -103,7 +104,7 @@ pub fn trial() -> Result<()> {
 }
 
 fn run(monitors: &[MonitorRect], opts: &ServeOpts) -> Result<()> {
-    let pointer = crate::platform::x11::X11Link::open()?;
+    let mut pointer = crate::platform::x11::X11Mouse::open()?;
     let socket = UdpSocket::bind(opts.listen)?;
     socket.set_nonblocking(true)?;
     let session_id = monotonic_ns();
@@ -215,12 +216,13 @@ fn run(monitors: &[MonitorRect], opts: &ServeOpts) -> Result<()> {
                     &scratch[..size],
                     from,
                     monitors,
-                    &pointer,
+                    &mut pointer,
                 ),
                 Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(err) => return Err(err.into()),
             }
         }
+        pointer.expire();
         if last_hello.elapsed() >= Duration::from_secs(1) {
             send_hello(&shared, &socket, &hellos);
             send_beacon(opts.listen.port());
@@ -261,6 +263,7 @@ fn run(monitors: &[MonitorRect], opts: &ServeOpts) -> Result<()> {
         thread::sleep(Duration::from_millis(8));
     }
     shared.stop.store(true, Ordering::Relaxed);
+    let _ = pointer.release();
     for thread in threads {
         let _ = thread.join();
     }
@@ -428,7 +431,7 @@ fn handle_datagram(
     bytes: &[u8],
     from: SocketAddr,
     monitors: &[MonitorRect],
-    pointer: &crate::platform::x11::X11Link,
+    pointer: &mut crate::platform::x11::X11Mouse,
 ) {
     let packet = match floatdesk_protocol::decode_packet(bytes) {
         Ok(packet) => packet,
@@ -452,11 +455,13 @@ fn handle_datagram(
                 .map(|current| current.generation)
                 .unwrap_or(0)
                 + 1;
+            let _ = pointer.release();
             *client = Some(ClientTarget {
                 control: from,
                 video_port,
                 generation,
                 pointer_sequence: None,
+                click_sequence: None,
             });
             drop(client);
             send_hello(shared, socket, hellos);
@@ -467,6 +472,7 @@ fn handle_datagram(
             norm_x,
             norm_y,
             sequence,
+            left_down,
         } => {
             let mut client = shared.client.write().unwrap_or_else(|err| err.into_inner());
             let first = client
@@ -481,10 +487,32 @@ fn handle_datagram(
                 norm_y,
                 sequence,
             ) {
-                match pointer.move_pointer(x, y) {
+                match pointer.move_pointer(x, y, left_down) {
                     Ok(()) if first => tracing::info!("remote pointer control active"),
                     Err(error) => tracing::warn!(%error,"pointer move failed"),
                     _ => {}
+                }
+            }
+        }
+        ControlPacket::PointerClick {
+            monitor_index,
+            norm_x,
+            norm_y,
+            button,
+            sequence,
+        } => {
+            let mut client = shared.client.write().unwrap_or_else(|err| err.into_inner());
+            if let Some((x, y)) = click_position(
+                &mut client,
+                monitors,
+                from,
+                monitor_index,
+                norm_x,
+                norm_y,
+                sequence,
+            ) {
+                if let Err(error) = pointer.click(x, y, button) {
+                    tracing::warn!(%error,"mouse click failed");
                 }
             }
         }
@@ -498,6 +526,16 @@ fn handle_datagram(
             }
         }
         ControlPacket::Goodbye => {
+            if !shared
+                .client
+                .read()
+                .unwrap_or_else(|err| err.into_inner())
+                .as_ref()
+                .is_some_and(|client| client.control == from)
+            {
+                return;
+            }
+            let _ = pointer.release();
             tracing::info!(%from, "client goodbye");
             *shared.client.write().unwrap_or_else(|err| err.into_inner()) = None;
         }
@@ -533,6 +571,35 @@ fn pointer_position(
     );
     client.pointer_sequence = Some(sequence);
     Some(point)
+}
+
+fn click_position(
+    client: &mut Option<ClientTarget>,
+    monitors: &[MonitorRect],
+    from: SocketAddr,
+    index: u8,
+    x: f32,
+    y: f32,
+    sequence: u32,
+) -> Option<(i32, i32)> {
+    if !x.is_finite() || !y.is_finite() || !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) {
+        return None;
+    }
+    let client = client.as_mut().filter(|client| client.control == from)?;
+    if client
+        .click_sequence
+        .is_some_and(|last| (sequence.wrapping_sub(last) as i32) <= 0)
+    {
+        return None;
+    }
+    let rect = monitors
+        .iter()
+        .find(|rect| rect.index == index && rect.width > 0 && rect.height > 0)?;
+    client.click_sequence = Some(sequence);
+    Some((
+        rect.x + (x * (rect.width - 1) as f32).round() as i32,
+        rect.y + (y * (rect.height - 1) as f32).round() as i32,
+    ))
 }
 
 fn send_beacon(listen_port: u16) {
@@ -830,6 +897,7 @@ mod pointer_tests {
             video_port: 48000,
             generation: 1,
             pointer_sequence: None,
+            click_sequence: None,
         });
         let monitors = [MonitorRect {
             index: 2,
@@ -877,6 +945,40 @@ mod pointer_tests {
         assert_eq!(
             pointer_position(&mut client, &monitors, peer, 2, 0.5, 0.5, u32::MAX),
             None
+        );
+    }
+    #[test]
+    fn atomic_click_retries_are_deduplicated_independently_of_motion() {
+        let peer: SocketAddr = "127.0.0.1:4000".parse().unwrap();
+        let mut client = Some(ClientTarget {
+            control: peer,
+            video_port: 48000,
+            generation: 1,
+            pointer_sequence: Some(900),
+            click_sequence: None,
+        });
+        let monitors = [MonitorRect {
+            index: 0,
+            x: 100,
+            y: 200,
+            width: 101,
+            height: 51,
+        }];
+        assert_eq!(
+            click_position(&mut client, &monitors, peer, 0, 0.5, 0.5, 1),
+            Some((150, 225))
+        );
+        assert_eq!(
+            click_position(&mut client, &monitors, peer, 0, 0.5, 0.5, 1),
+            None
+        );
+        assert_eq!(
+            click_position(&mut client, &monitors, peer, 0, 0.5, 0.5, 1),
+            None
+        );
+        assert_eq!(
+            click_position(&mut client, &monitors, peer, 0, 0.5, 0.5, 2),
+            Some((150, 225))
         );
     }
 }

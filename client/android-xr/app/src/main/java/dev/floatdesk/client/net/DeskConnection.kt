@@ -31,6 +31,8 @@ internal class DeskConnection(
     private val pendingCursors = ConcurrentHashMap<Int, CursorView>()
     private val cursorSeq = AtomicInteger()
     private val pointerSeq = AtomicInteger()
+    private val clickSeq = AtomicInteger()
+    private var pointerDragging = false
     private val pendingPointer = AtomicReference<ByteArray?>(null)
     private val pointerFlushPosted = AtomicBoolean(false)
     @Volatile private var outgoing: Handler? = null
@@ -81,6 +83,7 @@ internal class DeskConnection(
         control?.close()
         beacon?.close()
         pendingPointer.set(null)
+        pointerDragging = false
         outgoing = null
         outgoingThread?.quitSafely()
         outgoingThread?.join(500)
@@ -225,10 +228,28 @@ internal class DeskConnection(
         send(Protocol.keyframeRequest(0xff))
     }
 
-    fun movePointer(monitor: Int,x: Float,y: Float) {
+    fun movePointer(monitor: Int,x: Float,y: Float,dragging: Boolean = false) {
         if (monitors.value.none { it.index == monitor }) return
-        pendingPointer.set(Protocol.pointerMove(monitor,x,y,pointerSeq.incrementAndGet()))
-        schedulePointerFlush()
+        val packet=Protocol.pointerMove(monitor,x,y,pointerSeq.incrementAndGet(),dragging)
+        if(dragging != pointerDragging) {
+            pointerDragging=dragging
+            pendingPointer.set(null)
+            // Button edges must not disappear into a newer coalesced motion frame.
+            outgoing?.post { send(packet) }
+        } else {
+            pendingPointer.set(packet)
+            schedulePointerFlush()
+        }
+    }
+
+    fun clickPointer(monitor: Int,x: Float,y: Float,button: Int) {
+        if (monitors.value.none { it.index == monitor }) return
+        val packet=Protocol.pointerClick(monitor,x,y,button,clickSeq.incrementAndGet())
+        val handler=outgoing ?: return
+        // Atomic click commands are deduplicated by the host. Retries cannot become extra clicks.
+        handler.post { send(packet) }
+        handler.postDelayed({ send(packet) },20)
+        handler.postDelayed({ send(packet) },60)
     }
 
     private fun schedulePointerFlush() {
@@ -237,10 +258,7 @@ internal class DeskConnection(
     }
 
     private fun flushPointer() {
-        while (running) {
-            val packet = pendingPointer.getAndSet(null) ?: break
-            send(packet)
-        }
+        if(running) pendingPointer.getAndSet(null)?.let { send(it) }
         pointerFlushPosted.set(false)
         if (pendingPointer.get() != null) schedulePointerFlush()
     }

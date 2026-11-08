@@ -40,7 +40,8 @@ internal data class WorkspaceFile(
     val layouts: MutableMap<String, MutableList<MonitorPlacement>> = mutableMapOf(),
     val control: PanelPlacement = PanelPlacement(),
     val sphericalWarp: Boolean = false,
-    val mouseControl: Boolean = false,
+    val eyeAiming: Boolean = false,
+    val mouseGestures: Boolean = false,
 )
 
 internal class WorkspaceStore(private val file: File) {
@@ -123,7 +124,8 @@ private fun encode(workspace: WorkspaceFile): JSONObject {
         .put("layouts", layouts)
         .put("control", encodePanel(workspace.control))
         .put("spherical_warp", workspace.sphericalWarp)
-        .put("mouse_control", workspace.mouseControl)
+        .put("eye_aiming", workspace.eyeAiming)
+        .put("mouse_gestures", workspace.mouseGestures)
 }
 
 private fun encodeMonitor(monitor: MonitorPlacement): JSONObject {
@@ -162,7 +164,8 @@ private fun decode(json: JSONObject): WorkspaceFile {
         layouts = layouts,
         control = json.optJSONObject("control")?.let { decodePanel(it) } ?: PanelPlacement(),
         sphericalWarp = json.optBoolean("spherical_warp", false),
-        mouseControl = json.optBoolean("mouse_control", false),
+        eyeAiming = json.optBoolean("eye_aiming", json.optBoolean("mouse_control", false)),
+        mouseGestures = json.optBoolean("mouse_gestures", false),
     )
 }
 

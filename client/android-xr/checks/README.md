@@ -73,3 +73,15 @@ python3 checks/pointer_dispatch.py /path/to/gradle/lib
 ```
 
 This extracts the production outgoing methods and uses real loopback UDP with a socket that rejects UI-thread sends. It verifies background pointer/keyframe delivery, coalescing a burst into the latest target and a bounded pending queue. The Android runtime itself still requires device testing.
+
+### Stabilized gaze and optional mouse gestures
+
+```sh
+python3 checks/mouse_gestures.py /path/to/gradle/lib
+```
+
+These run the actual filter and gesture state machines: reduced fixation jitter, isolated-outlier rejection, fast intentional shifts, tracking reset, click/double-pinch location, right-click, hold-to-drag, cross-hand clicking and cancellation on disable/preview/tracking loss. The existing pointer tests also cover click wire format, retries and uncoalesced button edges.
+
+From the repository root, `python3 scripts/check-mouse-x11.py` starts a private Xvfb display and runs the ignored real-XTest integration test. It verifies button edges, pointer coordinates, dragging, the timeout lease and cleanup; it never targets the user's display.
+
+The current eye toggle controls only gaze; hand aiming remains active. The separate gesture toggle defaults off. Device-check short and double pinches, hold/release, middle-finger right-click, opposite-hand clicks, cancellation during two-hand grab/preview, gesture disable during a drag, gaze smoothing and lack of normal one-hand body movement. Explicit resize handles are retained; the old standard movement behavior was intentionally disabled at the user's request.

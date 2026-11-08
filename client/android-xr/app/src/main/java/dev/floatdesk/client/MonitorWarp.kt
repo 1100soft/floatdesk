@@ -122,6 +122,10 @@ internal class MonitorWarp : AutoCloseable {
                 if (event.action == InputEvent.Action.DOWN) {
                     Log.i("Floatdesk","native event contact=${local?.contentToString()} inputScale=$inputScale hit=$hit matrix=${info?.transform?.data?.contentToString()}")
                 }
+                if (event.source == InputEvent.Source.HANDS) {
+                    val point=if(event.action==InputEvent.Action.CANCEL) null else local
+                    onHover?.invoke(side,point,point?.let { mesh?.unproject(it) ?: it },flatWidth,flatHeight)
+                }
                 val legacy = if (local == null && hit != null) session.scene.activitySpace.transformPoseTo(Pose(hit),target).translation
                     .takeIf { onSurface(floatArrayOf(it.x,it.y,it.z)) } else null
                 fun pixels(v: Vector3) = Vector3(density.convertMetersToPixels(v.x),density.convertMetersToPixels(v.y),density.convertMetersToPixels(v.z))

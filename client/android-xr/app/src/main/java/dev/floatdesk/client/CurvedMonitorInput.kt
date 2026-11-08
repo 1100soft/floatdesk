@@ -18,6 +18,14 @@ internal class CurvedMonitorInput private constructor(
     private val component: InteractableComponent,
     private val pointer: SpatialPointerComponent,
 ) : AutoCloseable {
+    fun syncPose(video: Entity) {
+        // A video canvas is a compositor/input boundary. Keep the interaction mesh beside
+        // it, rather than underneath it, with the same complete parent-space transform.
+        entity.parent=video.parent
+        entity.setPose(video.getPose())
+        entity.setScale(video.getScale())
+    }
+
     fun setPointerDimmed(dimmed: Boolean) {
         val icon = if (dimmed) SpatialPointerIcon.NONE else SpatialPointerIcon.DEFAULT
         if (pointer.spatialPointerIcon != icon) pointer.spatialPointerIcon = icon
@@ -38,8 +46,9 @@ internal class CurvedMonitorInput private constructor(
             val model = GltfModel.create(session, frozenFrameGlb(pixel, mesh, interactionOnly = true), "floatdesk-curved-input-${System.nanoTime()}")
             var entity: GltfModelEntity? = null
             try {
-                val created = GltfModelEntity.create(session, model, parent = parent)
+                val created = GltfModelEntity.create(session, model, pose = parent.getPose(), parent = parent.parent)
                 entity = created
+                created.setScale(parent.getScale())
                 created.nodes.first().localScale = Vector3(mesh.width, mesh.height, mesh.width)
                 val component = InteractableComponent.create(session, listener)
                 check(created.addComponent(component)) { "Could not attach curved monitor interaction" }

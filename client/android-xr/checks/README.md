@@ -95,7 +95,7 @@ With desktop eye aiming disabled, open the palm panel, look for a stable button 
 
 `VideoCompositorSmoke.java` is an offscreen device check for the production EGL compositor. It feeds a red/blue Canvas frame into the decoder surface, asserts upright video and actual overlay pixel colors, clears the overlay and switches output surfaces without sending a new source frame. Run with `python3 checks/video_compositor_device.py` after building and installing the current debug APK. It does not open an Activity or send desktop input.
 
-Mouse checks reject relaxed combined 21 mm finger spacing while accepting independent 16 mm index and 21 mm middle pinches. Headset checks remain necessary for actual fingertip contact and the new single-surface beam.
+Mouse checks reject relaxed combined 21 mm finger spacing while accepting independent 16 mm index and 20 mm middle pinches. Headset checks remain necessary for actual fingertip contact and the new single-surface beam.
 
 User-confirmed interaction baseline: short middle-pinch right-click, middle-pinch scrolling, and gaze-focused same-hand middle-pinch palm activation work on the headset. Preserve palm activation while changing scroll arbitration. Immediate scrolling and the continuous native aiming beam were subsequently confirmed on the headset.
 
@@ -103,4 +103,6 @@ Idle-contact checks hold a stationary tracked wrist past a native hover-exit for
 
 The user confirmed unclipped preview tethers and no apparent idle timeout. The hidden-owner shape change did not resolve the dead region and has been removed. Flat and curved native lifecycle tests retain their original ownership expectations. The main panel was already disabled. Temporary native hit sweeps returned no intersections even for working custom-mesh regions, so they cannot establish coverage and were removed. Decorative surfaces now use custom meshes rather than native quad canvases to avoid rectangular input targets; device-check the persistent dead region and doubled-hand image.
 
-Pinch regressions now use separate finger thresholds: a 16 mm index sample and 21 mm middle sample activate independently, while relaxed entry remains rejected. Combined pinches use both thresholds. Check both fingers separately on the headset rather than assuming equal joint-center spacing corresponds to equal physical contact.
+Pinch regressions now use separate finger thresholds: a 16 mm index sample and 20 mm middle sample activate independently, while relaxed entry remains rejected. Combined pinches use both thresholds. Check both fingers separately on the headset rather than assuming equal joint-center spacing corresponds to equal physical contact.
+
+Curved interaction is now a sibling of the video surface, with its complete pose/scale synchronized each frame. Lifecycle checks assert unchanged contact conversion and collider identity during that synchronization. Palm presentation checks require full extension, 240 ms dwell and rearming after a joint jump. Device-check false panel appearances near screen edges, the previously unresponsive region and both finger thresholds separately.

@@ -15,7 +15,7 @@ for name in ['MonitorMesh.kt','PointerControl.kt','GazeStabilizer.kt','MouseGest
 checks='''
 fun main() {
     val target=PointerTarget(0,.5f,.5f,floatArrayOf(0f,0f,0f))
-    val open=FingerPinch(.07f,.07f); val index=FingerPinch(.016f,.07f); val middle=FingerPinch(.07f,.021f)
+    val open=FingerPinch(.07f,.07f); val index=FingerPinch(.016f,.07f); val middle=FingerPinch(.07f,.020f)
     val gestures=MouseGestures()
     fun frame(t: Long,sample: FingerPinch,point: PointerTarget?=target,enabled: Boolean=true,blocked: Boolean=false)=
         gestures.update(t,enabled,blocked,mapOf("RIGHT" to sample),point)
@@ -60,10 +60,10 @@ fun main() {
     val chord=MouseGestures()
     chord.update(0,true,false,mapOf("RIGHT" to open),target)
     chord.update(20,true,false,mapOf("RIGHT" to index),target)
-    chord.update(60,true,false,mapOf("RIGHT" to FingerPinch(.016f,.021f)),target)
+    chord.update(60,true,false,mapOf("RIGHT" to FingerPinch(.016f,.020f)),target)
     check(chord.update(120,true,false,mapOf("RIGHT" to open),target).click!!.button==2)
-    chord.update(200,true,false,mapOf("RIGHT" to FingerPinch(.016f,.021f)),target)
-    check(!chord.update(600,true,false,mapOf("RIGHT" to FingerPinch(.016f,.021f)),target).dragging)
+    chord.update(200,true,false,mapOf("RIGHT" to FingerPinch(.016f,.020f)),target)
+    check(!chord.update(600,true,false,mapOf("RIGHT" to FingerPinch(.016f,.020f)),target).dragging)
     check(chord.update(650,true,false,mapOf("RIGHT" to open),target).click!!.button==2)
     val scroll=MouseGestures()
     fun sf(t:Long,pinch:FingerPinch,blocked:Boolean=false)=scroll.update(t,true,blocked,mapOf("LEFT" to pinch),target.copy(u=.8f))

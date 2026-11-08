@@ -58,6 +58,7 @@ internal class MonitorWarp : AutoCloseable {
             interaction?.let { input?.removeComponent(it) }
             directInteraction = false
         }
+        live?.let { curvedInput?.syncPose(it) }
         if (curvedInput?.mesh === sphere) return
         val target = live ?: return
         val listener = inputListener ?: return

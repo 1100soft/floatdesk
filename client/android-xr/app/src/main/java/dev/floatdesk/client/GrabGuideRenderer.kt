@@ -41,6 +41,8 @@ internal class GrabGuideRenderer private constructor(
     private var closed = false
     private var pointerPoint: GltfModelEntity? = null
     private val aimBeams=mutableListOf<SurfaceEntity>()
+    private val grabBeams=mutableListOf<SurfaceEntity>()
+    private val grabPoints=mutableListOf<SurfaceEntity>()
 
     private fun newGroup(edgeCount: Int): Group {
         val root = Entity.create(session, name = "Floatdesk grab guide")
@@ -52,6 +54,8 @@ internal class GrabGuideRenderer private constructor(
 
     fun update(parent: Entity, guides: List<GrabGuide>) {
         if (closed) return
+        val tethers=mutableListOf<Pair<FloatArray,FloatArray>>()
+        val contacts=mutableListOf<FloatArray>()
         for ((index, guide) in guides.withIndex()) {
             val edgeCount = guide.outline.size
             val previous = groups.getOrNull(index)
@@ -65,12 +69,17 @@ internal class GrabGuideRenderer private constructor(
             for (edge in 0 until edgeCount) beam(group.parts[edge], guide.outline[edge], guide.outline[(edge + 1) % edgeCount], 0.0025f * unit)
             for (hand in 0..1) {
                 val contact = visibleGrabContact(guide.contacts[hand], guide.eye, unit)
-                beam(group.parts[edgeCount + hand], contact, guide.pinches[hand], 0.0015f * unit)
-                point(group.parts[edgeCount + 2 + hand], contact, 0.006f * unit)
+                group.parts[edgeCount + hand].setEnabled(false)
+                group.parts[edgeCount + 2 + hand].setEnabled(false)
+                tethers.add(contact to guide.pinches[hand]); contacts.add(contact)
                 point(group.parts[edgeCount + 4 + hand], guide.pinches[hand], 0.004f * unit)
             }
         }
         for (index in guides.size until groups.size) groups[index].root.setEnabled(false)
+        val unit=guides.firstOrNull()?.unitsPerMeter ?: 1f
+        val eye=guides.firstOrNull()?.eye
+        surfaceRays(parent,tethers,eye,.0015f*unit,1f,grabBeams,true)
+        surfacePoints(parent,contacts,eye,.012f*unit)
     }
 
     fun updatePointer(parent: Entity, position: FloatArray?, eye: FloatArray?, unitsPerMeter: Float) {
@@ -82,11 +91,16 @@ internal class GrabGuideRenderer private constructor(
         point(entity,visibleGrabContact(position,eye,unitsPerMeter),.003f*unitsPerMeter)
     }
 
+    fun updateRays(parent: Entity,rays: List<Pair<FloatArray,FloatArray>>,eye: FloatArray?,unitsPerMeter: Float,dimmed: Boolean) {
+        surfaceRays(parent,rays,eye,.0009f*unitsPerMeter,if(dimmed) .18f else .4f,aimBeams,false)
+    }
+
     @android.annotation.SuppressLint("RestrictedApi")
     @OptIn(androidx.xr.scenecore.ExperimentalSurfaceEntityPixelDimensionsApi::class)
-    fun updateRays(parent: Entity,rays: List<Pair<FloatArray,FloatArray>>,eye: FloatArray?,unitsPerMeter: Float,dimmed: Boolean) {
+    private fun surfaceRays(parent: Entity,rays: List<Pair<FloatArray,FloatArray>>,eye: FloatArray?,width: Float,alpha: Float,
+                            surfaces: MutableList<SurfaceEntity>,alternating: Boolean) {
         if(closed) return
-        while(aimBeams.size<rays.size) {
+        while(surfaces.size<rays.size) {
             val surface=SurfaceEntity.create(session,shape=SurfaceEntity.Shape.Quad(FloatSize2d(1f,.001f)),
                 parent=null,superSampling=SurfaceEntity.SuperSampling.NONE)
             surface.setSurfacePixelDimensions(IntSize2d(128,4))
@@ -94,11 +108,11 @@ internal class GrabGuideRenderer private constructor(
             // A plain native surface has no Compose input policy or InteractableComponent.
             // The entire beam shares one compositor layer, including where it overlaps video.
             val canvas=surface.getSurface().lockCanvas(null)
-            canvas.drawColor(android.graphics.Color.rgb(108,249,255))
+            canvas.drawColor(if(alternating && surfaces.size%2==1) android.graphics.Color.rgb(255,211,97) else android.graphics.Color.rgb(108,249,255))
             surface.getSurface().unlockCanvasAndPost(canvas)
-            aimBeams.add(surface)
+            surfaces.add(surface)
         }
-        for((index,entity) in aimBeams.withIndex()) {
+        for((index,entity) in surfaces.withIndex()) {
             val ray=rays.getOrNull(index)
             if(ray==null || eye==null) { entity.setEnabled(false); continue }
             val a=vector(ray.first); val b=vector(ray.second); val delta=b-a
@@ -109,9 +123,34 @@ internal class GrabGuideRenderer private constructor(
             val normal=toward-along*dot
             if(normal.length<.00001f) { entity.setEnabled(false); continue }
             val up=Vector3(normal.y*along.z-normal.z*along.y,normal.z*along.x-normal.x*along.z,normal.x*along.y-normal.y*along.x)
-            entity.shape=SurfaceEntity.Shape.Quad(FloatSize2d(delta.length,.0009f*unitsPerMeter))
+            entity.shape=SurfaceEntity.Shape.Quad(FloatSize2d(delta.length,width))
             entity.setPose(Pose(middle,Quaternion.fromLookTowards(normal,up)))
-            entity.setAlpha(if(dimmed) .18f else .4f)
+            entity.setAlpha(alpha)
+            entity.parent=parent; entity.setEnabled(true)
+        }
+    }
+
+    @android.annotation.SuppressLint("RestrictedApi")
+    @OptIn(androidx.xr.scenecore.ExperimentalSurfaceEntityPixelDimensionsApi::class)
+    private fun surfacePoints(parent: Entity,points: List<FloatArray>,eye: FloatArray?,diameter: Float) {
+        while(grabPoints.size<points.size) {
+            val entity=SurfaceEntity.create(session,shape=SurfaceEntity.Shape.Quad(FloatSize2d(diameter,diameter)),
+                parent=null,superSampling=SurfaceEntity.SuperSampling.NONE)
+            entity.setSurfacePixelDimensions(IntSize2d(32,32))
+            entity.mediaBlendingMode=SurfaceEntity.MediaBlendingMode.TRANSPARENT
+            val canvas=entity.getSurface().lockCanvas(null)
+            canvas.drawColor(android.graphics.Color.TRANSPARENT,android.graphics.PorterDuff.Mode.CLEAR)
+            val paint=android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+            paint.color=if(grabPoints.size%2==1) android.graphics.Color.rgb(255,211,97) else android.graphics.Color.rgb(108,249,255)
+            canvas.drawCircle(16f,16f,15f,paint)
+            entity.getSurface().unlockCanvasAndPost(canvas)
+            grabPoints.add(entity)
+        }
+        for((index,entity) in grabPoints.withIndex()) {
+            val position=points.getOrNull(index)
+            if(position==null || eye==null) { entity.setEnabled(false); continue }
+            entity.shape=SurfaceEntity.Shape.Quad(FloatSize2d(diameter,diameter))
+            entity.setPose(Pose(vector(position),Quaternion.fromLookTowards(vector(eye)-vector(position),Vector3.Up)))
             entity.parent=parent; entity.setEnabled(true)
         }
     }
@@ -141,7 +180,8 @@ internal class GrabGuideRenderer private constructor(
             group.parts.forEach { it.parent = null }
             group.root.parent = null
         }
-        aimBeams.forEach { it.parent=null }; aimBeams.clear()
+        (aimBeams+grabBeams+grabPoints).forEach { it.parent=null }
+        aimBeams.clear(); grabBeams.clear(); grabPoints.clear()
         pointerPoint?.parent = null; pointerPoint = null
         groups.clear()
         models.forEach { it.close() }

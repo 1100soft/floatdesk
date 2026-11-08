@@ -391,6 +391,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             var anyOpen = false
             var palmShown = false
             val palmCandidates = mutableMapOf<String, PalmPanelState>()
+            val aimPoses=mutableMapOf<String,HandAimPose>()
             val fingerTips = mutableMapOf<String, FloatArray>()
             val mouseSamples = mutableMapOf<String,FingerPinch>()
             grips.clear()
@@ -406,6 +407,10 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             for ((side, hand) in hands) {
                 val state = hand.state.value
                 if (state.trackingState == TrackingState.TRACKING) {
+                    state.handJoints[HandJointType.WRIST]?.let { pose ->
+                        val q=pose.rotation
+                        aimPoses[side]=HandAimPose(pose.translation.toArray(),floatArrayOf(q.x,q.y,q.z,q.w))
+                    }
                     val thumb = state.handJoints[HandJointType.THUMB_TIP]?.translation
                     val index = state.handJoints[HandJointType.INDEX_TIP]?.translation
                     val middle = state.handJoints[HandJointType.MIDDLE_TIP]?.translation
@@ -498,7 +503,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                     store.save(workspace)
                 }
             }
-            val hoverHands = pointerControl.hands(grips.keys,handTracking.nowMs)
+            val hoverHands = pointerControl.hands(grips.keys,handTracking.nowMs,aimPoses)
             val eyeRays = if (reliable && deviceState != null) gazeEyes.mapNotNull { eye ->
                 val state=eye.state.value
                 if(!state.isOpen || state.trackingState!=TrackingState.TRACKING) null else {
@@ -545,7 +550,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 val contacts=hoverHands.filterValues { it.monitor==index }
                 val marks=mutableListOf<Float>()
                 val eye=grips["VIEWER"] ?: grips["HEAD"]
-                if(choice.mode!=PointerMode.GRAB && palmPanel==null && eye!=null) {
+                if(choice.mode==PointerMode.HAND && palmPanel==null && eye!=null) {
                     for((side,contact) in contacts) {
                         if(grips[side]==null) continue
                         marks.add(contact.u); marks.add(contact.v)
@@ -568,7 +573,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                         workspace.monitorAt(hit.monitor)?.let { transformPoint(it.pose,hit.local) }
                     }
                     renderer.updatePointer(root,point,handTracking.points["HEAD"],handTracking.unitsPerMeter)
-                    renderer.updateRays(root,hoverHands.mapNotNull { (side,hit) ->
+                    renderer.updateRays(root,(if(choice.mode==PointerMode.HAND && palmPanel==null) hoverHands else emptyMap()).mapNotNull { (side,hit) ->
                         val origin=grips[side]; val placement=workspace.monitorAt(hit.monitor)
                         if(origin==null || placement==null) null else origin to transformPoint(placement.pose,hit.local)
                     },handTracking.points["VIEWER"] ?: handTracking.points["HEAD"],handTracking.unitsPerMeter,choice.mode==PointerMode.HAND) }.onFailure {

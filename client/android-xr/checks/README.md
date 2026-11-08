@@ -95,6 +95,8 @@ With desktop eye aiming disabled, open the palm panel, look for a stable button 
 
 `VideoCompositorSmoke.java` is an offscreen device check for the production EGL compositor. It feeds a red/blue Canvas frame into the decoder surface, asserts upright video and actual overlay pixel colors, clears the overlay and switches output surfaces without sending a new source frame. Run with `python3 checks/video_compositor_device.py` after building and installing the current debug APK. It does not open an Activity or send desktop input.
 
-Mouse checks additionally reject relaxed 21 mm finger spacing while requiring tight 12 mm contact and releasing beyond 16 mm. Headset checks remain necessary for actual fingertip contact and the new single-surface beam.
+Mouse checks additionally reject relaxed 21 mm finger spacing while accepting 18 mm contact, rejecting relaxed 21 mm entry and releasing beyond 25 mm. Headset checks remain necessary for actual fingertip contact and the new single-surface beam.
 
 User-confirmed interaction baseline: short middle-pinch right-click, middle-pinch scrolling, and gaze-focused same-hand middle-pinch palm activation work on the headset. Preserve palm activation while changing scroll arbitration. The subsequent immediate-scroll and beam-edge/style refinements still need user verification.
+
+Idle-contact checks hold a stationary tracked wrist past a native hover-exit for one hour, then assert that wrist translation or rotation releases it. Native curved hit tests put a foreign front surface before the actual interaction patch and preserve the monitor hit/matrix. Device-check the previously failing left-middle spherical region, aiming-beam suppression during preview, unclipped preview tethers/contact markers, relaxed hands versus actual pinches, and stationary-ray availability. The last native-surface aiming beam was user-confirmed visually consistent; preserve that rendering path.

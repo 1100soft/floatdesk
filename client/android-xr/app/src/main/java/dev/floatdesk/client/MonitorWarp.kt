@@ -87,11 +87,13 @@ internal class MonitorWarp : AutoCloseable {
         flatWidth = placement.physicalWidthM; flatHeight = placement.physicalHeightM
         if (density != null && onEvent != null) {
             val listener: (InputEvent) -> Unit = listener@ { event ->
-                val info = event.hitInfoList.firstOrNull()
+                val expected = if (mesh != null) curvedInput?.entity else target
+                // Decorative surfaces can appear before the actual monitor in the hit stack.
+                // Keep the native monitor hit and its matrix together instead of using the front hit.
+                val info = event.hitInfoList.firstOrNull { it.inputEntity === expected } ?: event.hitInfoList.firstOrNull()
                 val side = event.pointerType.toString()
                 if (event.action == InputEvent.Action.HOVER_ENTER || event.action == InputEvent.Action.HOVER_MOVE || event.action == InputEvent.Action.HOVER_EXIT) {
                     if (event.source == InputEvent.Source.HANDS) {
-                        val expected = if (mesh != null) curvedInput?.entity else target
                         if (event.action == InputEvent.Action.HOVER_EXIT && info != null && info.inputEntity !== expected) return@listener
                         val hoverHit = info?.hitPosition
                         val point = if (event.action != InputEvent.Action.HOVER_EXIT && info?.inputEntity === expected && hoverHit != null)
@@ -102,8 +104,10 @@ internal class MonitorWarp : AutoCloseable {
                     return@listener
                 }
                 if (event.action == InputEvent.Action.DOWN) {
-                    val expected = if (mesh != null) curvedInput?.entity else target
-                    if (info?.inputEntity !== expected || expected == null) return@listener
+                    if (info?.inputEntity !== expected || expected == null) {
+                        Log.i("Floatdesk","monitor rejected DOWN side=$side hits=${event.hitInfoList.size} expected=${expected?.javaClass?.simpleName} entities=${event.hitInfoList.map { it.inputEntity.javaClass.simpleName }}")
+                        return@listener
+                    }
                     sequences.add(side)
                 }
                 if (side !in sequences && (side != "DEFAULT" || sequences.isEmpty())) return@listener

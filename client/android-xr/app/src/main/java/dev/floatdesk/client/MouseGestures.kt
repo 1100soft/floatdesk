@@ -40,8 +40,8 @@ internal class MouseGestures {
         indexClosed.retainAll(samples.keys); middleClosed.retainAll(samples.keys); chordClosed.retainAll(samples.keys); armed.retainAll(samples.keys)
         for((side,sample) in samples) {
             fun gate(set: MutableSet<String>,distance: Float) {
-                if(!distance.isFinite() || distance>.016f) set.remove(side)
-                else if(distance<.012f) set.add(side)
+                if(!distance.isFinite() || distance>.025f) set.remove(side)
+                else if(distance<.019f) set.add(side)
             }
             gate(chordClosed,maxOf(sample.indexMetres,sample.middleMetres))
             gate(indexClosed,sample.indexMetres)

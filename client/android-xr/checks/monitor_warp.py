@@ -151,7 +151,7 @@ suspend fun main() {
     check(input.primaryAlphaMaskTexture != null && input.component == null)
     val p=warp.mesh!!.project(floatArrayOf(-.2f,0f,0f))
     patch.entity.component!!.listener(InputEvent(InputEvent.Action.DOWN,0,"LEFT",0,Vector3(0f,0f,1f),Vector3(0f,0f,-1f),
-        listOf(InputEvent.HitInfo(patch.entity,Vector3((ip.x+p[0])*1.785f,(ip.y+p[1])*1.785f,(ip.z+p[2])*1.785f),matrix))))
+        listOf(InputEvent.HitInfo(input,Vector3(99f,99f,99f),matrix), InputEvent.HitInfo(patch.entity,Vector3((ip.x+p[0])*1.785f,(ip.y+p[1])*1.785f,(ip.z+p[2])*1.785f),matrix))))
     check(events.size == 5 && events.last().hitPosition != null)
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,false,false)
     warp.syncCurvedInput(session)

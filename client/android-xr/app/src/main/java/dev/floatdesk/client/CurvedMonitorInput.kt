@@ -6,8 +6,6 @@ import androidx.xr.scenecore.Entity
 import androidx.xr.scenecore.GltfModel
 import androidx.xr.scenecore.GltfModelEntity
 import androidx.xr.scenecore.InputEvent
-import androidx.xr.scenecore.SpatialPointerComponent
-import androidx.xr.scenecore.SpatialPointerIcon
 import androidx.xr.scenecore.InteractableComponent
 
 /** Transparent material, rather than a hidden entity: the native mesh collider stays active. */
@@ -16,23 +14,8 @@ internal class CurvedMonitorInput private constructor(
     val entity: GltfModelEntity,
     private val model: GltfModel,
     private val component: InteractableComponent,
-    private val pointer: SpatialPointerComponent,
 ) : AutoCloseable {
-    fun syncPose(video: Entity) {
-        // A video canvas is a compositor/input boundary. Keep the interaction mesh beside
-        // it, rather than underneath it, with the same complete parent-space transform.
-        entity.parent=video.parent
-        entity.setPose(video.getPose())
-        entity.setScale(video.getScale())
-    }
-
-    fun setPointerDimmed(dimmed: Boolean) {
-        val icon = if (dimmed) SpatialPointerIcon.NONE else SpatialPointerIcon.DEFAULT
-        if (pointer.spatialPointerIcon != icon) pointer.spatialPointerIcon = icon
-    }
-
     override fun close() {
-        entity.removeComponent(pointer)
         entity.removeComponent(component)
         entity.parent = null
         model.close()
@@ -46,15 +29,12 @@ internal class CurvedMonitorInput private constructor(
             val model = GltfModel.create(session, frozenFrameGlb(pixel, mesh, interactionOnly = true), "floatdesk-curved-input-${System.nanoTime()}")
             var entity: GltfModelEntity? = null
             try {
-                val created = GltfModelEntity.create(session, model, pose = parent.getPose(), parent = parent.parent)
+                val created = GltfModelEntity.create(session, model, parent = parent)
                 entity = created
-                created.setScale(parent.getScale())
                 created.nodes.first().localScale = Vector3(mesh.width, mesh.height, mesh.width)
                 val component = InteractableComponent.create(session, listener)
                 check(created.addComponent(component)) { "Could not attach curved monitor interaction" }
-                val pointer = SpatialPointerComponent.create(session)
-                check(created.addComponent(pointer))
-                return CurvedMonitorInput(mesh, created, model, component, pointer)
+                return CurvedMonitorInput(mesh, created, model, component)
             } catch (failure: Throwable) {
                 entity?.parent = null
                 model.close()

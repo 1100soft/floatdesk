@@ -35,14 +35,17 @@ internal class MonitorWarp : AutoCloseable {
     private var curvedInput: CurvedMonitorInput? = null
     private var inputListener: ((InputEvent) -> Unit)? = null
     private var mask: Texture? = null
+    private var ownerEnabled=true
     private var directInteraction = false
     val outputSurface: Surface? get() = live?.getSurface()
+    val curvedVideo: SurfaceEntity? get()=live?.takeIf { it !== input }
 
     @SuppressLint("RestrictedApi")
     suspend fun syncCurvedInput(session: Session) {
         val sphere = mesh
         if (sphere == null) {
             curvedInput?.close(); curvedInput = null
+            input?.setEnabled(ownerEnabled)
             input?.primaryAlphaMaskTexture = null
             input?.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE
             if (!directInteraction) interaction?.let { component ->
@@ -58,17 +61,15 @@ internal class MonitorWarp : AutoCloseable {
             interaction?.let { input?.removeComponent(it) }
             directInteraction = false
         }
-        live?.let { curvedInput?.syncPose(it) }
-        if (curvedInput?.mesh === sphere) return
+        if (curvedInput?.mesh === sphere) { input?.setEnabled(false); return }
         val target = live ?: return
         val listener = inputListener ?: return
         val next = CurvedMonitorInput.create(session, target, sphere, listener)
         val old = curvedInput
         curvedInput = next
         old?.close()
+        input?.setEnabled(false)
     }
-
-    fun setPointerDimmed(dimmed: Boolean) { curvedInput?.setPointerDimmed(dimmed) }
 
     private fun applyShape(target: SurfaceEntity, shape: SurfaceEntity.Shape) {
         target.shape = shape
@@ -84,6 +85,7 @@ internal class MonitorWarp : AutoCloseable {
         target.setSurfacePixelDimensions(androidx.xr.runtime.math.IntSize2d(placement.pixelWidth,placement.pixelHeight))
         target.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE
         input = target
+        ownerEnabled=target.isEnabled(false)
         live = target
         flatWidth = placement.physicalWidthM; flatHeight = placement.physicalHeightM
         if (density != null && onEvent != null) {
@@ -210,9 +212,10 @@ internal class MonitorWarp : AutoCloseable {
 
     @SuppressLint("RestrictedApi")
     override fun close() {
-        // Compose owns the entity and surface. Never detach, disable or hide them here.
+        // Restore the Compose-owned surface before releasing our independent curved resources.
         curvedInput?.close(); curvedInput = null
         if (live !== input) live?.parent = null
+        input?.setEnabled(ownerEnabled)
         input?.primaryAlphaMaskTexture = null
         input?.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE
         mask?.close(); mask = null

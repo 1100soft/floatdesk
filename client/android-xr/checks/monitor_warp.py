@@ -28,7 +28,9 @@ internal open class Entity {
     suspend fun hitTest(origin: Vector3,direction: Vector3): NativeHit? = null
     var colliderAttachments = 0
     var parent: Entity? = null
-    var enabled = true
+    @JvmField var enabled = true
+    fun setEnabled(value: Boolean) { enabled=value }
+    fun isEnabled(includeParents: Boolean=true)=enabled
     var component: InteractableComponent? = null
     fun addComponent(value: InteractableComponent): Boolean { component=value; colliderAttachments++; return true }
     fun removeComponent(value: InteractableComponent) { if(component === value) component=null }
@@ -87,13 +89,11 @@ internal class SurfaceEntity(var shape: Shape): Entity() {
 '''
 stubs += """
 internal class CurvedMonitorInput(val mesh: MonitorMesh,val entity: Entity) {
-    fun syncPose(video: Entity) { entity.parent=video.parent; entity.setPose(video.getPose()); entity.setScale(video.getScale()) }
     fun close() { entity.parent=null }
-    fun setPointerDimmed(dimmed: Boolean) {}
     companion object {
         var last: CurvedMonitorInput? = null
         suspend fun create(session: Session,parent: Entity,mesh: MonitorMesh,listener: (InputEvent)->Unit): CurvedMonitorInput {
-            val entity=Entity(); entity.parent=parent.parent; entity.setPose(parent.getPose()); entity.setScale(parent.getScale())
+            val entity=Entity(); entity.parent=parent
             entity.addComponent(InteractableComponent.create(session,listener))
             return CurvedMonitorInput(mesh,entity).also { last=it }
         }
@@ -148,24 +148,18 @@ suspend fun main() {
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false)
     warp.syncCurvedInput(session)
     val patch=CurvedMonitorInput.last!!
-    check(patch.entity.parent === session.scene.entities.last().parent)
-    check(patch.entity.getPose() == session.scene.entities.last().getPose())
-    check(patch.entity.getScale() == session.scene.entities.last().getScale())
-    check(input.primaryAlphaMaskTexture != null && input.component == null)
+    check(patch.entity.parent === session.scene.entities.last())
+    check(input.primaryAlphaMaskTexture != null && input.component == null && !input.enabled)
+    check(session.scene.entities.last().enabled)
     val offAxis=MonitorMesh(1.4094946f,.8809341f,floatArrayOf(-.3641987f,-.037884656f,1.4811001f))
     check(offAxis.project(floatArrayOf(-.25f,0f,0f))[2]<0f) // Previously occluded left-middle area lies behind the old flat owner.
     val p=warp.mesh!!.project(floatArrayOf(-.2f,0f,0f))
     patch.entity.component!!.listener(InputEvent(InputEvent.Action.DOWN,0,"LEFT",0,Vector3(0f,0f,1f),Vector3(0f,0f,-1f),
         listOf(InputEvent.HitInfo(input,Vector3(99f,99f,99f),matrix), InputEvent.HitInfo(patch.entity,Vector3((ip.x+p[0])*1.785f,(ip.y+p[1])*1.785f,(ip.z+p[2])*1.785f),matrix))))
     check(events.size == 5 && events.last().hitPosition != null)
-    val curvedCanvas=session.scene.entities.last()
-    curvedCanvas.setPose(Pose(Vector3(.3f,.2f,-1.2f))); curvedCanvas.setScale(.75f)
-    warp.syncCurvedInput(session)
-    check(CurvedMonitorInput.last===patch && patch.entity.parent===curvedCanvas.parent)
-    check(patch.entity.getPose()==curvedCanvas.getPose() && patch.entity.getScale()==.75f)
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,false,false)
     warp.syncCurvedInput(session)
-    check(patch.entity.parent == null && input.primaryAlphaMaskTexture == null && input.component === component)
+    check(patch.entity.parent == null && input.primaryAlphaMaskTexture == null && input.component === component && input.enabled)
     warp.close(); check(input.component == null && input.parent === root && input.enabled)
     println("Passed: native matrix localization and independent left/right sequences, flat Compose surface/input/alpha/parent preserved, separate curved video and interaction ownership, mode-switch surface restoration, curvature freezes while held, video UVs, cleanup")
 }

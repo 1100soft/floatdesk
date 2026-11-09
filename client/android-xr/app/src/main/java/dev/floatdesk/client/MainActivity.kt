@@ -242,7 +242,6 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     }
     var palmPanel by remember { mutableStateOf<PalmPanelState?>(null) }
     val poke = remember { PalmPoke() }
-    val palmVisibility = remember { PalmVisibilityGate() }
     var lastPalmAction by remember { mutableStateOf(0L) }
     val palmAction: (PalmAction) -> Unit = { action ->
         val now = SystemClock.uptimeMillis()
@@ -426,7 +425,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                         grips[side] = deskPose(current, root, androidx.xr.runtime.math.Pose((thumb + index) * 0.5f)).translation.toArray()
                         fingerTips[side] = deskPose(current, root, androidx.xr.runtime.math.Pose(index)).translation.toArray()
                     }
-                    palmControls(state, perceived?.takeIf { reliable }, side, tick % 100 == 0, panelHand==side)?.let { palmCandidates[side] = it.copy(pose = deskPose(current, root, it.pose.toRuntimePose()).toWorkspacePose(), unitsPerMeter = unitsPerMeter) }
+                    palmControls(state, perceived, side, tick % 100 == 0, panelHand==side)?.let { palmCandidates[side] = it.copy(pose = deskPose(current, root, it.pose.toRuntimePose()).toWorkspacePose(), unitsPerMeter = unitsPerMeter) }
                 }
                 if (hand.state.value.trackingState == TrackingState.TRACKING) rawTracking += 1
                 val read = readHand(hand.state.value)
@@ -467,8 +466,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 fistHeld = 0
                 holdingFist = false
             }
-            val rawCandidate = palmCandidates[panelHand] ?: palmCandidates.values.firstOrNull()
-            val candidate = palmVisibility.update(handTracking.nowMs,rawCandidate,palmPanel!=null)
+            val candidate = palmCandidates[panelHand] ?: palmCandidates.values.firstOrNull()
             if (candidate == null) {
                 val hostTracked = hands.any { (side, hand) ->
                     side == panelHand && hand.state.value.trackingState == TrackingState.TRACKING
@@ -711,6 +709,8 @@ private fun DeskContent(
         var nativeResize by remember(index) { mutableStateOf(false) }
         val videoSurface = remember(index) { AtomicReference<Surface?>(null) }
         val warp = remember(index, session) { MonitorWarp() }
+        val curvedResize=remember(index,session) { CurvedResizeHandles() }
+        DisposableEffect(curvedResize) { onDispose { curvedResize.close() } }
         LaunchedEffect(index, session) {
             val current = session ?: return@LaunchedEffect
             while (isActive) {
@@ -725,8 +725,18 @@ private fun DeskContent(
                     warp.update(current, root, handTracking.points["VIEWER"] ?: handTracking.points["HEAD"], screen, file.sphericalWarp,
                         hands.busy || (file.sphericalWarp && handTracking.pinched.isNotEmpty()))
                     warp.syncCurvedInput(current)
+                    curvedResize.update(current,warp.curvedVideo,screen.physicalWidthM,screen.physicalHeightM,!hands.blocksNative) { event ->
+                        if(hands.blocksNative) { nativeResize=false; return@update }
+                        if(event.resizeState==androidx.xr.scenecore.ResizeEvent.ResizeState.START) { nativeResize=true; onManipulate(true) }
+                        if(!nativeResize) return@update
+                        val existing=latest.value.monitorAt(index) ?: return@update
+                        val ratio=existing.physicalHeightM/existing.physicalWidthM
+                        val width=event.newSize.width.coerceIn(maxOf(.28f,.16f/ratio),minOf(2.4f,1.5f/ratio))
+                        val end=event.resizeState==androidx.xr.scenecore.ResizeEvent.ResizeState.END
+                        onWorkspace(latest.value.monitorPlaced(index,existing.copy(physicalWidthM=width,physicalHeightM=width*ratio),store,end))
+                        if(end) { nativeResize=false; onManipulate(false) }
+                    }
                     pointerControl.meshes[index] = warp.mesh
-                    warp.setPointerDimmed(dimPointer)
                     warp.outputSurface?.let { display ->
                         if (videoSurface.get() !== display) {
                             videoSurface.set(display)
@@ -798,7 +808,7 @@ private fun DeskContent(
                 heightM = placement.physicalHeightM,
                 density = density,
                 pixelDensity = pixelDensity,
-            ).pointerHoverIcon(if (dimPointer) SpatialPointerIcon.NONE else SpatialPointerIcon.DEFAULT).resizable(
+            ).pointerHoverIcon(if (dimPointer && !workspace.sphericalWarp) SpatialPointerIcon.NONE else SpatialPointerIcon.DEFAULT).resizable(
                 minimumSize = DpVolumeSize(0.28f.meters(density, pixelDensity), 0.16f.meters(density, pixelDensity), 0.dp),
                 maximumSize = DpVolumeSize(2.4f.meters(density, pixelDensity), 1.5f.meters(density, pixelDensity), 0.dp),
                 maintainAspectRatio = true,
@@ -1051,25 +1061,6 @@ private const val PALM_WIDTH = 0.24f
 private const val PALM_HEIGHT = 0.24f
 private enum class PalmAction { FOLLOW, RESET, SEARCH, SPACE, WARP, EYES, GESTURES }
 private data class PalmPanelState(val side: String, val pose: Pose, val unitsPerMeter: Float = 1f)
-/** Reject brief pose flips and joint jumps before creating an input-catching panel. */
-private class PalmVisibilityGate {
-    private var side: String?=null
-    private var since=0L
-    private var anchor: FloatArray?=null
-    private var previous: FloatArray?=null
-    fun update(now: Long,candidate: PalmPanelState?,visible: Boolean): PalmPanelState? {
-        if(candidate==null) { side=null; anchor=null; previous=null; return null }
-        val position=candidate.pose.position
-        val before=previous
-        val jump=before!=null && distance(before,position)>.08f*candidate.unitsPerMeter
-        previous=position.copyOf()
-        if(candidate.side!=side || jump || (!visible && anchor?.let { distance(it,position)>.035f*candidate.unitsPerMeter }==true)) {
-            side=candidate.side; since=now; anchor=position.copyOf()
-            return null
-        }
-        return candidate.takeIf { (visible && !jump) || now-since>=240 }
-    }
-}
 private data class PalmButton(val action: PalmAction, val x: Float, val y: Float, val w: Float = 0.44f, val h: Float = 0.17f)
 private val palmButtons = listOf(
     PalmButton(PalmAction.FOLLOW, 0.04f, 0.16f), PalmButton(PalmAction.RESET, 0.52f, 0.16f),
@@ -1129,12 +1120,12 @@ private fun palmControls(state: Hand.State, head: androidx.xr.runtime.math.Pose?
     val otherTips=listOf(HandJointType.INDEX_TIP,HandJointType.RING_TIP,HandJointType.LITTLE_TIP)
         .mapNotNull { state.handJoints[it]?.translation?.toArray() }
     val panelPinch=allowMiddlePinch &&
-        otherTips.size==3 && otherTips.take(2).all { distance(it,wrist.toArray())>span*1.55f } && distance(otherTips[2],wrist.toArray())>span*1.2f
-    val open = panelOpenPalm(wrist.toArray(),tips,span) || panelPinch
+        otherTips.size==3 && otherTips.all { distance(it,wrist.toArray())>span*1.55f }
+    val open = openPalm(wrist.toArray(),tips,span) || panelPinch
     val facing = dot(normal, toward.toNormalized())
     val inFront = dot(palm.translation - head.translation, head.forward)
     if (diagnostics) Log.i("Floatdesk", "palm $side open=$open facing=$facing distance=${toward.length} front=$inFront")
-    if (!open || toward.length !in 0.15f..1.0f || inFront < 0.05f || facing < 0.8f) return null
+    if (!open || toward.length !in 0.15f..1.0f || inFront < 0.05f || facing < 0.5f) return null
     val up = knuckle - wrist
     val rotation = Quaternion.fromLookTowards(normal, up)
     val position = palm.translation + normal * 0.018f
@@ -1529,9 +1520,6 @@ private data class HandRead(
 
 private fun openPalm(wrist: FloatArray, tips: List<FloatArray>, span: Float): Boolean =
     span in 0.025f..0.15f && tips.size == 4 && tips.count { distance(it, wrist) > span * 1.35f } >= 3
-
-private fun panelOpenPalm(wrist: FloatArray,tips: List<FloatArray>,span: Float): Boolean =
-    span in .025f.. .15f && tips.size==4 && tips.take(3).all { distance(it,wrist)>span*1.55f } && distance(tips[3],wrist)>span*1.2f
 
 private fun firmFist(wrist: FloatArray, palm: FloatArray, tips: List<FloatArray>, span: Float): Boolean =
     tips.size == 4 && tips.all { distance(it, wrist) < span * 1.05f && distance(it, palm) < span * 0.70f }

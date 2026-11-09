@@ -75,7 +75,7 @@ fun main() {
     leftContact.update(0,true,false,mapOf("LEFT" to open),target)
     leftContact.update(10,true,false,mapOf("LEFT" to FingerPinch(.015f,.07f)),target)
     check(leftContact.update(20,true,false,mapOf("LEFT" to open),target).click!!.button==1)
-    for((side,threshold) in listOf("RIGHT" to .0115f,"LEFT" to .0155f)) {
+    for((side,threshold) in listOf("RIGHT" to .012f,"LEFT" to .0155f)) {
         val binary=MouseGestures()
         val apart=FingerPinch(threshold+.0001f,.07f)
         val touching=FingerPinch(threshold,.07f)
@@ -129,6 +129,18 @@ fun main() {
             independent.update(n*20+1,true,false,mapOf(side to both),target)
             check(independent.update(n*20+10,true,false,mapOf(side to partial),target).click!!.button==2)
         }
+    }
+    for(side in listOf("LEFT","RIGHT")) {
+        val instant=MouseGestures()
+        val up=FingerPinch(.05f,mouseMiddleContactMetres(side)+.0001f,position=floatArrayOf(0f,0f,0f))
+        val down=up.copy(middleMetres=mouseMiddleContactMetres(side)-.0001f)
+        instant.update(0,true,false,mapOf(side to up),target)
+        instant.update(1,true,false,mapOf(side to down),target)
+        check(instant.update(2,true,false,mapOf(side to up),target).click!!.button==3)
+        // Finger separation changes while the palm remains stationary cannot scroll.
+        instant.update(3,true,false,mapOf(side to down),target)
+        for(t in 4L..20L) check(instant.update(t,true,false,mapOf(side to down.copy(middleMetres=.005f)),target).scroll==null)
+        check(instant.update(21,true,false,mapOf(side to up),target).click!!.button==3)
     }
     val quick=MouseGestures()
     quick.update(0,true,false,mapOf("RIGHT" to open),target)

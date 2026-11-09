@@ -10,7 +10,7 @@ internal data class MouseGestureOutput(val target: PointerTarget?, val dragging:
                                       val click: MouseClick? = null, val scroll: TouchpadFrame? = null)
 
 // Thresholds describe tracked joint separation, not a physical skin gap.
-internal fun mouseIndexContactMetres(side: String)=if(side=="LEFT") .0155f else .0115f
+internal fun mouseIndexContactMetres(side: String)=if(side=="LEFT") .0155f else .012f
 internal fun mouseMiddleContactMetres(side: String)=if(side=="RIGHT") .014f else .015f
 
 /** Raw finger gestures are independent of which hand supplies the aiming ray. */
@@ -84,7 +84,10 @@ internal class MouseGestures(private val diagnostic: (String)->Unit = {}) {
                     val dx=(0..2).sumOf { (delta[it]*scrollRight[it]).toDouble() }.toFloat()
                     val dy=(0..2).sumOf { (delta[it]*scrollUp[it]).toDouble() }.toFloat()
                     // Movement, rather than a hold timer, distinguishes scrolling from a click.
-                    if(hypot(dx,dy)>=.008f) scrolling=true
+                    if(hypot(dx,dy)>=.008f) {
+                        scrolling=true
+                        diagnostic("mouse gesture scroll started side=${current.side} palmMovementMm=${hypot(dx,dy)*1000}")
+                    }
                     if(!scrolling) scrollPrevious=sample.position.copyOf()
                 }
                 if(scrolling) {

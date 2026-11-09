@@ -342,7 +342,8 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                         val index=joints[HandJointType.INDEX_TIP]?.translation
                         val middle=joints[HandJointType.MIDDLE_TIP]?.translation
                         if(thumb==null || index==null || middle==null) null else
-                            side to FingerPinch(distance(thumb,index),distance(thumb,middle),((thumb+middle)*.5f).toArray())
+                            side to FingerPinch(distance(thumb,index),distance(thumb,middle),
+                                (joints[HandJointType.PALM]?.translation ?: joints[HandJointType.WRIST]?.translation)?.toArray())
                     }
                 }.toMap()
                 pinchFrames.push(SystemClock.uptimeMillis(),samples)
@@ -513,7 +514,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                         val q=perceived?.rotation
                         val quaternion=if(q==null) floatArrayOf(0f,0f,0f,1f) else floatArrayOf(q.x,q.y,q.z,q.w)
                         mouseSamples[side]=FingerPinch(distance(thumb,index),distance(thumb,middle),
-                            ((thumb+middle)*.5f).toArray(),rotateVector(quaternion,1f,0f,0f),rotateVector(quaternion,0f,1f,0f))
+                            (joints[HandJointType.PALM]?.translation ?: joints[HandJointType.WRIST]?.translation)?.toArray(),rotateVector(quaternion,1f,0f,0f),rotateVector(quaternion,0f,1f,0f))
                     }
                     if (thumb != null && index != null) {
                         if (distance(thumb, index) < 0.04f) handTracking.pinched.add(side)

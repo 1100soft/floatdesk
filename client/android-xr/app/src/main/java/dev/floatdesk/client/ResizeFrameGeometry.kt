@@ -18,3 +18,11 @@ internal fun curvedResizeFrame(mesh: MonitorMesh): ResizeFrameGeometry {
     }
     return ResizeFrameGeometry(center,mesh.normal,mesh.tangentY,halfWidth*2f,halfHeight*2f)
 }
+
+/** Parallel backing plane, perspective-corrected to the flat image's corner rays. */
+internal fun flatResizeFrame(width: Float,height: Float,eye: FloatArray?): ResizeFrameGeometry {
+    val offset=minOf(width,height)*.01f
+    val factor=if(eye!=null && eye[2]>.1f) (eye[2]+offset)/eye[2] else 1f
+    val center=floatArrayOf((eye?.get(0) ?: 0f)*(1f-factor),(eye?.get(1) ?: 0f)*(1f-factor),-offset)
+    return ResizeFrameGeometry(center,floatArrayOf(0f,0f,1f),floatArrayOf(0f,1f,0f),width*factor,height*factor)
+}

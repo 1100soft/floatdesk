@@ -40,7 +40,6 @@ internal class MonitorWarp : AutoCloseable {
     val outputSurface: Surface? get() = live?.getSurface()
     val displayEntity: SurfaceEntity? get()=live
     fun matchesSize(placement: MonitorPlacement)=flatWidth==placement.physicalWidthM && flatHeight==placement.physicalHeightM
-    val curvedVideo: SurfaceEntity? get()=live?.takeIf { it !== input }
 
     @SuppressLint("RestrictedApi")
     suspend fun syncCurvedInput(session: Session) {

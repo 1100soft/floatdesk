@@ -710,13 +710,11 @@ private fun DeskContent(
         var nativeMove by remember(index) { mutableStateOf(false) }
         var moveBefore by remember(index) { mutableStateOf<Pose?>(null) }
         var nativeGeometryPending by remember(index) { mutableStateOf(false) }
-        var curvedResizeStartWidth by remember(index) { mutableStateOf(1f) }
+        var nativeResizeStartWidth by remember(index) { mutableStateOf(1f) }
         val videoSurface = remember(index) { AtomicReference<Surface?>(null) }
         val warp = remember(index, session) { MonitorWarp() }
-        val curvedResize=remember(index,session) { CurvedResizeHandles() }
-        val moveHandle=remember(index,session) { MonitorMoveHandle() }
-        DisposableEffect(moveHandle) { onDispose { moveHandle.close() } }
-        DisposableEffect(curvedResize) { onDispose { curvedResize.close() } }
+        val systemControls=remember(index,session) { MonitorSystemControls() }
+        DisposableEffect(systemControls) { onDispose { systemControls.close() } }
         LaunchedEffect(index, session) {
             val current = session ?: return@LaunchedEffect
             while (isActive) {
@@ -729,43 +727,42 @@ private fun DeskContent(
                     // Freeze before the platform DOWN arrives: replacing a native canvas while
                     // the user starts pinching can cancel its input acquisition.
                     warp.update(current, root, handTracking.points["VIEWER"] ?: handTracking.points["HEAD"], screen, file.sphericalWarp,
-                        hands.busy || (file.sphericalWarp && handTracking.pinched.isNotEmpty()),forceUpdate=nativeGeometryPending && !hands.busy)
+                        hands.busy || (file.sphericalWarp && handTracking.pinched.isNotEmpty()),forceUpdate=!hands.busy && (nativeGeometryPending || !warp.matchesSize(screen)))
                     warp.syncCurvedInput(current)
                     // Collider creation suspends: a newer resize event may arrive while awaiting it.
                     // Clear the pending update only after matching the latest canonical size.
                     latest.value.monitorAt(index)?.let { if(warp.matchesSize(it)) nativeGeometryPending=false }
-                    curvedResize.update(current,warp.curvedVideo,warp.mesh,!hands.engaged && !nativeMove) { event,factor ->
+                    val viewer=(handTracking.points["VIEWER"] ?: handTracking.points["HEAD"])?.let { viewerInMonitor(it,screen.pose.position,screen.pose.rotation) }
+                    systemControls.update(current,warp.displayEntity,warp.mesh,screen.physicalWidthM,screen.physicalHeightM,viewer,
+                        handTracking.unitsPerMeter,!hands.engaged,onResize={ event,factor ->
                         if(hands.engaged) { nativeResize=false; return@update }
                         val existing=latest.value.monitorAt(index) ?: return@update
                         if(event.resizeState==androidx.xr.scenecore.ResizeEvent.ResizeState.START) {
                             if(hands.busy) hands.cancel()
-                            curvedResizeStartWidth=existing.physicalWidthM
+                            nativeResizeStartWidth=existing.physicalWidthM
                             nativeResize=true; onManipulate(true)
                         }
                         if(!nativeResize || !factor.isFinite() || factor<=0f) return@update
                         nativeGeometryPending=true
                         val ratio=existing.physicalHeightM/existing.physicalWidthM
-                        val width=(curvedResizeStartWidth*factor).coerceIn(maxOf(.28f,.16f/ratio),minOf(2.4f,1.5f/ratio))
+                        val width=(nativeResizeStartWidth*factor).coerceIn(maxOf(.28f,.16f/ratio),minOf(2.4f,1.5f/ratio))
                         val end=event.resizeState==androidx.xr.scenecore.ResizeEvent.ResizeState.END
                         onWorkspace(latest.value.monitorPlaced(index,existing.copy(physicalWidthM=width,physicalHeightM=width*ratio),store,end))
                         if(end) { nativeResize=false; onManipulate(false) }
-                    }
-                    val handleScreen=latest.value.monitorAt(index) ?: screen
-                    moveHandle.update(current,warp.displayEntity,handleScreen.pose.toRuntimePose(),warp.mesh,
-                        handleScreen.physicalWidthM,handleScreen.physicalHeightM,handTracking.unitsPerMeter,!hands.engaged && !nativeResize) { phase,pose ->
+                    },onMove={ phase,pose ->
                         if(hands.engaged) { nativeMove=false; return@update }
                         val sample=pose.toWorkspacePose()
                         val before=moveBefore
                         moveBefore=sample
-                        if(phase==MoveHandlePhase.START) { if(hands.busy) hands.cancel();nativeMove=true;onManipulate(true);return@update }
+                        if(phase==SystemMovePhase.START) { if(hands.busy) hands.cancel();nativeMove=true;onManipulate(true);return@update }
                         if(!nativeMove) return@update
                         val existing=latest.value.monitorAt(index) ?: return@update
                         val safe=before!=null && distance(before.position,sample.position)<=.25f && kotlin.math.abs(dot4(before.rotation,sample.rotation))>=.9f
                         val next=if(safe) existing.copy(pose=nativeRelativePose(before!!,sample,existing.pose)) else existing
-                        val end=phase==MoveHandlePhase.END
+                        val end=phase==SystemMovePhase.END
                         onWorkspace(latest.value.monitorPlaced(index,next,store,end))
                         if(end) { nativeMove=false;moveBefore=null;nativeGeometryPending=true;onManipulate(false) }
-                    }
+                    })
                     pointerControl.meshes[index] = warp.mesh
                     warp.outputSurface?.let { display ->
                         if (videoSurface.get() !== display) {
@@ -839,28 +836,7 @@ private fun DeskContent(
                 heightM = placement.physicalHeightM,
                 density = density,
                 pixelDensity = pixelDensity,
-            ).pointerHoverIcon(if (dimPointer && !workspace.sphericalWarp) SpatialPointerIcon.NONE else SpatialPointerIcon.DEFAULT).resizable(
-                minimumSize = DpVolumeSize(0.28f.meters(density, pixelDensity), 0.16f.meters(density, pixelDensity), 0.dp),
-                maximumSize = DpVolumeSize(2.4f.meters(density, pixelDensity), 1.5f.meters(density, pixelDensity), 0.dp),
-                maintainAspectRatio = true,
-                resizePolicy = ResizePolicy.custom { event ->
-                    if (hands.engaged) { nativeResize = false; return@custom }
-                    if (event.type == SpatialResizeEventType.Start) { if(hands.busy) hands.cancel(); nativeResize = true; onManipulate(true) }
-                    nativeGeometryPending=true
-                    if (!nativeResize) return@custom
-                    if (event.type == SpatialResizeEventType.End) { nativeResize = false; onManipulate(false) }
-                    val size = event.sizeInMeters(pixelDensity) ?: return@custom
-                    val existing = latest.value.monitorAt(index) ?: return@custom
-                    onWorkspace(
-                        latest.value.monitorPlaced(
-                            index,
-                            existing.copy(physicalWidthM = size.first, physicalHeightM = size.second),
-                            store,
-                            event.type == SpatialResizeEventType.End,
-                        ),
-                    )
-                },
-            ),
+            ).pointerHoverIcon(if (dimPointer && !workspace.sphericalWarp) SpatialPointerIcon.NONE else SpatialPointerIcon.DEFAULT),
         ) {
             onSurfaceCreated { surface ->
                 val current = session ?: return@onSurfaceCreated
@@ -871,7 +847,7 @@ private fun DeskContent(
                 connection.attachSurface(index, display)
             }
             onSurfaceDestroyed {
-                moveHandle.close();curvedResize.close()
+                systemControls.close()
                 nativeMove=false;nativeResize=false;moveBefore=null;nativeGeometryPending=false
                 onManipulate(false)
                 videoSurface.set(null)

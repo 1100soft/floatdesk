@@ -62,9 +62,9 @@ Bring thumb and middle tips within 21 mm, then move that hand vertically or hori
 
 The palm panel supports eye focus independently of desktop eye mouse aiming and the OS aiming method, subject to Android's eye-tracking permission. Look at a button until it highlights, then pinch that hand's thumb and middle finger to activate. Keep the other three fingers extended. Open the pinch before activating again. Buttons flash on activation and use the system touch sound when enabled. Ordinary blinking is not an activation gesture. Direct tapping with the other hand remains available. Discrete sticky focus helps with gaze jitter; continuous desktop gaze still depends on tracking accuracy and may be unsuitable for small targets.
 
-In spherical mode, the hidden flat video owner is disabled so its native body cannot compete with the curved interaction mesh. Resize affordances use a separate entity aligned behind the viewer-facing tangent plane, with its corners projected onto the curved image corners; returning to flat mode restores the original owner and handles.
+In spherical mode, the hidden flat video owner is disabled so its native body cannot compete with the curved interaction mesh. The system move/resize rectangle sits behind the image, aligned with the viewer-facing tangent plane in spherical mode, with corners projected onto the image corners; returning to flat mode restores the original owner and handles.
 
-Drag the small **Move** grip below the monitor for one-hand repositioning, or use the custom two-hand grab. Whole-screen single-hand grabbing remains disabled. Resize handles, Reset and Follow remain available. Previewing never moves the monitor. Eye and gesture toggles are saved independently.
+Use the exposed border of the system rectangle for one-hand repositioning and its corners for resizing, or use the custom two-hand grab. The rectangle stays behind the image so image input remains available. Resize handles, Reset and Follow remain available. Previewing never moves the monitor. Eye and gesture toggles are saved independently.
 
 What changed after the first LAN proof of concept is recorded in [CHANGES.md](CHANGES.md). Regression checks and the limits of those checks are in [the Android checks README](client/android-xr/checks/README.md).
 

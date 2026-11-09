@@ -6,7 +6,7 @@ import sys
 import tempfile
 folder=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
 sources=[];imports=[]
-for name in ['MonitorMesh.kt','ResizeFrameGeometry.kt','CurvedResizeHandles.kt','MonitorMoveHandle.kt']:
+for name in ['MonitorMesh.kt','ResizeFrameGeometry.kt','MonitorSystemControls.kt']:
     lines=(folder/name).read_text().splitlines()
     imports += [l for l in lines if l.startswith('import kotlin.')]
     sources.append('\n'.join(l for l in lines if not l.startswith(('package ','import ')) and not l.strip().startswith('@OptIn(')))
@@ -42,6 +42,7 @@ internal open class Entity {
 internal class ResizableComponent(val listener:java.util.function.Consumer<ResizeEvent>) {
     var isFixedAspectRatioEnabled=false
     var isAutoHideContentWhileResizingEnabled=true
+    var isAlwaysShowOverlayEnabled=false
     var affordanceSize=FloatSize3d(1f,1f,1f)
     var minimumEntitySize=FloatSize3d(0f,0f,0f)
     var maximumEntitySize=FloatSize3d(10f,10f,10f)
@@ -55,10 +56,11 @@ internal annotation class SuppressLint(vararg val value:String)
 internal data class FloatSize2d(val width:Float,val height:Float)
 internal data class IntSize2d(val width:Int,val height:Int)
 internal class Ray
-internal object Color { const val TRANSPARENT=0; fun rgb(r:Int,g:Int,b:Int)=1 }
+internal object Color { const val TRANSPARENT=0; fun rgb(r:Int,g:Int,b:Int)=1;fun argb(a:Int,r:Int,g:Int,b:Int)=1 }
 internal object PorterDuff { enum class Mode { CLEAR } }
 internal class Paint(flags:Int) {
-    var color=0;var textSize=0f;var textAlign=Align.CENTER
+    var color=0;var textSize=0f;var textAlign=Align.CENTER;var style=Style.STROKE;var strokeWidth=1f
+    enum class Style { STROKE }
     enum class Align { CENTER }
     companion object { const val ANTI_ALIAS_FLAG=1 }
 }
@@ -66,6 +68,7 @@ internal class Canvas {
     fun drawColor(color:Int,mode:PorterDuff.Mode) {}
     fun drawRoundRect(a:Float,b:Float,c:Float,d:Float,e:Float,f:Float,paint:Paint) {}
     fun drawText(text:String,x:Float,y:Float,paint:Paint) {}
+    fun drawRect(a:Float,b:Float,c:Float,d:Float,paint:Paint) {}
 }
 internal class Surface {
     fun lockCanvas(rect:Any?)=Canvas()
@@ -88,10 +91,12 @@ internal interface EntityMoveListener {
     fun onMoveUpdate(entity:Entity,currentInputRay:Ray,currentPose:Pose,currentScale:Float) {}
     fun onMoveEnd(entity:Entity,finalInputRay:Ray,finalPose:Pose,finalScale:Float,updatedParent:Entity?) {}
 }
-internal class MovableComponent(val listener:EntityMoveListener,val scaleInZ:Boolean) {
+internal class MovableComponent(val scaleInZ:Boolean) {
+    lateinit var listener:EntityMoveListener
+    fun addMoveListener(value:EntityMoveListener) { listener=value }
     var size=FloatSize3d(0f,0f,0f)
     companion object {
-        fun createCustomMovable(session:Session,scaleInZ:Boolean,executor:Any?,entityMoveListener:EntityMoveListener)=MovableComponent(entityMoveListener,scaleInZ)
+        fun createSystemMovable(session:Session,scaleInZ:Boolean)=MovableComponent(scaleInZ)
     }
 }
 """
@@ -121,54 +126,55 @@ fun main() {
         println("$label: old plane min z=$oldMin; aligned frame minimum clearance=$minGap; all four corner rays match")
     }
     val mesh=MonitorMesh(.8f,.5f,floatArrayOf(-.2f,-.3f,1.2f)); val frame=curvedResizeFrame(mesh)
-    val session=Session(); val parent=Entity(); val video=Entity().also { it.parent=parent; it.pose=Pose(Vector3(.2f,0f,0f)); it.scale=.8f }
-    val handles=CurvedResizeHandles(); val events=mutableListOf<Float>()
-    handles.update(session,video,mesh,true) { _,factor -> events.add(factor) }
-    val root=session.entities.single(); val component=root.resize!!
-    check(root!==video && root.parent===parent && root.scale==.8f)
+    val session=Session();val parent=Entity();val video=Entity().also { it.parent=parent;it.pose=Pose(Vector3(.2f,0f,0f));it.scale=.8f }
+    val handles=MonitorSystemControls();val events=mutableListOf<Float>();val phases=mutableListOf<SystemMovePhase>()
+    fun update(m:MonitorMesh?=mesh,enabled:Boolean=true) = handles.update(session,video,m,.8f,.5f,mesh.eye,1f,enabled,
+        onResize={ _,factor -> events.add(factor) },onMove={ phase,_ -> phases.add(phase) })
+    update()
+    val root=session.entities.single() as SurfaceEntity;val component=root.resize!!;val move=root.move!!
+    check(root!==video && root.parent===parent && root.scale==.8f && video.move==null && !move.scaleInZ)
     near(root.pose.translation.x,.2f+frame.center[0]*.8f)
-    near(root.pose.rotation.normal.x,frame.normal[0]); near(root.pose.rotation.normal.y,frame.normal[1])
-    check(component.isFixedAspectRatioEnabled && !component.isAutoHideContentWhileResizingEnabled)
+    check(component.isFixedAspectRatioEnabled && !component.isAutoHideContentWhileResizingEnabled && component.isAlwaysShowOverlayEnabled)
     near(component.affordanceSize.width,frame.width)
     fun event(state:ResizeEvent.ResizeState,factor:Float)=ResizeEvent(state,FloatSize3d(frame.width*factor,frame.height*factor,.001f))
-    component.listener.accept(event(ResizeEvent.ResizeState.ONGOING,1.1f)); check(events.isEmpty())
+    component.listener.accept(event(ResizeEvent.ResizeState.ONGOING,1.1f));check(events.isEmpty())
     component.listener.accept(event(ResizeEvent.ResizeState.START,1f))
     component.listener.accept(event(ResizeEvent.ResizeState.ONGOING,1.2f))
+    val initialPose=root.pose;val initialShape=root.shape
+    val proposed=FloatSize3d(frame.width*1.2f,frame.height*1.2f,.001f)
+    component.affordanceSize=proposed // Native controller updates its proposal.
+    video.pose=Pose(Vector3(.4f,0f,0f));video.scale=1.2f
+    update(MonitorMesh(1f,.625f,mesh.eye))
+    check(root.pose==initialPose && root.shape===initialShape && root.scale==.8f)
+    check(component.affordanceSize==proposed) // App must not reset native size during drag: flicker regression.
     component.listener.accept(event(ResizeEvent.ResizeState.END,1.5f))
     check(events.size==3);near(events[0],1f);near(events[1],1.2f);near(events[2],1.5f)
+    update()
+    near(root.pose.translation.x,.4f+frame.center[0]*1.2f);check(root.scale==1.2f)
     component.listener.accept(event(ResizeEvent.ResizeState.START,2f))
     component.listener.accept(event(ResizeEvent.ResizeState.END,2.4f))
-    near(events[3],1f);near(events[4],1.2f) // Start anchors cancel any native size-unit scale.
-    video.pose=Pose(Vector3(.4f,0f,0f));video.scale=1.2f
-    handles.update(session,video,mesh,false) { _,factor -> events.add(factor) }
-    check(session.entities.size==1 && !root.enabled && root.scale==1.2f)
-    near(root.pose.translation.x,.4f+frame.center[0]*1.2f)
-    handles.update(session,null,null,true) { _,_ -> error("stale resize") }
-    check(root.parent==null && root.resize==null)
-    handles.update(session,video,mesh,true) { _,factor -> events.add(factor) }
+    near(events[3],1f);near(events[4],1.2f)
+    val beforeMove=root.pose
+    move.listener.onMoveStart(root,Ray(),beforeMove,1.2f,parent)
+    val dragged=Pose(Vector3(.7f,.1f,0f));root.pose=dragged // System controller applies its proposal.
+    move.listener.onMoveUpdate(root,Ray(),dragged,1.2f)
+    update();check(root.pose==dragged) // Native move owns pose until release.
+    move.listener.onMoveEnd(root,Ray(),dragged,1.2f,null)
+    check(phases==listOf(SystemMovePhase.START,SystemMovePhase.UPDATE,SystemMovePhase.END))
+    update(null)
+    check(root.pose.translation.z<0f && root.move===move) // Same system rectangle supports flat mode.
+    val flat=flatResizeFrame(.8f,.5f,mesh.eye)
+    for(x in listOf(-.5f,.5f)) for(y in listOf(-.5f,.5f)) {
+        val imageRay=unit(floatArrayOf(x*.8f-mesh.eye[0],y*.5f-mesh.eye[1],-mesh.eye[2]))
+        val handleRay=unit(floatArrayOf(flat.center[0]+x*flat.width-mesh.eye[0],flat.center[1]+y*flat.height-mesh.eye[1],flat.center[2]-mesh.eye[2]))
+        for(i in 0..2) near(imageRay[i],handleRay[i])
+    }
+    handles.close();check(root.parent==null && root.resize==null && root.move==null)
+    update();check(session.entities.size==2)
     component.listener.accept(event(ResizeEvent.ResizeState.START,1f));check(events.size==5)
-    check(session.entities.size==2)
-    handles.close();check(session.entities.last().parent==null)
-    val moveSession=Session();val moveParent=Entity();val moveVideo=Entity().also { it.parent=moveParent }
-    val moveHandle=MonitorMoveHandle();val phases=mutableListOf<MoveHandlePhase>()
-    moveHandle.update(moveSession,moveVideo,Pose(),null,.8f,.5f,1f,true) { phase,_ -> phases.add(phase) }
-    val grip=moveSession.entities.single() as SurfaceEntity
-    val move=grip.move!!
-    check(moveVideo.move==null && grip.parent===moveParent && !move.scaleInZ)
-    check(grip.pose.translation.y+move.size.height*.5f<-.25f) // Only a small grip below the image is movable.
-    val originalPose=grip.pose
-    move.listener.onMoveStart(grip,Ray(),originalPose,1f,moveParent)
-    val dragged=Pose(Vector3(.1f,originalPose.translation.y,0f))
-    move.listener.onMoveUpdate(grip,Ray(),dragged,1f)
-    moveHandle.update(moveSession,moveVideo,Pose(),null,.8f,.5f,1f,true) { phase,_ -> phases.add(phase) }
-    check(grip.pose==dragged) // Per-frame placement must not fight an active drag.
-    move.listener.onMoveEnd(grip,Ray(),dragged,1f,null)
-    check(phases==listOf(MoveHandlePhase.START,MoveHandlePhase.UPDATE,MoveHandlePhase.END))
-    moveHandle.close();check(grip.parent==null && grip.move==null)
-    moveHandle.update(moveSession,moveVideo,Pose(),mesh,.8f,.5f,1f,true) { phase,_ -> phases.add(phase) }
-    move.listener.onMoveStart(grip,Ray(),originalPose,1f,moveParent);check(phases.size==3)
-    moveHandle.close()
-    println("Passed: explicit below-image move grip, no whole-body movement, active-drag ownership and stale move callback rejection")
+    move.listener.onMoveStart(root,Ray(),beforeMove,1f,parent);check(phases.size==3)
+    handles.close()
+    println("Passed: native backing rectangle in both modes, no app pose/size writes during active resize/move, projected flat corners and stale callback rejection")
     println("Passed: behind-image tangent frame, projected corner alignment, independent resize ownership, source scale factors, transform synchronization and stale callback rejection")
 }
 '''

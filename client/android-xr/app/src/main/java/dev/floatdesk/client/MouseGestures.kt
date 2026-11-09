@@ -104,7 +104,7 @@ internal class MouseGestures {
             if(scrolling) return MouseGestureOutput(current.target,scroll=endScroll())
             if(dragging) { dragging=false; return MouseGestureOutput(target ?: lastTarget) }
             if(current.button==3 && nowMs-current.began>350) return MouseGestureOutput(target)
-            if(nowMs-current.began<35) return MouseGestureOutput(target)
+            // A sampled contact followed by release is a click, even within one frame.
             var clicked=current.target
             val previous=lastClick
             if(current.button==1 && previous?.button==1 && nowMs-lastClickAt<=400 &&

@@ -57,6 +57,13 @@ fun main() {
     cross.update(20,true,false,mapOf("RIGHT" to index),target.copy(u=.2f))
     check(cross.update(100,true,false,mapOf("RIGHT" to open),target.copy(u=.8f)).click!!.target.u==.2f)
 
+    val quick=MouseGestures()
+    quick.update(0,true,false,mapOf("RIGHT" to open),target)
+    quick.update(10,true,false,mapOf("RIGHT" to index),target)
+    check(quick.update(20,true,false,mapOf("RIGHT" to open),target).click!!.button==1)
+    quick.update(30,true,false,mapOf("RIGHT" to index),target)
+    check(quick.update(390,true,false,mapOf("RIGHT" to index),target).dragging)
+    check(!quick.update(400,true,false,mapOf("RIGHT" to open),null).dragging)
     val chord=MouseGestures()
     chord.update(0,true,false,mapOf("RIGHT" to open),target)
     chord.update(20,true,false,mapOf("RIGHT" to index),target)

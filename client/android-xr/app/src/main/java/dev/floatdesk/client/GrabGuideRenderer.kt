@@ -100,7 +100,7 @@ internal class GrabGuideRenderer private constructor(
                             surfaces: MutableList<SurfaceEntity>,alternating: Boolean) {
         if(closed) return
         while(surfaces.size<rays.size) {
-            val surface=SurfaceEntity.create(session,shape=decorationShape(1f,.001f),
+            val surface=SurfaceEntity.create(session,shape=decorationShape(1f,1f),
                 parent=null,superSampling=SurfaceEntity.SuperSampling.NONE)
             surface.setSurfacePixelDimensions(IntSize2d(128,4))
             surface.mediaBlendingMode=SurfaceEntity.MediaBlendingMode.TRANSPARENT
@@ -122,7 +122,9 @@ internal class GrabGuideRenderer private constructor(
             val normal=toward-along*dot
             if(normal.length<.00001f) { entity.setEnabled(false); continue }
             val up=Vector3(normal.y*along.z-normal.z*along.y,normal.z*along.x-normal.x*along.z,normal.x*along.y-normal.y*along.x)
-            entity.shape=decorationShape(delta.length,width)
+            // Keep the native mesh allocation stable: replacing it every sample can
+            // crash Impress and stall input on the UI thread. Transform the unit mesh.
+            entity.setScale(Vector3(delta.length,width,1f))
             entity.setPose(Pose(middle,Quaternion.fromLookTowards(normal,up)))
             entity.setAlpha(alpha)
             entity.parent=parent; entity.setEnabled(true)
@@ -133,7 +135,7 @@ internal class GrabGuideRenderer private constructor(
     @OptIn(androidx.xr.scenecore.ExperimentalSurfaceEntityPixelDimensionsApi::class)
     private fun surfacePoints(parent: Entity,points: List<FloatArray>,eye: FloatArray?,diameter: Float) {
         while(grabPoints.size<points.size) {
-            val entity=SurfaceEntity.create(session,shape=decorationShape(diameter,diameter),
+            val entity=SurfaceEntity.create(session,shape=decorationShape(1f,1f),
                 parent=null,superSampling=SurfaceEntity.SuperSampling.NONE)
             entity.setSurfacePixelDimensions(IntSize2d(32,32))
             entity.mediaBlendingMode=SurfaceEntity.MediaBlendingMode.TRANSPARENT
@@ -148,7 +150,7 @@ internal class GrabGuideRenderer private constructor(
         for((index,entity) in grabPoints.withIndex()) {
             val position=points.getOrNull(index)
             if(position==null || eye==null) { entity.setEnabled(false); continue }
-            entity.shape=decorationShape(diameter,diameter)
+            entity.setScale(diameter)
             entity.setPose(Pose(vector(position),Quaternion.fromLookTowards(vector(eye)-vector(position),Vector3.Up)))
             entity.parent=parent; entity.setEnabled(true)
         }

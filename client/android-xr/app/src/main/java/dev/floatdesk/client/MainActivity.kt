@@ -329,7 +329,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
         var seenGeneration = followGeneration
         var tick = 0
         while (isActive) {
-            delay(20)
+            delay(10)
             tick += 1
             val wantEyes = context.checkSelfPermission("android.permission.EYE_TRACKING_FINE") == android.content.pm.PackageManager.PERMISSION_GRANTED
             val resumed = current.lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
@@ -566,7 +566,10 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             val gestureBlocked=choice.mode==PointerMode.PREVIEW || choice.mode==PointerMode.GRAB || palmPanel!=null
             val mouse=mouseGestures.update(handTracking.nowMs,workspace.mouseGestures && trackingAvailable && handInputAllowed,
                 gestureBlocked,mouseSamples,choice.target)
-            mouse.scroll?.let { connection.touchpad(it.fingers,it.x,it.y) }
+            mouse.scroll?.let {
+                if(it.fingers==0) Log.i("Floatdesk","mouse scroll released at=${handTracking.nowMs}")
+                connection.touchpad(it.fingers,it.x,it.y)
+            }
             if(mouse.dragging != lastMouseDragging) {
                 Log.i("Floatdesk","mouse drag=${mouse.dragging}")
                 lastMouseDragging=mouse.dragging

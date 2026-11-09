@@ -101,6 +101,9 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     }
 
     fun overlay(value: VideoAim) {
+        val before=aim
+        if(before.thickness==value.thickness && before.opacity==value.opacity &&
+            before.segments.contentEquals(value.segments) && before.contacts.contentEquals(value.contacts)) return
         aim=value
         if(!closed && redrawPosted.compareAndSet(false,true)) handler.post {
             redrawPosted.set(false)

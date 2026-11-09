@@ -314,10 +314,15 @@ internal class MonitorDecoder(
         var displayedSurface: Surface?=null
         while (running.get()) {
             val accessUnit = try {
-                pending.poll(30, TimeUnit.MILLISECONDS)
+                pending.poll(2, TimeUnit.MILLISECONDS)
             } catch (_: InterruptedException) {
                 null
-            } ?: continue
+            }
+            if(accessUnit==null) {
+                // Completed output must not wait for the next compressed frame.
+                codec?.let { rendered += drain(it,rendered,byteDump) }
+                continue
+            }
             val display=surface.get()
             if(display !== displayedSurface) { renderer?.output(display); displayedSurface=display }
             val target = if (byteDump || display==null) null else renderer?.input ?: display

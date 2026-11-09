@@ -51,11 +51,18 @@ public final class VideoCompositorSmoke {
             compositor.overlay(new VideoAim(new float[0],new float[0],2f,.18f));
             SystemClock.sleep(40);
             try(Image image=frame(first)) { require(pixel(image,16,12)[1]<20,"Cleared ray left a ghost"); }
+            for(int i=0;i<5;i++) {
+                compositor.overlay(new VideoAim(new float[0],new float[0],2f,.18f));
+                SystemClock.sleep(20);
+            }
+            try(Image unchanged=first.acquireLatestImage()) {
+                require(unchanged==null,"Unchanged empty overlays requeued stale video frames");
+            }
             compositor.output(second.getSurface());
             try(Image image=frame(second)) {
                 require(pixel(image,16,8)[0]>220,"Surface handoff lost the retained video frame");
             }
-            System.out.println("PASS: real headset EGL video orientation, ray/ring pixels, overlay clearing and output handoff without a new decoder frame");
+            System.out.println("PASS: real headset EGL video orientation, ray/ring pixels, overlay clearing, unchanged-overlay suppression and output handoff without a new decoder frame");
         } finally { compositor.close(); first.close(); second.close(); }
     }
 }

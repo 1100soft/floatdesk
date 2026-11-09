@@ -356,8 +356,6 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
         var eyeNoticeShown = false
         var lastPointerMode: PointerMode? = null
         var lastMouseDragging = false
-        var rayComparisonAt=0L
-        var rayComparisonPhase="waiting"
         val lastMouseContact=mutableMapOf<String,Int>()
         var fistHeld = 0
         var panelHand: String? = null
@@ -608,7 +606,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                     sample.copy(right=basis.right,up=basis.up)
                 }
                 if(workspace.mouseGestures) for((side,sample) in frame.samples) {
-                    val contact=(if(sample.indexMetres<=(if(side=="LEFT") .0155f else .013f)) 1 else 0) or (if(sample.middleMetres<=.019f) 2 else 0)
+                    val contact=(if(sample.indexMetres<=(if(side=="LEFT") .0155f else .011f)) 1 else 0) or (if(sample.middleMetres<=(if(side=="RIGHT") .015f else .019f)) 2 else 0)
                     if(lastMouseContact.put(side,contact)!=contact) Log.i("Floatdesk",
                         "mouse contact side=$side fingers=$contact indexMm=${sample.indexMetres*1000} middleMm=${sample.middleMetres*1000} accepted=${side in samples} blocked=$gestureBlocked sampleAge=${handTracking.nowMs-frame.at}")
                 }
@@ -647,15 +645,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                     val draw: ()->Unit = {
                         val contactsNow=pointerControl.hands(grips.keys,SystemClock.uptimeMillis(),aimPoses)
                         val show=contactsNow.size==1 && palmPanel==null && !monitorGrab && !nativeManipulation
-                        val now=SystemClock.uptimeMillis()
-                        if(show && rayComparisonAt==0L) rayComparisonAt=now
-                        val hideForComparison=rayComparisonAt>0 && now-rayComparisonAt<8000
-                        val phase=if(rayComparisonAt==0L) "waiting" else if(hideForComparison) "hidden" else "visible"
-                        if(phase!=rayComparisonPhase) {
-                            Log.i("Floatdesk","ray input comparison phase=$phase")
-                            rayComparisonPhase=phase
-                        }
-                        val rays=(if(show && !hideForComparison) contactsNow else emptyMap()).mapNotNull { (side,hit) ->
+                        val rays=(if(show) contactsNow else emptyMap()).mapNotNull { (side,hit) ->
                             val origin=grips[side]; val placement=workspace.monitorAt(hit.monitor)
                             if(origin==null || placement==null) null else side to (origin to transformPoint(placement.pose,hit.local))
                         }.toMap()

@@ -26,11 +26,12 @@ installed=subprocess.check_output([adb,'shell','pm','path','dev.floatdesk.client
 assert installed.startswith('/data/app/') and '\n' not in installed, installed
 with tempfile.TemporaryDirectory(prefix='floatdesk-compositor-') as temp:
     folder=Path(temp); (folder/'classes').mkdir();(folder/'dex').mkdir()
-    subprocess.run([str(javac),'--release','17','-cp',f'{platform}:{classes}','-d',str(folder/'classes'),str(root/'checks/VideoCompositorSmoke.java')],check=True)
-    subprocess.run([str(d8),'--lib',str(platform),'--output',str(folder/'dex'),str(folder/'classes/VideoCompositorSmoke.class')],check=True)
+    subprocess.run([str(javac),'--release','17','-cp',f'{platform}:{classes}','-d',str(folder/'classes'),str(root/'checks/VideoCompositorSmoke.java'),str(root/'checks/DecoderIdleSmoke.java')],check=True)
+    subprocess.run([str(d8),'--lib',str(platform),'--output',str(folder/'dex'),*[str(file) for file in (folder/'classes').glob('*.class')]],check=True)
     remote='/data/local/tmp/floatdesk-compositor-smoke.dex'
     subprocess.run([adb,'push',str(folder/'dex/classes.dex'),remote],check=True)
     try:
-        subprocess.run([adb,'shell',f'CLASSPATH={shlex.quote(remote+":"+installed)} app_process /system/bin VideoCompositorSmoke'],check=True)
+        for main in ['VideoCompositorSmoke','DecoderIdleSmoke']:
+            subprocess.run([adb,'shell',f'CLASSPATH={shlex.quote(remote+":"+installed)} app_process /system/bin {main}'],check=True)
     finally:
         subprocess.run([adb,'shell','rm',remote],check=True)

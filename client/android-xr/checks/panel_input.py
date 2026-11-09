@@ -35,19 +35,19 @@ fun main() {
     fun p(t:Long,x:Float?=.2f,thumb:Float=.07f,side:String?="LEFT")=
         panel.update(t,side,x?.let {floatArrayOf(it,.5f)},thumb)
     p(0); p(120); check(panel.focused==0)
-    check(p(140,thumb=.015f)==null)
-    check(p(200,thumb=.015f)==0)
-    check(p(300,thumb=.015f)==null) // One fold, one activation.
-    p(320,x=.8f,thumb=.015f); p(460,x=.8f,thumb=.015f)
-    check(panel.focused==1 && p(480,x=.8f,thumb=.015f)==null)
-    p(500,x=.8f); p(520,x=.8f,thumb=.015f)
-    check(p(580,x=.8f,thumb=.015f)==1)
-    p(600,x=.8f); p(620,x=null,thumb=.015f)
-    check(p(720,x=null,thumb=.015f)==null) // Stale focus cannot click.
+    check(p(140,thumb=.025f)==null)
+    check(p(200,thumb=.025f)==0)
+    check(p(300,thumb=.025f)==null) // One fold, one activation.
+    p(320,x=.8f,thumb=.025f); p(460,x=.8f,thumb=.025f)
+    check(panel.focused==1 && p(480,x=.8f,thumb=.025f)==null)
+    p(500,x=.8f); p(520,x=.8f,thumb=.025f)
+    check(p(580,x=.8f,thumb=.025f)==1)
+    p(600,x=.8f); p(620,x=null,thumb=.025f)
+    check(p(720,x=null,thumb=.025f)==null) // Stale focus cannot click.
     p(900,x=null); check(panel.focused==null)
     p(920,side=null); check(panel.focused==null)
-    p(940,thumb=.015f); p(1080,thumb=.015f)
-    check(p(1160,thumb=.015f)==null) // Folded thumb on panel entry never arms.
+    p(940,thumb=.025f); p(1080,thumb=.025f)
+    check(p(1160,thumb=.025f)==null) // Folded thumb on panel entry never arms.
     println("Passed: warm eye lifecycle, stalled-resource/mode recovery, resume and permission handling; panel dwell, sticky focus, fresh middle pinch and stale-gaze rejection")
 }
 '''

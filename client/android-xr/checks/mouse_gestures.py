@@ -15,7 +15,7 @@ for name in ['MonitorMesh.kt','PointerControl.kt','GazeStabilizer.kt','MouseGest
 checks='''
 fun main() {
     val target=PointerTarget(0,.5f,.5f,floatArrayOf(0f,0f,0f))
-    val open=FingerPinch(.07f,.07f); val index=FingerPinch(.016f,.07f); val middle=FingerPinch(.07f,.020f)
+    val open=FingerPinch(.07f,.07f); val index=FingerPinch(.014f,.07f); val middle=FingerPinch(.07f,.019f)
     val gestures=MouseGestures()
     fun frame(t: Long,sample: FingerPinch,point: PointerTarget?=target,enabled: Boolean=true,blocked: Boolean=false)=
         gestures.update(t,enabled,blocked,mapOf("RIGHT" to sample),point)
@@ -60,10 +60,10 @@ fun main() {
     val chord=MouseGestures()
     chord.update(0,true,false,mapOf("RIGHT" to open),target)
     chord.update(20,true,false,mapOf("RIGHT" to index),target)
-    chord.update(60,true,false,mapOf("RIGHT" to FingerPinch(.016f,.020f)),target)
+    chord.update(60,true,false,mapOf("RIGHT" to FingerPinch(.014f,.019f)),target)
     check(chord.update(120,true,false,mapOf("RIGHT" to open),target).click!!.button==2)
-    chord.update(200,true,false,mapOf("RIGHT" to FingerPinch(.016f,.020f)),target)
-    check(!chord.update(600,true,false,mapOf("RIGHT" to FingerPinch(.016f,.020f)),target).dragging)
+    chord.update(200,true,false,mapOf("RIGHT" to FingerPinch(.014f,.019f)),target)
+    check(!chord.update(600,true,false,mapOf("RIGHT" to FingerPinch(.014f,.019f)),target).dragging)
     check(chord.update(650,true,false,mapOf("RIGHT" to open),target).click!!.button==2)
     val scroll=MouseGestures()
     fun sf(t:Long,pinch:FingerPinch,blocked:Boolean=false)=scroll.update(t,true,blocked,mapOf("LEFT" to pinch),target.copy(u=.8f))
@@ -91,6 +91,15 @@ fun main() {
     sf(860,middle.copy(position=floatArrayOf(.02f,0f,0f)))
     check(sf(880,middle.copy(position=floatArrayOf(.3f,0f,0f))).scroll!!.fingers==0)
     check(sf(900,open).click==null)
+    for(sample in listOf(FingerPinch(.0155f,.07f),FingerPinch(.07f,.0205f))) {
+        val contact=MouseGestures()
+        contact.update(0,true,false,mapOf("LEFT" to open),target)
+        for(t in 1L..30L) {
+            val output=contact.update(t*20,true,false,mapOf("LEFT" to sample.copy(position=floatArrayOf(t*.002f,0f,0f))),target)
+            check(output.click==null && !output.dragging && output.scroll==null)
+        }
+        check(contact.update(650,true,false,mapOf("LEFT" to open),target).click==null)
+    }
     val filter=GazeStabilizer()
     filter.update(target,0)
     var maximum=0f

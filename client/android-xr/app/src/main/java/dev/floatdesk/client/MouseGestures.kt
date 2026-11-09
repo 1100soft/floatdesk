@@ -43,10 +43,10 @@ internal class MouseGestures {
                 if(!distance.isFinite() || distance>open) set.remove(side)
                 else if(distance<=close) set.add(side)
             }
-            gate(indexClosed,sample.indexMetres,.016f,.021f)
-            gate(middleClosed,sample.middleMetres,.021f,.027f)
-            if(!sample.indexMetres.isFinite() || !sample.middleMetres.isFinite() || sample.indexMetres>.021f || sample.middleMetres>.027f) chordClosed.remove(side)
-            else if(sample.indexMetres<=.016f && sample.middleMetres<=.021f) chordClosed.add(side)
+            gate(indexClosed,sample.indexMetres,.015f,.020f)
+            gate(middleClosed,sample.middleMetres,.020f,.026f)
+            if(!sample.indexMetres.isFinite() || !sample.middleMetres.isFinite() || sample.indexMetres>.020f || sample.middleMetres>.026f) chordClosed.remove(side)
+            else if(sample.indexMetres<=.015f && sample.middleMetres<=.020f) chordClosed.add(side)
             // A middle pinch is distinct only when the index finger remains open.
             if(sample.indexMetres<.045f) middleClosed.remove(side)
         }

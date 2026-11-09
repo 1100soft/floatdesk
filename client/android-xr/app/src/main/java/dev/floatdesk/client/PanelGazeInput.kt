@@ -33,7 +33,7 @@ internal class PanelGazeInput(private val buttons: List<PanelButtonArea>) {
         }
         if(pinchMetres==null || !pinchMetres.isFinite()) { pinchArmed=false; foldedSince=null; return null }
         if(pinchMetres>.035f) { pinchArmed=true; foldedSince=null }
-        if(pinchMetres<.023f && pinchArmed) {
+        if(pinchMetres<.026f && pinchArmed) {
             val began=foldedSince
             if(began==null) foldedSince=now
             else if(now-began>=60) {

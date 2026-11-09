@@ -15,6 +15,7 @@ internal class MouseGestures {
     private val indexClosed=mutableSetOf<String>()
     private val middleClosed=mutableSetOf<String>()
     private val chordClosed=mutableSetOf<String>()
+    private val indexReady=mutableSetOf<String>()
     private val armed=mutableSetOf<String>()
     private var hold: Hold? = null
     private var scrolling=false
@@ -37,24 +38,26 @@ internal class MouseGestures {
 
     fun update(nowMs: Long, enabled: Boolean, blocked: Boolean, samples: Map<String,FingerPinch>,
                target: PointerTarget?): MouseGestureOutput {
+        indexReady.retainAll(samples.keys)
         indexClosed.retainAll(samples.keys); middleClosed.retainAll(samples.keys); chordClosed.retainAll(samples.keys); armed.retainAll(samples.keys)
         for((side,sample) in samples) {
+            if(sample.indexMetres>=.024f) indexReady.add(side)
             fun gate(set: MutableSet<String>,distance: Float,close: Float,open: Float) {
                 if(!distance.isFinite() || distance>open) set.remove(side)
                 else if(distance<=close) set.add(side)
             }
             val indexContact=if(side=="LEFT") .0155f else .014f
-            val indexRelease=if(side=="LEFT") .0205f else .019f
+            val indexRelease=if(side=="LEFT") .0165f else .015f
             gate(indexClosed,sample.indexMetres,indexContact,indexRelease)
-            gate(middleClosed,sample.middleMetres,.019f,.025f)
-            if(!sample.indexMetres.isFinite() || !sample.middleMetres.isFinite() || sample.indexMetres>indexRelease || sample.middleMetres>.025f) chordClosed.remove(side)
+            gate(middleClosed,sample.middleMetres,.019f,.020f)
+            if(!sample.indexMetres.isFinite() || !sample.middleMetres.isFinite() || sample.indexMetres>indexRelease || sample.middleMetres>.020f) chordClosed.remove(side)
             else if(sample.indexMetres<=indexContact && sample.middleMetres<=.019f) chordClosed.add(side)
             // A middle pinch is distinct only when the index finger remains open.
             if(sample.indexMetres<.045f) middleClosed.remove(side)
         }
         if(!enabled || blocked) {
             val release=if(dragging) dragTarget else target
-            hold=null; dragging=false; armed.clear(); lastClick=null
+            hold=null; dragging=false; indexReady.clear(); armed.clear(); lastClick=null
             return MouseGestureOutput(release,scroll=endScroll())
         }
         if(target != null) { lastTarget=target; lastTargetAt=nowMs }
@@ -119,9 +122,11 @@ internal class MouseGestures {
         val startTarget=target ?: lastTarget?.takeIf { nowMs-lastTargetAt<=120 }
         for(side in samples.keys.sorted()) {
             if(side !in armed) continue
+            if(side in indexClosed && side !in indexReady) continue
             val button=when(side) { in chordClosed -> 2; in indexClosed -> 1; in middleClosed -> 3; else -> continue }
             armed.remove(side)
             if(startTarget == null) continue
+            indexReady.remove(side)
             hold=Hold(side,button,nowMs,startTarget)
             if(button==3) {
                 val sample=samples.getValue(side)

@@ -227,6 +227,20 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     val grips = handTracking.points
     val deskSpace = remember { AtomicReference<Entity?>(null) }
     val redrawAim=remember { AtomicReference<()->Unit>({}) }
+    LaunchedEffect(session) {
+        var frames=0
+        var began=SystemClock.uptimeMillis()
+        while(isActive) {
+            androidx.compose.runtime.withFrameNanos { }
+            frames++
+            val now=SystemClock.uptimeMillis()
+            if(now-began>=5000) {
+                Log.i("Floatdesk","ray display frames=$frames windowMs=${now-began}")
+                frames=0;began=now
+            }
+            runCatching { redrawAim.get().invoke() }.onFailure { Log.w("Floatdesk","Ray frame update failed",it) }
+        }
+    }
     var guideRenderer by remember(session) { mutableStateOf<GrabGuideRenderer?>(null) }
     LaunchedEffect(session) {
         val current = session ?: return@LaunchedEffect
@@ -631,14 +645,14 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                     val draw: ()->Unit = {
                         val contactsNow=pointerControl.hands(grips.keys,SystemClock.uptimeMillis(),aimPoses)
                         val show=contactsNow.size==1 && palmPanel==null && !monitorGrab && !nativeManipulation
-                        val rays=(if(show) contactsNow else emptyMap()).mapNotNull { (side,hit) ->
+                        val rays=pointerControl.visualHands(if(show) contactsNow else emptyMap(),SystemClock.uptimeMillis()).mapNotNull { (side,hit) ->
                             val origin=grips[side]; val placement=workspace.monitorAt(hit.monitor)
                             if(origin==null || placement==null) null else side to (origin to transformPoint(placement.pose,hit.local))
                         }.toMap()
                         renderer.updateRays(root,rays,handTracking.points["VIEWER"] ?: handTracking.points["HEAD"],handTracking.unitsPerMeter,true)
                     }
                     redrawAim.set(draw)
-                    draw() }.onFailure {
+                     }.onFailure {
                     Log.e("Floatdesk", "Could not update grab guides", it)
                     guideRenderer = null
                     renderer.close()
@@ -729,7 +743,6 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 handTracking = handTracking,
                 pointerControl = pointerControl,
                 dimPointer = dimPointer,
-                onPointerHover = { redrawAim.get().invoke() },
                 panelFocused = panelFocused,
                 panelPressed = panelPressed,
                 onManipulate = { updateManipulation(it) },
@@ -758,7 +771,6 @@ private fun DeskContent(
     handTracking: GrabTracking,
     pointerControl: PointerControl,
     dimPointer: Boolean,
-    onPointerHover: ()->Unit,
     panelFocused: PalmAction?,
     panelPressed: PalmAction?,
     onManipulate: (Boolean) -> Unit,
@@ -914,7 +926,6 @@ private fun DeskContent(
                 val current = session ?: return@onSurfaceCreated
                 val display = warp.attach(current, surface, latest.value.monitorAt(index) ?: placement, pixelDensity, inputPolicy::onInputEvent) { side, point, flat, width, height ->
                     pointerControl.hover(index,side,point,flat,width,height,SystemClock.uptimeMillis())
-                    onPointerHover()
                 }
                 videoSurface.set(display)
                 connection.attachSurface(index, display)

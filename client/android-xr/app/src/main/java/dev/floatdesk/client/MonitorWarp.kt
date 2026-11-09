@@ -39,6 +39,10 @@ internal class MonitorWarp : AutoCloseable {
     private var mask: Texture? = null
     private var ownerEnabled=true
     private var directInteraction = false
+    private var hoverWindow=0L
+    private val hoverCounts=mutableMapOf<String,Int>()
+    private val hoverLast=mutableMapOf<String,Long>()
+    private var hoverGap=0L
     val outputSurface: Surface? get() = live?.getSurface()
     val displayEntity: SurfaceEntity? get()=live
     fun matchesSize(placement: MonitorPlacement)=flatWidth==placement.physicalWidthM && flatHeight==placement.physicalHeightM
@@ -100,6 +104,14 @@ internal class MonitorWarp : AutoCloseable {
                 val side = event.pointerType.toString()
                 if (event.action == InputEvent.Action.HOVER_ENTER || event.action == InputEvent.Action.HOVER_MOVE || event.action == InputEvent.Action.HOVER_EXIT) {
                     if (event.source == InputEvent.Source.HANDS) {
+                        val now=android.os.SystemClock.uptimeMillis()
+                        if(hoverWindow==0L) hoverWindow=now
+                        hoverLast.put(side,now)?.let { hoverGap=maxOf(hoverGap,now-it) }
+                        hoverCounts[side]=(hoverCounts[side] ?: 0)+1
+                        if(now-hoverWindow>=5000) {
+                            Log.i("Floatdesk","native hover counts=$hoverCounts windowMs=${now-hoverWindow} maxGapMs=$hoverGap")
+                            hoverWindow=now;hoverCounts.clear();hoverGap=0
+                        }
                         if (event.action == InputEvent.Action.HOVER_EXIT && info != null && info.inputEntity !== expected) return@listener
                         val hoverHit = info?.hitPosition
                         val point = if (event.action != InputEvent.Action.HOVER_EXIT && info?.inputEntity === expected && hoverHit != null)

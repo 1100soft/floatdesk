@@ -42,9 +42,9 @@ internal class MouseGestures {
             fun contact(set: MutableSet<String>,distance: Float,threshold: Float) {
                 if(distance.isFinite() && distance<=threshold) set.add(side) else set.remove(side)
             }
-            val indexContact=if(side=="LEFT") .0155f else .011f
+            val indexContact=if(side=="LEFT") .0155f else .0095f
             contact(indexClosed,sample.indexMetres,indexContact)
-            contact(middleClosed,sample.middleMetres,if(side=="RIGHT") .015f else .019f)
+            contact(middleClosed,sample.middleMetres,if(side=="RIGHT") .012f else .015f)
             if(side in indexClosed && side in middleClosed) chordClosed.add(side) else chordClosed.remove(side)
             // A middle pinch is distinct only when the index finger remains open.
             if(sample.indexMetres<.045f) middleClosed.remove(side)

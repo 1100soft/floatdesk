@@ -606,7 +606,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                     sample.copy(right=basis.right,up=basis.up)
                 }
                 if(workspace.mouseGestures) for((side,sample) in frame.samples) {
-                    val contact=(if(sample.indexMetres<=(if(side=="LEFT") .0155f else .011f)) 1 else 0) or (if(sample.middleMetres<=(if(side=="RIGHT") .015f else .019f)) 2 else 0)
+                    val contact=(if(sample.indexMetres<=(if(side=="LEFT") .0155f else .0095f)) 1 else 0) or (if(sample.middleMetres<=(if(side=="RIGHT") .012f else .015f)) 2 else 0)
                     if(lastMouseContact.put(side,contact)!=contact) Log.i("Floatdesk",
                         "mouse contact side=$side fingers=$contact indexMm=${sample.indexMetres*1000} middleMm=${sample.middleMetres*1000} accepted=${side in samples} blocked=$gestureBlocked sampleAge=${handTracking.nowMs-frame.at}")
                 }

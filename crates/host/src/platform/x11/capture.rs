@@ -232,13 +232,15 @@ impl CaptureBackend for X11Capture {
         // Clear the damage region before reading pixels. A change that lands
         // during the grab then produces a new notification, instead of being
         // erased with the region we already decided to read.
+        let started = Instant::now();
         self.subtract_damage();
         let frame = self.grab()?;
         self.dirty = false;
         if self.damage_ok {
             self.drain_damage();
         }
-        self.last = Some(Instant::now());
+        // Pace capture starts, not capture completion plus another full interval.
+        self.last = Some(started);
         Ok(Some(frame))
     }
 }
@@ -256,5 +258,48 @@ impl Drop for X11Capture {
             unsafe { libc::shmdt(self.addr) };
             self.addr = std::ptr::null_mut();
         }
+    }
+}
+
+#[cfg(test)]
+mod pacing_checks {
+    use super::*;
+
+    /// Read-only benchmark. Keeps pixels in memory and never changes desktop input.
+    #[test]
+    #[ignore = "requires an explicitly selected live X11 display"]
+    fn capture_cadence_read_only() {
+        assert_eq!(std::env::var("FLOATDESK_CAPTURE_BENCH").as_deref(), Ok("1"));
+        let link = X11Link::open().unwrap();
+        let screen = &link.conn.setup().roots[link.screen];
+        let rect = MonitorRect {
+            index: 0,
+            x: 0,
+            y: 0,
+            width: u32::from(screen.width_in_pixels),
+            height: u32::from(screen.height_in_pixels),
+        };
+        let mut capture = X11Capture::open(rect).unwrap();
+        let began = Instant::now();
+        let mut frames = 0;
+        while began.elapsed() < Duration::from_secs(2) {
+            capture.note_cursor();
+            if capture
+                .poll(Duration::from_secs_f64(1.0 / 60.0), false)
+                .unwrap()
+                .is_some()
+            {
+                frames += 1;
+            } else {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        println!(
+            "Read-only {}x{} capture: {:.1} fps at requested 60 fps",
+            rect.width,
+            rect.height,
+            f64::from(frames) / began.elapsed().as_secs_f64()
+        );
+        assert!(frames > 0);
     }
 }

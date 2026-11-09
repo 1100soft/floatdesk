@@ -98,6 +98,7 @@ internal class MonitorWarp : AutoCloseable {
         flatWidth = placement.physicalWidthM; flatHeight = placement.physicalHeightM
         if (density != null && onEvent != null) {
             val listener: (InputEvent) -> Unit = listener@ { event ->
+                if(input !== target) return@listener // Ignore callbacks queued before detach/reconnect.
                 val expected = if (mesh != null) curvedInput?.entity else target
                 // Decorative surfaces can appear before the actual monitor in the hit stack.
                 // Keep the native monitor hit and its matrix together instead of using the front hit.
@@ -163,7 +164,7 @@ internal class MonitorWarp : AutoCloseable {
                 }
             }
             inputListener = listener
-            val component = InteractableComponent.create(session, listener)
+            val component = NativeMonitorInput.create(session, listener)
             check(target.addComponent(component)) { "Could not attach native monitor input" }
             interaction = component
             directInteraction = true

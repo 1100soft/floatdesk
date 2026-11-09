@@ -36,7 +36,7 @@ internal class CurvedMonitorInput private constructor(
                 val created = GltfModelEntity.create(session, model, parent = parent)
                 entity = created
                 created.nodes.first().localScale = Vector3(mesh.width, mesh.height, mesh.width)
-                val component = InteractableComponent.create(session, listener)
+                val component = NativeMonitorInput.create(session, listener)
                 check(created.addComponent(component)) { "Could not attach curved monitor interaction" }
                 val pointer=SpatialPointerComponent.create(session)
                 check(created.addComponent(pointer)) { "Could not set curved monitor pointer" }

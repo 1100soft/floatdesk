@@ -152,7 +152,7 @@ impl X11Capture {
         })
     }
 
-    fn drain_damage(&mut self) {
+    fn drain_damage(&mut self) -> Result<()> {
         loop {
             match self.link.conn.poll_for_event() {
                 Ok(Some(event)) => {
@@ -162,12 +162,10 @@ impl X11Capture {
                     }
                 }
                 Ok(None) => break,
-                Err(err) => {
-                    tracing::warn!("X event poll failed: {err}");
-                    break;
-                }
+                Err(err) => return Err(Error::x11(err)),
             }
         }
+        Ok(())
     }
 
     fn event_hits_rect(&self, event: &x11rb::protocol::Event) -> bool {
@@ -215,7 +213,7 @@ impl X11Capture {
 impl CaptureBackend for X11Capture {
     fn poll(&mut self, min_interval: Duration, force: bool) -> Result<Option<CapturedFrame>> {
         if self.damage_ok {
-            self.drain_damage();
+            self.drain_damage()?;
         } else {
             self.dirty = true;
         }
@@ -237,7 +235,7 @@ impl CaptureBackend for X11Capture {
         let frame = self.grab()?;
         self.dirty = false;
         if self.damage_ok {
-            self.drain_damage();
+            self.drain_damage()?;
         }
         // Pace capture starts, not capture completion plus another full interval.
         self.last = Some(started);
@@ -301,5 +299,13 @@ mod pacing_checks {
             f64::from(frames) / began.elapsed().as_secs_f64()
         );
         assert!(frames > 0);
+        // Close only this test's client socket, never the X server itself.
+        unsafe {
+            libc::shutdown(capture.connection_fd(), libc::SHUT_RDWR);
+        }
+        assert!(
+            capture.poll(Duration::from_secs(60), false).is_err(),
+            "a dead X connection must escape idle polling so the session can reconnect"
+        );
     }
 }

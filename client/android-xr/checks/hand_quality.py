@@ -39,6 +39,10 @@ fun main() {
         val result=stable.update(t,mapOf("LEFT" to hand(-.2f+t*.00002f),"RIGHT" to hand(.2f+t*.00002f)))
         check(result.rejected.isEmpty() && !result.overlapping) // No universal palm-entry delay.
     }
+    val reacquired=HandTrackingQuality()
+    reacquired.update(0,mapOf("LEFT" to hand(0f)))
+    reacquired.update(100,emptyMap())
+    check(reacquired.update(1000,mapOf("LEFT" to hand(.5f))).rejected.isEmpty())
     val duplicate=HandTrackingQuality()
     duplicate.update(0,mapOf("LEFT" to hand(0f),"RIGHT" to hand(.3f)))
     val bad=duplicate.update(20,mapOf("LEFT" to hand(0f),"RIGHT" to hand(.025f)))

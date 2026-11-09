@@ -36,7 +36,7 @@ vertices=[]; normals=[]; indices=[]
 for face,normal in zip(faces,face_normals):
     i=len(vertices); vertices.extend(cube[x] for x in face); normals.extend([normal]*4)
     indices.extend([i,i+1,i+2,i,i+2,i+3])
-for name,color in [('cyan',[.15,.95,1,1]),('amber',[1,.65,.12,1])]:
+for name,color in [('cyan',[.15,.95,1,1]),('violet',[.68,.34,1,1])]:
     write(name+'-beam.glb',vertices,normals,indices,color)
     sphere=[]; tri=[]
     for row in range(9):

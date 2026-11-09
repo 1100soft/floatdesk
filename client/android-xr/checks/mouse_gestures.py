@@ -71,6 +71,10 @@ fun main() {
     isolated.update(0,true,false,mapOf("LEFT" to open,"RIGHT" to open),target)
     isolated.update(10,true,false,mapOf("RIGHT" to index),target)
     check(isolated.update(20,true,false,mapOf("RIGHT" to open),target).click!!.button==1)
+    val leftContact=MouseGestures()
+    leftContact.update(0,true,false,mapOf("LEFT" to open),target)
+    leftContact.update(10,true,false,mapOf("LEFT" to FingerPinch(.015f,.07f)),target)
+    check(leftContact.update(20,true,false,mapOf("LEFT" to open),target).click!!.button==1)
     val quick=MouseGestures()
     quick.update(0,true,false,mapOf("RIGHT" to open),target)
     quick.update(10,true,false,mapOf("RIGHT" to index),target)
@@ -112,7 +116,7 @@ fun main() {
     sf(860,middle.copy(position=floatArrayOf(.02f,0f,0f)))
     check(sf(880,middle.copy(position=floatArrayOf(.3f,0f,0f))).scroll!!.fingers==0)
     check(sf(900,open).click==null)
-    for(sample in listOf(FingerPinch(.0145f,.07f),FingerPinch(.07f,.0195f))) {
+    for(sample in listOf(FingerPinch(.016f,.07f),FingerPinch(.07f,.0195f))) {
         val contact=MouseGestures()
         contact.update(0,true,false,mapOf("LEFT" to open),target)
         for(t in 1L..30L) {

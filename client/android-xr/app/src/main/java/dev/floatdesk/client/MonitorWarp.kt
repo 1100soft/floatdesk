@@ -3,6 +3,8 @@ package dev.floatdesk.client
 import android.annotation.SuppressLint
 import android.view.Surface
 import android.util.Log
+import androidx.xr.scenecore.SpatialPointerComponent
+import androidx.xr.scenecore.SpatialPointerIcon
 import androidx.xr.scenecore.Space
 import androidx.xr.scenecore.InteractableComponent
 import androidx.xr.scenecore.InputEvent
@@ -204,6 +206,9 @@ internal class MonitorWarp : AutoCloseable {
                 it.setScale(original.getScale())
                 it.setSurfacePixelDimensions(androidx.xr.runtime.math.IntSize2d(placement.pixelWidth,placement.pixelHeight))
                 it.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE
+                val pointer=SpatialPointerComponent.create(session)
+                check(it.addComponent(pointer))
+                pointer.spatialPointerIcon=SpatialPointerIcon.NONE
                 live = it
             } else live!!
             applyShape(target, shape)

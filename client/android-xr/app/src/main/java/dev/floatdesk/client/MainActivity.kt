@@ -226,6 +226,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     val handTracking = remember { GrabTracking() }
     val grips = handTracking.points
     val deskSpace = remember { AtomicReference<Entity?>(null) }
+    val redrawAim=remember { AtomicReference<()->Unit>({}) }
     var guideRenderer by remember(session) { mutableStateOf<GrabGuideRenderer?>(null) }
     LaunchedEffect(session) {
         val current = session ?: return@LaunchedEffect
@@ -591,7 +592,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                     sample.copy(right=basis.right,up=basis.up)
                 }
                 if(workspace.mouseGestures) for((side,sample) in frame.samples) {
-                    val contact=(if(sample.indexMetres<=.014f) 1 else 0) or (if(sample.middleMetres<=.019f) 2 else 0)
+                    val contact=(if(sample.indexMetres<=(if(side=="LEFT") .0155f else .014f)) 1 else 0) or (if(sample.middleMetres<=.019f) 2 else 0)
                     if(lastMouseContact.put(side,contact)!=contact) Log.i("Floatdesk",
                         "mouse contact side=$side fingers=$contact indexMm=${sample.indexMetres*1000} middleMm=${sample.middleMetres*1000} accepted=${side in samples} blocked=$gestureBlocked sampleAge=${handTracking.nowMs-frame.at}")
                 }
@@ -612,16 +613,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 }
             }
             for((index,placement) in workspace.layouts[workspace.activeLayout].orEmpty().withIndex()) {
-                val contacts=hoverHands.filterValues { it.monitor==index }
                 val marks=mutableListOf<Float>()
-                val eye=grips["VIEWER"] ?: grips["HEAD"]
-                if(choice.mode==PointerMode.HAND && palmPanel==null && eye!=null) {
-                    for((side,contact) in contacts) {
-                        if(grips[side]==null) continue
-                        marks.add(contact.u); marks.add(contact.v)
-
-                    }
-                }
                 connection.aimOverlay(index,dev.floatdesk.client.media.VideoAim(floatArrayOf(),marks.toFloatArray(),
                     .0009f*handTracking.unitsPerMeter/placement.physicalWidthM*placement.pixelWidth,if(dimPointer) .18f else .4f))
             }
@@ -634,14 +626,19 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             }.toMap() else emptyMap()
             guideRenderer?.let { renderer ->
                 runCatching { renderer.update(root, grabs.mapNotNull { (index,grab) -> grab.guide ?: previews[index] })
-                    val point = choice.target?.takeIf { choice.mode == PointerMode.HAND }?.let { hit ->
-                        workspace.monitorAt(hit.monitor)?.let { transformPoint(it.pose,hit.local) }
+                    // The desktop cursor is the target marker; avoid a second dot over it.
+                    renderer.updatePointer(root,null,handTracking.points["HEAD"],handTracking.unitsPerMeter)
+                    val draw: ()->Unit = {
+                        val contactsNow=pointerControl.hands(grips.keys,SystemClock.uptimeMillis(),aimPoses)
+                        val show=contactsNow.size==1 && palmPanel==null && !monitorGrab && !nativeManipulation
+                        val rays=(if(show) contactsNow else emptyMap()).mapNotNull { (side,hit) ->
+                            val origin=grips[side]; val placement=workspace.monitorAt(hit.monitor)
+                            if(origin==null || placement==null) null else side to (origin to transformPoint(placement.pose,hit.local))
+                        }.toMap()
+                        renderer.updateRays(root,rays,handTracking.points["VIEWER"] ?: handTracking.points["HEAD"],handTracking.unitsPerMeter,true)
                     }
-                    renderer.updatePointer(root,point,handTracking.points["HEAD"],handTracking.unitsPerMeter)
-                    renderer.updateRays(root,(if(choice.mode==PointerMode.HAND && palmPanel==null) hoverHands else emptyMap()).mapNotNull { (side,hit) ->
-                        val origin=grips[side]; val placement=workspace.monitorAt(hit.monitor)
-                        if(origin==null || placement==null) null else origin to transformPoint(placement.pose,hit.local)
-                    },handTracking.points["VIEWER"] ?: handTracking.points["HEAD"],handTracking.unitsPerMeter,choice.mode==PointerMode.HAND) }.onFailure {
+                    redrawAim.set(draw)
+                    draw() }.onFailure {
                     Log.e("Floatdesk", "Could not update grab guides", it)
                     guideRenderer = null
                     renderer.close()
@@ -732,6 +729,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 handTracking = handTracking,
                 pointerControl = pointerControl,
                 dimPointer = dimPointer,
+                onPointerHover = { redrawAim.get().invoke() },
                 panelFocused = panelFocused,
                 panelPressed = panelPressed,
                 onManipulate = { updateManipulation(it) },
@@ -760,6 +758,7 @@ private fun DeskContent(
     handTracking: GrabTracking,
     pointerControl: PointerControl,
     dimPointer: Boolean,
+    onPointerHover: ()->Unit,
     panelFocused: PalmAction?,
     panelPressed: PalmAction?,
     onManipulate: (Boolean) -> Unit,
@@ -909,12 +908,13 @@ private fun DeskContent(
                 heightM = placement.physicalHeightM,
                 density = density,
                 pixelDensity = pixelDensity,
-            ).pointerHoverIcon(if (dimPointer && !workspace.sphericalWarp) SpatialPointerIcon.NONE else SpatialPointerIcon.DEFAULT),
+            ).pointerHoverIcon(SpatialPointerIcon.NONE),
         ) {
             onSurfaceCreated { surface ->
                 val current = session ?: return@onSurfaceCreated
                 val display = warp.attach(current, surface, latest.value.monitorAt(index) ?: placement, pixelDensity, inputPolicy::onInputEvent) { side, point, flat, width, height ->
-                    pointerControl.hover(index,side,point,flat,width,height,handTracking.nowMs)
+                    pointerControl.hover(index,side,point,flat,width,height,SystemClock.uptimeMillis())
+                    onPointerHover()
                 }
                 videoSurface.set(display)
                 connection.attachSurface(index, display)

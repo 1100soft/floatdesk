@@ -90,8 +90,9 @@ internal class GrabGuideRenderer private constructor(
         point(entity,visibleGrabContact(position,eye,unitsPerMeter),.003f*unitsPerMeter)
     }
 
-    fun updateRays(parent: Entity,rays: List<Pair<FloatArray,FloatArray>>,eye: FloatArray?,unitsPerMeter: Float,dimmed: Boolean) {
-        surfaceRays(parent,rays,eye,.0009f*unitsPerMeter,if(dimmed) .18f else .4f,aimBeams,false)
+    fun updateRays(parent: Entity,rays: Map<String,Pair<FloatArray,FloatArray>>,eye: FloatArray?,unitsPerMeter: Float,dimmed: Boolean) {
+        val slots=listOf("LEFT","RIGHT").map { rays[it] ?: (FloatArray(3) to FloatArray(3)) }
+        surfaceRays(parent,slots,eye,.0009f*unitsPerMeter,if(dimmed) .18f else .4f,aimBeams,true)
     }
 
     @android.annotation.SuppressLint("RestrictedApi")
@@ -107,7 +108,7 @@ internal class GrabGuideRenderer private constructor(
             // A plain native surface has no Compose input policy or InteractableComponent.
             // The entire beam shares one compositor layer, including where it overlaps video.
             val canvas=surface.getSurface().lockCanvas(null)
-            canvas.drawColor(if(alternating && surfaces.size%2==1) android.graphics.Color.rgb(255,211,97) else android.graphics.Color.rgb(108,249,255))
+            canvas.drawColor(if(alternating && surfaces.size%2==1) android.graphics.Color.rgb(193,128,255) else android.graphics.Color.rgb(108,249,255))
             surface.getSurface().unlockCanvasAndPost(canvas)
             surfaces.add(surface)
         }
@@ -142,7 +143,7 @@ internal class GrabGuideRenderer private constructor(
             val canvas=entity.getSurface().lockCanvas(null)
             canvas.drawColor(android.graphics.Color.TRANSPARENT,android.graphics.PorterDuff.Mode.CLEAR)
             val paint=android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
-            paint.color=if(grabPoints.size%2==1) android.graphics.Color.rgb(255,211,97) else android.graphics.Color.rgb(108,249,255)
+            paint.color=if(grabPoints.size%2==1) android.graphics.Color.rgb(193,128,255) else android.graphics.Color.rgb(108,249,255)
             canvas.drawCircle(16f,16f,15f,paint)
             entity.getSurface().unlockCanvasAndPost(canvas)
             grabPoints.add(entity)
@@ -203,7 +204,7 @@ internal class GrabGuideRenderer private constructor(
         suspend fun create(session: Session): GrabGuideRenderer {
             val loaded = mutableListOf<GltfModel>()
             try {
-                for (asset in listOf("cyan-beam", "amber-beam", "cyan-point", "amber-point")) {
+                for (asset in listOf("cyan-beam", "violet-beam", "cyan-point", "violet-point")) {
                     loaded.add(GltfModel.create(session, Paths.get("grab-guides/$asset.glb")))
                 }
                 return GrabGuideRenderer(session, loaded)

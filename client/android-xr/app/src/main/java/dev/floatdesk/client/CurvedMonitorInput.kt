@@ -6,6 +6,8 @@ import androidx.xr.scenecore.Entity
 import androidx.xr.scenecore.GltfModel
 import androidx.xr.scenecore.GltfModelEntity
 import androidx.xr.scenecore.InputEvent
+import androidx.xr.scenecore.SpatialPointerComponent
+import androidx.xr.scenecore.SpatialPointerIcon
 import androidx.xr.scenecore.InteractableComponent
 
 /** Transparent material, rather than a hidden entity: the native mesh collider stays active. */
@@ -14,8 +16,10 @@ internal class CurvedMonitorInput private constructor(
     val entity: GltfModelEntity,
     private val model: GltfModel,
     private val component: InteractableComponent,
+    private val pointer: SpatialPointerComponent,
 ) : AutoCloseable {
     override fun close() {
+        entity.removeComponent(pointer)
         entity.removeComponent(component)
         entity.parent = null
         model.close()
@@ -34,7 +38,10 @@ internal class CurvedMonitorInput private constructor(
                 created.nodes.first().localScale = Vector3(mesh.width, mesh.height, mesh.width)
                 val component = InteractableComponent.create(session, listener)
                 check(created.addComponent(component)) { "Could not attach curved monitor interaction" }
-                return CurvedMonitorInput(mesh, created, model, component)
+                val pointer=SpatialPointerComponent.create(session)
+                check(created.addComponent(pointer)) { "Could not set curved monitor pointer" }
+                pointer.spatialPointerIcon=SpatialPointerIcon.NONE
+                return CurvedMonitorInput(mesh, created, model, component,pointer)
             } catch (failure: Throwable) {
                 entity?.parent = null
                 model.close()

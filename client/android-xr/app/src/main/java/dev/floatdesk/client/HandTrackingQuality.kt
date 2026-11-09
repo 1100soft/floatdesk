@@ -18,7 +18,9 @@ internal class HandTrackingQuality {
             if(!finite) {
                 recoverUntil[side]=now+200;history.remove(side);reasons[side]="invalid joints";continue
             }
-            val before=history[side]
+            // A reacquired hand starts a new motion history; the missing interval
+            // is not evidence that the newly tracked pose is a jump.
+            val before=history[side]?.takeIf { now-it.at<=150 }
             val elapsed=before?.let { now-it.at } ?: 0L
             val dt=elapsed.coerceIn(1,100)/1000f
             val velocity=before?.let { FloatArray(3){axis->(sample.wrist[axis]-it.sample.wrist[axis])/dt} }
@@ -26,7 +28,7 @@ internal class HandTrackingQuality {
                 val cosine=kotlin.math.abs((0..3).sumOf { (sample.rotation[it]*before.sample.rotation[it]).toDouble() }).coerceIn(0.0,1.0)
                 val angle=2*kotlin.math.acos(cosine)
                 val predicted=before.velocity?.let { v->FloatArray(3){before.sample.wrist[it]+v[it]*dt} }
-                val unstable=elapsed>150 || gap(sample.wrist,before.sample.wrist)>.025f+3f*dt ||
+                val unstable=gap(sample.wrist,before.sample.wrist)>.025f+3f*dt ||
                     angle>.35f+8f*dt || (predicted!=null && gap(sample.wrist,predicted)>.015f+dt)
                 if(unstable) { recoverUntil[side]=now+200;reasons[side]="pose discontinuity" }
             }

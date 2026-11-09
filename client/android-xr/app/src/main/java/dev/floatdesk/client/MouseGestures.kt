@@ -43,10 +43,12 @@ internal class MouseGestures {
                 if(!distance.isFinite() || distance>open) set.remove(side)
                 else if(distance<=close) set.add(side)
             }
-            gate(indexClosed,sample.indexMetres,.014f,.019f)
+            val indexContact=if(side=="LEFT") .0155f else .014f
+            val indexRelease=if(side=="LEFT") .0205f else .019f
+            gate(indexClosed,sample.indexMetres,indexContact,indexRelease)
             gate(middleClosed,sample.middleMetres,.019f,.025f)
-            if(!sample.indexMetres.isFinite() || !sample.middleMetres.isFinite() || sample.indexMetres>.019f || sample.middleMetres>.025f) chordClosed.remove(side)
-            else if(sample.indexMetres<=.014f && sample.middleMetres<=.019f) chordClosed.add(side)
+            if(!sample.indexMetres.isFinite() || !sample.middleMetres.isFinite() || sample.indexMetres>indexRelease || sample.middleMetres>.025f) chordClosed.remove(side)
+            else if(sample.indexMetres<=indexContact && sample.middleMetres<=.019f) chordClosed.add(side)
             // A middle pinch is distinct only when the index finger remains open.
             if(sample.indexMetres<.045f) middleClosed.remove(side)
         }

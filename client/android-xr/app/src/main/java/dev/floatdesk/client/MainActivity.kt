@@ -645,7 +645,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                     val draw: ()->Unit = {
                         val contactsNow=pointerControl.hands(grips.keys,SystemClock.uptimeMillis(),aimPoses)
                         val show=contactsNow.size==1 && palmPanel==null && !monitorGrab && !nativeManipulation
-                        val rays=pointerControl.visualHands(if(show) contactsNow else emptyMap(),SystemClock.uptimeMillis()).mapNotNull { (side,hit) ->
+                        val rays=(if(show) contactsNow else emptyMap()).mapNotNull { (side,hit) ->
                             val origin=grips[side]; val placement=workspace.monitorAt(hit.monitor)
                             if(origin==null || placement==null) null else side to (origin to transformPoint(placement.pose,hit.local))
                         }.toMap()

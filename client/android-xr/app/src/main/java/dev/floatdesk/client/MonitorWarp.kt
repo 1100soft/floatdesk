@@ -40,6 +40,7 @@ internal class MonitorWarp : AutoCloseable {
     private var ownerEnabled=true
     private var directInteraction = false
     private var hoverWindow=0L
+    private val hoverActions=mutableMapOf<String,Int>()
     private val hoverCounts=mutableMapOf<String,Int>()
     private val hoverLast=mutableMapOf<String,Long>()
     private var hoverGap=0L
@@ -108,9 +109,11 @@ internal class MonitorWarp : AutoCloseable {
                         if(hoverWindow==0L) hoverWindow=now
                         hoverLast.put(side,now)?.let { hoverGap=maxOf(hoverGap,now-it) }
                         hoverCounts[side]=(hoverCounts[side] ?: 0)+1
+                        val action=event.action.toString()
+                        hoverActions[action]=(hoverActions[action] ?: 0)+1
                         if(now-hoverWindow>=5000) {
-                            Log.i("Floatdesk","native hover counts=$hoverCounts windowMs=${now-hoverWindow} maxGapMs=$hoverGap")
-                            hoverWindow=now;hoverCounts.clear();hoverGap=0
+                            Log.i("Floatdesk","native hover counts=$hoverCounts windowMs=${now-hoverWindow} maxGapMs=$hoverGap actions=$hoverActions curved=${mesh!=null}")
+                            hoverWindow=now;hoverCounts.clear();hoverActions.clear();hoverGap=0
                         }
                         if (event.action == InputEvent.Action.HOVER_EXIT && info != null && info.inputEntity !== expected) return@listener
                         val hoverHit = info?.hitPosition

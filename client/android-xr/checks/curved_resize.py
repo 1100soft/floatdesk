@@ -173,6 +173,10 @@ fun main() {
     update();check(session.entities.size==2)
     component.listener.accept(event(ResizeEvent.ResizeState.START,1f));check(events.size==5)
     move.listener.onMoveStart(root,Ray(),beforeMove,1f,parent);check(phases.size==3)
+    val active=session.entities.last() as SurfaceEntity
+    active.move!!.listener.onMoveStart(active,Ray(),active.pose,1f,parent)
+    update(enabled=false)
+    check(active.parent==null && active.move==null && active.resize==null)
     handles.close()
     println("Passed: native backing rectangle in both modes, no app pose/size writes during active resize/move, projected flat corners and stale callback rejection")
     println("Passed: behind-image tangent frame, projected corner alignment, independent resize ownership, source scale factors, transform synchronization and stale callback rejection")

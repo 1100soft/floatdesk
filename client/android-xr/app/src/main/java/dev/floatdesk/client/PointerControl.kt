@@ -34,6 +34,10 @@ internal class PointerControl {
         departedAt.remove(side)
     }
 
+    fun rejectHand(side: String) {
+        hovering.remove(side);departedAt.remove(side);lastHoverAt.remove(side);handPoses.remove(side);hoverPoses.remove(side)
+    }
+
     fun clearMonitor(monitor: Int) {
         hovering.entries.removeAll { it.value.monitor == monitor }
         meshes.remove(monitor)

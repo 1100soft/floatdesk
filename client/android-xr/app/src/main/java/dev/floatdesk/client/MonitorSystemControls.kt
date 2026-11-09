@@ -37,7 +37,7 @@ internal class MonitorSystemControls : AutoCloseable {
     fun update(session: Session,video: Entity?,mesh: MonitorMesh?,width: Float,height: Float,viewer: FloatArray?,
                unitsPerMeter: Float,enabled: Boolean,onResize: (ResizeEvent,Float)->Unit,onMove: (SystemMovePhase,Pose)->Unit) {
         listener=onResize;moveListener=onMove
-        if(video==null) { close();return }
+        if(video==null || (!enabled && (resizeStartWidth!=null || moving))) { close();return }
         // Do not feed the app's changing geometry back into an active native controller.
         if(resizeStartWidth!=null || moving) return
         val frame=mesh?.let(::curvedResizeFrame) ?: flatResizeFrame(width,height,viewer)

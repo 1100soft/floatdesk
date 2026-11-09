@@ -38,6 +38,8 @@ internal class MonitorWarp : AutoCloseable {
     private var ownerEnabled=true
     private var directInteraction = false
     val outputSurface: Surface? get() = live?.getSurface()
+    val displayEntity: SurfaceEntity? get()=live
+    fun matchesSize(placement: MonitorPlacement)=flatWidth==placement.physicalWidthM && flatHeight==placement.physicalHeightM
     val curvedVideo: SurfaceEntity? get()=live?.takeIf { it !== input }
 
     @SuppressLint("RestrictedApi")
@@ -155,7 +157,7 @@ internal class MonitorWarp : AutoCloseable {
 
     @SuppressLint("RestrictedApi") // CustomMesh is available in the pinned SceneCore 1.0 runtime.
     fun update(session: Session, root: Entity, eye: FloatArray?, placement: MonitorPlacement,
-               enabled: Boolean, held: Boolean) {
+               enabled: Boolean, held: Boolean, forceUpdate: Boolean = false) {
         val original = input ?: return
         if (live !== original) live?.let {
             it.parent = original.parent
@@ -163,8 +165,11 @@ internal class MonitorWarp : AutoCloseable {
             it.setScale(original.getScale())
         }
         // A captured shape must remain rigid while either contact is held.
-        if (held) return
-        val viewer = eye?.let { viewerInMonitor(it,placement.pose.position,placement.pose.rotation) }
+        val modeChanged=enabled != (mesh!=null)
+        if (held && !forceUpdate && !modeChanged) return
+        val candidateViewer = eye?.let { viewerInMonitor(it,placement.pose.position,placement.pose.rotation) }
+        val viewer=candidateViewer?.takeIf { it[2]>.10f && kotlin.math.sqrt(it.sumOf { v->(v*v).toDouble() })>.15 }
+            ?: mesh?.eye?.takeIf { forceUpdate }
         val localEye = viewer?.let { Vector3(it[0],it[1],it[2]) }
         // Freeze the last valid curvature during tracking gaps; never switch shape on a stale pose.
         if (enabled && (localEye == null || localEye.z <= .10f || localEye.length <= .15f)) return

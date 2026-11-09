@@ -64,7 +64,7 @@ The palm panel supports eye focus independently of desktop eye mouse aiming and 
 
 In spherical mode, the hidden flat video owner is disabled so its native body cannot compete with the curved interaction mesh. Resize affordances use a separate entity aligned behind the viewer-facing tangent plane, with its corners projected onto the curved image corners; returning to flat mode restores the original owner and handles.
 
-Normal one-hand monitor movement is disabled to avoid competing with mouse input. Use the custom two-hand grab to move the monitor; explicit resize handles, Reset and Follow remain available. Previewing never moves the monitor. Eye and gesture toggles are saved independently.
+Drag the small **Move** grip below the monitor for one-hand repositioning, or use the custom two-hand grab. Whole-screen single-hand grabbing remains disabled. Resize handles, Reset and Follow remain available. Previewing never moves the monitor. Eye and gesture toggles are saved independently.
 
 What changed after the first LAN proof of concept is recorded in [CHANGES.md](CHANGES.md). Regression checks and the limits of those checks are in [the Android checks README](client/android-xr/checks/README.md).
 

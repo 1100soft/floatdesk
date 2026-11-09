@@ -114,6 +114,13 @@ suspend fun main() {
     val curvedVideo=session.scene.entities.last()
     check(curvedVideo !== input && input.shape is SurfaceEntity.Shape.Quad)
     check(warp.outputSurface === curvedVideo.getSurface())
+    val resizedScreen=screen.copy(physicalWidthM=.96f,physicalHeightM=.54f)
+    val heldShape=curvedVideo.shape
+    warp.update(session,root,floatArrayOf(0f,0f,0f),resizedScreen,true,true)
+    check(curvedVideo.shape===heldShape && !warp.matchesSize(resizedScreen))
+    warp.update(session,root,null,resizedScreen,true,true,forceUpdate=true)
+    check(curvedVideo.shape!==heldShape && warp.matchesSize(resizedScreen))
+    warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false)
     val curved = curvedVideo.shape as SurfaceEntity.Shape.CustomMesh
     check(curved.mesh.texCoords[1] == 1f)
     check(warp.mesh != null && input.enabled)
@@ -121,7 +128,7 @@ suspend fun main() {
     check(curvedVideo.shape === curved && input.enabled)
     warp.update(session,root,floatArrayOf(.3f,0f,0f),screen,true,false)
     check(curvedVideo.shape !== curved && warp.outputSurface === curvedVideo.getSurface())
-    warp.update(session,root,floatArrayOf(.3f,0f,0f),screen,false,false)
+    warp.update(session,root,floatArrayOf(.3f,0f,0f),screen,false,true)
     check(input.shape is SurfaceEntity.Shape.Quad && warp.mesh == null && curvedVideo.parent == null && warp.outputSurface === output)
     warp.close(); warp.close()
     check(input.enabled && input.getAlpha() == .8f && input.parent === root)

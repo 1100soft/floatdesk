@@ -15,6 +15,21 @@ public final class DecoderIdleSmoke {
     static Object field(Object object,String name) throws Exception {
         var field=object.getClass().getDeclaredField(name); field.setAccessible(true); return field.get(object);
     }
+    static void awaitColor(ImageReader reader,boolean blue) {
+        long deadline=SystemClock.uptimeMillis()+3000;
+        while(SystemClock.uptimeMillis()<deadline) {
+            try(Image image=reader.acquireLatestImage()) {
+                if(image!=null) {
+                    var plane=image.getPlanes()[0];var pixels=plane.getBuffer();
+                    int offset=120*plane.getRowStride()+160*plane.getPixelStride();
+                    int red=pixels.get(offset)&255,green=pixels.get(offset+1)&255,b=pixels.get(offset+2)&255;
+                    if(green<40 && (blue ? b>200 && red<40 : red>200 && b<40)) return;
+                }
+            }
+            SystemClock.sleep(5);
+        }
+        throw new AssertionError(blue ? "Fresh frame did not display after visibility resume" : "Completed decoder output waited for another compressed frame");
+    }
     @SuppressWarnings("unchecked")
     public static void main(String[] args) throws Exception {
         var reader=ImageReader.newInstance(320,240,PixelFormat.RGBA_8888,4);
@@ -31,21 +46,16 @@ public final class DecoderIdleSmoke {
             ((AtomicReference<byte[]>)field(decoder,"pps")).set(Base64.getDecoder().decode("aM4PyA=="));
             ((BlockingQueue<byte[]>)field(decoder,"pending")).put(Base64.getDecoder().decode("AAAAAWdCwA3aBQfsBEAAAAMAQAAADKPFCqgAAAABaM4PyAAAAAFliIQ6EYoAAhjxwABA9jgACHlJycnJycnJycnJycnJycnJycnJ111111111111111111111111111111111111111111111111111111111111111111111111111111114AAAAAFlAyiIQ6EYoAAhjxwABA9jgACHlJycnJycnJycnJycnJycnJycnJ111111111111111111111111111111111111111111111111111111111111111111111111111111114AAAABZQGSIhDoRigACGPHAAED2OAAIeUnJycnJycnJycnJycnJycnJycnXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXgA=="));
             type.getMethod("start").invoke(decoder);
-            long deadline=SystemClock.uptimeMillis()+3000;
-            while(SystemClock.uptimeMillis()<deadline) {
-                try(Image image=reader.acquireLatestImage()) {
-                    if(image!=null) {
-                        var plane=image.getPlanes()[0];var pixels=plane.getBuffer();
-                        int offset=120*plane.getRowStride()+160*plane.getPixelStride();
-                        if((pixels.get(offset)&255)<200 || (pixels.get(offset+1)&255)>40)
-                            throw new AssertionError("Single keyframe pixels are corrupt");
-                        System.out.println("PASS: actual MediaCodec displays a lone keyframe while decoder input is idle");
-                        return;
-                    }
-                }
-                SystemClock.sleep(5);
+            awaitColor(reader,false);
+            type.getMethod("setRenderingActive",boolean.class).invoke(decoder,false);
+            SystemClock.sleep(150);
+            try(Image image=reader.acquireLatestImage()) {
+                if(image!=null) throw new AssertionError("Hidden decoder kept submitting frames");
             }
-            throw new AssertionError("Completed decoder output waited for another compressed frame");
+            type.getMethod("setRenderingActive",boolean.class).invoke(decoder,true);
+            ((BlockingQueue<byte[]>)field(decoder,"pending")).put(Base64.getDecoder().decode("AAAAAWdCwA3aBQfsBEAAAAMAQAAADKPFCqgAAAABaM4PyAAAAAFliIQ6EYoAAjFxwABDyjgACAXJycnJycnJycnJycnJycnJycnJ111111111111111111111111111111111111111111111111111111111111111111111111111111114AAAAAFlAyiIQ6EYoAAjFxwABDyjgACAXJycnJycnJycnJycnJycnJycnJ111111111111111111111111111111111111111111111111111111111111111111111111111111114AAAABZQGSIhDoRigACMXHAAEPKOAAIBcnJycnJycnJycnJycnJycnJycnXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXgA=="));
+            awaitColor(reader,true);
+            System.out.println("PASS: actual MediaCodec displays idle keyframe, pauses while hidden and resumes with a fresh frame");
         } finally { type.getMethod("stop").invoke(decoder); socket.close(); reader.close(); }
     }
 }

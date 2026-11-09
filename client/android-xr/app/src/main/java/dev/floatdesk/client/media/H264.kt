@@ -324,7 +324,8 @@ internal class MonitorDecoder(
             if(!renderingActive.get()) {
                 codec?.stop();codec?.release();codec=null;codecSurface=null;sawKeyframe=false
                 if(displayedSurface!=null) { renderer?.output(null);displayedSurface=null }
-                pending.clear()
+                // Transition methods clear the queue. Clearing it here could race
+                // with a newly queued resume keyframe after the active flag changes.
                 Thread.sleep(20)
                 continue
             }

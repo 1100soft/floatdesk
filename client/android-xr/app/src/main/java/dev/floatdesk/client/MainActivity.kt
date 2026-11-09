@@ -396,6 +396,9 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             if(!resumed) {
                 sampledHands.set(emptyList())
                 if(inputWasResumed) {
+                    pinchFrames.drain(SystemClock.uptimeMillis())
+                    if(handInputAllowed) palmInteractionEpoch++
+                    handInputAllowed=false
                     val release=mouseGestures.update(SystemClock.uptimeMillis(),false,true,emptyMap(),null)
                     release.target?.let { connection.movePointer(it.monitor,it.u,it.v,false) }
                     release.scroll?.let { connection.touchpad(it.fingers,it.x,it.y) }

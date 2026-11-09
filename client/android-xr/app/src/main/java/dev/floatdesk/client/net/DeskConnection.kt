@@ -28,6 +28,7 @@ internal class DeskConnection(
 
     private val main = Handler(Looper.getMainLooper())
     private val assembler = CursorAssembler()
+    @Volatile private var renderingActive=true
     private val decoders = HashMap<Int, MonitorDecoder>()
     private val pendingCursors = ConcurrentHashMap<Int, CursorView>()
     private val cursorSeq = AtomicInteger()
@@ -113,6 +114,12 @@ internal class DeskConnection(
         }
     }
 
+    @Synchronized
+    fun setRenderingActive(active: Boolean) {
+        renderingActive=active
+        decoders.values.forEach { it.setRenderingActive(active) }
+    }
+
     fun attachSurface(index: Int, surface: Surface) {
         decoders[index]?.attach(surface)
         send(Protocol.keyframeRequest(index))
@@ -191,6 +198,7 @@ internal class DeskConnection(
             val video = videos.getOrNull(monitor.index) ?: continue
             val decoder = MonitorDecoder(video, monitor.width, monitor.height, dumpFile, ::askKeyframe)
             decoder.punch(remote.address)
+            decoder.setRenderingActive(renderingActive)
             decoder.start()
             decoders[monitor.index] = decoder
         }

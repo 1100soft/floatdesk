@@ -203,6 +203,7 @@ internal class MonitorDecoder(
     private val dumpFile: File? = null,
     private val onGap: () -> Unit = {},
 ) {
+    private val renderingActive=AtomicBoolean(true)
     private val running = AtomicBoolean(true)
     private val surface = AtomicReference<Surface?>(null)
     private val pending = ArrayBlockingQueue<ByteArray>(4)
@@ -223,6 +224,12 @@ internal class MonitorDecoder(
         runCatching {
             socket.send(DatagramPacket(byteArrayOf(0), 1, host, 47000))
         }
+    }
+
+    fun setRenderingActive(active: Boolean) {
+        if(renderingActive.getAndSet(active)==active) return
+        pending.clear()
+        if(active) recover("visible stream resumed") else awaitingKey.set(true)
     }
 
     fun overlay(value: VideoAim) { aim.set(value); compositor?.overlay(value) }
@@ -264,6 +271,7 @@ internal class MonitorDecoder(
             } catch (_: java.net.SocketException) {
                 break
             }
+            if(!renderingActive.get()) { depacketizer.restart();reorder.consumeRestart();continue }
             if (reorder.consumeRestart()) {
                 depacketizer.restart()
                 recover("RTP source restarted")
@@ -313,6 +321,13 @@ internal class MonitorDecoder(
         renderer?.overlay(aim.get())
         var displayedSurface: Surface?=null
         while (running.get()) {
+            if(!renderingActive.get()) {
+                codec?.stop();codec?.release();codec=null;codecSurface=null;sawKeyframe=false
+                if(displayedSurface!=null) { renderer?.output(null);displayedSurface=null }
+                pending.clear()
+                Thread.sleep(20)
+                continue
+            }
             val accessUnit = try {
                 pending.poll(2, TimeUnit.MILLISECONDS)
             } catch (_: InterruptedException) {

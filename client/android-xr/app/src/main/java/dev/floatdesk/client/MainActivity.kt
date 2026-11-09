@@ -169,18 +169,22 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     val connection = remember { DeskConnection(dumpFile) }
     val context = LocalContext.current
     LaunchedEffect(connection) { connection.start(context) }
+    DisposableEffect(connection) { onDispose { connection.disconnect() } }
     val session = LocalSession.current
     SessionHolder.session = session
-    DisposableEffect(session) {
+    DisposableEffect(session,connection) {
         val current = session
         val observer = LifecycleEventObserver { _, event ->
+            connection.setRenderingActive(current?.lifecycleOwner?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.STARTED)==true)
             if (current != null && event == Lifecycle.Event.ON_RESUME) {
                 runCatching { current.configure(Config.Builder(current.config).setHandTracking(HandTrackingMode.BOTH).build()) }
                 runCatching { current.configure(Config.Builder(current.config).setDeviceTracking(DeviceTrackingMode.SPATIAL).build()) }
             }
         }
         current?.lifecycleOwner?.lifecycle?.addObserver(observer)
-        onDispose { current?.lifecycleOwner?.lifecycle?.removeObserver(observer) }
+        onDispose {
+            current?.lifecycleOwner?.lifecycle?.removeObserver(observer)
+        }
     }
     var workspace by remember { mutableStateOf(store.load()) }
     val pointerControl = remember { PointerControl() }
@@ -231,6 +235,9 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
         var frames=0
         var began=SystemClock.uptimeMillis()
         while(isActive) {
+            if(session?.lifecycleOwner?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.RESUMED)!=true) {
+                delay(100);continue
+            }
             androidx.compose.runtime.withFrameNanos { }
             frames++
             val now=SystemClock.uptimeMillis()
@@ -325,7 +332,9 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
         val pinchFrames=PinchFrameBuffer()
         launch(Dispatchers.Default) {
             while(isActive) {
-                val samples=sampledHands.get().mapNotNull { (side,hand) ->
+                val sources=sampledHands.get()
+                if(sources.isEmpty()) { delay(100);continue }
+                val samples=sources.mapNotNull { (side,hand) ->
                     val state=hand.state.value
                     if(state.trackingState!=TrackingState.TRACKING) null else {
                         val joints=state.handJoints
@@ -357,6 +366,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
         var lastPointerMode: PointerMode? = null
         var lastMouseDragging = false
         val lastMouseContact=mutableMapOf<String,Int>()
+        var inputWasResumed=true
         var fistHeld = 0
         var panelHand: String? = null
         var lastPalmSeen = 0L
@@ -383,6 +393,23 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 gazeEyes=listOfNotNull(runCatching { Eye.left(current) }.getOrNull(),runCatching { Eye.right(current) }.getOrNull())
                 Log.i("Floatdesk","eye resources refreshed count=${gazeEyes.size}")
             }
+            if(!resumed) {
+                sampledHands.set(emptyList())
+                if(inputWasResumed) {
+                    val release=mouseGestures.update(SystemClock.uptimeMillis(),false,true,emptyMap(),null)
+                    release.target?.let { connection.movePointer(it.monitor,it.u,it.v,false) }
+                    release.scroll?.let { connection.touchpad(it.fingers,it.x,it.y) }
+                    grabs.values.forEach { it.cancel() }
+                    pointerControl.clear();palmPanel=null;holdingFist=false;followLock=null
+                    deskSpace.get()?.let { parent ->
+                        guideRenderer?.update(parent,emptyList())
+                        guideRenderer?.updateRays(parent,emptyMap(),null,1f,true)
+                    }
+                }
+                inputWasResumed=false
+                delay(100);continue
+            }
+            inputWasResumed=true
             if(wantEyes && resumed && gazeEyes.isEmpty() && SystemClock.uptimeMillis()-eyeRequestAt>=1500 && !eyeNoticeShown) {
                 eyeNoticeShown=true
                 android.widget.Toast.makeText(context,"Eye tracking is unavailable. Hand pointing remains available.",android.widget.Toast.LENGTH_LONG).show()
@@ -606,7 +633,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                     sample.copy(right=basis.right,up=basis.up)
                 }
                 if(workspace.mouseGestures) for((side,sample) in frame.samples) {
-                    val contact=(if(sample.indexMetres<=(if(side=="LEFT") .0155f else .0095f)) 1 else 0) or (if(sample.middleMetres<=(if(side=="RIGHT") .012f else .015f)) 2 else 0)
+                    val contact=(if(sample.indexMetres<=(if(side=="LEFT") .0155f else .0105f)) 1 else 0) or (if(sample.middleMetres<=(if(side=="RIGHT") .0135f else .015f)) 2 else 0)
                     if(lastMouseContact.put(side,contact)!=contact) Log.i("Floatdesk",
                         "mouse contact side=$side fingers=$contact indexMm=${sample.indexMetres*1000} middleMm=${sample.middleMetres*1000} accepted=${side in samples} blocked=$gestureBlocked sampleAge=${handTracking.nowMs-frame.at}")
                 }
@@ -799,6 +826,7 @@ private fun DeskContent(
             val current = session ?: return@LaunchedEffect
             while (isActive) {
                 delay(20)
+                if(!current.lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) { delay(100);continue }
                 if (videoSurface.get() == null) continue
                 val root = findDeskSpace(current) ?: continue
                 val file = latest.value

@@ -707,6 +707,7 @@ private fun DeskContent(
     layout.forEachIndexed { index, placement ->
         val hands = remember(index) { grabs.getOrPut(index) { TwoHandState() } }
         var nativeResize by remember(index) { mutableStateOf(false) }
+        var curvedResizeStartWidth by remember(index) { mutableStateOf(1f) }
         val videoSurface = remember(index) { AtomicReference<Surface?>(null) }
         val warp = remember(index, session) { MonitorWarp() }
         val curvedResize=remember(index,session) { CurvedResizeHandles() }
@@ -725,13 +726,16 @@ private fun DeskContent(
                     warp.update(current, root, handTracking.points["VIEWER"] ?: handTracking.points["HEAD"], screen, file.sphericalWarp,
                         hands.busy || (file.sphericalWarp && handTracking.pinched.isNotEmpty()))
                     warp.syncCurvedInput(current)
-                    curvedResize.update(current,warp.curvedVideo,screen.physicalWidthM,screen.physicalHeightM,!hands.blocksNative) { event ->
+                    curvedResize.update(current,warp.curvedVideo,warp.mesh,!hands.blocksNative) { event,factor ->
                         if(hands.blocksNative) { nativeResize=false; return@update }
-                        if(event.resizeState==androidx.xr.scenecore.ResizeEvent.ResizeState.START) { nativeResize=true; onManipulate(true) }
-                        if(!nativeResize) return@update
                         val existing=latest.value.monitorAt(index) ?: return@update
+                        if(event.resizeState==androidx.xr.scenecore.ResizeEvent.ResizeState.START) {
+                            curvedResizeStartWidth=existing.physicalWidthM
+                            nativeResize=true; onManipulate(true)
+                        }
+                        if(!nativeResize || !factor.isFinite() || factor<=0f) return@update
                         val ratio=existing.physicalHeightM/existing.physicalWidthM
-                        val width=event.newSize.width.coerceIn(maxOf(.28f,.16f/ratio),minOf(2.4f,1.5f/ratio))
+                        val width=(curvedResizeStartWidth*factor).coerceIn(maxOf(.28f,.16f/ratio),minOf(2.4f,1.5f/ratio))
                         val end=event.resizeState==androidx.xr.scenecore.ResizeEvent.ResizeState.END
                         onWorkspace(latest.value.monitorPlaced(index,existing.copy(physicalWidthM=width,physicalHeightM=width*ratio),store,end))
                         if(end) { nativeResize=false; onManipulate(false) }

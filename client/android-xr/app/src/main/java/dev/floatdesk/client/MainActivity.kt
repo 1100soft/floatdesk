@@ -311,9 +311,9 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
         var device = runCatching { ArDevice.getInstance(current) }.getOrNull()
         Log.i("Floatdesk", "head source view=${viewpoint != null} device=${device != null}")
         val trackingGuard = TrackingGuard()
-        var eyeTrackingRequested: Boolean? = null
+        val eyeLifecycle=EyeTrackingLifecycle()
         var gazeEyes = emptyList<Eye>()
-        var eyeRequestTick = 0
+        var eyeRequestAt=SystemClock.uptimeMillis()
         var eyeNoticeShown = false
         var lastPointerMode: PointerMode? = null
         var lastMouseDragging = false
@@ -326,26 +326,26 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
         while (isActive) {
             delay(20)
             tick += 1
-            val wantEyes = (workspace.eyeAiming || palmPanel != null) && context.checkSelfPermission("android.permission.EYE_TRACKING_FINE") == android.content.pm.PackageManager.PERMISSION_GRANTED
+            val wantEyes = context.checkSelfPermission("android.permission.EYE_TRACKING_FINE") == android.content.pm.PackageManager.PERMISSION_GRANTED
             val resumed = current.lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
-            if (wantEyes != eyeTrackingRequested && resumed) {
-                eyeTrackingRequested = wantEyes
-                eyeRequestTick = tick
-                eyeNoticeShown = false
-                gazeEyes = emptyList()
-                val result = runCatching { current.configure(Config.Builder(current.config)
-                    .setEyeTracking(if (wantEyes) EyeTrackingMode.FINE_TRACKING else EyeTrackingMode.DISABLED).build()) }
-                Log.i("Floatdesk","eye tracking configured enabled=$wantEyes result=$result")
+            val eyeAction=eyeLifecycle.update(SystemClock.uptimeMillis(),resumed,wantEyes,
+                current.config.eyeTracking==EyeTrackingMode.FINE_TRACKING,gazeEyes.size==2,
+                wantEyes && resumed && gazeEyes.any { it.state.value.trackingState==TrackingState.TRACKING })
+            if(eyeAction.clearResources) {
+                gazeEyes=emptyList();eyeNoticeShown=false;eyeRequestAt=SystemClock.uptimeMillis()
             }
-            // Resources can appear on a later XR frame after configuration/permission resume.
-            if (wantEyes && resumed && gazeEyes.isEmpty() && tick-eyeRequestTick >= 2 && tick%5 == 0) {
-                if (current.config.eyeTracking != EyeTrackingMode.FINE_TRACKING && tick%50 == 0)
-                    runCatching { current.configure(Config.Builder(current.config).setEyeTracking(EyeTrackingMode.FINE_TRACKING).build()) }
-                gazeEyes = listOfNotNull(runCatching { Eye.left(current) }.getOrNull(),runCatching { Eye.right(current) }.getOrNull())
-                if (gazeEyes.isEmpty() && tick-eyeRequestTick >= 75 && !eyeNoticeShown) {
-                    eyeNoticeShown = true
-                    android.widget.Toast.makeText(context,"Eye tracking is unavailable. Hand pointing remains available.",android.widget.Toast.LENGTH_LONG).show()
-                }
+            eyeAction.configureFine?.let { fine ->
+                val result=runCatching { current.configure(Config.Builder(current.config)
+                    .setEyeTracking(if(fine) EyeTrackingMode.FINE_TRACKING else EyeTrackingMode.DISABLED).build()) }
+                Log.i("Floatdesk","eye tracking configured enabled=$fine result=$result")
+            }
+            if(eyeAction.refreshResources) {
+                gazeEyes=listOfNotNull(runCatching { Eye.left(current) }.getOrNull(),runCatching { Eye.right(current) }.getOrNull())
+                Log.i("Floatdesk","eye resources refreshed count=${gazeEyes.size}")
+            }
+            if(wantEyes && resumed && gazeEyes.isEmpty() && SystemClock.uptimeMillis()-eyeRequestAt>=1500 && !eyeNoticeShown) {
+                eyeNoticeShown=true
+                android.widget.Toast.makeText(context,"Eye tracking is unavailable. Hand pointing remains available.",android.widget.Toast.LENGTH_LONG).show()
             }
             if (followGeneration != seenGeneration) {
                 followLock = null
@@ -356,8 +356,10 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                     runCatching { "LEFT" to Hand.left(current) }.getOrNull(),
                     runCatching { "RIGHT" to Hand.right(current) }.getOrNull(),
                 )
-                if (viewpoint == null) viewpoint = openViewpoint(current)
-                if (device == null) device = runCatching { ArDevice.getInstance(current) }.getOrNull()
+            }
+            if(tick%25==1) {
+                if(viewpoint==null) viewpoint=openViewpoint(current)
+                if(device==null) device=runCatching { ArDevice.getInstance(current) }.getOrNull()
             }
             val deviceState = device?.state?.value
             // Joints and the raw viewpoint live in perception space. The desk is
@@ -504,7 +506,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 }
             }
             val hoverHands = pointerControl.hands(grips.keys,handTracking.nowMs,aimPoses)
-            val eyeRays = if (reliable && deviceState != null) gazeEyes.mapNotNull { eye ->
+            val eyeRays = if (trackingAvailable && deviceState != null) gazeEyes.mapNotNull { eye ->
                 val state=eye.state.value
                 if(!state.isOpen || state.trackingState!=TrackingState.TRACKING) null else {
                     val gaze=deskPose(current,root,deviceState.devicePose.compose(state.pose))
@@ -518,7 +520,8 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             val activate=panelInput.update(handTracking.nowMs,panel?.side,panelGaze,panel?.let { mouseSamples[it.side]?.middleMetres })
             panelFocused=panelInput.focused?.let { PalmAction.entries.getOrNull(it) }
             if(activate!=null) PalmAction.entries.getOrNull(activate)?.let { palmActionNow.value(it) }
-            val gazeTargets=if(workspace.eyeAiming) eyeRays.mapNotNull { (origin,direction) -> gazePointerTarget(origin,direction,workspace,pointerControl.meshes) } else emptyList()
+            if(panel!=null && tick%50==0) Log.i("Floatdesk","panel gaze resources=${gazeEyes.size} tracked=${gazeEyes.count { it.state.value.trackingState==TrackingState.TRACKING }} open=${gazeEyes.count { it.state.value.isOpen }} device=${deviceState?.trackingState} rays=${eyeRays.size} hits=${panelHits.size}")
+            val gazeTargets=if(workspace.eyeAiming && reliable) eyeRays.mapNotNull { (origin,direction) -> gazePointerTarget(origin,direction,workspace,pointerControl.meshes) } else emptyList()
             // Average binocular contacts on the same monitor; a valid single eye can still aim.
             val rawGazeTarget = gazeTargets.firstOrNull()?.let { first ->
                 val same = gazeTargets.filter { it.monitor == first.monitor }

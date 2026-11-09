@@ -9,6 +9,10 @@ internal data class MouseClick(val target: PointerTarget, val button: Int)
 internal data class MouseGestureOutput(val target: PointerTarget?, val dragging: Boolean = false,
                                       val click: MouseClick? = null, val scroll: TouchpadFrame? = null)
 
+// Thresholds describe tracked joint separation, not a physical skin gap.
+internal fun mouseIndexContactMetres(side: String)=if(side=="LEFT") .0155f else .011f
+internal fun mouseMiddleContactMetres(side: String)=if(side=="RIGHT") .014f else .015f
+
 /** Raw finger gestures are independent of which hand supplies the aiming ray. */
 internal class MouseGestures {
     private data class Hold(val side: String, val button: Int, val began: Long, val target: PointerTarget)
@@ -42,9 +46,9 @@ internal class MouseGestures {
             fun contact(set: MutableSet<String>,distance: Float,threshold: Float) {
                 if(distance.isFinite() && distance<=threshold) set.add(side) else set.remove(side)
             }
-            val indexContact=if(side=="LEFT") .0155f else .0105f
+            val indexContact=mouseIndexContactMetres(side)
             contact(indexClosed,sample.indexMetres,indexContact)
-            contact(middleClosed,sample.middleMetres,if(side=="RIGHT") .0135f else .015f)
+            contact(middleClosed,sample.middleMetres,mouseMiddleContactMetres(side))
             if(side in indexClosed && side in middleClosed) chordClosed.add(side) else chordClosed.remove(side)
             // A middle pinch is distinct only when the index finger remains open.
             if(sample.indexMetres<.045f) middleClosed.remove(side)

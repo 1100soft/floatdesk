@@ -6,7 +6,7 @@ import sys
 import tempfile
 folder=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
 imports=[];sources=[]
-for name in ['HandTrackingQuality.kt','MonitorMesh.kt','PointerControl.kt']:
+for name in ['HandTrackingQuality.kt','MonitorMesh.kt','PointerControl.kt','MouseGestures.kt']:
     lines=(folder/name).read_text().splitlines()
     imports += [line for line in lines if line.startswith('import ')]
     sources.append('\n'.join(line for line in lines if not line.startswith(('package ','import '))))
@@ -54,6 +54,32 @@ fun main() {
     var recovered=bad
     for(t in 40L..400L step 20) recovered=duplicate.update(t,mapOf("LEFT" to hand(0f),"RIGHT" to hand(.3f)))
     check(recovered.rejected.isEmpty())
+    val clone=HandTrackingQuality()
+    for(t in 0L..200L step 20) clone.update(t,mapOf("RIGHT" to hand(.2f)))
+    for(t in 220L..1000L step 20) {
+        val result=clone.update(t,mapOf("RIGHT" to hand(.2f),"LEFT" to hand(.225f)))
+        check(result.overlapping && result.continuousOwner=="RIGHT" && result.rejected==setOf("LEFT"))
+    }
+    val disappeared=clone.update(1020,mapOf("RIGHT" to hand(.2f)))
+    check("RIGHT" !in disappeared.rejected) // Ghost disappearing is not a real identity switch.
+    val unknown=HandTrackingQuality().update(0,mapOf("RIGHT" to hand(.2f),"LEFT" to hand(.225f)))
+    check(unknown.continuousOwner==null && unknown.rejected==setOf("LEFT","RIGHT"))
+    val establishedPair=HandTrackingQuality()
+    for(t in 0L..200L step 20) establishedPair.update(t,mapOf("LEFT" to hand(0f),"RIGHT" to hand(.3f)))
+    val merged=establishedPair.update(220,mapOf("LEFT" to hand(0f),"RIGHT" to hand(.025f)))
+    check(merged.continuousOwner==null && merged.rejected==setOf("LEFT","RIGHT"))
+    val routing=HandTrackingQuality()
+    val gestures=MouseGestures()
+    val target=PointerTarget(0,.5f,.5f,floatArrayOf(0f,0f,0f))
+    for(t in 0L..200L step 20) routing.update(t,mapOf("RIGHT" to hand(.2f)))
+    gestures.update(200,true,false,mapOf("RIGHT" to FingerPinch(.07f,.07f)),target)
+    for(t in listOf(220L,240L,260L)) {
+        val decision=routing.update(t,mapOf("RIGHT" to hand(.2f),"LEFT" to hand(.225f)))
+        val raw=mapOf("RIGHT" to FingerPinch(if(t==240L) .009f else .07f,.07f),"LEFT" to FingerPinch(.009f,.07f))
+        val output=gestures.update(t,true,decision.overlapping && decision.continuousOwner==null,
+            raw.filterKeys { it !in decision.rejected },target)
+        if(t==260L) check(output.click?.button==1) else check(output.click==null)
+    }
     val switched=HandTrackingQuality()
     switched.update(0,mapOf("LEFT" to hand(0f)))
     check(switched.update(20,mapOf("RIGHT" to hand(.02f))).rejected==setOf("LEFT","RIGHT"))

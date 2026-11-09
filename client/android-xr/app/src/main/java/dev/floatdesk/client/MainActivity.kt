@@ -493,7 +493,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             handInputAllowed=allowed
             for(side in quality.rejected) pointerControl.rejectHand(side)
             if(quality.rejected!=lastHandRejection || quality.overlapping!=lastHandOverlap) {
-                Log.i("Floatdesk","hand quality rejected=${quality.rejected} overlap=${quality.overlapping} reasons=${quality.reasons}")
+                Log.i("Floatdesk","hand quality rejected=${quality.rejected} overlap=${quality.overlapping} owner=${quality.continuousOwner} reasons=${quality.reasons}")
                 lastHandRejection=quality.rejected;lastHandOverlap=quality.overlapping
             }
             var tracking = 0
@@ -641,7 +641,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                         "mouse contact side=$side fingers=$contact indexMm=${sample.indexMetres*1000} middleMm=${sample.middleMetres*1000} accepted=${side in samples} blocked=$gestureBlocked sampleAge=${handTracking.nowMs-frame.at}")
                 }
                 val mouse=mouseGestures.update(frame.at,workspace.mouseGestures && trackingAvailable,
-                    gestureBlocked || quality.overlapping,samples,choice.target)
+                    gestureBlocked || (quality.overlapping && quality.continuousOwner==null),samples,choice.target)
                 mouse.scroll?.let {
                     if(it.fingers==0) Log.i("Floatdesk","mouse scroll released at=${frame.at}")
                     connection.touchpad(it.fingers,it.x,it.y)

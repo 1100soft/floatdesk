@@ -306,6 +306,25 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
         }
         Log.i("Floatdesk", "tracking configure hands=$handsConfigured head=$headConfigured")
         var hands = emptyList<Pair<String, Hand>>()
+        val sampledHands=java.util.concurrent.atomic.AtomicReference<List<Pair<String,Hand>>>(emptyList())
+        val pinchFrames=PinchFrameBuffer()
+        launch(Dispatchers.Default) {
+            while(isActive) {
+                val samples=sampledHands.get().mapNotNull { (side,hand) ->
+                    val state=hand.state.value
+                    if(state.trackingState!=TrackingState.TRACKING) null else {
+                        val joints=state.handJoints
+                        val thumb=joints[HandJointType.THUMB_TIP]?.translation
+                        val index=joints[HandJointType.INDEX_TIP]?.translation
+                        val middle=joints[HandJointType.MIDDLE_TIP]?.translation
+                        if(thumb==null || index==null || middle==null) null else
+                            side to FingerPinch(distance(thumb,index),distance(thumb,middle),((thumb+middle)*.5f).toArray())
+                    }
+                }.toMap()
+                pinchFrames.push(SystemClock.uptimeMillis(),samples)
+                delay(5)
+            }
+        }
         // This headset is stereo, so the mono viewpoint is not created. The left
         // eye, then the device pose, is the head.
         var viewpoint = openViewpoint(current)
@@ -322,6 +341,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
         var eyeNoticeShown = false
         var lastPointerMode: PointerMode? = null
         var lastMouseDragging = false
+        val lastMouseContact=mutableMapOf<String,Int>()
         var fistHeld = 0
         var panelHand: String? = null
         var lastPalmSeen = 0L
@@ -409,6 +429,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 androidx.xr.runtime.math.Pose((perceived.translation + rightEye.translation) * 0.5f)
             } else perceived
             viewer?.takeIf { reliable }?.let { grips["VIEWER"] = deskPose(current, root, it).translation.toArray() }
+            sampledHands.set(hands)
             val handStates=hands.map { (side,hand)->val state=hand.state.value;Triple(side,state,state.handJoints.toMap()) }
             val handSamples=handStates.mapNotNull { (side,state,joints) ->
                 if(state.trackingState!=TrackingState.TRACKING) null else {
@@ -564,20 +585,31 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             }
             dimPointer = choice.mode == PointerMode.HAND
             val gestureBlocked=choice.mode==PointerMode.PREVIEW || choice.mode==PointerMode.GRAB || palmPanel!=null
-            val mouse=mouseGestures.update(handTracking.nowMs,workspace.mouseGestures && trackingAvailable && handInputAllowed,
-                gestureBlocked,mouseSamples,choice.target)
-            mouse.scroll?.let {
-                if(it.fingers==0) Log.i("Floatdesk","mouse scroll released at=${handTracking.nowMs}")
-                connection.touchpad(it.fingers,it.x,it.y)
-            }
-            if(mouse.dragging != lastMouseDragging) {
-                Log.i("Floatdesk","mouse drag=${mouse.dragging}")
-                lastMouseDragging=mouse.dragging
-            }
-            mouse.target?.let { connection.movePointer(it.monitor,it.u,it.v,mouse.dragging) }
-            mouse.click?.let {
-                Log.i("Floatdesk","mouse click button=${it.button}")
-                connection.clickPointer(it.target.monitor,it.target.u,it.target.v,it.button)
+            for(frame in pinchFrames.drain(handTracking.nowMs)) {
+                val samples=frame.samples.filterKeys { it in mouseSamples }.mapValues { (side,sample) ->
+                    val basis=mouseSamples.getValue(side)
+                    sample.copy(right=basis.right,up=basis.up)
+                }
+                if(workspace.mouseGestures) for((side,sample) in frame.samples) {
+                    val contact=(if(sample.indexMetres<=.014f) 1 else 0) or (if(sample.middleMetres<=.019f) 2 else 0)
+                    if(lastMouseContact.put(side,contact)!=contact) Log.i("Floatdesk",
+                        "mouse contact side=$side fingers=$contact indexMm=${sample.indexMetres*1000} middleMm=${sample.middleMetres*1000} accepted=${side in samples} blocked=$gestureBlocked sampleAge=${handTracking.nowMs-frame.at}")
+                }
+                val mouse=mouseGestures.update(frame.at,workspace.mouseGestures && trackingAvailable,
+                    gestureBlocked || quality.overlapping,samples,choice.target)
+                mouse.scroll?.let {
+                    if(it.fingers==0) Log.i("Floatdesk","mouse scroll released at=${frame.at}")
+                    connection.touchpad(it.fingers,it.x,it.y)
+                }
+                if(mouse.dragging != lastMouseDragging) {
+                    Log.i("Floatdesk","mouse drag=${mouse.dragging}")
+                    lastMouseDragging=mouse.dragging
+                }
+                mouse.target?.let { connection.movePointer(it.monitor,it.u,it.v,mouse.dragging) }
+                mouse.click?.let {
+                    Log.i("Floatdesk","mouse click button=${it.button}")
+                    connection.clickPointer(it.target.monitor,it.target.u,it.target.v,it.button)
+                }
             }
             for((index,placement) in workspace.layouts[workspace.activeLayout].orEmpty().withIndex()) {
                 val contacts=hoverHands.filterValues { it.monitor==index }

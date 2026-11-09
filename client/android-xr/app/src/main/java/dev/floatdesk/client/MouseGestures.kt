@@ -131,3 +131,18 @@ internal class MouseGestures {
         return MouseGestureOutput(target)
     }
 }
+
+/** Preserve brief contacts while the UI thread is submitting scene updates. */
+internal class PinchFrameBuffer {
+    data class Frame(val at: Long,val samples: Map<String,FingerPinch>)
+    private val frames=java.util.ArrayDeque<Frame>()
+    @Synchronized fun push(at: Long,samples: Map<String,FingerPinch>) {
+        if(frames.size>=64) frames.removeFirst()
+        frames.addLast(Frame(at,samples))
+    }
+    @Synchronized fun drain(now: Long): List<Frame> {
+        val result=frames.toList();frames.clear()
+        // Never replay stale clicks after a stall; an empty sample releases active input.
+        return if(result.firstOrNull()?.let { now-it.at>120 }==true) listOf(Frame(now,emptyMap())) else result
+    }
+}

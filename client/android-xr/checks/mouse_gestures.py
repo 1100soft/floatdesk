@@ -75,7 +75,7 @@ fun main() {
     leftContact.update(0,true,false,mapOf("LEFT" to open),target)
     leftContact.update(10,true,false,mapOf("LEFT" to FingerPinch(.015f,.07f)),target)
     check(leftContact.update(20,true,false,mapOf("LEFT" to open),target).click!!.button==1)
-    for((side,threshold) in listOf("RIGHT" to .011f,"LEFT" to .0155f)) {
+    for((side,threshold) in listOf("RIGHT" to .0115f,"LEFT" to .0155f)) {
         val binary=MouseGestures()
         val apart=FingerPinch(threshold+.0001f,.07f)
         val touching=FingerPinch(threshold,.07f)
@@ -106,6 +106,29 @@ fun main() {
         check(released.scroll!!.fingers==0 && released.click==null)
         relaxedIndex.update(1040,true,false,mapOf(side to touching),target)
         check(relaxedIndex.update(1050,true,false,mapOf(side to apart),target).click!!.button==3)
+    }
+    for(side in listOf("LEFT","RIGHT")) {
+        val repeats=MouseGestures()
+        val threshold=mouseMiddleContactMetres(side)
+        val apart=FingerPinch(.033f,threshold+.0001f)
+        val touching=apart.copy(middleMetres=threshold)
+        repeats.update(0,true,false,mapOf(side to apart),target)
+        for(n in 0L..9L) {
+            repeats.update(n*20+1,true,false,mapOf(side to touching),target)
+            check(repeats.update(n*20+10,true,false,mapOf(side to apart),target).click!!.button==3)
+        }
+    }
+    // Repeated combined pinches need only release ONE participating finger.
+    for(side in listOf("LEFT","RIGHT")) for(releaseIndex in listOf(false,true)) {
+        val independent=MouseGestures()
+        val i=mouseIndexContactMetres(side);val m=mouseMiddleContactMetres(side)
+        val both=FingerPinch(i-.0001f,m-.0001f)
+        val partial=if(releaseIndex) both.copy(indexMetres=i+.0001f) else both.copy(middleMetres=m+.0001f)
+        independent.update(0,true,false,mapOf(side to open),target)
+        for(n in 0L..9L) {
+            independent.update(n*20+1,true,false,mapOf(side to both),target)
+            check(independent.update(n*20+10,true,false,mapOf(side to partial),target).click!!.button==2)
+        }
     }
     val quick=MouseGestures()
     quick.update(0,true,false,mapOf("RIGHT" to open),target)

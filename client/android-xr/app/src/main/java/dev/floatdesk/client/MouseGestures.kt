@@ -10,7 +10,7 @@ internal data class MouseGestureOutput(val target: PointerTarget?, val dragging:
                                       val click: MouseClick? = null, val scroll: TouchpadFrame? = null)
 
 // Thresholds describe tracked joint separation, not a physical skin gap.
-internal fun mouseIndexContactMetres(side: String)=if(side=="LEFT") .0155f else .011f
+internal fun mouseIndexContactMetres(side: String)=if(side=="LEFT") .0155f else .0115f
 internal fun mouseMiddleContactMetres(side: String)=if(side=="RIGHT") .014f else .015f
 
 /** Raw finger gestures are independent of which hand supplies the aiming ray. */
@@ -19,7 +19,7 @@ internal class MouseGestures(private val diagnostic: (String)->Unit = {}) {
     private val indexClosed=mutableSetOf<String>()
     private val middleClosed=mutableSetOf<String>()
     private val chordClosed=mutableSetOf<String>()
-    private val armed=mutableSetOf<String>()
+    private val armed=mutableMapOf<String,MutableSet<Int>>()
     private var hold: Hold? = null
     private var scrolling=false
     private var scrollOrigin: FloatArray?=null
@@ -41,7 +41,7 @@ internal class MouseGestures(private val diagnostic: (String)->Unit = {}) {
 
     fun update(nowMs: Long, enabled: Boolean, blocked: Boolean, samples: Map<String,FingerPinch>,
                target: PointerTarget?): MouseGestureOutput {
-        indexClosed.retainAll(samples.keys); middleClosed.retainAll(samples.keys); chordClosed.retainAll(samples.keys); armed.retainAll(samples.keys)
+        indexClosed.retainAll(samples.keys); middleClosed.retainAll(samples.keys); chordClosed.retainAll(samples.keys); armed.keys.retainAll(samples.keys)
         for((side,sample) in samples) {
             fun contact(set: MutableSet<String>,distance: Float,threshold: Float) {
                 if(distance.isFinite() && distance<=threshold) set.add(side) else set.remove(side)
@@ -50,8 +50,6 @@ internal class MouseGestures(private val diagnostic: (String)->Unit = {}) {
             contact(indexClosed,sample.indexMetres,indexContact)
             contact(middleClosed,sample.middleMetres,mouseMiddleContactMetres(side))
             if(side in indexClosed && side in middleClosed) chordClosed.add(side) else chordClosed.remove(side)
-            // A middle pinch is distinct only when the index finger remains open.
-            if(side in indexClosed) middleClosed.remove(side)
         }
         if(!enabled || blocked) {
             val release=if(dragging) dragTarget else target
@@ -60,7 +58,12 @@ internal class MouseGestures(private val diagnostic: (String)->Unit = {}) {
             return MouseGestureOutput(release,scroll=endScroll())
         }
         if(target != null) { lastTarget=target; lastTargetAt=nowMs }
-        for(side in samples.keys) if(side !in indexClosed && side !in middleClosed) armed.add(side)
+        for(side in samples.keys) {
+            val ready=armed.getOrPut(side) { mutableSetOf() }
+            if(side !in indexClosed) ready.add(1)
+            if(side !in middleClosed) ready.add(3)
+            if(side !in chordClosed) ready.add(2)
+        }
         var current=hold
         if(current != null) {
             for(side in samples.keys) if(side != current.side && (side in indexClosed || side in middleClosed)) armed.remove(side)
@@ -121,9 +124,14 @@ internal class MouseGestures(private val diagnostic: (String)->Unit = {}) {
         }
         val startTarget=target ?: lastTarget?.takeIf { nowMs-lastTargetAt<=120 }
         for(side in samples.keys.sorted()) {
-            if(side !in armed) continue
-            val button=when(side) { in chordClosed -> 2; in indexClosed -> 1; in middleClosed -> 3; else -> continue }
-            armed.remove(side)
+            val ready=armed[side] ?: continue
+            val button=when {
+                side in chordClosed && 2 in ready -> 2
+                side in indexClosed && side !in middleClosed && 1 in ready -> 1
+                side in middleClosed && side !in indexClosed && 3 in ready -> 3
+                else -> continue
+            }
+            ready.clear()
             if(startTarget == null) { diagnostic("mouse gesture ignored side=$side reason=no-target");continue }
             diagnostic("mouse gesture started side=$side button=$button")
             hold=Hold(side,button,nowMs,startTarget)

@@ -1,184 +1,93 @@
-#!/usr/bin/env python3
-"""Run actual gaze filtering and mouse gesture state machines without Android."""
-from pathlib import Path
-import subprocess
-import sys
-import tempfile
+# Floatdesk
 
-folder=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
-sources=[]
-imports=[]
-for name in ['MonitorMesh.kt','PointerControl.kt','GazeStabilizer.kt','MouseGestures.kt']:
-    lines=(folder/name).read_text().splitlines()[1:]
-    imports.extend(line for line in lines if line.startswith('import '))
-    sources.append('\n'.join(line for line in lines if not line.startswith('import ')))
-checks='''
-fun main() {
-    val target=PointerTarget(0,.5f,.5f,floatArrayOf(0f,0f,0f))
-    val open=FingerPinch(.07f,.07f); val index=FingerPinch(.009f,.07f); val middle=FingerPinch(.07f,.011f)
-    val gestures=MouseGestures()
-    fun frame(t: Long,sample: FingerPinch,point: PointerTarget?=target,enabled: Boolean=true,blocked: Boolean=false)=
-        gestures.update(t,enabled,blocked,mapOf("RIGHT" to sample),point)
-    frame(0,open)
-    for(t in 1L..30L) {
-        val relaxed=frame(t*20,FingerPinch(.021f,.021f,position=floatArrayOf(t*.001f,0f,0f)))
-        check(!relaxed.dragging && relaxed.click==null && relaxed.scroll==null)
-    }
-    frame(0,open)
-    check(frame(20,index).click == null)
-    val first=frame(100,open).click!!
-    check(first.button==1 && first.target.u==.5f)
-    frame(170,index,target.copy(u=.505f))
-    val second=frame(250,open,target.copy(u=.505f)).click!!
-    check(second.target.u==first.target.u) // Two pinches retain one double-click location.
-    frame(500,index)
-    val down=frame(860,index,target.copy(u=.6f))
-    check(down.dragging && down.target!!.u==.5f) // Button goes down at the original target.
-    check(frame(880,index,target.copy(u=.7f)).target!!.u==.7f)
-    check(!frame(920,open,target.copy(u=.7f)).dragging)
-    frame(1000,middle)
-    check(frame(1100,open).click!!.button==3)
-    frame(1200,index)
-    check(frame(1600,index).dragging)
-    check(!frame(1620,index,enabled=false).dragging)
-    check(frame(1800,index).click == null) // Held gesture cannot rearm on enable.
-    frame(1820,open)
-    frame(1840,index)
-    val blocked=frame(1900,open,blocked=true)
-    check(blocked.click == null && !blocked.dragging)
-    frame(2000,open)
-    frame(2020,index)
-    check(frame(2400,index).dragging)
-    val lost=gestures.update(2420,true,false,emptyMap(),target.copy(u=.9f))
-    check(!lost.dragging && lost.click==null && lost.target!!.u==.5f)
-    // Clicking hand is RIGHT; target can come from the other hand (or gaze).
-    val cross=MouseGestures()
-    cross.update(0,true,false,mapOf("RIGHT" to open),target.copy(u=.2f))
-    cross.update(20,true,false,mapOf("RIGHT" to index),target.copy(u=.2f))
-    check(cross.update(100,true,false,mapOf("RIGHT" to open),target.copy(u=.8f)).click!!.target.u==.2f)
+An X11-first host that places logical monitors in an Android XR workspace. Each monitor is its own H.264 stream. The host composites the cursor into the video and schedules frames when the pointer moves, even on an otherwise static desktop. All monitors share one workspace coordinate space.
 
-    val buffered=PinchFrameBuffer()
-    buffered.push(0,mapOf("RIGHT" to open))
-    buffered.push(5,mapOf("RIGHT" to index))
-    buffered.push(10,mapOf("RIGHT" to open))
-    val burst=MouseGestures()
-    check(buffered.drain(15).map { burst.update(it.at,true,false,it.samples,target) }.count { it.click!=null }==1)
-    check(buffered.drain(16).isEmpty())
-    buffered.push(20,mapOf("RIGHT" to index))
-    check(buffered.drain(200).single().samples.isEmpty())
-    // Losing the other hand must not reset an active clicking hand.
-    val isolated=MouseGestures()
-    isolated.update(0,true,false,mapOf("LEFT" to open,"RIGHT" to open),target)
-    isolated.update(10,true,false,mapOf("RIGHT" to index),target)
-    check(isolated.update(20,true,false,mapOf("RIGHT" to open),target).click!!.button==1)
-    val leftContact=MouseGestures()
-    leftContact.update(0,true,false,mapOf("LEFT" to open),target)
-    leftContact.update(10,true,false,mapOf("LEFT" to FingerPinch(.015f,.07f)),target)
-    check(leftContact.update(20,true,false,mapOf("LEFT" to open),target).click!!.button==1)
-    for((side,threshold) in listOf("RIGHT" to .011f,"LEFT" to .0155f)) {
-        val binary=MouseGestures()
-        val apart=FingerPinch(threshold+.0001f,.07f)
-        val touching=FingerPinch(threshold,.07f)
-        binary.update(0,true,false,mapOf(side to apart),target)
-        binary.update(10,true,false,mapOf(side to touching),target)
-        check(binary.update(20,true,false,mapOf(side to apart),target).click!!.button==1)
-        binary.update(30,true,false,mapOf(side to touching),target)
-        check(binary.update(40,true,false,mapOf(side to apart),target).click!!.button==1)
-    }
-    val narrowRelease=MouseGestures()
-    narrowRelease.update(0,true,false,mapOf("RIGHT" to open),target)
-    narrowRelease.update(10,true,false,mapOf("RIGHT" to index),target)
-    check(narrowRelease.update(400,true,false,mapOf("RIGHT" to index),target).dragging)
-    check(!narrowRelease.update(410,true,false,mapOf("RIGHT" to FingerPinch(.0151f,.07f)),target).dragging)
-    // A relaxed index does not have to be held 45 mm away from the thumb.
-    for(side in listOf("LEFT","RIGHT")) {
-        val relaxedIndex=MouseGestures()
-        val apart=FingerPinch(.033f,.025f)
-        val touching=FingerPinch(.033f,.01f,position=floatArrayOf(0f,0f,0f))
-        relaxedIndex.update(0,true,false,mapOf(side to apart),target)
-        relaxedIndex.update(10,true,false,mapOf(side to touching),target)
-        check(relaxedIndex.update(100,true,false,mapOf(side to apart),target).click!!.button==3)
-        relaxedIndex.update(110,true,false,mapOf(side to touching),target)
-        check(relaxedIndex.update(1000,true,false,mapOf(side to apart),target).click!!.button==3)
-        relaxedIndex.update(1010,true,false,mapOf(side to touching),target)
-        check(relaxedIndex.update(1020,true,false,mapOf(side to touching.copy(position=floatArrayOf(.02f,0f,0f))),target).scroll!!.fingers==2)
-        val released=relaxedIndex.update(1030,true,false,mapOf(side to apart),target)
-        check(released.scroll!!.fingers==0 && released.click==null)
-        relaxedIndex.update(1040,true,false,mapOf(side to touching),target)
-        check(relaxedIndex.update(1050,true,false,mapOf(side to apart),target).click!!.button==3)
-    }
-    val quick=MouseGestures()
-    quick.update(0,true,false,mapOf("RIGHT" to open),target)
-    quick.update(10,true,false,mapOf("RIGHT" to index),target)
-    check(quick.update(20,true,false,mapOf("RIGHT" to open),target).click!!.button==1)
-    quick.update(30,true,false,mapOf("RIGHT" to index),target)
-    check(quick.update(390,true,false,mapOf("RIGHT" to index),target).dragging)
-    check(!quick.update(400,true,false,mapOf("RIGHT" to open),null).dragging)
-    val chord=MouseGestures()
-    chord.update(0,true,false,mapOf("RIGHT" to open),target)
-    chord.update(20,true,false,mapOf("RIGHT" to index),target)
-    chord.update(60,true,false,mapOf("RIGHT" to FingerPinch(.009f,.011f)),target)
-    check(chord.update(120,true,false,mapOf("RIGHT" to open),target).click!!.button==2)
-    chord.update(200,true,false,mapOf("RIGHT" to FingerPinch(.009f,.011f)),target)
-    check(!chord.update(600,true,false,mapOf("RIGHT" to FingerPinch(.009f,.011f)),target).dragging)
-    check(chord.update(650,true,false,mapOf("RIGHT" to open),target).click!!.button==2)
-    val scroll=MouseGestures()
-    fun sf(t:Long,pinch:FingerPinch,blocked:Boolean=false)=scroll.update(t,true,blocked,mapOf("LEFT" to pinch),target.copy(u=.8f))
-    sf(0,open)
-    sf(20,middle.copy(position=floatArrayOf(0f,0f,0f)))
-    check(sf(30,middle.copy(position=floatArrayOf(.003f,0f,0f))).scroll==null)
-    val moved=sf(40,middle.copy(position=floatArrayOf(.025f,.015f,0f)))
-    check(moved.scroll!!.fingers==2 && moved.target!!.u==.8f) // Starts after 20 ms, with no hold delay.
-    check(kotlin.math.abs(moved.scroll.x-.6f)<.0001f && kotlin.math.abs(moved.scroll.y-.4f)<.0001f)
-    check(sf(60,middle.copy(position=floatArrayOf(.025f,.015f,.05f))).scroll!!.y==moved.scroll.y)
-    val end=sf(80,open)
-    check(end.scroll!!.fingers==0 && end.click==null && !end.dragging)
-    sf(100,middle.copy(position=floatArrayOf(0f,0f,0f)))
-    check(sf(180,open).click!!.button==3) // Still short pinch remains right-click.
-    sf(200,middle.copy(position=floatArrayOf(0f,0f,0f)))
-    check(sf(600,middle.copy(position=floatArrayOf(0f,0f,0f))).scroll==null)
-    check(sf(620,open).click!!.button==3) // Duration alone never discards a stationary right-click.
-    sf(700,middle.copy(position=floatArrayOf(0f,0f,0f)))
-    sf(720,middle.copy(position=floatArrayOf(.02f,0f,0f)))
-    val cancelled=sf(740,middle.copy(position=floatArrayOf(.02f,0f,0f)),true)
-    check(cancelled.scroll!!.fingers==0 && cancelled.click==null)
-    check(sf(800,middle.copy(position=floatArrayOf(.02f,0f,0f))).scroll==null)
-    sf(820,open)
-    sf(840,middle.copy(position=floatArrayOf(0f,0f,0f)))
-    sf(860,middle.copy(position=floatArrayOf(.02f,0f,0f)))
-    check(sf(880,middle.copy(position=floatArrayOf(.3f,0f,0f))).scroll!!.fingers==0)
-    check(sf(900,open).click==null)
-    for(sample in listOf(FingerPinch(.016f,.07f),FingerPinch(.07f,.0195f))) {
-        val contact=MouseGestures()
-        contact.update(0,true,false,mapOf("LEFT" to open),target)
-        for(t in 1L..30L) {
-            val output=contact.update(t*20,true,false,mapOf("LEFT" to sample.copy(position=floatArrayOf(t*.002f,0f,0f))),target)
-            check(output.click==null && !output.dragging && output.scroll==null)
-        }
-        check(contact.update(650,true,false,mapOf("LEFT" to open),target).click==null)
-    }
-    val filter=GazeStabilizer()
-    filter.update(target,0)
-    var maximum=0f
-    for(i in 1..100) {
-        val raw=target.copy(u=.5f+if(i%2==0) .006f else -.006f)
-        val shown=filter.update(raw,i*20L)!!
-        maximum=maxOf(maximum,kotlin.math.abs(shown.u-.5f))
-    }
-    check(maximum<.002f) // Stationary jitter is reduced, not merely delayed.
-    val before=filter.update(target,2020)!!
-    val jump=filter.update(target.copy(u=.9f),2040)!!
-    check(jump.u==before.u) // Reject one isolated large outlier.
-    val shifted=filter.update(target.copy(u=.9f),2060)!!
-    check(shifted.u>.8f) // A deliberate sustained gaze shift remains responsive.
-    check(filter.update(null,2200)==null)
-    check(filter.update(target.copy(monitor=1,u=.1f),2220)!!.u==.1f)
-    println("Passed: gaze jitter reduction/outlier rejection/fast shifts/reset, click/double pinch/right-click/drag, cross-hand target, disabled/preview/tracking-loss cancellation")
-}
-'''
-lib=Path(sys.argv[1]); stdlib=next(lib.glob('kotlin-stdlib-*.jar'))
-with tempfile.TemporaryDirectory(prefix='floatdesk-mouse-') as temp:
-    file=Path(temp)/'MouseGestureChecks.kt'
-    file.write_text('\n'.join(sorted(set(imports)))+'\n'+'\n'.join(sources)+checks)
-    subprocess.run(['java','-cp',str(lib/'*'),'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler','-no-stdlib','-no-reflect','-classpath',str(stdlib),'-d',temp,str(file)],check=True)
-    subprocess.run(['java','-cp',temp+':'+str(stdlib),'MouseGestureChecksKt'],check=True)
+This tree is the LAN proof of concept: RandR 1.5 regions, MIT-SHM capture, XDamage, XFixes, GStreamer H.264, and RTP/UDP. It is not encrypted. Keep it on a trusted network. The session boundary (`DisplayBackend`, `CaptureBackend`, `CursorBackend`, `EncodeBackend`) is where Wayland, Windows, macOS, and a WebRTC transport plug in later.
+
+## Host
+
+Requires an X11 session (`DISPLAY`) and GStreamer with an H.264 encoder (`x264enc` is the portable fallback; `vah264enc`, `vaapih264enc`, and `nvh264enc` are used automatically when present).
+
+```bash
+cargo build --release
+./target/release/floatdesk doctor
+./target/release/floatdesk trial
+./target/release/floatdesk serve --monitors 2 --width 1920 --height 1080
+```
+
+`doctor` only reads the server. `trial` creates one 1280×720 logical monitor named `Floatdesk-1`, checks that RandR lists it, and restores the framebuffer. `serve` enlarges the X screen, adds `Floatdesk-N` monitors with no physical output, and waits for a client hello on UDP `47000`.
+
+`--existing` streams the current primary CRTC and does not resize the screen. That is the right mode for a loopback test:
+
+```bash
+./target/release/floatdesk recv --host 127.0.0.1:47000 --output /tmp/floatdesk.h264 --seconds 5 &
+./target/release/floatdesk serve --existing --duration 4 --encoder x264enc --fps 15
+```
+
+For long-running headset use, run the existing-desktop host under your user service manager instead of leaving a background process attached to a terminal or coding tool:
+
+```bash
+cargo build --release
+./scripts/serve-existing.sh --encoder vah264enc --fps 60
+journalctl --user -u floatdesk-live -f
+```
+
+This session service restarts the host after a crash, sends logs to the journal, and removes inherited regular-file size limits. Omit `--encoder` to select an available encoder automatically. It uses the current X11 `DISPLAY` and `XAUTHORITY`. Stop it with `systemctl --user stop floatdesk-live`; use `systemctl --user restart floatdesk-live` to restart the running service. To change launch arguments, stop it and rerun the script. `FLOATDESK_BIN` can select a different executable.
+
+Ctrl-C restores a virtual framebuffer. If the process is killed first, the saved size is in `$XDG_STATE_HOME/floatdesk/x11-screen.json` (or `~/.local/state/floatdesk/`). Put it back with:
+
+```bash
+floatdesk restore
+```
+
+`capture-once` writes a PPM of the top-left corner through MIT-SHM. `encode-once` writes an Annex-B file from a synthetic frame.
+
+## Android XR client
+
+`client/android-xr` is a Jetpack XR app. It decodes each RTP stream with `MediaCodec` straight into a `SpatialExternalSurface`, receives the cursor within the video, and stores monitor poses in the workspace. Room anchoring is available when supported by the headset.
+
+The headset finds the computer on the LAN by itself. `floatdesk serve` announces itself once a second. Open the app and wait until the status says it found the machine. There is no address to type.
+
+Face an open palm toward yourself to show the control panel, and touch its buttons with the other hand. A firmly clenched fist held briefly makes the desk follow your head; the Follow button toggles persistent follow.
+
+Pinch two well-separated points on a monitor to manipulate it in 3D. Hand translation, depth, rotation, and separation move and scale a miniature monitor held between your hands; the real monitor mirrors that transformation. A wireframe, fixed contact markers, and tethers show the mapping. Aiming beams and mouse contact rings hide during preview/grabbing. Preview tethers and contact markers use native transparent surfaces so live video does not cut them off. Closely spaced contacts are rejected, and releasing either pinch or losing tracking ends the grab. During manipulation a frozen snapshot replaces the video visually so the guides stay visible. The hidden video surface continues receiving frames and reappears on release.
+
+Use **Enable spherical / Disable spherical** on the palm panel to curve each monitor horizontally and vertically onto a sphere centered between your eyes. The screen center stays in place and an equal-edge angular mesh keeps neighboring grid rays uniformly spaced in both axes as you move your head. The setting is saved with the workspace. During a grab, the curved shape freezes with the image to keep the contact points rigid; it refits to your viewpoint on release.
+
+Hand-ray mouse aiming is always available. **Enable eye mouse / Disable eye mouse** on the palm panel controls only gaze aiming: with no hand ray on a monitor, enabled gaze aims the mouse; one hand ray takes priority; two hand rays stop mouse movement and preview the miniature grab guides before pinching. Flat mode replaces the bright system reticle with a faint marker in one-hand mode. Spherical mode currently keeps the original SDK pointer styling while its input regression is investigated. Eye aiming uses an adaptive filter and small deadband to reduce jitter while following deliberate gaze changes. Grant eye-tracking permission when enabling it. Keep Android XR's aiming method on **Use hand aiming only**; the app reads gaze independently. Denied or unavailable gaze does not disable hand aiming. Android XR still controls its own ray beam. A faint app-rendered beam remains visible while a tracked hand has a valid monitor contact. Stationary tracked hands have no contact expiry; after a native hover-exit, moving more than 15 mm or rotating more than 5 degrees clears the retained target. The entire beam uses one thin transparent native custom-mesh surface, avoiding a seam between native and video-rendered portions. The contact ring is composited into live video; it cannot recover unavailable native aiming or tracking.
+
+Mouse distances are measured between tracked joint positions, not the physical skin gap. Contact and release use the same fixed threshold: left index/middle 15.5/15 mm, right index/middle 11.5/14 mm. Palm-button pinch tuning is separate.
+
+**Enable gestures / Disable gestures** separately controls mouse clicks and dragging, and defaults off. Bring the tracked thumb and index tips into contact range, then release for a left click; pinch twice quickly for a double-click. Hold the pinch for 350 ms to drag and release to drop. Pinch thumb and middle finger with the index open for right-click. Pinch thumb, index and middle together for middle-click. The clicking hand can point away while the other hand aims. Two rays on the monitor reserve the interaction for preview/grabbing, so they do not generate mouse clicks. Opening the palm controls, losing the clicking hand or disabling gestures cancels the gesture and releases a drag. The host also releases a held button after 300 ms without updates.
+
+Pinch thumb and middle finger, then move that hand vertically or horizontally to scroll immediately. An 8 mm movement threshold suppresses small tracking jitter; there is no hold delay. The cursor stays at the initial target; release ends scrolling without right-clicking. A middle pinch that does not enter scrolling right-clicks on release, regardless of hold duration. The index only needs to be outside its own contact range, rather than fully extended. Scrolling requires writable `/dev/uinput` and `libevdev.so.2` on the Linux host. Air swipes with raised fingers are disabled. On Linux, middle-click commonly pastes the primary selection; it is distinct from Ctrl+V clipboard paste.
+
+The palm panel supports eye focus independently of desktop eye mouse aiming and the OS aiming method, subject to Android's eye-tracking permission. Permitted eye tracking stays ready while the app is active, so showing or briefly losing the panel does not restart sensor acquisition. The Eyes button still controls desktop cursor routing only. Look at a button until it highlights, then pinch that hand's thumb and middle finger to activate. Keep the other three fingers extended. Open the pinch before activating again. Buttons flash on activation and use the system touch sound when enabled. Ordinary blinking is not an activation gesture. Direct tapping with the other hand remains available. Discrete sticky focus helps with gaze jitter; continuous desktop gaze still depends on tracking accuracy and may be unsuitable for small targets.
+
+In spherical mode, the hidden flat video owner is disabled so its native body cannot compete with the curved interaction mesh. The system move/resize rectangle sits behind the image, aligned with the viewer-facing tangent plane in spherical mode, with corners projected onto the image corners; returning to flat mode restores the original owner and handles.
+
+Use the exposed border of the system rectangle for one-hand repositioning and its corners for resizing, or use the custom two-hand grab. The rectangle stays behind the image so image input remains available. Resize handles, Reset and Follow remain available. Previewing never moves the monitor. Eye and gesture toggles are saved independently.
+
+What changed after the first LAN proof of concept is recorded in [CHANGES.md](CHANGES.md). Regression checks and the limits of those checks are in [the Android checks README](client/android-xr/checks/README.md).
+
+Plasma does not treat a RandR monitor with no physical output as a desktop, so a virtual `Floatdesk-N` region stays empty. Stream the laptop panel instead:
+
+```bash
+./target/release/floatdesk serve --existing
+```
+
+## Layout
+
+```text
+crates/protocol    control datagrams, RTP H.264, workspace math
+crates/host        X11 capture, GStreamer encoder, RTP session
+client/android-xr  Jetpack XR receiver
+benchmarks         netem helper for latency, jitter, and loss
+packaging          systemd unit
+```
+
+Explicit resize handles and the two-point controller are available; normal one-hand monitor movement is disabled. Flat video and standard handles retain the original Compose-owned surface. Spherical video uses a separate native canvas and a transparent interaction mesh with matching geometry. Two-point contacts use raw native hit events: remove the activity-root scale, then apply the event's hit transform to obtain screen-local coordinates. The prior native movement implementation remains covered by regression checks; it is not attached to the monitor body. Rearming a rejected two-point grab does not disable normal handles. Head-quality checks gate follow independently of tracked hands, so a paused head signal does not erase valid hand samples. A visible activity stays awake and reapplies tracking configuration on resume. Android XR still controls sensor availability and physical safety boundaries.
+
+For persistent hand rays, choose **Settings → Input → Aiming method → Use hand aiming only**. The mixed eye/hand mode can switch away from hand aiming; hand-only mode was confirmed to remove the need to wave the hands to restore rays. This does not override tracking loss when the headset cannot see a hand.
+
+Hand samples are read once per frame. Overlapping left/right identities, pose jumps and tracking recovery temporarily suspend app hand actions and hide the palm panel; normal palm detection and its middle-pinch threshold are unchanged. This prevents uncertain samples and delayed panel clicks from operating controls. System-rendered duplicate hand imagery still needs device verification.

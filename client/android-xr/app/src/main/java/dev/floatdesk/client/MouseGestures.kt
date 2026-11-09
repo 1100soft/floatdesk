@@ -14,7 +14,7 @@ internal fun mouseIndexContactMetres(side: String)=if(side=="LEFT") .0155f else 
 internal fun mouseMiddleContactMetres(side: String)=if(side=="RIGHT") .014f else .015f
 
 /** Raw finger gestures are independent of which hand supplies the aiming ray. */
-internal class MouseGestures {
+internal class MouseGestures(private val diagnostic: (String)->Unit = {}) {
     private data class Hold(val side: String, val button: Int, val began: Long, val target: PointerTarget)
     private val indexClosed=mutableSetOf<String>()
     private val middleClosed=mutableSetOf<String>()
@@ -51,10 +51,11 @@ internal class MouseGestures {
             contact(middleClosed,sample.middleMetres,mouseMiddleContactMetres(side))
             if(side in indexClosed && side in middleClosed) chordClosed.add(side) else chordClosed.remove(side)
             // A middle pinch is distinct only when the index finger remains open.
-            if(sample.indexMetres<.045f) middleClosed.remove(side)
+            if(side in indexClosed) middleClosed.remove(side)
         }
         if(!enabled || blocked) {
             val release=if(dragging) dragTarget else target
+            hold?.let { diagnostic("mouse gesture cancelled side=${it.side} reason=disabled-or-blocked") }
             hold=null; dragging=false; armed.clear(); lastClick=null
             return MouseGestureOutput(release,scroll=endScroll())
         }
@@ -64,6 +65,7 @@ internal class MouseGestures {
         if(current != null) {
             for(side in samples.keys) if(side != current.side && (side in indexClosed || side in middleClosed)) armed.remove(side)
             if(current.side !in samples) {
+                diagnostic("mouse gesture cancelled side=${current.side} reason=missing-or-rejected-sample")
                 val release=if(dragging) dragTarget else target
                 hold=null; dragging=false; armed.remove(current.side)
                 return MouseGestureOutput(release,scroll=endScroll())
@@ -103,10 +105,10 @@ internal class MouseGestures {
                 if(dragging && target != null) dragTarget=target
                 return MouseGestureOutput(if(dragging) target ?: lastTarget else current.target,dragging)
             }
+            diagnostic("mouse gesture released side=${current.side} button=${current.button} heldMs=${nowMs-current.began} scrolling=$scrolling dragging=$dragging")
             hold=null
             if(scrolling) return MouseGestureOutput(current.target,scroll=endScroll())
             if(dragging) { dragging=false; return MouseGestureOutput(target ?: lastTarget) }
-            if(current.button==3 && nowMs-current.began>350) return MouseGestureOutput(target)
             // A sampled contact followed by release is a click, even within one frame.
             var clicked=current.target
             val previous=lastClick
@@ -122,7 +124,8 @@ internal class MouseGestures {
             if(side !in armed) continue
             val button=when(side) { in chordClosed -> 2; in indexClosed -> 1; in middleClosed -> 3; else -> continue }
             armed.remove(side)
-            if(startTarget == null) continue
+            if(startTarget == null) { diagnostic("mouse gesture ignored side=$side reason=no-target");continue }
+            diagnostic("mouse gesture started side=$side button=$button")
             hold=Hold(side,button,nowMs,startTarget)
             if(button==3) {
                 val sample=samples.getValue(side)

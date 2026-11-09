@@ -189,7 +189,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     var workspace by remember { mutableStateOf(store.load()) }
     val pointerControl = remember { PointerControl() }
     val gazeStabilizer = remember { GazeStabilizer() }
-    val mouseGestures = remember { MouseGestures() }
+    val mouseGestures = remember { MouseGestures { Log.i("Floatdesk",it) } }
     val panelInput = remember { PanelGazeInput(palmButtons.map { PanelButtonArea(it.action.ordinal,it.x,it.y,it.w,it.h) }) }
     var panelFocused by remember { mutableStateOf<PalmAction?>(null) }
     var panelPressed by remember { mutableStateOf<PalmAction?>(null) }

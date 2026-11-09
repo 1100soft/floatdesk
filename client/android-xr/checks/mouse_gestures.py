@@ -90,6 +90,23 @@ fun main() {
     narrowRelease.update(10,true,false,mapOf("RIGHT" to index),target)
     check(narrowRelease.update(400,true,false,mapOf("RIGHT" to index),target).dragging)
     check(!narrowRelease.update(410,true,false,mapOf("RIGHT" to FingerPinch(.0151f,.07f)),target).dragging)
+    // A relaxed index does not have to be held 45 mm away from the thumb.
+    for(side in listOf("LEFT","RIGHT")) {
+        val relaxedIndex=MouseGestures()
+        val apart=FingerPinch(.033f,.025f)
+        val touching=FingerPinch(.033f,.01f,position=floatArrayOf(0f,0f,0f))
+        relaxedIndex.update(0,true,false,mapOf(side to apart),target)
+        relaxedIndex.update(10,true,false,mapOf(side to touching),target)
+        check(relaxedIndex.update(100,true,false,mapOf(side to apart),target).click!!.button==3)
+        relaxedIndex.update(110,true,false,mapOf(side to touching),target)
+        check(relaxedIndex.update(1000,true,false,mapOf(side to apart),target).click!!.button==3)
+        relaxedIndex.update(1010,true,false,mapOf(side to touching),target)
+        check(relaxedIndex.update(1020,true,false,mapOf(side to touching.copy(position=floatArrayOf(.02f,0f,0f))),target).scroll!!.fingers==2)
+        val released=relaxedIndex.update(1030,true,false,mapOf(side to apart),target)
+        check(released.scroll!!.fingers==0 && released.click==null)
+        relaxedIndex.update(1040,true,false,mapOf(side to touching),target)
+        check(relaxedIndex.update(1050,true,false,mapOf(side to apart),target).click!!.button==3)
+    }
     val quick=MouseGestures()
     quick.update(0,true,false,mapOf("RIGHT" to open),target)
     quick.update(10,true,false,mapOf("RIGHT" to index),target)
@@ -120,7 +137,7 @@ fun main() {
     check(sf(180,open).click!!.button==3) // Still short pinch remains right-click.
     sf(200,middle.copy(position=floatArrayOf(0f,0f,0f)))
     check(sf(600,middle.copy(position=floatArrayOf(0f,0f,0f))).scroll==null)
-    check(sf(620,open).click==null) // A long stationary hold is not a short-click gesture.
+    check(sf(620,open).click!!.button==3) // Duration alone never discards a stationary right-click.
     sf(700,middle.copy(position=floatArrayOf(0f,0f,0f)))
     sf(720,middle.copy(position=floatArrayOf(.02f,0f,0f)))
     val cancelled=sf(740,middle.copy(position=floatArrayOf(.02f,0f,0f)),true)

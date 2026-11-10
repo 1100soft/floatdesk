@@ -330,24 +330,65 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
         var hands = emptyList<Pair<String, Hand>>()
         val sampledHands=java.util.concurrent.atomic.AtomicReference<List<Pair<String,Hand>>>(emptyList())
         val pinchFrames=PinchFrameBuffer()
+        fun fingerSample(state: Hand.State): FingerPinch? {
+            if(state.trackingState!=TrackingState.TRACKING) return null
+            val joints=state.handJoints
+            val thumb=joints[HandJointType.THUMB_TIP]?.translation ?: return null
+            val index=joints[HandJointType.INDEX_TIP]?.translation ?: return null
+            val middle=joints[HandJointType.MIDDLE_TIP]?.translation ?: return null
+            return FingerPinch(distance(thumb,index),distance(thumb,middle),
+                (joints[HandJointType.PALM]?.translation ?: joints[HandJointType.WRIST]?.translation)?.toArray())
+        }
         launch(Dispatchers.Default) {
+            val observers=mutableMapOf<String,Pair<Hand,kotlinx.coroutines.Job>>()
+            val flowFrames=java.util.concurrent.atomic.AtomicInteger()
+            var polledFrames=0
+            var captureStatsAt=SystemClock.uptimeMillis()
+            val observedAt=mutableMapOf<String,java.util.concurrent.atomic.AtomicLong>()
             while(isActive) {
                 val sources=sampledHands.get()
-                if(sources.isEmpty()) { delay(100);continue }
-                val samples=sources.mapNotNull { (side,hand) ->
-                    val state=hand.state.value
-                    if(state.trackingState!=TrackingState.TRACKING) null else {
-                        val joints=state.handJoints
-                        val thumb=joints[HandJointType.THUMB_TIP]?.translation
-                        val index=joints[HandJointType.INDEX_TIP]?.translation
-                        val middle=joints[HandJointType.MIDDLE_TIP]?.translation
-                        if(thumb==null || index==null || middle==null) null else
-                            side to FingerPinch(distance(thumb,index),distance(thumb,middle),
-                                (joints[HandJointType.PALM]?.translation ?: joints[HandJointType.WRIST]?.translation)?.toArray())
+                val active=sources.toMap()
+                for(side in observers.keys.toList()) if(active[side] !== observers[side]?.first) {
+                    observers.remove(side)?.second?.cancel()
+                    observedAt.remove(side)
+                    pinchFrames.offerHand(side,null,SystemClock.uptimeMillis())
+                }
+                for((side,hand) in sources) {
+                    if(side !in observers) {
+                        val received=java.util.concurrent.atomic.AtomicLong(0)
+                        observedAt[side]=received
+                        // Copy only joint scalars here; never mutate scene/UI on the publisher thread.
+                        val job=launch(Dispatchers.Unconfined) {
+                            hand.state.collect { state ->
+                                if(sampledHands.get().any { it.first==side && it.second===hand }) {
+                                    val now=SystemClock.uptimeMillis()
+                                    received.set(now)
+                                    flowFrames.incrementAndGet()
+                                    pinchFrames.offerHand(side,fingerSample(state),now)
+                                }
+                            }
+                        }
+                        observers[side]=hand to job
                     }
-                }.toMap()
-                pinchFrames.push(SystemClock.uptimeMillis(),samples)
-                delay(5)
+                    val received=observedAt.getValue(side)
+                    val before=received.get()
+                    if(SystemClock.uptimeMillis()-before>30) {
+                        // Some SDK runtimes mutate their joint buffer without a flow emission.
+                        val state=hand.state.value
+                        val sample=fingerSample(state)
+                        if(received.get()==before && state===hand.state.value) {
+                            polledFrames++
+                            pinchFrames.offerHand(side,sample,SystemClock.uptimeMillis())
+                        }
+                    }
+                }
+                val now=SystemClock.uptimeMillis()
+                if(now-captureStatsAt>=5000) {
+                    if(sources.isNotEmpty()) Log.i("Floatdesk","pinch capture sdkFrames=${flowFrames.getAndSet(0)} fallbackFrames=$polledFrames windowMs=${now-captureStatsAt}")
+                    else flowFrames.set(0)
+                    polledFrames=0;captureStatsAt=now
+                }
+                delay(if(sources.isEmpty()) 100 else 5)
             }
         }
         // This headset is stereo, so the mono viewpoint is not created. The left

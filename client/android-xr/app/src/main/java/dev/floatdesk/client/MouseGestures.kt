@@ -10,7 +10,7 @@ internal data class MouseGestureOutput(val target: PointerTarget?, val dragging:
                                       val click: MouseClick? = null, val scroll: TouchpadFrame? = null)
 
 // Thresholds describe tracked joint separation, not a physical skin gap.
-internal fun mouseIndexContactMetres(side: String)=if(side=="LEFT") .0155f else .012f
+internal fun mouseIndexContactMetres(side: String)=if(side=="LEFT") .0155f else .0125f
 internal fun mouseMiddleContactMetres(side: String)=if(side=="RIGHT") .014f else .015f
 
 /** Raw finger gestures are independent of which hand supplies the aiming ray. */
@@ -153,7 +153,16 @@ internal class MouseGestures(private val diagnostic: (String)->Unit = {}) {
 internal class PinchFrameBuffer {
     data class Frame(val at: Long,val samples: Map<String,FingerPinch>)
     private val frames=java.util.ArrayDeque<Frame>()
+    private val latest=mutableMapOf<String,FingerPinch>()
+    @Synchronized fun offerHand(side: String,sample: FingerPinch?,at: Long) {
+        if(sample==null) latest.remove(side) else latest[side]=sample
+        enqueue(at,latest.toMap())
+    }
     @Synchronized fun push(at: Long,samples: Map<String,FingerPinch>) {
+        latest.clear();latest.putAll(samples)
+        enqueue(at,samples)
+    }
+    private fun enqueue(at: Long,samples: Map<String,FingerPinch>) {
         if(frames.size>=64) frames.removeFirst()
         frames.addLast(Frame(at,samples))
     }

@@ -75,7 +75,7 @@ fun main() {
     leftContact.update(0,true,false,mapOf("LEFT" to open),target)
     leftContact.update(10,true,false,mapOf("LEFT" to FingerPinch(.015f,.07f)),target)
     check(leftContact.update(20,true,false,mapOf("LEFT" to open),target).click!!.button==1)
-    for((side,threshold) in listOf("RIGHT" to .012f,"LEFT" to .0155f)) {
+    for((side,threshold) in listOf("RIGHT" to .0125f,"LEFT" to .0155f)) {
         val binary=MouseGestures()
         val apart=FingerPinch(threshold+.0001f,.07f)
         val touching=FingerPinch(threshold,.07f)
@@ -141,6 +141,20 @@ fun main() {
         instant.update(3,true,false,mapOf(side to down),target)
         for(t in 4L..20L) check(instant.update(t,true,false,mapOf(side to down.copy(middleMetres=.005f)),target).scroll==null)
         check(instant.update(21,true,false,mapOf(side to up),target).click!!.button==3)
+    }
+    for(side in listOf("LEFT","RIGHT")) for(button in listOf(1,3)) {
+        val events=PinchFrameBuffer()
+        val repeated=MouseGestures()
+        val touching=if(button==1) FingerPinch(mouseIndexContactMetres(side),.07f)
+            else FingerPinch(.07f,mouseMiddleContactMetres(side))
+        events.offerHand(side,open,0)
+        for(n in 0L..2L) {
+            events.offerHand(side,touching,n*10+1)
+            events.offerHand(side,open,n*10+2)
+        }
+        val clicks=events.drain(30).map { repeated.update(it.at,true,false,it.samples,target) }.mapNotNull { it.click }
+        check(clicks.size==3 && clicks.all { it.button==button })
+        check(clicks.all { it.target.u==target.u })
     }
     val quick=MouseGestures()
     quick.update(0,true,false,mapOf("RIGHT" to open),target)

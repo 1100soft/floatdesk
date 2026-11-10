@@ -26,6 +26,12 @@ internal class DeskConnection(
     val monitors = mutableStateOf<List<MonitorHello>>(emptyList())
     val cursors = mutableStateOf<Map<Int, CursorView>>(emptyMap())
 
+    val displayState=mutableStateOf(Packet.MonitorStatus(0,true,0,0,"Checking available displays…"))
+    val displayBusy=mutableStateOf(false)
+    private val monitorSequence=AtomicInteger()
+    private val monitorPending=AtomicInteger()
+    private var currentMonitors=emptyList<MonitorHello>()
+    private val activeSurfaces=ConcurrentHashMap<Int,Surface>()
     private val main = Handler(Looper.getMainLooper())
     private val assembler = CursorAssembler()
     @Volatile private var renderingActive=true
@@ -98,6 +104,8 @@ internal class DeskConnection(
         pointerFlushPosted.set(false)
         decoders.values.forEach { it.stop() }
         decoders.clear()
+        currentMonitors=emptyList()
+        monitorPending.set(0)
         videos.forEach { runCatching { it.close() } }
         videos = emptyList()
         thread?.join(500)
@@ -110,6 +118,7 @@ internal class DeskConnection(
         main.post {
             monitors.value = emptyList()
             cursors.value = emptyMap()
+            displayBusy.value = false
             status.value = "Disconnected"
         }
     }
@@ -120,14 +129,32 @@ internal class DeskConnection(
         decoders.values.forEach { it.setRenderingActive(active) }
     }
 
+    fun requestDisplays(action:Int=0,index:Int=0,width:Int=1920,height:Int=1080) {
+        val handler=outgoing ?: return
+        if(!monitorPending.compareAndSet(0,-1)) return
+        val id=monitorSequence.incrementAndGet()
+        monitorPending.set(id);displayBusy.value=true
+        val packet=Protocol.monitorCommand(id,action,index,width,height)
+        handler.post { send(packet) }
+        for(delay in listOf(300L,900L)) handler.postDelayed({ if(monitorPending.get()==id) send(packet) },delay)
+        main.postDelayed({ if(monitorPending.compareAndSet(id,0)) {
+            displayBusy.value=false
+            displayState.value=displayState.value.copy(ok=false,message="Display request timed out. Refresh before retrying a change.")
+        } },5000)
+    }
+
+    @Synchronized
     fun attachSurface(index: Int, surface: Surface) {
+        activeSurfaces[index]=surface
         decoders[index]?.attach(surface)
         send(Protocol.keyframeRequest(index))
     }
 
     fun aimOverlay(index: Int,value: VideoAim) { decoders[index]?.overlay(value) }
 
-    fun detachSurface(index: Int) {
+    @Synchronized
+    fun detachSurface(index: Int,expected:Surface?=null) {
+        if(expected==null) activeSurfaces.remove(index) else if(!activeSurfaces.remove(index,expected)) return
         decoders[index]?.detach()
     }
 
@@ -155,10 +182,16 @@ internal class DeskConnection(
                 val decoded = Protocol.decode(buffer.copyOf(incoming.length)) ?: continue
                 when (decoded) {
                     is Packet.HostHello -> {
+                        if(pendingRemote!=null && incoming.address!=pendingRemote?.address) continue
                         if (pendingRemote == null) {
                             pendingRemote = InetSocketAddress(incoming.address, 47000)
                         }
                         onHello(decoded, pendingRemote ?: InetSocketAddress(incoming.address, 47000))
+                    }
+                    is Packet.MonitorStatus -> {
+                        if(incoming.address==pendingRemote?.address && incoming.port==pendingRemote?.port) main.post {
+                            if(monitorPending.compareAndSet(decoded.requestId,0)) {displayBusy.value=false;displayState.value=decoded}
+                        }
                     }
                     is Packet.Cursor -> onCursor(decoded.fragment)
                     is Packet.Beacon -> Unit
@@ -193,10 +226,14 @@ internal class DeskConnection(
 
     @Synchronized
     private fun onHello(hello: Packet.HostHello, remote: InetSocketAddress) {
-        if (decoders.isNotEmpty()) return
+        if (hello.monitors==currentMonitors && decoders.isNotEmpty()) return
+        decoders.values.forEach { it.stop() };decoders.clear()
+        videos=videos.mapIndexed { index,socket -> if(socket.isClosed) DatagramSocket(48000+index).apply {receiveBufferSize=8*1024*1024} else socket }
+        currentMonitors=hello.monitors
         for (monitor in hello.monitors) {
             val video = videos.getOrNull(monitor.index) ?: continue
             val decoder = MonitorDecoder(video, monitor.width, monitor.height, dumpFile, ::askKeyframe)
+            activeSurfaces[monitor.index]?.let { decoder.attach(it) }
             decoder.punch(remote.address)
             decoder.setRenderingActive(renderingActive)
             decoder.start()
@@ -205,6 +242,7 @@ internal class DeskConnection(
         send(Protocol.keyframeRequest(0xff))
         main.post {
             monitors.value = hello.monitors
+            if(monitorPending.get()==0) requestDisplays()
             status.value = "Connected to ${remote.hostString}:${remote.port}, ${hello.monitors.size} monitor(s)"
         }
     }

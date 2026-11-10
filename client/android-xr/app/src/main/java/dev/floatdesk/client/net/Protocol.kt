@@ -28,6 +28,8 @@ internal object Protocol {
     const val KIND_POINTER_MOVE = 8
     const val KIND_POINTER_CLICK = 9
     const val KIND_TOUCHPAD_STATE = 10
+    const val KIND_MONITOR_COMMAND=11
+    const val KIND_MONITOR_STATUS=12
     private const val CURSOR_FIXED = 38
 
     fun clientHello(name: String, videoPort: Int): ByteArray {
@@ -62,6 +64,13 @@ internal object Protocol {
         return frame(KIND_TOUCHPAD_STATE,payload.array())
     }
 
+    fun monitorCommand(id: Int,action: Int,index: Int,width: Int,height: Int): ByteArray {
+        require(action in 0..3 && index in 0..5)
+        val p=ByteBuffer.allocate(10).order(ByteOrder.LITTLE_ENDIAN)
+        p.putInt(id).put(action.toByte()).put(index.toByte()).putShort(width.toShort()).putShort(height.toShort())
+        return frame(KIND_MONITOR_COMMAND,p.array())
+    }
+
     fun goodbye(): ByteArray = frame(KIND_GOODBYE, ByteArray(0))
 
     fun decode(bytes: ByteArray): Packet? {
@@ -80,6 +89,10 @@ internal object Protocol {
             KIND_HOST_HELLO -> decodeHostHello(payload)
             KIND_CURSOR -> decodeCursor(payload)
             KIND_BEACON -> decodeBeacon(payload)
+            KIND_MONITOR_STATUS -> {
+                if(payload.size<8 || payload[4].toInt() !in 0..1 || payload.size!=8+(payload[7].toInt() and 255)) null else
+                    Packet.MonitorStatus(ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN).int,payload[4].toInt()!=0,payload[5].toInt() and 255,payload[6].toInt() and 255,String(payload,8,payload.size-8,Charsets.UTF_8))
+            }
             else -> Packet.Ignored(kind)
         }
     }
@@ -115,9 +128,10 @@ internal object Protocol {
         val buf = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN)
         val sessionId = buf.long
         val count = buf.get().toInt() and 0xFF
+        if(count !in 1..6) return null
         val monitors = ArrayList<MonitorHello>(count)
         repeat(count) {
-            if (buf.remaining() < 11) return null
+            if (buf.remaining() < 12) return null
             val index = buf.get().toInt() and 0xFF
             val width = buf.short.toInt() and 0xFFFF
             val height = buf.short.toInt() and 0xFFFF
@@ -127,6 +141,7 @@ internal object Protocol {
             if (buf.remaining() < nameLen) return null
             val nameBytes = ByteArray(nameLen)
             buf.get(nameBytes)
+            if(index!=monitors.size || width<160 || height<160) return null
             monitors += MonitorHello(index, width, height, port, ssrc, String(nameBytes, Charsets.UTF_8))
         }
         return Packet.HostHello(sessionId, monitors)
@@ -184,6 +199,7 @@ internal data class CursorFragment(
 )
 
 internal sealed interface Packet {
+    data class MonitorStatus(val requestId:Int,val ok:Boolean,val available:Int,val owned:Int,val message:String):Packet
     data class HostHello(val sessionId: Long, val monitors: List<MonitorHello>) : Packet
     data class Cursor(val fragment: CursorFragment) : Packet
     data class Beacon(val listenPort: Int, val name: String) : Packet

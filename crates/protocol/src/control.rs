@@ -28,6 +28,8 @@ pub const KIND_BEACON: u8 = 7;
 pub const KIND_POINTER_MOVE: u8 = 8;
 pub const KIND_POINTER_CLICK: u8 = 9;
 pub const KIND_TOUCHPAD_STATE: u8 = 10;
+pub const KIND_MONITOR_COMMAND: u8 = 11;
+pub const KIND_MONITOR_STATUS: u8 = 12;
 pub const BEACON_PORT: u16 = 47001;
 
 const CURSOR_FIXED: usize = 38;
@@ -119,6 +121,20 @@ pub enum ControlPacket {
         y: f32,
         sequence: u32,
     },
+    MonitorCommand {
+        request_id: u32,
+        action: u8,
+        index: u8,
+        width: u16,
+        height: u16,
+    },
+    MonitorStatus {
+        request_id: u32,
+        ok: bool,
+        available: u8,
+        owned: u8,
+        message: String,
+    },
     KeyframeRequest {
         monitor_index: u8,
     },
@@ -152,6 +168,8 @@ impl ControlPacket {
             Self::ClientHello { .. } => KIND_CLIENT_HELLO,
             Self::HostHello { .. } => KIND_HOST_HELLO,
             Self::Cursor(_) => KIND_CURSOR,
+            Self::MonitorCommand { .. } => KIND_MONITOR_COMMAND,
+            Self::MonitorStatus { .. } => KIND_MONITOR_STATUS,
             Self::PointerMove { .. } => KIND_POINTER_MOVE,
             Self::PointerClick { .. } => KIND_POINTER_CLICK,
             Self::TouchpadState { .. } => KIND_TOUCHPAD_STATE,
@@ -235,6 +253,31 @@ impl ControlPacket {
                 w.extend_from_slice(&x.to_le_bytes());
                 w.extend_from_slice(&y.to_le_bytes());
                 w.extend_from_slice(&sequence.to_le_bytes());
+            }
+            Self::MonitorCommand {
+                request_id,
+                action,
+                index,
+                width,
+                height,
+            } => {
+                w.extend_from_slice(&request_id.to_le_bytes());
+                w.extend_from_slice(&[*action, *index]);
+                w.extend_from_slice(&width.to_le_bytes());
+                w.extend_from_slice(&height.to_le_bytes());
+            }
+            Self::MonitorStatus {
+                request_id,
+                ok,
+                available,
+                owned,
+                message,
+            } => {
+                let bytes = message.as_bytes();
+                let count = bytes.len().min(240);
+                w.extend_from_slice(&request_id.to_le_bytes());
+                w.extend_from_slice(&[u8::from(*ok), *available, *owned, count as u8]);
+                w.extend_from_slice(&bytes[..count]);
             }
             Self::KeyframeRequest { monitor_index } => w.push(*monitor_index),
             Self::Layout { monitors } => {
@@ -424,6 +467,42 @@ pub fn decode_packet(bytes: &[u8]) -> Result<ControlPacket, ProtocolError> {
                 x,
                 y,
                 sequence: u32::from_le_bytes(p[9..13].try_into().unwrap()),
+            })
+        }
+        KIND_MONITOR_COMMAND => {
+            if p.len() != 10 || p[4] > 3 || (p[4] != 1 && p[5] >= 6) {
+                return Err(ProtocolError::Payload(kind));
+            }
+            let width = u16::from_le_bytes(p[6..8].try_into().unwrap());
+            let height = u16::from_le_bytes(p[8..10].try_into().unwrap());
+            if matches!(p[4], 1 | 3)
+                && (width < 320
+                    || height < 200
+                    || width > 3840
+                    || height > 2160
+                    || width % 2 != 0
+                    || height % 2 != 0)
+            {
+                return Err(ProtocolError::Payload(kind));
+            }
+            Ok(ControlPacket::MonitorCommand {
+                request_id: u32::from_le_bytes(p[..4].try_into().unwrap()),
+                action: p[4],
+                index: p[5],
+                width,
+                height,
+            })
+        }
+        KIND_MONITOR_STATUS => {
+            if p.len() < 8 || p[4] > 1 || p.len() != 8 + p[7] as usize {
+                return Err(ProtocolError::Payload(kind));
+            }
+            Ok(ControlPacket::MonitorStatus {
+                request_id: u32::from_le_bytes(p[..4].try_into().unwrap()),
+                ok: p[4] != 0,
+                available: p[5],
+                owned: p[6],
+                message: String::from_utf8_lossy(&p[8..]).into_owned(),
             })
         }
         KIND_KEYFRAME_REQUEST => {
@@ -731,6 +810,43 @@ mod pointer_tests {
                 Err(ProtocolError::Payload(KIND_TOUCHPAD_STATE))
             );
         }
+    }
+    #[test]
+    fn monitor_management_roundtrip_and_validation() {
+        for action in 0..=3 {
+            let packet = ControlPacket::MonitorCommand {
+                request_id: u32::MAX,
+                action,
+                index: 1,
+                width: 1920,
+                height: 1080,
+            };
+            assert_eq!(decode_packet(&packet.encode()), Ok(packet));
+        }
+        for (action, index, width, height) in [
+            (4, 0, 1920, 1080),
+            (3, 6, 1920, 1080),
+            (1, 0, 319, 1080),
+            (3, 0, 1921, 1080),
+            (1, 0, 1920, 2162),
+        ] {
+            let p = ControlPacket::MonitorCommand {
+                request_id: 1,
+                action,
+                index,
+                width,
+                height,
+            };
+            assert!(decode_packet(&p.encode()).is_err());
+        }
+        let packet = ControlPacket::MonitorStatus {
+            request_id: 7,
+            ok: false,
+            available: 4,
+            owned: 6,
+            message: "Mode unavailable".into(),
+        };
+        assert_eq!(decode_packet(&packet.encode()), Ok(packet));
     }
     #[test]
     fn click_and_drag_wire_validation() {

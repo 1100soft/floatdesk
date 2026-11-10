@@ -1,0 +1,25 @@
+# Dynamic desktop screens
+
+Open the palm panel, choose **Workspace**, then use **Screens**. Add creates a 1920 × 1080 desktop screen. Each added screen offers 1280 × 720, 1920 × 1080 and 2560 × 1600, plus Remove. Modes must already be advertised by that output; unsupported choices report an error. The host chooses the available refresh rate nearest 60 Hz within 25–61 Hz, avoiding the notebook's very low refresh defaults. Refresh reloads active outputs, capacity and management status.
+
+Run the host with `serve --existing`. It streams up to six active outputs, primary first, with one capture/encoder and RTP port per output. Each screen can be placed and manipulated independently. Adding/removing/changing resolution rebuilds the capture streams and headset decoders; a brief video interruption is expected. Total configured bitrate is shared across screens. Several high-resolution screens increase GPU, encoder and decoder load.
+
+The primary source keeps its existing saved identity (`existing-0`); other outputs use their XRandR names. Existing screen poses and physical widths survive additions, removals and source index changes. Resolution changes adjust physical height to preserve aspect ratio. New screens appear beside existing screens. Removed screens' placements are discarded from the active layout. Saved layouts store placement, not an instruction to recreate desktop outputs automatically.
+
+## VKMS pool
+
+The supplied `vkms_flexible_monitors_kde_x11.ipynb` is reference material, not an installer executed by Floatdesk. Its configfs service provisions independent VKMS connectors/CRTCs before Xorg, links the provider and advertises modes. This machine already has four inactive `Virtual-1-*` outputs. Floatdesk activates that pool through unprivileged XRandR commands; it does not run notebook cells, use sudo, rebuild modules, change boot configuration or reboot.
+
+This produces real KDE desktop outputs, unlike RandR logical monitor regions with no backing output. Creating a larger kernel/Xorg pool remains a separate administrator setup step, normally before the graphical session starts. If no unused `Virtual-*` output exists, Add is unavailable. The current implementation supports X11 and numeric `Virtual-*` output names; it does not provision VKMS or manage Wayland displays.
+
+Physical and already-active outputs are streamed but cannot be resized or removed from the app. Only outputs added by the current Floatdesk host process are manageable. Managed outputs are packed to the right of unowned outputs; growing one shifts subsequent managed screens without moving physical outputs. Existing desktop windows may be rearranged by KDE when outputs are added or removed.
+
+Added outputs remain active across headset reconnects and are disabled on graceful host shutdown. Host service restart ends that ownership session. SIGKILL, power loss or a crash can leave outputs enabled; disable those specific virtual outputs in KDE Display Configuration before restarting if they should return to the available pool. Floatdesk does not adopt or disable pre-existing screens automatically.
+
+## Control and validation
+
+Monitor commands carry request IDs and are accepted only from the connected control peer. The host caches replies so retransmitted Add requests do not create duplicate screens. Dimensions and action/index values are bounded. A timeout asks the user to Refresh before issuing another change. This uses the existing trusted-LAN UDP transport, without authentication or encryption.
+
+Validation includes Rust parser/protocol tests and `checks/monitor_management.py`, which checks Android/Rust wire fixtures and pose preservation through source changes. A live X11 test exercised two additions, retry deduplication, resolution change, index compaction, removal and graceful cleanup, receiving RTP on three independent ports. The physical display configuration matched its starting state afterward. Headset UI interaction and simultaneous multi-screen decoding still require a user device test.
+
+Gesture reliability remains deferred in [gesture-issues.md](gesture-issues.md); this work does not tune gestures or change the confirmed monitor coordinate conversion.

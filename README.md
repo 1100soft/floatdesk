@@ -6,6 +6,8 @@ This tree is the LAN proof of concept: RandR 1.5 regions, MIT-SHM capture, XDama
 
 ## Host
 
+Use **Workspace → Screens** in the headset to add, resize or remove independent desktop screens from a pre-provisioned VKMS pool. Your existing four-output pool supports this without a reboot or privileged commands during use. See [multi-monitor setup and behavior](docs/multi-monitor.md).
+
 Requires an X11 session (`DISPLAY`) and GStreamer with an H.264 encoder (`x264enc` is the portable fallback; `vah264enc`, `vaapih264enc`, and `nvh264enc` are used automatically when present).
 
 ```bash
@@ -17,7 +19,7 @@ cargo build --release
 
 `doctor` only reads the server. `trial` creates one 1280×720 logical monitor named `Floatdesk-1`, checks that RandR lists it, and restores the framebuffer. `serve` enlarges the X screen, adds `Floatdesk-N` monitors with no physical output, and waits for a client hello on UDP `47000`.
 
-`--existing` streams the current primary CRTC and does not resize the screen. That is the right mode for a loopback test:
+`--existing` streams active XRandR outputs (up to six), with the primary display first. It leaves their modes unchanged until you explicitly add or resize a Floatdesk-managed screen. It also works for a loopback test:
 
 ```bash
 ./target/release/floatdesk recv --host 127.0.0.1:47000 --output /tmp/floatdesk.h264 --seconds 5 &
@@ -72,7 +74,7 @@ Use the exposed border of the system rectangle for one-hand repositioning and it
 
 What changed after the first LAN proof of concept is recorded in [CHANGES.md](CHANGES.md). Regression checks and the limits of those checks are in [the Android checks README](client/android-xr/checks/README.md).
 
-Plasma does not treat a RandR monitor with no physical output as a desktop, so a virtual `Floatdesk-N` region stays empty. Stream the laptop panel instead:
+Plasma does not treat a RandR monitor with no physical output as a desktop, so a legacy virtual `Floatdesk-N` region stays empty. Use the VKMS screen controls above for independent desktops, or stream existing outputs:
 
 ```bash
 ./target/release/floatdesk serve --existing

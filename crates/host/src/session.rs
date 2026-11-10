@@ -8,6 +8,7 @@ use crate::core::{
 };
 use crate::error::{Error, Result};
 use crate::media::GstEncoder;
+use crate::platform::x11::monitor_pool::MonitorPool;
 use crate::platform::x11::{X11Capture, X11Cursor, X11Display};
 use floatdesk_protocol::{
     allocate_bitrate, rtp_timestamp, ControlPacket, LayoutEntry, MonitorHello, MonitorLoad,
@@ -104,21 +105,40 @@ struct Shared {
     cursor: Mutex<CursorSprite>,
     cursor_generation: AtomicU64,
     /// X11 socket of the capture thread. -1 when capture is not connected.
-    capture_fd: AtomicI32,
+    capture_fd: [AtomicI32; 6],
+    stream_active: [AtomicBool; 6],
+    stream_progress: [AtomicU64; 6],
 }
 
 pub fn serve(opts: ServeOpts) -> Result<()> {
     let _epoch = epoch_ns();
     let mut display = X11Display::open()?;
+    let mut pool = MonitorPool::new();
+    let sources = if opts.existing {
+        match pool.sources() {
+            Ok(sources) => sources,
+            Err(error) => {
+                tracing::warn!(%error,"XRandR catalogue unavailable; streaming primary display only");
+                vec![("existing-0".into(), display.primary()?)]
+            }
+        }
+    } else {
+        Vec::new()
+    };
     let monitors = if opts.existing {
-        vec![display.primary()?]
+        sources.iter().map(|(_, r)| *r).collect()
     } else {
         display.create_virtual(opts.monitors, opts.width, opts.height)?
     };
     if monitors.is_empty() {
         return Err(Error::Msg("no monitors to stream".into()));
     }
-    let result = run(&monitors, &opts);
+    let result = run(
+        &monitors,
+        &opts,
+        if opts.existing { Some(&mut pool) } else { None },
+        sources,
+    );
     if !opts.existing {
         display.restore()?;
     }
@@ -145,12 +165,93 @@ pub fn trial() -> Result<()> {
     Ok(())
 }
 
-fn run(monitors: &[MonitorRect], opts: &ServeOpts) -> Result<()> {
+fn launch_streams(
+    shared: &Arc<Shared>,
+    monitors: &[MonitorRect],
+    hellos: &[MonitorHello],
+    opts: &ServeOpts,
+) -> Vec<thread::JoinHandle<()>> {
+    let loads: Vec<_> = monitors
+        .iter()
+        .enumerate()
+        .map(|(i, r)| MonitorLoad {
+            index: r.index,
+            focused: i == 0,
+            damaged: false,
+            visible: true,
+        })
+        .collect();
+    let bitrates = allocate_bitrate(opts.bitrate_bps, &loads);
+    let mut threads = Vec::new();
+    for (monitor, (hello, bitrate)) in monitors.iter().zip(hellos.iter().zip(bitrates.iter())) {
+        let shared = Arc::clone(&shared);
+        let rect = *monitor;
+        let ssrc = hello.ssrc;
+        let encoder_name = opts.encoder.clone();
+        let fps = opts.fps.max(1);
+        let bitrate = *bitrate;
+        threads.push(thread::spawn(move || {
+            // Preserve RTP sequence numbers across capture/encoder reconnections.
+            let mut packetizer = RtpH264Packetizer::new(ssrc);
+            while !shared.stop.load(Ordering::Relaxed)
+                && shared.stream_active[rect.index as usize].load(Ordering::Relaxed)
+            {
+                if let Err(err) = monitor_thread(
+                    Arc::clone(&shared),
+                    rect,
+                    &mut packetizer,
+                    encoder_name.clone(),
+                    fps,
+                    bitrate,
+                ) {
+                    if shared.stream_active[rect.index as usize].load(Ordering::Relaxed)
+                        && !shared.stop.load(Ordering::Relaxed)
+                    {
+                        tracing::error!(
+                            monitor = rect.index,
+                            "capture stopped, reconnecting: {err}"
+                        );
+                    }
+                }
+                if shared.stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(200));
+            }
+        }));
+    }
+
+    threads
+}
+fn stop_streams(shared: &Shared, threads: &mut Vec<thread::JoinHandle<()>>) {
+    for active in &shared.stream_active {
+        active.store(false, Ordering::Relaxed);
+    }
+    for fd in &shared.capture_fd {
+        let fd = fd.load(Ordering::Relaxed);
+        if fd >= 0 {
+            unsafe {
+                libc::shutdown(fd, libc::SHUT_RDWR);
+            }
+        }
+    }
+    for thread in threads.drain(..) {
+        let _ = thread.join();
+    }
+}
+
+fn run(
+    initial: &[MonitorRect],
+    opts: &ServeOpts,
+    mut pool: Option<&mut MonitorPool>,
+    mut sources: Vec<(String, MonitorRect)>,
+) -> Result<()> {
+    let mut monitors = initial.to_vec();
     let mut pointer = InputDevices::open()?;
     let socket = UdpSocket::bind(opts.listen)?;
     socket.set_nonblocking(true)?;
     let session_id = monotonic_ns();
-    let hellos: Vec<MonitorHello> = monitors
+    let mut hellos: Vec<MonitorHello> = monitors
         .iter()
         .map(|monitor| MonitorHello {
             index: monitor.index,
@@ -159,23 +260,16 @@ fn run(monitors: &[MonitorRect], opts: &ServeOpts) -> Result<()> {
             port: 0,
             ssrc: ssrc_for(monitor.index),
             name: if opts.existing {
-                "existing-0".into()
+                sources
+                    .iter()
+                    .find(|(_, r)| r.index == monitor.index)
+                    .map(|(n, _)| n.clone())
+                    .unwrap_or_else(|| "existing-0".into())
             } else {
                 monitor.name()
             },
         })
         .collect();
-    let loads: Vec<MonitorLoad> = monitors
-        .iter()
-        .enumerate()
-        .map(|(i, monitor)| MonitorLoad {
-            index: monitor.index,
-            focused: i == 0,
-            damaged: false,
-            visible: true,
-        })
-        .collect();
-    let bitrates = allocate_bitrate(opts.bitrate_bps, &loads);
     let shared = Arc::new(Shared {
         stop: AtomicBool::new(false),
         client: RwLock::new(None),
@@ -194,52 +288,26 @@ fn run(monitors: &[MonitorRect], opts: &ServeOpts) -> Result<()> {
             pixels: Vec::new(),
         }),
         cursor_generation: AtomicU64::new(0),
-        capture_fd: AtomicI32::new(-1),
+        capture_fd: std::array::from_fn(|_| AtomicI32::new(-1)),
+        stream_active: std::array::from_fn(|_| AtomicBool::new(true)),
+        stream_progress: std::array::from_fn(|_| AtomicU64::new(0)),
     });
     let stop_flag = Arc::clone(&shared);
     let _ = ctrlc::set_handler(move || {
         stop_flag.stop.store(true, Ordering::Relaxed);
     });
 
-    let mut threads = Vec::new();
-    for (monitor, (hello, bitrate)) in monitors.iter().zip(hellos.iter().zip(bitrates.iter())) {
-        let shared = Arc::clone(&shared);
-        let rect = *monitor;
-        let ssrc = hello.ssrc;
-        let encoder_name = opts.encoder.clone();
-        let fps = opts.fps.max(1);
-        let bitrate = *bitrate;
-        threads.push(thread::spawn(move || {
-            // Preserve RTP sequence numbers across capture/encoder reconnections.
-            let mut packetizer = RtpH264Packetizer::new(ssrc);
-            while !shared.stop.load(Ordering::Relaxed) {
-                if let Err(err) = monitor_thread(
-                    Arc::clone(&shared),
-                    rect,
-                    &mut packetizer,
-                    encoder_name.clone(),
-                    fps,
-                    bitrate,
-                ) {
-                    tracing::error!(monitor = rect.index, "capture stopped, reconnecting: {err}");
-                }
-                if shared.stop.load(Ordering::Relaxed) {
-                    break;
-                }
-                thread::sleep(Duration::from_millis(200));
-            }
-        }));
-    }
-
+    let mut threads = launch_streams(&shared, &monitors, &hellos, opts);
     tracing::info!(listen = %opts.listen, "waiting for a client hello");
     let cursor_shared = Arc::clone(&shared);
-    threads.push(thread::spawn(move || {
+    let cursor_thread = thread::spawn(move || {
         cursor_loop(cursor_shared);
-    }));
+    });
+    let mut replies: std::collections::VecDeque<(SocketAddr, u32, Vec<u8>)> =
+        std::collections::VecDeque::new();
     let mut last_hello = Instant::now() - Duration::from_secs(2);
     let mut last_stats = Instant::now();
-    let mut last_progress = 0u64;
-    let mut stalled_checks = 0u32;
+    let mut last_progress = [0u64; 6];
     let started = Instant::now();
     let mut scratch = [0u8; 2048];
     while !shared.stop.load(Ordering::Relaxed) {
@@ -251,15 +319,121 @@ fn run(monitors: &[MonitorRect], opts: &ServeOpts) -> Result<()> {
         }
         loop {
             match socket.recv_from(&mut scratch) {
-                Ok((size, from)) => handle_datagram(
-                    &shared,
-                    &socket,
-                    &hellos,
-                    &scratch[..size],
-                    from,
-                    monitors,
-                    &mut pointer,
-                ),
+                Ok((size, from)) => {
+                    if let Ok(ControlPacket::MonitorCommand {
+                        request_id,
+                        action,
+                        index,
+                        width,
+                        height,
+                    }) = floatdesk_protocol::decode_packet(&scratch[..size])
+                    {
+                        let allowed = shared
+                            .client
+                            .read()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .as_ref()
+                            .is_some_and(|c| c.control == from);
+                        if !allowed {
+                            continue;
+                        }
+                        if let Some((_, _, reply)) = replies
+                            .iter()
+                            .find(|(peer, id, _)| *peer == from && *id == request_id)
+                        {
+                            let _ = socket.send_to(reply, from);
+                            continue;
+                        }
+                        let mut ok = true;
+                        let mut message = String::from("Displays ready");
+                        let refreshed = if action == 0 {
+                            pool.as_deref().map(|p| p.sources())
+                        } else {
+                            None
+                        };
+                        let topology_changed =
+                            matches!(&refreshed, Some(Ok(next)) if next != &sources);
+                        if let Some(Err(error)) = &refreshed {
+                            ok = false;
+                            message = error.to_string();
+                        }
+                        if action != 0 || topology_changed {
+                            pointer.release();
+                            stop_streams(&shared, &mut threads);
+                            let result = if action == 0 {
+                                Ok(())
+                            } else {
+                                pool.as_deref_mut()
+                                    .ok_or_else(|| {
+                                        Error::Msg("Display management requires --existing".into())
+                                    })
+                                    .and_then(|p| p.apply(action, index, width, height, &sources))
+                            };
+                            if let Err(error) = result {
+                                ok = false;
+                                message = error.to_string();
+                            }
+                            if let Some(p) = pool.as_deref() {
+                                match p.sources() {
+                                    Ok(next) => {
+                                        sources = next;
+                                        monitors = sources.iter().map(|(_, r)| *r).collect();
+                                    }
+                                    Err(error) => {
+                                        ok = false;
+                                        message = error.to_string();
+                                    }
+                                }
+                            }
+                            hellos = monitors
+                                .iter()
+                                .map(|r| MonitorHello {
+                                    index: r.index,
+                                    width: r.width as u16,
+                                    height: r.height as u16,
+                                    port: 0,
+                                    ssrc: ssrc_for(r.index),
+                                    name: sources
+                                        .iter()
+                                        .find(|(_, s)| s.index == r.index)
+                                        .map(|(n, _)| n.clone())
+                                        .unwrap_or_else(|| r.name()),
+                                })
+                                .collect();
+                            for r in &monitors {
+                                shared.stream_active[r.index as usize]
+                                    .store(true, Ordering::Relaxed);
+                            }
+                            threads = launch_streams(&shared, &monitors, &hellos, opts);
+                            send_hello(&shared, &socket, &hellos);
+                        }
+                        let available = pool.as_deref().map_or(0, |p| p.capacity());
+                        let owned = pool.as_deref().map_or(0, |p| p.owned_mask(&sources));
+                        let reply = ControlPacket::MonitorStatus {
+                            request_id,
+                            ok,
+                            available,
+                            owned,
+                            message,
+                        }
+                        .encode();
+                        let _ = socket.send_to(&reply, from);
+                        replies.push_back((from, request_id, reply));
+                        if replies.len() > 32 {
+                            replies.pop_front();
+                        }
+                    } else {
+                        handle_datagram(
+                            &shared,
+                            &socket,
+                            &hellos,
+                            &scratch[..size],
+                            from,
+                            &monitors,
+                            &mut pointer,
+                        );
+                    }
+                }
                 Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(err) => return Err(err.into()),
             }
@@ -267,37 +441,38 @@ fn run(monitors: &[MonitorRect], opts: &ServeOpts) -> Result<()> {
         pointer.expire();
         if last_hello.elapsed() >= Duration::from_secs(1) {
             send_hello(&shared, &socket, &hellos);
-            send_beacon(opts.listen.port());
+            if !opts.listen.ip().is_loopback() {
+                send_beacon(opts.listen.port());
+            }
             last_hello = Instant::now();
         }
         if last_stats.elapsed() >= Duration::from_secs(2) {
             let frames = shared.captured.load(Ordering::Relaxed);
             let skipped = shared.skipped.load(Ordering::Relaxed);
             let bytes = shared.bytes.load(Ordering::Relaxed);
-            let progress = frames.wrapping_add(skipped);
             let client_waiting = shared
                 .client
                 .read()
-                .unwrap_or_else(|err| err.into_inner())
+                .unwrap_or_else(|e| e.into_inner())
                 .is_some();
-            if progress == last_progress && client_waiting {
-                stalled_checks = stalled_checks.saturating_add(1);
-            } else {
-                stalled_checks = 0;
-                last_progress = progress;
-            }
-            // One unchanged interval is two seconds. A grab or a keyframe is
-            // much shorter than that. Closing the X11 socket unblocks a reply
-            // wait; the capture thread then opens a new connection. The encoder
-            // queue itself is drained so it does not need this reset.
-            if stalled_checks >= 1 {
-                let fd = shared.capture_fd.load(Ordering::Relaxed);
-                if fd >= 0 {
-                    tracing::error!("capture made no progress, resetting the X11 connection");
-                    unsafe {
-                        libc::shutdown(fd, libc::SHUT_RDWR);
+            for (index, previous) in last_progress.iter_mut().enumerate() {
+                let progress = shared.stream_progress[index].load(Ordering::Relaxed);
+                if client_waiting
+                    && shared.stream_active[index].load(Ordering::Relaxed)
+                    && progress == *previous
+                {
+                    let fd = shared.capture_fd[index].load(Ordering::Relaxed);
+                    if fd >= 0 {
+                        tracing::error!(
+                            monitor = index,
+                            "capture made no progress, resetting connection"
+                        );
+                        unsafe {
+                            libc::shutdown(fd, libc::SHUT_RDWR);
+                        }
                     }
                 }
+                *previous = progress;
             }
             tracing::info!(frames, skipped, bytes, "session");
             last_stats = Instant::now();
@@ -306,9 +481,8 @@ fn run(monitors: &[MonitorRect], opts: &ServeOpts) -> Result<()> {
     }
     shared.stop.store(true, Ordering::Relaxed);
     pointer.release();
-    for thread in threads {
-        let _ = thread.join();
-    }
+    stop_streams(&shared, &mut threads);
+    let _ = cursor_thread.join();
     Ok(())
 }
 
@@ -359,10 +533,8 @@ fn monitor_thread(
     bitrate: u32,
 ) -> Result<()> {
     let mut capture = X11Capture::open(rect)?;
-    shared
-        .capture_fd
-        .store(capture.connection_fd(), Ordering::Relaxed);
-    let _clear_fd = ClearCaptureFd(&shared.capture_fd);
+    shared.capture_fd[rect.index as usize].store(capture.connection_fd(), Ordering::Relaxed);
+    let _clear_fd = ClearCaptureFd(&shared.capture_fd[rect.index as usize]);
     let mut encoder = GstEncoder::open(
         &encoder_name,
         crate::core::EncoderConfig {
@@ -377,7 +549,10 @@ fn monitor_thread(
     let interval = Duration::from_secs_f64(1.0 / f64::from(fps));
     let mut seen_generation = 0u64;
     let mut seen_cursor = 0u64;
-    while !shared.stop.load(Ordering::Relaxed) {
+    while !shared.stop.load(Ordering::Relaxed)
+        && shared.stream_active[rect.index as usize].load(Ordering::Relaxed)
+    {
+        shared.stream_progress[rect.index as usize].fetch_add(1, Ordering::Relaxed);
         let target = shared
             .client
             .read()

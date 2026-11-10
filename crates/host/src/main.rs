@@ -40,7 +40,7 @@ enum Command {
         /// Total video bitrate shared across monitors.
         #[arg(long, default_value_t = 12_000_000)]
         bitrate: u32,
-        /// Capture the current primary CRTC instead of creating a virtual monitor.
+        /// Stream active XRandR outputs and allow management of a pre-provisioned VKMS pool.
         #[arg(long)]
         existing: bool,
         /// `auto`, or one of nvh264enc, vah264enc, vaapih264enc, x264enc, openh264enc.

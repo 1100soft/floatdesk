@@ -96,3 +96,7 @@ This checkpoint adds direct hand/gaze mouse routing, optional click/drag/scroll 
 Verification commands and their limits are documented in [the checks README](client/android-xr/checks/README.md). Hardware quick-pinch reliability is explicitly not established by the automated checks. Local troubleshooting captures/build backups remain ignored; this checkpoint contains no raw personal desktop images or logs.
 
 Checkpoint validation on 10 November 2026: Android debug build and lint; all ten JVM checks; Rust workspace tests/release build/format check; private-Xvfb XTest checks; read-only live capture/reconnection and passive uinput classification; and offscreen headset EGL/MediaCodec pause/resume checks passed. The Android unit-test task has no test sources. Clippy completes with existing warnings in unchanged code; it is not a warning-free result. Gesture reliability remains deferred despite these checks.
+
+## Dynamic screen pool — 10 November 2026
+
+The headset's Workspace button now opens screen management. With `serve --existing`, active XRandR outputs stream independently; Add/Remove/resolution commands manage only virtual outputs created by the current host process. The already-provisioned VKMS pool supplies real KDE desktop screens without privileged runtime setup. Capture/decoder reconfiguration and source-identity layout reconciliation preserve existing placements. Retried commands are deduplicated, and graceful host shutdown releases its outputs. See [multi-monitor behavior and limitations](docs/multi-monitor.md).

@@ -112,3 +112,7 @@ FLOATDESK_UINPUT_TEST=1 cargo test --offline -p floatdesk platform::touchpad::te
 The capture benchmark reads the selected live X11 screen into memory for two seconds, writes no screenshots and emits no input. It closes only its own X11 client socket to verify idle polling propagates failure. A prior 2560×1600 observation improved from ~40 to ~58 fps after capture-start pacing; that excludes encode/network/display latency. The uinput test creates a passive device and checks classification without emitting touches.
 
 Preserve the forward native event-matrix/root-scale coordinate conversion, matching live/frozen curved meshes, native frame behind the image, immediate grab release restoration, and working palm presentation. Rerun center/edge grabs, flat/curved toggling and native handles on the device only when interaction work resumes. Ignored `.agent-artifacts/` holds local baselines, including the user-confirmed smooth-stream APK/source checkpoint. They are not portable regression fixtures or committed artifacts.
+
+### Screen management
+
+`python3 checks/monitor_management.py /path/to/gradle/lib` checks monitor-management wire fixtures and production layout reconciliation across add/remove/resize. Rust workspace tests validate command bounds and signed XRandR geometry. Neither synthetic check establishes simultaneous device decoder capacity; test Workspace → Screens on the headset. See [multi-monitor behavior](../../../docs/multi-monitor.md).

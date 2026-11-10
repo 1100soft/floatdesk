@@ -216,3 +216,20 @@ private fun floatArray(json: JSONObject, name: String, size: Int): FloatArray {
     if (size == 4 && array.length() < 4) out[3] = 1f
     return out
 }
+
+/** Reconcile stable source identities without resetting poses when a display is added or removed. */
+internal fun WorkspaceFile.reconcileMonitors(sources:List<Triple<String,Int,Int>>): WorkspaceFile {
+    val old=layouts[activeLayout].orEmpty()
+    val defaults=deskLayout(sources)
+    var right=old.maxOfOrNull { it.pose.position[0]+it.physicalWidthM*.5f } ?: -.34f
+    val next=sources.mapIndexed { index,(id,w,h) ->
+        val prior=old.firstOrNull { it.hostSourceId==id }
+        if(prior!=null) prior.copy(pixelWidth=w,pixelHeight=h,physicalHeightM=prior.physicalWidthM*h/w.coerceAtLeast(1)) else {
+            val fresh=defaults[index]
+            val x=right+.04f+fresh.physicalWidthM*.5f;right=x+fresh.physicalWidthM*.5f
+            fresh.copy(pose=Pose(floatArrayOf(x,0f,-1.2f)))
+        }
+    }.toMutableList()
+    if(old==next) return this
+    return copy(layouts=layouts.toMutableMap().also { it[activeLayout]=next })
+}

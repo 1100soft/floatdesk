@@ -5,6 +5,7 @@ mod capture;
 mod cursor;
 mod display;
 mod doctor;
+pub mod monitor_pool;
 
 pub use capture::X11Capture;
 pub use cursor::X11Cursor;

@@ -1,95 +1,114 @@
-# Floatdesk
+Run gesture regression checks with a cached Kotlin compiler (no Android device or Gradle daemon required):
 
-An X11-first host that places logical monitors in an Android XR workspace. Each monitor is its own H.264 stream. The host composites the cursor into the video and schedules frames when the pointer moves, even on an otherwise static desktop. All monitors share one workspace coordinate space.
+```sh
+python3 checks/gestures.py /path/to/gradle/lib
+```
 
-This tree is the LAN proof of concept: RandR 1.5 regions, MIT-SHM capture, XDamage, XFixes, GStreamer H.264, and RTP/UDP. It is not encrypted. Keep it on a trusted network. The session boundary (`DisplayBackend`, `CaptureBackend`, `CursorBackend`, `EncodeBackend`) is where Wayland, Windows, macOS, and a WebRTC transport plug in later.
+The directory must contain Kotlin compiler and standard library jars. The checks extract the production controller and math unchanged, substituting only platform input/value types. They verify the miniature-monitor mapping, initial identity/no jump, fixed gain from contact span versus hand span, amplified translation and independent depth, both held pixels under rotation/scale, minimum contact/hand separation, DEFAULT and physical release, tracking-loss cancellation, fresh-grip rearming, and discontinuity rejection. They also cover continuous depth rotation, scaled roots, unclamped endpoints, anatomical palm alignment, fist thresholds, and palm touches. The grab guide checks verify that the miniature corners interpolate to the pinch positions at the same pixel fractions, that real markers lie on the screen, and that release/tracking loss clears the guide.
 
-## Host
+They do not validate headset coordinate conversion, joint accuracy, visual ray availability, native move event ordering, text rendering, or physical placement. Those require device verification.
 
-Requires an X11 session (`DISPLAY`) and GStreamer with an H.264 encoder (`x264enc` is the portable fallback; `vah264enc`, `vaapih264enc`, and `nvh264enc` are used automatically when present).
+Frozen image mesh validation:
+
+```sh
+python3 checks/frozen_frame.py /path/to/gradle/lib
+```
+
+This runs the production frozen-frame GLB writer on the JVM and validates the embedded PNG, chunk alignment/bounds, opaque material, and texture orientation. PixelCopy, native model loading, hidden-surface video updates and immediate surface restoration need a headset check.
+
+RTP recovery checks:
+
+```sh
+python3 checks/rtp.py /path/to/gradle/lib
+```
+
+These extract the production depacketizer and reorder buffer and check access-unit assembly, sequence wrap, fragment loss, partial-frame rejection, out-of-order delivery, host source changes, and sequence restart after downtime.
+
+The native guide assets are checked in for packaging. Regenerate them with `python3 tools/generate_grab_guides.py` from `client/android-xr`.
+
+The gesture checks also validate spherical projection at centered and offset viewpoints, constant vertex radius, pixel hit inversion, curved contact capture, the curved guide outline, and the Spherical palm button. Frozen-frame checks cover both flat and spherical snapshot meshes, including radius preservation under monitor scaling. Live custom-mesh support, UV orientation, input hit testing and curvature updates still require headset verification.
+
+Display lifecycle checks:
+
+```sh
+python3 checks/monitor_warp.py /path/to/gradle/lib
+```
+
+These run the production curvature controller with SceneCore substitutes. They verify that flat mode retains the original Compose-owned surface, alpha, parent and enabled state; spherical mode uses a separate native video canvas and matching transparent interaction patch; returning to flat mode restores its surface and listener; and cleanup does not detach Compose's entity. Curvature and decoder surface identity remain fixed during a grab and during head-driven mesh updates within the same mode. Gesture checks cover native Start identity, relative translation/rotation without orbiting an unrelated native origin, handle availability during two-point rearm, curved contacts and physical release.
+
+Headset checks remain necessary for native handle visibility, SDK-local DOWN hit coordinates, pointer behavior and system-origin relocalization. The app cannot guarantee physical world locking while the operating system has lost its spatial map.
+
+Native localization regressions include activity-root scale compensation, a recorded device hit/matrix reproducing the offset, and independent left/right DOWN/UP sequences through the production native event bridge. The runtime hit matrix maps unscaled event coordinates into screen-local coordinates.
+
+Confirmed device baseline — 2026-11-08:
+
+The user confirmed that two-point manipulation and coordinate alignment work in the installed scale-corrected build. Preserve this as the reference for future interaction changes. The conversion is `local = hitInfo.transform * (rawHit / activityRootScale)`, using the original Compose-owned surface and native input listener. Native move/resize handles must remain available.
+
+Accepted limitation: two-point control requires sufficiently separated contacts. At small monitor sizes, use the native handle or Reset; do not weaken separation safeguards as an unsolicited fix. Current thresholds are contact span >= max(12 cm in physical units, 18% of monitor width), and hand span >= 9 cm.
+
+Hand-ray availability was subsequently confirmed with Android XR set to hand-only aiming. Mixed eye/hand aiming can switch away from hand rays. This acceptance confirms coordinates and usable manipulation; system tracking loss and relocalization still require device checks.
+
+Before modifying input coordinates, surface ownership, scale conversion or movement arbitration, run the gesture and native-event lifecycle checks and compare with this baseline. Device-check center/edge contact alignment, repeat grab/release, native handles, and the small-monitor fallback.
+
+The equal-angle warp checks measure chord lengths (equivalently central angles at a fixed radius) across every horizontal and vertical neighboring vertex, for both centered and off-axis viewers. They also check projection/inverse texture alignment, constant radius, angular aspect under extreme-field limiting, and flat/curved snapshot geometry. Uniform longitude/elevation alone is deliberately not accepted as proof of equal neighboring-ray angles. Native hand-only aiming was confirmed on the headset by the user; no application pointer override is needed.
+
+### Confirmed spherical rendering and input
+
+On 8 November 2026 the user confirmed that the dedicated native curved video surface matches the native frozen image on grab and that outer-edge two-hand grabs work. Keep the curved video and interaction patch on the same mesh and transform. Flat mode continues to use the original Compose-owned surface and its recorded coordinate conversion.
+
+
+## Mouse and interaction checkpoint checks
+
+Remaining device gesture failures are [deferred](../../../docs/gesture-issues.md). Passing a supplied-sample test does not prove physical quick-touch detection, click timing or OS hand rendering.
+
+Run all JVM checks from the repository root with a cached Gradle Kotlin compiler directory:
 
 ```bash
-cargo build --release
-./target/release/floatdesk doctor
-./target/release/floatdesk trial
-./target/release/floatdesk serve --monitors 2 --width 1920 --height 1080
+for check in gestures monitor_warp frozen_frame rtp pointer_protocol pointer_dispatch mouse_gestures panel_input curved_resize hand_quality; do
+  python3 "client/android-xr/checks/$check.py" /path/to/gradle/lib || exit
+done
 ```
 
-`doctor` only reads the server. `trial` creates one 1280×720 logical monitor named `Floatdesk-1`, checks that RandR lists it, and restores the framebuffer. `serve` enlarges the X screen, adds `Floatdesk-N` monitors with no physical output, and waits for a client hello on UDP `47000`.
+| Check | Coverage |
+| --- | --- |
+| `pointer_protocol.py` | Pointer/click/touchpad datagram layout and invalid payload rejection. |
+| `pointer_dispatch.py` | Real local UDP, outgoing UI-thread avoidance, bounded motion coalescing, button edges and deduplicated click retries. |
+| `mouse_gestures.py` | Gaze filter; cross-hand clicks; drag/scroll cancellation; stationary and short middle clicks; independent binary rearming; minimal opening; event-buffer triple-click bursts; stale-batch cancellation. |
+| `panel_input.py` | Sticky eye focus, same-hand palm pinch, timing/rearming and hand switching. |
+| `curved_resize.py` | Tangent/perspective frame placement, bounds, native controller ownership and resize synchronization. |
+| `hand_quality.py` | Pose jumps, unknown/overlapping identities, established-owner retention, clone disappearance, continued mouse routing and invalidated palm callback epochs. |
 
-`--existing` streams the current primary CRTC and does not resize the screen. That is the right mode for a loopback test:
+Current mouse joint contact/release thresholds: left index/middle 15.5/15 mm, right index/middle 12.5/14 mm. These are fixed tracked-joint distances, not skin gaps. Palm activation remains separate (26 mm contact, 35 mm rearm, 60 ms confirmation). No device acceptance of fast desktop taps is implied.
+
+### Offscreen headset checks
+
+After building and installing the current debug APK:
 
 ```bash
-./target/release/floatdesk recv --host 127.0.0.1:47000 --output /tmp/floatdesk.h264 --seconds 5 &
-./target/release/floatdesk serve --existing --duration 4 --encoder x264enc --fps 15
+python3 client/android-xr/checks/video_compositor_device.py
 ```
 
-For long-running headset use, run the existing-desktop host under your user service manager instead of leaving a background process attached to a terminal or coding tool:
+Requires ADB and JDK 17+ (`JAVA_HOME` or `/opt/android-studio/jbr`). The runner compiles `VideoCompositorSmoke.java` and `DecoderIdleSmoke.java` against the installed APK. It opens no Activity and injects no desktop input. It checks real EGL video orientation, overlay pixel colors/clearing, identical-overlay suppression and output handoff without a new source frame. A generated 320×240 red baseline H.264 keyframe must display with no later compressed input; hiding must stop output, and resuming must display a fresh blue keyframe. Synthetic fixtures contain no captured desktop pixels.
+
+### Host checks
 
 ```bash
-cargo build --release
-./scripts/serve-existing.sh --encoder vah264enc --fps 60
-journalctl --user -u floatdesk-live -f
+cargo fmt --all -- --check
+cargo test --workspace --offline
+cargo clippy --workspace --all-targets --offline
+cargo build --release --offline
+python3 scripts/check-mouse-x11.py
 ```
 
-This session service restarts the host after a crash, sends logs to the journal, and removes inherited regular-file size limits. Omit `--encoder` to select an available encoder automatically. It uses the current X11 `DISPLAY` and `XAUTHORITY`. Stop it with `systemctl --user stop floatdesk-live`; use `systemctl --user restart floatdesk-live` to restart the running service. To change launch arguments, stop it and rerun the script. `FLOATDESK_BIN` can select a different executable.
+The XTest runner creates a private Xvfb and tests actual click edges, drag release, timeout and object-drop cleanup. Never run its ignored input test on the user’s desktop. The normal Rust suite also tests a real GStreamer slow-consumer raw queue: obsolete raw frames must not accumulate and the latest frame must survive.
 
-Ctrl-C restores a virtual framebuffer. If the process is killed first, the saved size is in `$XDG_STATE_HOME/floatdesk/x11-screen.json` (or `~/.local/state/floatdesk/`). Put it back with:
+Two explicit opt-in tests are separate from the default suite:
 
 ```bash
-floatdesk restore
+FLOATDESK_CAPTURE_BENCH=1 cargo test --offline -p floatdesk capture_cadence_read_only -- --ignored --nocapture
+FLOATDESK_UINPUT_TEST=1 cargo test --offline -p floatdesk platform::touchpad::tests::creates_classified_touchpad_without_emitting_touches -- --ignored --exact
 ```
 
-`capture-once` writes a PPM of the top-left corner through MIT-SHM. `encode-once` writes an Annex-B file from a synthetic frame.
+The capture benchmark reads the selected live X11 screen into memory for two seconds, writes no screenshots and emits no input. It closes only its own X11 client socket to verify idle polling propagates failure. A prior 2560×1600 observation improved from ~40 to ~58 fps after capture-start pacing; that excludes encode/network/display latency. The uinput test creates a passive device and checks classification without emitting touches.
 
-## Android XR client
-
-`client/android-xr` is a Jetpack XR app. It decodes each RTP stream with `MediaCodec` straight into a `SpatialExternalSurface`, receives the cursor within the video, and stores monitor poses in the workspace. Room anchoring is available when supported by the headset.
-
-The headset finds the computer on the LAN by itself. `floatdesk serve` announces itself once a second. Open the app and wait until the status says it found the machine. There is no address to type.
-
-Face an open palm toward yourself to show the control panel, and touch its buttons with the other hand. A firmly clenched fist held briefly makes the desk follow your head; the Follow button toggles persistent follow.
-
-Pinch two well-separated points on a monitor to manipulate it in 3D. Hand translation, depth, rotation, and separation move and scale a miniature monitor held between your hands; the real monitor mirrors that transformation. A wireframe, fixed contact markers, and tethers show the mapping. Aiming beams and mouse contact rings hide during preview/grabbing. Preview tethers and contact markers use native transparent surfaces so live video does not cut them off. Closely spaced contacts are rejected, and releasing either pinch or losing tracking ends the grab. During manipulation a frozen snapshot replaces the video visually so the guides stay visible. The hidden video surface continues receiving frames and reappears on release.
-
-Use **Enable spherical / Disable spherical** on the palm panel to curve each monitor horizontally and vertically onto a sphere centered between your eyes. The screen center stays in place and an equal-edge angular mesh keeps neighboring grid rays uniformly spaced in both axes as you move your head. The setting is saved with the workspace. During a grab, the curved shape freezes with the image to keep the contact points rigid; it refits to your viewpoint on release.
-
-Hand-ray mouse aiming is always available. **Enable eye mouse / Disable eye mouse** on the palm panel controls only gaze aiming: with no hand ray on a monitor, enabled gaze aims the mouse; one hand ray takes priority; two hand rays stop mouse movement and preview the miniature grab guides before pinching. Flat mode replaces the bright system reticle with a faint marker in one-hand mode. Spherical mode currently keeps the original SDK pointer styling while its input regression is investigated. Eye aiming uses an adaptive filter and small deadband to reduce jitter while following deliberate gaze changes. Grant eye-tracking permission when enabling it. Keep Android XR's aiming method on **Use hand aiming only**; the app reads gaze independently. Denied or unavailable gaze does not disable hand aiming. Android XR still controls its own ray beam. A faint app-rendered beam remains visible while a tracked hand has a valid monitor contact. Stationary tracked hands have no contact expiry; after a native hover-exit, moving more than 15 mm or rotating more than 5 degrees clears the retained target. The entire beam uses one thin transparent native custom-mesh surface, avoiding a seam between native and video-rendered portions. The contact ring is composited into live video; it cannot recover unavailable native aiming or tracking.
-
-Mouse distances are measured between tracked joint positions, not the physical skin gap. Contact and release use the same fixed threshold: left index/middle 15.5/15 mm, right index/middle 12.5/14 mm. Palm-button pinch tuning is separate.
-
-**Enable gestures / Disable gestures** separately controls mouse clicks and dragging, and defaults off. Bring the tracked thumb and index tips into contact range, then release for a left click; pinch twice quickly for a double-click. Hold the pinch for 350 ms to drag and release to drop. Pinch thumb and middle finger with the index open for right-click. Pinch thumb, index and middle together for middle-click. The clicking hand can point away while the other hand aims. Two rays on the monitor reserve the interaction for preview/grabbing, so they do not generate mouse clicks. Opening the palm controls, losing the clicking hand or disabling gestures cancels the gesture and releases a drag. The host also releases a held button after 300 ms without updates.
-
-Pinch thumb and middle finger, then move that hand vertically or horizontally to scroll immediately. An 8 mm movement threshold suppresses small tracking jitter; there is no hold delay. The cursor stays at the initial target; release ends scrolling without right-clicking. A middle pinch that does not enter scrolling right-clicks on release, regardless of hold duration. The index only needs to be outside its own contact range, rather than fully extended. Scrolling requires writable `/dev/uinput` and `libevdev.so.2` on the Linux host. Air swipes with raised fingers are disabled. On Linux, middle-click commonly pastes the primary selection; it is distinct from Ctrl+V clipboard paste.
-
-The palm panel supports eye focus independently of desktop eye mouse aiming and the OS aiming method, subject to Android's eye-tracking permission. Permitted eye tracking stays ready while the app is active, so showing or briefly losing the panel does not restart sensor acquisition. The Eyes button still controls desktop cursor routing only. Look at a button until it highlights, then pinch that hand's thumb and middle finger to activate. Keep the other three fingers extended. Open the pinch before activating again. Buttons flash on activation and use the system touch sound when enabled. Ordinary blinking is not an activation gesture. Direct tapping with the other hand remains available. Discrete sticky focus helps with gaze jitter; continuous desktop gaze still depends on tracking accuracy and may be unsuitable for small targets.
-
-In spherical mode, the hidden flat video owner is disabled so its native body cannot compete with the curved interaction mesh. The system move/resize rectangle sits behind the image, aligned with the viewer-facing tangent plane in spherical mode, with corners projected onto the image corners; returning to flat mode restores the original owner and handles.
-
-Use the exposed border of the system rectangle for one-hand repositioning and its corners for resizing, or use the custom two-hand grab. The rectangle stays behind the image so image input remains available. Resize handles, Reset and Follow remain available. Previewing never moves the monitor. Eye and gesture toggles are saved independently.
-
-What changed after the first LAN proof of concept is recorded in [CHANGES.md](CHANGES.md). Regression checks and the limits of those checks are in [the Android checks README](client/android-xr/checks/README.md).
-
-Plasma does not treat a RandR monitor with no physical output as a desktop, so a virtual `Floatdesk-N` region stays empty. Stream the laptop panel instead:
-
-```bash
-./target/release/floatdesk serve --existing
-```
-
-## Layout
-
-```text
-crates/protocol    control datagrams, RTP H.264, workspace math
-crates/host        X11 capture, GStreamer encoder, RTP session
-client/android-xr  Jetpack XR receiver
-benchmarks         netem helper for latency, jitter, and loss
-packaging          systemd unit
-```
-
-Explicit resize handles and the two-point controller are available; normal one-hand monitor movement is disabled. Flat video and standard handles retain the original Compose-owned surface. Spherical video uses a separate native canvas and a transparent interaction mesh with matching geometry. Two-point contacts use raw native hit events: remove the activity-root scale, then apply the event's hit transform to obtain screen-local coordinates. The prior native movement implementation remains covered by regression checks; it is not attached to the monitor body. Rearming a rejected two-point grab does not disable normal handles. Head-quality checks gate follow independently of tracked hands, so a paused head signal does not erase valid hand samples. A visible activity stays awake and reapplies tracking configuration on resume. Android XR still controls sensor availability and physical safety boundaries.
-
-For persistent hand rays, choose **Settings → Input → Aiming method → Use hand aiming only**. The mixed eye/hand mode can switch away from hand aiming; hand-only mode was confirmed to remove the need to wave the hands to restore rays. This does not override tracking loss when the headset cannot see a hand.
-
-Hand samples are read once per frame. Overlapping left/right identities, pose jumps and tracking recovery temporarily suspend app hand actions and hide the palm panel; normal palm detection and its middle-pinch threshold are unchanged. This prevents uncertain samples and delayed panel clicks from operating controls. System-rendered duplicate hand imagery still needs device verification.
-
-Independent binary rearming is checked with ten successive combined pinches, releasing only one participating finger by 0.1 mm beyond its contact threshold between clicks, on either hand. Both index-only and middle-only tiny-opening repetition remain covered.
+Preserve the forward native event-matrix/root-scale coordinate conversion, matching live/frozen curved meshes, native frame behind the image, immediate grab release restoration, and working palm presentation. Rerun center/edge grabs, flat/curved toggling and native handles on the device only when interaction work resumes. Ignored `.agent-artifacts/` holds local baselines, including the user-confirmed smooth-stream APK/source checkpoint. They are not portable regression fixtures or committed artifacts.

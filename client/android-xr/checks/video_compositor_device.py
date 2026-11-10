@@ -17,7 +17,7 @@ for home in [os.environ.get('JAVA_HOME',''),'/opt/android-studio/jbr']:
     major=re.search(r'javac (\d+)',version)
     if major and int(major.group(1))>=17:
         javac=candidate; break
-assert javac is not None, 'Set JAVA_HOME to a JDK version 17 or newer' 
+assert javac is not None, 'Set JAVA_HOME to a JDK version 17 or newer'
 platform=sorted((sdk/'platforms').glob('android-*'))[-1]/'android.jar'
 d8=sorted((sdk/'build-tools').glob('*/d8'))[-1]
 adb=str(sdk/'platform-tools/adb')

@@ -305,7 +305,7 @@ fn run(monitors: &[MonitorRect], opts: &ServeOpts) -> Result<()> {
         thread::sleep(Duration::from_millis(8));
     }
     shared.stop.store(true, Ordering::Relaxed);
-    let _ = pointer.release();
+    pointer.release();
     for thread in threads {
         let _ = thread.join();
     }
@@ -497,7 +497,7 @@ fn handle_datagram(
                 .map(|current| current.generation)
                 .unwrap_or(0)
                 + 1;
-            let _ = pointer.release();
+            pointer.release();
             *client = Some(ClientTarget {
                 control: from,
                 video_port,
@@ -608,7 +608,7 @@ fn handle_datagram(
             {
                 return;
             }
-            let _ = pointer.release();
+            pointer.release();
             tracing::info!(%from, "client goodbye");
             *shared.client.write().unwrap_or_else(|err| err.into_inner()) = None;
         }

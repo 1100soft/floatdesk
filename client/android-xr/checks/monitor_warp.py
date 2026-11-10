@@ -8,10 +8,19 @@ import tempfile
 folder = Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client'
 mesh = (folder/'MonitorMesh.kt').read_text().split('\n', 1)[1]
 warp = (folder/'MonitorWarp.kt').read_text()
-warp = warp[warp.index('internal class MonitorWarp'):].replace('@SuppressLint("RestrictedApi")', '').replace('androidx.xr.runtime.math.IntSize2d','IntSize2d')
+warp = warp[warp.index('internal class MonitorWarp'):].replace('@SuppressLint("RestrictedApi")', '').replace('androidx.xr.runtime.math.IntSize2d','IntSize2d').replace('android.os.SystemClock','SystemClock')
 stubs = '''
 internal class Texture { fun close() {}; companion object { suspend fun create(session: Session,path: java.nio.file.Path)=Texture() } }
 internal class Surface
+internal object SystemClock { fun uptimeMillis()=0L }
+internal enum class SpatialPointerIcon { DEFAULT,NONE }
+internal class SpatialPointerComponent {
+    var spatialPointerIcon=SpatialPointerIcon.DEFAULT
+    companion object { fun create(session: Session)=SpatialPointerComponent() }
+}
+internal object NativeMonitorInput {
+    fun create(session: Session,listener: (InputEvent)->Unit)=InteractableComponent.create(session,listener)
+}
 internal data class Vector3(val x: Float, val y: Float, val z: Float) {
     val length get() = kotlin.math.sqrt(x*x+y*y+z*z)
 }
@@ -31,6 +40,8 @@ internal open class Entity {
     @JvmField var enabled = true
     fun setEnabled(value: Boolean) { enabled=value }
     fun isEnabled(includeParents: Boolean=true)=enabled
+    var pointer: SpatialPointerComponent? = null
+    fun addComponent(value: SpatialPointerComponent): Boolean { pointer=value;value.spatialPointerIcon=SpatialPointerIcon.DEFAULT;return true }
     var component: InteractableComponent? = null
     fun addComponent(value: InteractableComponent): Boolean { component=value; colliderAttachments++; return true }
     fun removeComponent(value: InteractableComponent) { if(component === value) component=null }

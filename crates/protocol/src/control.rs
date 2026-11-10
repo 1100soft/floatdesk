@@ -386,7 +386,7 @@ pub fn decode_packet(bytes: &[u8]) -> Result<ControlPacket, ProtocolError> {
             })
         }
         KIND_POINTER_CLICK => {
-            if p.len() != 14 || !matches!(p[9], 1 | 2 | 3) {
+            if p.len() != 14 || !matches!(p[9], 1..=3) {
                 return Err(ProtocolError::Payload(kind));
             }
             let norm_x = f32::from_le_bytes(p[1..5].try_into().unwrap());

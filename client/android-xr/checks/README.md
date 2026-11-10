@@ -55,3 +55,60 @@ The equal-angle warp checks measure chord lengths (equivalently central angles a
 ### Confirmed spherical rendering and input
 
 On 8 November 2026 the user confirmed that the dedicated native curved video surface matches the native frozen image on grab and that outer-edge two-hand grabs work. Keep the curved video and interaction patch on the same mesh and transform. Flat mode continues to use the original Compose-owned surface and its recorded coordinate conversion.
+
+
+## Mouse and interaction checkpoint checks
+
+Remaining device gesture failures are [deferred](../../../docs/gesture-issues.md). Passing a supplied-sample test does not prove physical quick-touch detection, click timing or OS hand rendering.
+
+Run all JVM checks from the repository root with a cached Gradle Kotlin compiler directory:
+
+```bash
+for check in gestures monitor_warp frozen_frame rtp pointer_protocol pointer_dispatch mouse_gestures panel_input curved_resize hand_quality; do
+  python3 "client/android-xr/checks/$check.py" /path/to/gradle/lib || exit
+done
+```
+
+| Check | Coverage |
+| --- | --- |
+| `pointer_protocol.py` | Pointer/click/touchpad datagram layout and invalid payload rejection. |
+| `pointer_dispatch.py` | Real local UDP, outgoing UI-thread avoidance, bounded motion coalescing, button edges and deduplicated click retries. |
+| `mouse_gestures.py` | Gaze filter; cross-hand clicks; drag/scroll cancellation; stationary and short middle clicks; independent binary rearming; minimal opening; event-buffer triple-click bursts; stale-batch cancellation. |
+| `panel_input.py` | Sticky eye focus, same-hand palm pinch, timing/rearming and hand switching. |
+| `curved_resize.py` | Tangent/perspective frame placement, bounds, native controller ownership and resize synchronization. |
+| `hand_quality.py` | Pose jumps, unknown/overlapping identities, established-owner retention, clone disappearance, continued mouse routing and invalidated palm callback epochs. |
+
+Current mouse joint contact/release thresholds: left index/middle 15.5/15 mm, right index/middle 12.5/14 mm. These are fixed tracked-joint distances, not skin gaps. Palm activation remains separate (26 mm contact, 35 mm rearm, 60 ms confirmation). No device acceptance of fast desktop taps is implied.
+
+### Offscreen headset checks
+
+After building and installing the current debug APK:
+
+```bash
+python3 client/android-xr/checks/video_compositor_device.py
+```
+
+Requires ADB and JDK 17+ (`JAVA_HOME` or `/opt/android-studio/jbr`). The runner compiles `VideoCompositorSmoke.java` and `DecoderIdleSmoke.java` against the installed APK. It opens no Activity and injects no desktop input. It checks real EGL video orientation, overlay pixel colors/clearing, identical-overlay suppression and output handoff without a new source frame. A generated 320×240 red baseline H.264 keyframe must display with no later compressed input; hiding must stop output, and resuming must display a fresh blue keyframe. Synthetic fixtures contain no captured desktop pixels.
+
+### Host checks
+
+```bash
+cargo fmt --all -- --check
+cargo test --workspace --offline
+cargo clippy --workspace --all-targets --offline
+cargo build --release --offline
+python3 scripts/check-mouse-x11.py
+```
+
+The XTest runner creates a private Xvfb and tests actual click edges, drag release, timeout and object-drop cleanup. Never run its ignored input test on the user’s desktop. The normal Rust suite also tests a real GStreamer slow-consumer raw queue: obsolete raw frames must not accumulate and the latest frame must survive.
+
+Two explicit opt-in tests are separate from the default suite:
+
+```bash
+FLOATDESK_CAPTURE_BENCH=1 cargo test --offline -p floatdesk capture_cadence_read_only -- --ignored --nocapture
+FLOATDESK_UINPUT_TEST=1 cargo test --offline -p floatdesk platform::touchpad::tests::creates_classified_touchpad_without_emitting_touches -- --ignored --exact
+```
+
+The capture benchmark reads the selected live X11 screen into memory for two seconds, writes no screenshots and emits no input. It closes only its own X11 client socket to verify idle polling propagates failure. A prior 2560×1600 observation improved from ~40 to ~58 fps after capture-start pacing; that excludes encode/network/display latency. The uinput test creates a passive device and checks classification without emitting touches.
+
+Preserve the forward native event-matrix/root-scale coordinate conversion, matching live/frozen curved meshes, native frame behind the image, immediate grab release restoration, and working palm presentation. Rerun center/edge grabs, flat/curved toggling and native handles on the device only when interaction work resumes. Ignored `.agent-artifacts/` holds local baselines, including the user-confirmed smooth-stream APK/source checkpoint. They are not portable regression fixtures or committed artifacts.

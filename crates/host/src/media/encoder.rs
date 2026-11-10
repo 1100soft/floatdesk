@@ -17,6 +17,10 @@ struct Profile {
     props: &'static [(&'static str, &'static str)],
 }
 
+// Raw frames may be replaced safely before encoding. max-bytes with block=false
+// alone is a notification threshold, not a queue bound.
+const LIVE_SOURCE: &str = "appsrc name=src is-live=true format=time do-timestamp=true block=false max-buffers=1 leaky-type=downstream";
+
 const NVENC: &[(&str, &str)] = &[
     ("rc-mode", "cbr"),
     ("preset", "low-latency-hq"),
@@ -156,7 +160,7 @@ impl GstEncoder {
     fn start(profile: Profile, config: EncoderConfig) -> Result<Self> {
         let max_bytes = (config.width as u64 * config.height as u64 * 4).saturating_mul(2);
         let description = format!(
-            "appsrc name=src is-live=true format=time do-timestamp=true block=false max-bytes={max_bytes} \
+            "{LIVE_SOURCE} max-bytes={max_bytes} \
              ! videoconvert ! video/x-raw,format={} \
              ! {} name=enc \
              ! h264parse config-interval=-1 \
@@ -293,6 +297,34 @@ mod tests {
         panic!(
             "encoder produced {} bytes without an Annex-B start code",
             output.len()
+        );
+    }
+
+    #[test]
+    fn raw_input_keeps_latest_frame_when_downstream_is_slow() {
+        let pipeline = Pipeline::launch(&format!(
+            "{LIVE_SOURCE} max-bytes=1024 ! identity name=enc sleep-time=100000 ! appsink name=sink sync=false max-buffers=8"
+        )).expect("slow pipeline");
+        pipeline.play().expect("play");
+        pipeline.push(&[0]).expect("initial frame");
+        assert_eq!(pipeline.pull(1_000_000_000).unwrap(), Some(vec![0]));
+        for value in 1..=80 {
+            pipeline.push(&[value]).expect("push burst");
+        }
+        let mut observed = Vec::new();
+        while observed.len() < 4 {
+            let Some(value) = pipeline.pull(500_000_000).unwrap() else {
+                break;
+            };
+            observed.push(value[0]);
+            if value[0] == 80 {
+                break;
+            }
+        }
+        assert_eq!(observed.last(), Some(&80), "latest raw frame must survive");
+        assert!(
+            observed.len() <= 2,
+            "obsolete raw frames accumulated: {observed:?}"
         );
     }
 

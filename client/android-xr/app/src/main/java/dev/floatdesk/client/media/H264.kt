@@ -203,12 +203,15 @@ internal class MonitorDecoder(
     private val dumpFile: File? = null,
     private val onGap: () -> Unit = {},
 ) {
+    private val renderingActive=AtomicBoolean(true)
     private val running = AtomicBoolean(true)
     private val surface = AtomicReference<Surface?>(null)
     private val pending = ArrayBlockingQueue<ByteArray>(4)
     private val sps = AtomicReference<ByteArray?>(null)
     private val pps = AtomicReference<ByteArray?>(null)
     private val awaitingKey = AtomicBoolean(true)
+    @Volatile private var compositor: VideoCompositor? = null
+    private val aim = AtomicReference(VideoAim())
     private var receiveThread: Thread? = null
     private var decodeThread: Thread? = null
 
@@ -222,6 +225,14 @@ internal class MonitorDecoder(
             socket.send(DatagramPacket(byteArrayOf(0), 1, host, 47000))
         }
     }
+
+    fun setRenderingActive(active: Boolean) {
+        if(renderingActive.getAndSet(active)==active) return
+        pending.clear()
+        if(active) recover("visible stream resumed") else awaitingKey.set(true)
+    }
+
+    fun overlay(value: VideoAim) { aim.set(value); compositor?.overlay(value) }
 
     fun attach(next: Surface) {
         surface.set(next)
@@ -260,6 +271,7 @@ internal class MonitorDecoder(
             } catch (_: java.net.SocketException) {
                 break
             }
+            if(!renderingActive.get()) { depacketizer.restart();reorder.consumeRestart();continue }
             if (reorder.consumeRestart()) {
                 depacketizer.restart()
                 recover("RTP source restarted")
@@ -303,13 +315,33 @@ internal class MonitorDecoder(
         var rendered = 0
         var sawKeyframe = false
         val byteDump = dumpFile != null
+        val renderer=if(byteDump) null else runCatching { VideoCompositor(width,height) }
+            .onFailure { Log.e(TAG,"Live video compositor unavailable; using direct decode",it) }.getOrNull()
+        compositor=renderer
+        renderer?.overlay(aim.get())
+        var displayedSurface: Surface?=null
         while (running.get()) {
+            if(!renderingActive.get()) {
+                codec?.stop();codec?.release();codec=null;codecSurface=null;sawKeyframe=false
+                if(displayedSurface!=null) { renderer?.output(null);displayedSurface=null }
+                // Transition methods clear the queue. Clearing it here could race
+                // with a newly queued resume keyframe after the active flag changes.
+                Thread.sleep(20)
+                continue
+            }
             val accessUnit = try {
-                pending.poll(30, TimeUnit.MILLISECONDS)
+                pending.poll(2, TimeUnit.MILLISECONDS)
             } catch (_: InterruptedException) {
                 null
-            } ?: continue
-            val target = if (byteDump) null else surface.get()
+            }
+            if(accessUnit==null) {
+                // Completed output must not wait for the next compressed frame.
+                codec?.let { rendered += drain(it,rendered,byteDump) }
+                continue
+            }
+            val display=surface.get()
+            if(display !== displayedSurface) { renderer?.output(display); displayedSurface=display }
+            val target = if (byteDump || display==null) null else renderer?.input ?: display
             val parameters = sps.get() to pps.get()
             val surfaceReady = byteDump || target != null
             if (surfaceReady && parameters.first != null && parameters.second != null &&
@@ -337,6 +369,8 @@ internal class MonitorDecoder(
         }
         codec?.stop()
         codec?.release()
+        compositor=null
+        renderer?.close()
     }
 
     private fun startCodec(target: Surface?, sps: ByteArray, pps: ByteArray): MediaCodec? {

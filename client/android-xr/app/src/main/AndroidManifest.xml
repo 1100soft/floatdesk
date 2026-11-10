@@ -7,6 +7,7 @@
     <uses-permission android:name="android.permission.SCENE_UNDERSTANDING_COARSE" />
     <uses-permission android:name="android.permission.HAND_TRACKING" />
     <uses-permission android:name="android.permission.HEAD_TRACKING" />
+    <uses-permission android:name="android.permission.EYE_TRACKING_FINE" />
 
     <uses-feature
         android:name="android.software.xr.api.spatial"

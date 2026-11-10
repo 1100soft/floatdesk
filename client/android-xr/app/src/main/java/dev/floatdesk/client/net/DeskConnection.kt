@@ -2,11 +2,15 @@ package dev.floatdesk.client.net
 
 import android.content.Context
 import android.net.wifi.WifiManager
+import android.os.HandlerThread
+import android.util.Log
+import java.util.concurrent.atomic.AtomicReference
 import android.os.Handler
 import android.os.Looper
 import android.view.Surface
 import androidx.compose.runtime.mutableStateOf
 import dev.floatdesk.client.media.MonitorDecoder
+import dev.floatdesk.client.media.VideoAim
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
@@ -24,9 +28,21 @@ internal class DeskConnection(
 
     private val main = Handler(Looper.getMainLooper())
     private val assembler = CursorAssembler()
+    @Volatile private var renderingActive=true
     private val decoders = HashMap<Int, MonitorDecoder>()
     private val pendingCursors = ConcurrentHashMap<Int, CursorView>()
     private val cursorSeq = AtomicInteger()
+    private val pointerSeq = AtomicInteger()
+    private val clickSeq = AtomicInteger()
+    private var pointerDragging = false
+    private val padSeq=AtomicInteger()
+    private val pendingPad=AtomicReference<ByteArray?>(null)
+    private val padFlushPosted=AtomicBoolean(false)
+    private var padFingers=0
+    private val pendingPointer = AtomicReference<ByteArray?>(null)
+    private val pointerFlushPosted = AtomicBoolean(false)
+    @Volatile private var outgoing: Handler? = null
+    private var outgoingThread: HandlerThread? = null
     private val cursorFlushPosted = AtomicBoolean(false)
     private var lastGapAsk = 0L
     private var control: DatagramSocket? = null
@@ -63,6 +79,7 @@ internal class DeskConnection(
             acquire()
         }
         running = true
+        outgoingThread = HandlerThread("floatdesk-input").also { it.start(); outgoing = Handler(it.looper) }
         status.value = "Looking for your computer…"
         thread = Thread({ controlLoop() }, "floatdesk-control").also { it.start() }
     }
@@ -71,6 +88,14 @@ internal class DeskConnection(
         running = false
         control?.close()
         beacon?.close()
+        pendingPointer.set(null)
+        pointerDragging = false
+        pendingPad.set(null); padFingers=0; padFlushPosted.set(false)
+        outgoing = null
+        outgoingThread?.quitSafely()
+        outgoingThread?.join(500)
+        outgoingThread = null
+        pointerFlushPosted.set(false)
         decoders.values.forEach { it.stop() }
         decoders.clear()
         videos.forEach { runCatching { it.close() } }
@@ -89,10 +114,18 @@ internal class DeskConnection(
         }
     }
 
+    @Synchronized
+    fun setRenderingActive(active: Boolean) {
+        renderingActive=active
+        decoders.values.forEach { it.setRenderingActive(active) }
+    }
+
     fun attachSurface(index: Int, surface: Surface) {
         decoders[index]?.attach(surface)
         send(Protocol.keyframeRequest(index))
     }
+
+    fun aimOverlay(index: Int,value: VideoAim) { decoders[index]?.overlay(value) }
 
     fun detachSurface(index: Int) {
         decoders[index]?.detach()
@@ -165,6 +198,7 @@ internal class DeskConnection(
             val video = videos.getOrNull(monitor.index) ?: continue
             val decoder = MonitorDecoder(video, monitor.width, monitor.height, dumpFile, ::askKeyframe)
             decoder.punch(remote.address)
+            decoder.setRenderingActive(renderingActive)
             decoder.start()
             decoders[monitor.index] = decoder
         }
@@ -210,9 +244,76 @@ internal class DeskConnection(
         send(Protocol.keyframeRequest(0xff))
     }
 
+    fun movePointer(monitor: Int,x: Float,y: Float,dragging: Boolean = false) {
+        if (monitors.value.none { it.index == monitor }) return
+        val packet=Protocol.pointerMove(monitor,x,y,pointerSeq.incrementAndGet(),dragging)
+        if(dragging != pointerDragging) {
+            pointerDragging=dragging
+            pendingPointer.set(null)
+            // Button edges must not disappear into a newer coalesced motion frame.
+            outgoing?.post { send(packet) }
+        } else {
+            pendingPointer.set(packet)
+            schedulePointerFlush()
+        }
+    }
+
+    fun clickPointer(monitor: Int,x: Float,y: Float,button: Int) {
+        if (monitors.value.none { it.index == monitor }) return
+        val sequence=clickSeq.incrementAndGet()
+        val requestedAt=System.nanoTime()/1_000_000
+        val packet=Protocol.pointerClick(monitor,x,y,button,sequence)
+        val handler=outgoing ?: return
+        // Atomic click commands are deduplicated by the host. Retries cannot become extra clicks.
+        handler.post {
+            if(button==3) Log.i("Floatdesk","right click sent sequence=$sequence queueMs=${System.nanoTime()/1_000_000-requestedAt}")
+            send(packet)
+        }
+        handler.postDelayed({ send(packet) },20)
+        handler.postDelayed({ send(packet) },60)
+    }
+
+    fun touchpad(fingers: Int,x: Float,y: Float) {
+        val packet=Protocol.touchpad(fingers,x,y,padSeq.incrementAndGet())
+        val handler=outgoing ?: return
+        if(fingers!=padFingers) {
+            padFingers=fingers; pendingPad.set(null)
+            handler.post { send(packet) }
+            if(fingers==0) { handler.postDelayed({ send(packet) },20); handler.postDelayed({ send(packet) },60) }
+        } else {
+            pendingPad.set(packet)
+            schedulePadFlush()
+        }
+    }
+
+    private fun schedulePadFlush() {
+        val handler=outgoing ?: return
+        if(padFlushPosted.compareAndSet(false,true)) handler.post {
+            if(running) pendingPad.getAndSet(null)?.let { send(it) }
+            padFlushPosted.set(false)
+            if(pendingPad.get()!=null) schedulePadFlush()
+        }
+    }
+
+    private fun schedulePointerFlush() {
+        val handler = outgoing ?: return
+        if (pointerFlushPosted.compareAndSet(false,true)) handler.post { flushPointer() }
+    }
+
+    private fun flushPointer() {
+        if(running) pendingPointer.getAndSet(null)?.let { send(it) }
+        pointerFlushPosted.set(false)
+        if (pendingPointer.get() != null) schedulePointerFlush()
+    }
+
     private fun send(bytes: ByteArray) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            outgoing?.post { send(bytes) }
+            return
+        }
         val socket = control ?: return
         val address = pendingRemote ?: return
         runCatching { socket.send(DatagramPacket(bytes, bytes.size, address)) }
+            .onFailure { if (running) Log.w("Floatdesk","Control datagram send failed",it) }
     }
 }

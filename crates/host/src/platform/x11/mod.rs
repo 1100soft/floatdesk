@@ -14,6 +14,7 @@ pub use doctor::doctor_report;
 use crate::error::{Error, Result};
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::ConnectionExt as _;
+use x11rb::protocol::xtest::ConnectionExt as _;
 use x11rb::rust_connection::RustConnection;
 
 pub struct X11Link {
@@ -34,6 +35,31 @@ impl X11Link {
             root,
             root_depth,
         })
+    }
+
+    pub fn move_pointer(&self, x: i32, y: i32) -> Result<()> {
+        let x = i16::try_from(x).map_err(|_| Error::Msg("pointer x outside X11 range".into()))?;
+        let y = i16::try_from(y).map_err(|_| Error::Msg("pointer y outside X11 range".into()))?;
+        self.conn
+            .warp_pointer(x11rb::NONE, self.root, 0, 0, 0, 0, x, y)
+            .map_err(Error::x11)?
+            .check()
+            .map_err(Error::x11)?;
+        self.conn.flush().map_err(Error::x11)
+    }
+
+    pub fn mouse_button(&self, button: u8, down: bool) -> Result<()> {
+        let event = if down {
+            x11rb::protocol::xproto::BUTTON_PRESS_EVENT
+        } else {
+            x11rb::protocol::xproto::BUTTON_RELEASE_EVENT
+        };
+        self.conn
+            .xtest_fake_input(event, button, 0, self.root, 0, 0, 0)
+            .map_err(Error::x11)?
+            .check()
+            .map_err(Error::x11)?;
+        self.conn.flush().map_err(Error::x11)
     }
 
     pub fn roundtrip(&self) -> Result<()> {
@@ -114,4 +140,134 @@ pub fn state_dir() -> std::path::PathBuf {
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     std::path::PathBuf::from(home).join(".local/state/floatdesk")
+}
+
+/// Drag state has a lease, so loss of the headset never leaves a button held indefinitely.
+pub struct X11Mouse {
+    link: X11Link,
+    left_down: bool,
+    last_input: std::time::Instant,
+}
+impl X11Mouse {
+    pub fn open() -> Result<Self> {
+        Ok(Self {
+            link: X11Link::open()?,
+            left_down: false,
+            last_input: std::time::Instant::now(),
+        })
+    }
+    pub fn move_pointer(&mut self, x: i32, y: i32, left_down: bool) -> Result<()> {
+        self.link.move_pointer(x, y)?;
+        if self.left_down != left_down {
+            self.link.mouse_button(1, left_down)?;
+            self.left_down = left_down;
+        }
+        self.last_input = std::time::Instant::now();
+        Ok(())
+    }
+    pub fn click(&mut self, x: i32, y: i32, button: u8) -> Result<()> {
+        if self.left_down {
+            tracing::warn!(button, "atomic click ignored while left drag held");
+            return Ok(());
+        }
+        self.link.move_pointer(x, y)?;
+        self.link.mouse_button(button, true)?;
+        self.link.mouse_button(button, false)
+    }
+    pub fn release(&mut self) -> Result<()> {
+        if self.left_down {
+            self.link.mouse_button(1, false)?;
+            self.left_down = false;
+        }
+        Ok(())
+    }
+    pub fn expire(&mut self) {
+        if self.left_down && self.last_input.elapsed() >= std::time::Duration::from_millis(300) {
+            if let Err(error) = self.release() {
+                tracing::warn!(%error,"could not release timed-out drag");
+            }
+        }
+    }
+}
+impl Drop for X11Mouse {
+    fn drop(&mut self) {
+        let _ = self.release();
+    }
+}
+
+#[cfg(test)]
+mod pointer_device_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires an isolated Xvfb display; run scripts/check-mouse-x11.py"]
+    fn buttons_drag_timeout_and_drop_release() {
+        assert_eq!(
+            std::env::var("FLOATDESK_INPUT_TEST_DISPLAY").as_deref(),
+            Ok("1")
+        );
+        let watcher = X11Link::open().unwrap();
+        watcher
+            .conn
+            .change_window_attributes(
+                watcher.root,
+                &x11rb::protocol::xproto::ChangeWindowAttributesAux::new().event_mask(
+                    x11rb::protocol::xproto::EventMask::BUTTON_PRESS
+                        | x11rb::protocol::xproto::EventMask::BUTTON_RELEASE,
+                ),
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+        let held = || {
+            watcher
+                .conn
+                .query_pointer(watcher.root)
+                .unwrap()
+                .reply()
+                .unwrap()
+                .mask
+                .contains(x11rb::protocol::xproto::KeyButMask::BUTTON1)
+        };
+        let mut mouse = X11Mouse::open().unwrap();
+        mouse.click(120, 160, 1).unwrap();
+        mouse.click(120, 160, 2).unwrap();
+        watcher.roundtrip().unwrap();
+        let mut edges = Vec::new();
+        while let Some(event) = watcher.conn.poll_for_event().unwrap() {
+            match event {
+                x11rb::protocol::Event::ButtonPress(event) => edges.push((event.detail, true)),
+                x11rb::protocol::Event::ButtonRelease(event) => edges.push((event.detail, false)),
+                _ => {}
+            }
+        }
+        assert_eq!(edges, vec![(1, true), (1, false), (2, true), (2, false)]);
+        mouse.move_pointer(200, 200, true).unwrap();
+        assert!(held());
+        mouse.move_pointer(240, 220, true).unwrap();
+        assert!(held());
+        mouse.move_pointer(240, 220, false).unwrap();
+        assert!(!held());
+        mouse.click(250, 230, 3).unwrap();
+        let pointer = watcher
+            .conn
+            .query_pointer(watcher.root)
+            .unwrap()
+            .reply()
+            .unwrap();
+        assert_eq!((pointer.root_x, pointer.root_y), (250, 230));
+        assert!(!pointer
+            .mask
+            .contains(x11rb::protocol::xproto::KeyButMask::BUTTON3));
+        mouse.move_pointer(300, 240, true).unwrap();
+        mouse.last_input = std::time::Instant::now() - std::time::Duration::from_millis(301);
+        mouse.expire();
+        assert!(!held());
+        {
+            let mut temporary = X11Mouse::open().unwrap();
+            temporary.move_pointer(320, 260, true).unwrap();
+            assert!(held());
+        }
+        assert!(!held());
+    }
 }

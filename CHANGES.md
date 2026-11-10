@@ -10,7 +10,7 @@ The pointer is no longer a separate overlay. XFixes does not put the cursor in t
 
 XDamage does not fire for a cursor-only move. A pointer move marks the capture dirty, and the next frame interval sends a picture with the new cursor. A still desktop with a still pointer does not keep encoding.
 
-The H.264 encoder prefers `vah264enc` when it is present (`x264enc` remains the fallback). The VA profile is low-latency CBR: no B-frames, one reference frame, a 400 Kb coded-picture buffer. The GOP is about eight seconds, because a full-screen keyframe every second stalled the encoder. `appsrc` does not block. Encoded frames are always read back before another raw frame is submitted. The appsink keeps two buffers and leaks the oldest (`leaky-type=upstream`) instead of blocking the encoder thread.
+The H.264 encoder prefers `vah264enc` when it is present (`x264enc` remains the fallback). The VA profile is low-latency CBR: no B-frames, one reference frame, a 400 Kb coded-picture buffer. The GOP is about eight seconds, because a full-screen keyframe every second stalled the encoder. `appsrc` does not block. Encoded frames are always read back before another raw frame is submitted. The appsink keeps two buffers and drops incoming encoded buffers when full (`leaky-type=upstream`) instead of blocking the encoder thread.
 
 ### Capture stall, 8 November 2026
 
@@ -40,13 +40,13 @@ A grab starts when both hands pinch the same monitor, far enough apart. The two 
 
 While the grab lasts, the live video surface is hidden and a frozen snapshot of the current frame is shown in its place, so the guides stay visible. The decoder keeps writing to the hidden surface. Releasing either pinch, or losing tracking, ends the grab and shows the live video again. Contacts that are too close together are rejected.
 
-The guides are native glTF meshes (points and tethers) parented to the desk root. They are not interactable panels, so they do not take the hand rays. Regenerate the meshes with `python3 tools/generate_grab_guides.py` from `client/android-xr`.
+The miniature outline/pinch guides use native glTF meshes; aiming beams, tethers and contact decorations use stable custom-mesh SurfaceEntities parented to the desk root. They are not interactable panels, so they do not take the hand rays. Regenerate the meshes with `python3 tools/generate_grab_guides.py` from `client/android-xr`.
 
 ## Spherical monitor display
 
 The palm panel's Enable spherical / Disable spherical button saves a workspace-wide setting, off by default. The mesh lies on a sphere centered between the eyes, with radius equal to the distance to the monitor center. An equal-edge angular quadrilateral net gives horizontal and vertical neighboring grid rays their prescribed central-angle steps at a shared angular pitch per image pixel. The grid can shear as required by spherical geometry. Extreme fields are limited uniformly to avoid folds. Invalid viewpoints freeze the last valid geometry; viewer-coordinate changes above 1 cm refit it.
 
-Curved video uses a dedicated native SurfaceEntity created with its mesh and supersampling disabled, outside Compose's rectangular canvas sizing. A transparent alpha mask hides the retained flat video buffer without hiding its entity or standard handles. A transparent native glTF interaction patch shares the curved video's mesh and transform. Resizing updates the bounds used to validate contacts. Mode switches route the decoder to the appropriate surface; head-driven curved updates reuse the same decoder surface.
+Curved video uses a dedicated native SurfaceEntity created with its mesh and supersampling disabled, outside Compose's rectangular canvas sizing. The retained flat video owner is masked and disabled in curved mode. A separate system rectangle behind the image provides native move/resize controls. A transparent native glTF interaction patch shares the curved video's mesh and transform. Resizing updates the bounds used to validate contacts. Mode switches route the decoder to the appropriate surface; head-driven curved updates reuse the same decoder surface.
 
 Raw pinch state freezes geometry before platform DOWN acquisition. The frozen image, contact markers and miniature outline use that same geometry throughout a grab. The hidden video continues receiving frames and reappears immediately on release.
 
@@ -56,7 +56,7 @@ Native contact positions include the activity-root scale, while the event's hit-
 
 Head-quality checks gate follow independently of raw hand tracking. Tracking gaps and discontinuities suspend follow until 300 ms of stable samples, then follow rebases. Space-origin changes cancel gestures and reset follow. A visible activity stays awake and reapplies tracking configuration on resume. Physical boundaries and sensor availability remain system-controlled.
 
-The user confirmed that Settings → Input → Aiming method → Use hand aiming only keeps hand rays available without waving. Mixed eye/hand aiming can switch away from the hand pointer. Independent app-level eye gaze alongside hand aiming remains a future feature requiring permission and device verification.
+The user confirmed that Settings → Input → Aiming method → Use hand aiming only keeps hand rays available without waving. Mixed eye/hand aiming can switch away from the hand pointer. Independent app-level eye gaze alongside hand aiming is now implemented, subject to eye-tracking permission and the limitations below.
 
 ## Streaming recovery
 
@@ -78,3 +78,21 @@ python3 checks/rtp.py /path/to/gradle/lib
 These cover grab transforms, gesture thresholds, spherical radius and angular sampling, pixel inversion, mode-switch surface ownership, curved interaction routing, snapshot geometry/materials, native coordinate conversion, tracking guards and RTP recovery. `python3 scripts/check-serve-existing.py` checks launcher arguments without changing a service. JVM checks cannot validate physical placement or native rendering; those need the headset.
 
 On 8 November 2026 the user confirmed flat coordinate alignment, matching live/frozen spherical shape, and successful spherical grabs near both outer edges. Preserve the separate native curved video canvas, matching interaction patch, resized contact bounds, and event-matrix/root-scale conversion. Native handles or Reset remain the accepted fallback below the minimum safe contact separation. Future interaction changes must rerun the regressions and verify center/edge grabs, live/frozen agreement, mode toggling, and native handles on the headset. Local APK/source backups preserve both confirmed baselines and are excluded from Git.
+
+## Mouse, interaction and stream checkpoint — 10 November 2026
+
+This checkpoint adds direct hand/gaze mouse routing, optional click/drag/scroll gestures, palm gaze activation and interaction/rendering recovery. Gesture reliability remains incomplete. At the user’s request, further gesture work is deferred; [the gesture issue record](docs/gesture-issues.md) contains observed failures, current constants, diagnostics and resume criteria.
+
+- Hand mouse aiming remains available independently of the desktop Eyes toggle. One ray takes precedence over gaze; two rays freeze pointer motion and show grab preview. Gesture and eye preferences persist separately.
+- Index pinch releases click, a 350 ms hold drags, middle pinch releases right-click, and middle pinch plus 8 mm palm translation scrolls immediately. Combined contact produces middle-click. Contacts and rearming are binary and independent; no desktop click minimum hold is intended. Rapid physical pinches and triple-clicks are still unreliable despite synthetic replay checks.
+- The palm panel supports sticky eye focus plus same-hand middle pinch, independent of desktop Eyes and OS aiming selection. Its existing activation threshold/dwell remain separate. Fine eye resources stay configured while active; head and eye poses are composed in the correct spaces.
+- Native monitor input preserves the matched entity/hit matrix. In curved mode the old flat owner is disabled. A tangent-aligned system rectangle sits behind both flat and curved video, preventing interception and providing stable one-hand fallback movement/resizing. App geometry does not rewrite an active system controller; final resize dimensions refit the latest curved mesh.
+- Left/right rays and grab guides use cyan/violet. Screen pointer icons and redundant contact dots are hidden. Stable unit ray meshes avoid the observed native Impress replacement crash. The guides remain visible across video and monitor edges.
+- Tracking checks reject duplicates/discontinuities. A single identity established before a new overlapping clone can retain mouse ownership; ambiguous pairs remain blocked. This mitigates app input interruption, not the OS-drawn duplicate hand. Deferred notes preserve the user’s observations outside Floatdesk and recovery after a headset reboot.
+- Mouse datagrams carry validated coordinates and independent sequences. The host scopes input to the connected peer, deduplicates clicks, uses XTest buttons/drag and a native libevdev/uinput two-contact touchpad. Buttons/contacts have release leases. Pointer and pad motion are coalesced off the UI thread; click and release edges are retained. Scrolling needs writable `/dev/uinput` and `libevdev.so.2`.
+- Video uses a stable decoder input and EGL compositor across flat/curved surface handoffs. Output drains while input is idle; identical overlays do not resubmit stale frames. Hidden video releases decoder/output resources; visibility return requests a keyframe, and composition disposal closes the connection.
+- Host capture is paced between starts rather than completion plus a full interval. Raw encoder input keeps one pending frame and replaces obsolete frames before encoding; nonblocking max-bytes alone had allowed backlog. X event failures now propagate to the existing reconnect loop. Read-only pacing and slow-consumer queue checks cover these cases.
+
+Verification commands and their limits are documented in [the checks README](client/android-xr/checks/README.md). Hardware quick-pinch reliability is explicitly not established by the automated checks. Local troubleshooting captures/build backups remain ignored; this checkpoint contains no raw personal desktop images or logs.
+
+Checkpoint validation on 10 November 2026: Android debug build and lint; all ten JVM checks; Rust workspace tests/release build/format check; private-Xvfb XTest checks; read-only live capture/reconnection and passive uinput classification; and offscreen headset EGL/MediaCodec pause/resume checks passed. The Android unit-test task has no test sources. Clippy completes with existing warnings in unchanged code; it is not a warning-free result. Gesture reliability remains deferred despite these checks.

@@ -19,9 +19,9 @@ internal class MonitorMesh(
     val rows: Int = 40,
 ) {
     val radius = sqrt(eye.sumOf { (it * it).toDouble() }).toFloat()
-    private val normal = FloatArray(3) { eye[it] / radius }
-    private val tangentX = floatArrayOf(1f-normal[0]*normal[0]/(1f+normal[2]), -normal[0]*normal[1]/(1f+normal[2]), -normal[0])
-    private val tangentY = floatArrayOf(-normal[0]*normal[1]/(1f+normal[2]), 1f-normal[1]*normal[1]/(1f+normal[2]), -normal[1])
+    val normal = FloatArray(3) { eye[it] / radius }
+    val tangentX = floatArrayOf(1f-normal[0]*normal[0]/(1f+normal[2]), -normal[0]*normal[1]/(1f+normal[2]), -normal[0])
+    val tangentY = floatArrayOf(-normal[0]*normal[1]/(1f+normal[2]), 1f-normal[1]*normal[1]/(1f+normal[2]), -normal[1])
     // Keep one angular pixel scale in both axes; limit extreme fields uniformly to avoid folds.
     val radiansPerMeter = minOf(1f/radius, 2.2f/sqrt(width*width+height*height))
     val positions = FloatArray((columns + 1) * (rows + 1) * 3)

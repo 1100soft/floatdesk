@@ -554,8 +554,15 @@ fn handle_datagram(
                 norm_y,
                 sequence,
             ) {
+                let started = Instant::now();
                 if let Err(error) = pointer.click(x, y, button) {
                     tracing::warn!(%error,"mouse click failed");
+                } else if button == 3 {
+                    tracing::info!(
+                        sequence,
+                        elapsed_us = started.elapsed().as_micros(),
+                        "right click processed"
+                    );
                 }
             }
         }

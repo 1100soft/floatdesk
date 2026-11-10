@@ -653,6 +653,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 }
                 mouse.target?.let { connection.movePointer(it.monitor,it.u,it.v,mouse.dragging) }
                 mouse.click?.let {
+                    if(it.button==3) clickView.playSoundEffect(android.view.SoundEffectConstants.CLICK)
                     Log.i("Floatdesk","mouse click button=${it.button}")
                     connection.clickPointer(it.target.monitor,it.target.u,it.target.v,it.button)
                 }

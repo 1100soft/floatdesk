@@ -260,10 +260,15 @@ internal class DeskConnection(
 
     fun clickPointer(monitor: Int,x: Float,y: Float,button: Int) {
         if (monitors.value.none { it.index == monitor }) return
-        val packet=Protocol.pointerClick(monitor,x,y,button,clickSeq.incrementAndGet())
+        val sequence=clickSeq.incrementAndGet()
+        val requestedAt=System.nanoTime()/1_000_000
+        val packet=Protocol.pointerClick(monitor,x,y,button,sequence)
         val handler=outgoing ?: return
         // Atomic click commands are deduplicated by the host. Retries cannot become extra clicks.
-        handler.post { send(packet) }
+        handler.post {
+            if(button==3) Log.i("Floatdesk","right click sent sequence=$sequence queueMs=${System.nanoTime()/1_000_000-requestedAt}")
+            send(packet)
+        }
         handler.postDelayed({ send(packet) },20)
         handler.postDelayed({ send(packet) },60)
     }

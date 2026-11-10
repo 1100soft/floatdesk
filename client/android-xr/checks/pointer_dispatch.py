@@ -16,7 +16,7 @@ private object Looper {
     fun getMainLooper() = main
     fun myLooper(): Any? = if(Thread.currentThread() === uiThread) main else null
 }
-private object Log { fun w(tag: String,message: String,error: Throwable) { throw error } }
+private object Log { fun w(tag: String,message: String,error: Throwable) { throw error }; fun i(tag: String,message: String) = 0 }
 private class Handler {
     val gate = java.util.concurrent.CountDownLatch(1)
     val pool = java.util.concurrent.ThreadPoolExecutor(1,1,0,java.util.concurrent.TimeUnit.SECONDS,

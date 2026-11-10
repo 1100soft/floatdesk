@@ -167,6 +167,7 @@ impl X11Mouse {
     }
     pub fn click(&mut self, x: i32, y: i32, button: u8) -> Result<()> {
         if self.left_down {
+            tracing::warn!(button, "atomic click ignored while left drag held");
             return Ok(());
         }
         self.link.move_pointer(x, y)?;

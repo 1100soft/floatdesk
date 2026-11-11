@@ -90,8 +90,21 @@ internal object Protocol {
             KIND_CURSOR -> decodeCursor(payload)
             KIND_BEACON -> decodeBeacon(payload)
             KIND_MONITOR_STATUS -> {
-                if(payload.size<8 || payload[4].toInt() !in 0..1 || payload.size!=8+(payload[7].toInt() and 255)) null else
-                    Packet.MonitorStatus(ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN).int,payload[4].toInt()!=0,payload[5].toInt() and 255,payload[6].toInt() and 255,String(payload,8,payload.size-8,Charsets.UTF_8))
+                if(payload.size<8 || payload[4].toInt() !in 0..1) return null
+                val end=8+(payload[7].toInt() and 255)
+                if(payload.size<end) return null
+                val screens=mutableListOf<Pair<Int,Int>>()
+                if(payload.size>end) {
+                    val count=payload[end].toInt() and 255
+                    if(count>6 || payload.size!=end+1+count*4) return null
+                    val sizes=ByteBuffer.wrap(payload,end+1,count*4).order(ByteOrder.LITTLE_ENDIAN)
+                    repeat(count) {
+                        val w=sizes.short.toInt() and 65535;val h=sizes.short.toInt() and 65535
+                        if(w<160 || h<160) return null
+                        screens.add(w to h)
+                    }
+                }
+                Packet.MonitorStatus(ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN).int,payload[4].toInt()!=0,payload[5].toInt() and 255,payload[6].toInt() and 255,String(payload,8,end-8,Charsets.UTF_8),screens)
             }
             else -> Packet.Ignored(kind)
         }
@@ -199,7 +212,7 @@ internal data class CursorFragment(
 )
 
 internal sealed interface Packet {
-    data class MonitorStatus(val requestId:Int,val ok:Boolean,val available:Int,val owned:Int,val message:String):Packet
+    data class MonitorStatus(val requestId:Int,val ok:Boolean,val available:Int,val owned:Int,val message:String,val screens:List<Pair<Int,Int>> = emptyList()):Packet
     data class HostHello(val sessionId: Long, val monitors: List<MonitorHello>) : Packet
     data class Cursor(val fragment: CursorFragment) : Packet
     data class Beacon(val listenPort: Int, val name: String) : Packet

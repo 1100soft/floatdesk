@@ -8,7 +8,7 @@ use crate::core::{
 };
 use crate::error::{Error, Result};
 use crate::media::GstEncoder;
-use crate::platform::x11::monitor_pool::MonitorPool;
+use crate::platform::x11::monitor_pool::{desktop_rect, stream_size, MonitorPool};
 use crate::platform::x11::{X11Capture, X11Cursor, X11Display};
 use floatdesk_protocol::{
     allocate_bitrate, rtp_timestamp, ControlPacket, LayoutEntry, MonitorHello, MonitorLoad,
@@ -126,7 +126,7 @@ pub fn serve(opts: ServeOpts) -> Result<()> {
         Vec::new()
     };
     let monitors = if opts.existing {
-        sources.iter().map(|(_, r)| *r).collect()
+        vec![desktop_rect(&sources)?]
     } else {
         display.create_virtual(opts.monitors, opts.width, opts.height)?
     };
@@ -255,8 +255,8 @@ fn run(
         .iter()
         .map(|monitor| MonitorHello {
             index: monitor.index,
-            width: monitor.width as u16,
-            height: monitor.height as u16,
+            width: stream_size(*monitor).0,
+            height: stream_size(*monitor).1,
             port: 0,
             ssrc: ssrc_for(monitor.index),
             name: if opts.existing {
@@ -377,7 +377,7 @@ fn run(
                                 match p.sources() {
                                     Ok(next) => {
                                         sources = next;
-                                        monitors = sources.iter().map(|(_, r)| *r).collect();
+                                        monitors = vec![desktop_rect(&sources)?];
                                     }
                                     Err(error) => {
                                         ok = false;
@@ -389,8 +389,8 @@ fn run(
                                 .iter()
                                 .map(|r| MonitorHello {
                                     index: r.index,
-                                    width: r.width as u16,
-                                    height: r.height as u16,
+                                    width: stream_size(*r).0,
+                                    height: stream_size(*r).1,
                                     port: 0,
                                     ssrc: ssrc_for(r.index),
                                     name: sources
@@ -414,6 +414,10 @@ fn run(
                             ok,
                             available,
                             owned,
+                            screens: sources
+                                .iter()
+                                .map(|(_, r)| (r.width as u16, r.height as u16))
+                                .collect(),
                             message,
                         }
                         .encode();
@@ -535,14 +539,16 @@ fn monitor_thread(
     let mut capture = X11Capture::open(rect)?;
     shared.capture_fd[rect.index as usize].store(capture.connection_fd(), Ordering::Relaxed);
     let _clear_fd = ClearCaptureFd(&shared.capture_fd[rect.index as usize]);
-    let mut encoder = GstEncoder::open(
+    let (width, height) = stream_size(rect);
+    let mut encoder = GstEncoder::open_scaled(
         &encoder_name,
         crate::core::EncoderConfig {
-            width: rect.width,
-            height: rect.height,
+            width: u32::from(width),
+            height: u32::from(height),
             fps,
             bitrate_bps: bitrate.max(400_000),
         },
+        (rect.width, rect.height),
     )?;
     let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))?;
     encoder.set_bitrate(bitrate.max(400_000))?;

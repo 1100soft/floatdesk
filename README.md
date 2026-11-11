@@ -1,6 +1,6 @@
 # Floatdesk
 
-An X11-first host that places logical monitors in an Android XR workspace. Each monitor is its own H.264 stream. The host composites the cursor into the video and schedules frames when the pointer moves, even on an otherwise static desktop. All monitors share one workspace coordinate space.
+An X11-first host that places logical monitors in an Android XR workspace. In existing-desktop mode, active outputs form one H.264 stream and one XR screen, following the X11 arrangement. The host composites the cursor into the video and schedules frames when the pointer moves, even on an otherwise static desktop. All monitors share one workspace coordinate space.
 
 This tree is the LAN proof of concept: RandR 1.5 regions, MIT-SHM capture, XDamage, XFixes, GStreamer H.264, and RTP/UDP. It is not encrypted. Keep it on a trusted network. The session boundary (`DisplayBackend`, `CaptureBackend`, `CursorBackend`, `EncodeBackend`) is where Wayland, Windows, macOS, and a WebRTC transport plug in later.
 
@@ -19,7 +19,7 @@ cargo build --release
 
 `doctor` only reads the server. `trial` creates one 1280×720 logical monitor named `Floatdesk-1`, checks that RandR lists it, and restores the framebuffer. `serve` enlarges the X screen, adds `Floatdesk-N` monitors with no physical output, and waits for a client hello on UDP `47000`.
 
-`--existing` streams active XRandR outputs (up to six), with the primary display first. It leaves their modes unchanged until you explicitly add or resize a Floatdesk-managed screen. It also works for a loopback test:
+`--existing` captures the bounding rectangle of active XRandR outputs (up to six), preserving their relative placement in one XR screen. It leaves their modes unchanged until you explicitly add or resize a Floatdesk-managed screen. It also works for a loopback test:
 
 ```bash
 ./target/release/floatdesk recv --host 127.0.0.1:47000 --output /tmp/floatdesk.h264 --seconds 5 &
@@ -46,7 +46,7 @@ floatdesk restore
 
 ## Android XR client
 
-`client/android-xr` is a Jetpack XR app. It decodes each RTP stream with `MediaCodec` straight into a `SpatialExternalSurface`, receives the cursor within the video, and stores monitor poses in the workspace. Room anchoring is available when supported by the headset.
+`client/android-xr` is a Jetpack XR app. It decodes RTP video with `MediaCodec` into a `SpatialExternalSurface`, receives the cursor within the video, and stores screen poses in the workspace. Room anchoring is available when supported by the headset.
 
 The headset finds the computer on the LAN by itself. `floatdesk serve` announces itself once a second. Open the app and wait until the status says it found the machine. There is no address to type.
 

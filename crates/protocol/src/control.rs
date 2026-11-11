@@ -133,6 +133,7 @@ pub enum ControlPacket {
         ok: bool,
         available: u8,
         owned: u8,
+        screens: Vec<(u16, u16)>,
         message: String,
     },
     KeyframeRequest {
@@ -271,6 +272,7 @@ impl ControlPacket {
                 ok,
                 available,
                 owned,
+                screens,
                 message,
             } => {
                 let bytes = message.as_bytes();
@@ -278,6 +280,11 @@ impl ControlPacket {
                 w.extend_from_slice(&request_id.to_le_bytes());
                 w.extend_from_slice(&[u8::from(*ok), *available, *owned, count as u8]);
                 w.extend_from_slice(&bytes[..count]);
+                w.push(screens.len().min(6) as u8);
+                for (width, height) in screens.iter().take(6) {
+                    w.extend_from_slice(&width.to_le_bytes());
+                    w.extend_from_slice(&height.to_le_bytes());
+                }
             }
             Self::KeyframeRequest { monitor_index } => w.push(*monitor_index),
             Self::Layout { monitors } => {
@@ -494,15 +501,32 @@ pub fn decode_packet(bytes: &[u8]) -> Result<ControlPacket, ProtocolError> {
             })
         }
         KIND_MONITOR_STATUS => {
-            if p.len() < 8 || p[4] > 1 || p.len() != 8 + p[7] as usize {
+            if p.len() < 8 || p[4] > 1 || p.len() < 8 + p[7] as usize {
                 return Err(ProtocolError::Payload(kind));
+            }
+            let end = 8 + p[7] as usize;
+            let mut screens = Vec::new();
+            if p.len() > end {
+                let count = usize::from(p[end]);
+                if count > 6 || p.len() != end + 1 + count * 4 {
+                    return Err(ProtocolError::Payload(kind));
+                }
+                for v in p[end + 1..].chunks_exact(4) {
+                    let width = u16::from_le_bytes(v[..2].try_into().unwrap());
+                    let height = u16::from_le_bytes(v[2..].try_into().unwrap());
+                    if width < 160 || height < 160 {
+                        return Err(ProtocolError::Payload(kind));
+                    }
+                    screens.push((width, height));
+                }
             }
             Ok(ControlPacket::MonitorStatus {
                 request_id: u32::from_le_bytes(p[..4].try_into().unwrap()),
                 ok: p[4] != 0,
                 available: p[5],
                 owned: p[6],
-                message: String::from_utf8_lossy(&p[8..]).into_owned(),
+                screens,
+                message: String::from_utf8_lossy(&p[8..end]).into_owned(),
             })
         }
         KIND_KEYFRAME_REQUEST => {
@@ -844,6 +868,7 @@ mod pointer_tests {
             ok: false,
             available: 4,
             owned: 6,
+            screens: vec![(1920, 1080), (2560, 1600)],
             message: "Mode unavailable".into(),
         };
         assert_eq!(decode_packet(&packet.encode()), Ok(packet));

@@ -74,6 +74,46 @@ fn virtual_name(name: &str) -> bool {
                 .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
     })
 }
+/// One capture rectangle preserves X11's arrangement, including gaps and overlaps.
+pub fn desktop_rect(sources: &[(String, MonitorRect)]) -> Result<MonitorRect> {
+    let x = sources
+        .iter()
+        .map(|(_, r)| r.x)
+        .min()
+        .ok_or_else(|| Error::Msg("No desktop outputs".into()))?;
+    let y = sources.iter().map(|(_, r)| r.y).min().unwrap();
+    let right = sources
+        .iter()
+        .map(|(_, r)| i64::from(r.x) + i64::from(r.width))
+        .max()
+        .unwrap();
+    let bottom = sources
+        .iter()
+        .map(|(_, r)| i64::from(r.y) + i64::from(r.height))
+        .max()
+        .unwrap();
+    let width = u32::try_from(right - i64::from(x))
+        .map_err(|_| Error::Msg("Desktop width overflow".into()))?;
+    let height = u32::try_from(bottom - i64::from(y))
+        .map_err(|_| Error::Msg("Desktop height overflow".into()))?;
+    Ok(MonitorRect {
+        index: 0,
+        x,
+        y,
+        width,
+        height,
+    })
+}
+/// Fit a combined desktop within a practical single H.264 decoder envelope.
+pub fn stream_size(rect: MonitorRect) -> (u16, u16) {
+    let scale = (4096.0 / f64::from(rect.width))
+        .min(2160.0 / f64::from(rect.height))
+        .min(1.0);
+    (
+        ((f64::from(rect.width) * scale).floor() as u16 / 2 * 2).max(2),
+        ((f64::from(rect.height) * scale).floor() as u16 / 2 * 2).max(2),
+    )
+}
 pub struct MonitorPool {
     owned: BTreeSet<String>,
 }
@@ -272,6 +312,38 @@ impl Drop for MonitorPool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn combines_arrangement_and_bounds_stream_size() {
+        let rect = |index, x, y, width, height| MonitorRect {
+            index,
+            x,
+            y,
+            width,
+            height,
+        };
+        let side = vec![
+            ("a".into(), rect(0, 0, 0, 1920, 1080)),
+            ("b".into(), rect(1, 1920, 0, 1920, 1080)),
+        ];
+        assert_eq!(desktop_rect(&side).unwrap(), rect(0, 0, 0, 3840, 1080));
+        assert_eq!(stream_size(desktop_rect(&side).unwrap()), (3840, 1080));
+        let offset = vec![
+            ("a".into(), rect(0, -1920, -1080, 1920, 1080)),
+            ("b".into(), rect(1, 0, 0, 2560, 1600)),
+        ];
+        assert_eq!(
+            desktop_rect(&offset).unwrap(),
+            rect(0, -1920, -1080, 4480, 2680)
+        );
+        let (w, h) = stream_size(desktop_rect(&offset).unwrap());
+        assert!(w <= 4096 && h <= 2160 && w % 2 == 0 && h % 2 == 0);
+        assert!((f64::from(w) / f64::from(h) - 4480.0 / 2680.0).abs() < 0.003);
+        let stacked = vec![
+            ("a".into(), rect(0, 0, 0, 1920, 1080)),
+            ("b".into(), rect(1, 0, 1080, 1920, 1080)),
+        ];
+        assert_eq!(desktop_rect(&stacked).unwrap(), rect(0, 0, 0, 1920, 2160));
+    }
     #[test]
     fn parses_signed_geometry() {
         assert_eq!(geometry("1920x1080-1920+40"), Some((-1920, 40, 1920, 1080)));

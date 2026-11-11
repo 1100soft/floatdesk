@@ -113,11 +113,19 @@ pub struct GstEncoder {
     pipeline: Pipeline,
     profile: Profile,
     config: EncoderConfig,
+    input_size: (u32, u32),
     keyframe_pending: bool,
 }
 
 impl GstEncoder {
     pub fn open(preference: &str, config: EncoderConfig) -> Result<Self> {
+        Self::open_scaled(preference, config, (config.width, config.height))
+    }
+    pub fn open_scaled(
+        preference: &str,
+        config: EncoderConfig,
+        input_size: (u32, u32),
+    ) -> Result<Self> {
         if config.width % 2 != 0 || config.height % 2 != 0 {
             return Err(Error::Encoder(
                 "encoder width and height must be even".into(),
@@ -143,7 +151,7 @@ impl GstEncoder {
         }
         let mut errors = Vec::new();
         for profile in chosen {
-            match Self::start(profile, config) {
+            match Self::start(profile, config, input_size) {
                 Ok(encoder) => {
                     tracing::info!(encoder = profile.element, "using H.264 encoder");
                     return Ok(encoder);
@@ -157,22 +165,22 @@ impl GstEncoder {
         Err(Error::Encoder(errors.join("; ")))
     }
 
-    fn start(profile: Profile, config: EncoderConfig) -> Result<Self> {
-        let max_bytes = (config.width as u64 * config.height as u64 * 4).saturating_mul(2);
+    fn start(profile: Profile, config: EncoderConfig, input_size: (u32, u32)) -> Result<Self> {
+        let max_bytes = (input_size.0 as u64 * input_size.1 as u64 * 4).saturating_mul(2);
         let description = format!(
             "{LIVE_SOURCE} max-bytes={max_bytes} \
-             ! videoconvert ! video/x-raw,format={} \
+             ! videoconvert ! videoscale ! video/x-raw,format={},width={},height={} \
              ! {} name=enc \
              ! h264parse config-interval=-1 \
              ! video/x-h264,stream-format=byte-stream,alignment=au \
              ! appsink name=sink emit-signals=false sync=false max-buffers=2 leaky-type=upstream",
-            profile.format, profile.element
+            profile.format, config.width, config.height, profile.element
         );
         let pipeline = Pipeline::launch(&description)?;
         let caps = format!(
             "video/x-raw,format=BGRx,width={},height={},framerate={}/1",
-            config.width,
-            config.height,
+            input_size.0,
+            input_size.1,
             config.fps.max(1)
         );
         pipeline.set_arg(Element::Source, "caps", &caps)?;
@@ -189,6 +197,7 @@ impl GstEncoder {
             pipeline,
             profile,
             config,
+            input_size,
             keyframe_pending: true,
         })
     }
@@ -196,10 +205,10 @@ impl GstEncoder {
 
 impl EncodeBackend for GstEncoder {
     fn submit(&mut self, frame: &CapturedFrame) -> Result<()> {
-        if frame.width != self.config.width || frame.height != self.config.height {
+        if (frame.width, frame.height) != self.input_size {
             return Err(Error::Encoder(format!(
                 "frame {}x{} does not match encoder {}x{}",
-                frame.width, frame.height, self.config.width, self.config.height
+                frame.width, frame.height, self.input_size.0, self.input_size.1
             )));
         }
         if self.keyframe_pending {
@@ -300,6 +309,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn scaled_input_emits_an_access_unit() {
+        if !inspect("x264enc") {
+            return;
+        }
+        let config = EncoderConfig {
+            width: 320,
+            height: 180,
+            fps: 30,
+            bitrate_bps: 2_000_000,
+        };
+        let mut encoder = GstEncoder::open_scaled("x264enc", config, (640, 360)).unwrap();
+        encoder.submit(&synthetic(640, 360)).unwrap();
+        assert!(encoder.pull_wait(2_000_000_000).unwrap().is_some());
+        assert!(encoder.submit(&synthetic(320, 180)).is_err());
+    }
     #[test]
     fn raw_input_keeps_latest_frame_when_downstream_is_slow() {
         let pipeline = Pipeline::launch(&format!(

@@ -17,7 +17,7 @@ fun main(args:Array<String>) {
     java.io.File(args[0]).writeBytes(Protocol.monitorCommand(-1,1,0,1920,1080))
     val status=java.io.File(args[1]).readBytes()
     val decoded=Protocol.decode(status) as Packet.MonitorStatus
-    check(decoded.requestId==7 && decoded.available==3 && decoded.owned==2 && decoded.ok)
+    check(decoded.requestId==7 && decoded.available==3 && decoded.owned==2 && decoded.ok && decoded.screens==listOf(1920 to 1080,1920 to 1080))
     check(Protocol.decode(status.copyOf(status.size-1))==null)
     val first=WorkspaceFile().reconcileMonitors(listOf(Triple("existing-0",2560,1600)))
     val original=first.layouts["Desk"]!!.single().copy(pose=Pose(floatArrayOf(.2f,.3f,-2f)),physicalWidthM=1.1f)
@@ -37,7 +37,7 @@ stdlib = next(lib.glob('kotlin-stdlib-*.jar'))
 with tempfile.TemporaryDirectory(prefix='floatdesk-monitors-') as temp:
     path = Path(temp)
     (path/'MonitorManagement.kt').write_text(code)
-    payload = struct.pack('<IBBBB',7,1,3,2,5)+b'Ready'
+    payload = struct.pack('<IBBBB',7,1,3,2,5)+b'Ready'+struct.pack('<BHHHH',2,1920,1080,1920,1080)
     (path/'status.bin').write_bytes(b'FDC1'+struct.pack('<BBHII',1,12,0,len(payload),0)+payload)
     subprocess.run(['java','-cp',str(lib/'*'),'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler','-no-stdlib','-no-reflect','-classpath',str(stdlib),'-d',temp,str(path/'MonitorManagement.kt')],check=True)
     subprocess.run(['java','-cp',temp+':'+str(stdlib),'MonitorManagementKt',str(path/'command.bin'),str(path/'status.bin')],check=True)

@@ -24,18 +24,19 @@ internal fun MonitorManagerPanel(connection: DeskConnection,onClose:()->Unit) {
             Text("Screens",color=Color.White,fontSize=22.sp)
             Button(onClick=onClose) {Text("Close")}
         }
-        Text(if(busy) "Updating screens…" else "${monitors.size} active · ${state.available} available",color=Color.White)
+        Text(if(busy) "Updating screens…" else "${state.screens.size} desktop screens · ${state.available} available",color=Color.White)
         Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-            Button(enabled=!busy && state.available>0 && monitors.size<6,onClick={connection.requestDisplays(1)}) {Text("Add screen")}
+            Button(enabled=!busy && state.available>0 && state.screens.size<6,onClick={connection.requestDisplays(1)}) {Text("Add screen")}
             Button(enabled=!busy,onClick={connection.requestDisplays()}) {Text("Refresh")}
         }
-        for(monitor in monitors) {
-            val managed=(state.owned and (1 shl monitor.index))!=0
-            Text("${if(monitor.index==0) "Computer screen" else "Screen ${monitor.index+1}"} — ${monitor.width} × ${monitor.height}",color=Color.White,fontSize=16.sp)
+        monitors.firstOrNull()?.let { Text("Combined desktop — ${it.width} × ${it.height} streamed pixels",color=Color.White) }
+        state.screens.forEachIndexed { index,(width,height) ->
+            val managed=(state.owned and (1 shl index))!=0
+            Text("${if(index==0) "Computer screen" else "Screen ${index+1}"} — $width × $height",color=Color.White,fontSize=16.sp)
             if(managed) Row(horizontalArrangement=Arrangement.spacedBy(6.dp)) {
                 for((w,h) in listOf(1280 to 720,1920 to 1080,2560 to 1600))
-                    Button(enabled=!busy && (w!=monitor.width || h!=monitor.height),onClick={connection.requestDisplays(3,monitor.index,w,h)}) {Text("$w × $h",fontSize=12.sp)}
-                Button(enabled=!busy,onClick={connection.requestDisplays(2,monitor.index)}) {Text("Remove")}
+                    Button(enabled=!busy && (w!=width || h!=height),onClick={connection.requestDisplays(3,index,w,h)}) {Text("$w × $h",fontSize=12.sp)}
+                Button(enabled=!busy,onClick={connection.requestDisplays(2,index)}) {Text("Remove")}
             }
         }
         Text(state.message,color=if(state.ok) Color(0xFFB8D9EA) else Color(0xFFFFB4AB),fontSize=13.sp)

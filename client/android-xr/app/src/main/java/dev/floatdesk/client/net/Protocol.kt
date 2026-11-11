@@ -65,7 +65,7 @@ internal object Protocol {
     }
 
     fun monitorCommand(id: Int,action: Int,index: Int,width: Int,height: Int): ByteArray {
-        require(action in 0..3 && index in 0..5)
+        require(action in 0..4 && index in 0..5)
         val p=ByteBuffer.allocate(10).order(ByteOrder.LITTLE_ENDIAN)
         p.putInt(id).put(action.toByte()).put(index.toByte()).putShort(width.toShort()).putShort(height.toShort())
         return frame(KIND_MONITOR_COMMAND,p.array())
@@ -96,7 +96,7 @@ internal object Protocol {
                 val screens=mutableListOf<Pair<Int,Int>>()
                 if(payload.size>end) {
                     val count=payload[end].toInt() and 255
-                    if(count>6 || payload.size!=end+1+count*4) return null
+                    if(count>6 || (payload.size!=end+1+count*4 && payload.size!=end+1+count*8)) return null
                     val sizes=ByteBuffer.wrap(payload,end+1,count*4).order(ByteOrder.LITTLE_ENDIAN)
                     repeat(count) {
                         val w=sizes.short.toInt() and 65535;val h=sizes.short.toInt() and 65535
@@ -104,7 +104,12 @@ internal object Protocol {
                         screens.add(w to h)
                     }
                 }
-                Packet.MonitorStatus(ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN).int,payload[4].toInt()!=0,payload[5].toInt() and 255,payload[6].toInt() and 255,String(payload,8,end-8,Charsets.UTF_8),screens)
+                val positions=mutableListOf<Pair<Int,Int>>()
+                if(screens.isNotEmpty() && payload.size==end+1+screens.size*8) {
+                    val points=ByteBuffer.wrap(payload,end+1+screens.size*4,screens.size*4).order(ByteOrder.LITTLE_ENDIAN)
+                    repeat(screens.size) {positions.add(points.short.toInt() to points.short.toInt())}
+                }
+                Packet.MonitorStatus(ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN).int,payload[4].toInt()!=0,payload[5].toInt() and 255,payload[6].toInt() and 255,String(payload,8,end-8,Charsets.UTF_8),screens,positions)
             }
             else -> Packet.Ignored(kind)
         }
@@ -212,7 +217,7 @@ internal data class CursorFragment(
 )
 
 internal sealed interface Packet {
-    data class MonitorStatus(val requestId:Int,val ok:Boolean,val available:Int,val owned:Int,val message:String,val screens:List<Pair<Int,Int>> = emptyList()):Packet
+    data class MonitorStatus(val requestId:Int,val ok:Boolean,val available:Int,val owned:Int,val message:String,val screens:List<Pair<Int,Int>> = emptyList(),val positions:List<Pair<Int,Int>> = emptyList()):Packet
     data class HostHello(val sessionId: Long, val monitors: List<MonitorHello>) : Packet
     data class Cursor(val fragment: CursorFragment) : Packet
     data class Beacon(val listenPort: Int, val name: String) : Packet

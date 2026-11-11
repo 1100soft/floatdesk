@@ -134,6 +134,7 @@ pub enum ControlPacket {
         available: u8,
         owned: u8,
         screens: Vec<(u16, u16)>,
+        positions: Vec<(i16, i16)>,
         message: String,
     },
     KeyframeRequest {
@@ -273,6 +274,7 @@ impl ControlPacket {
                 available,
                 owned,
                 screens,
+                positions,
                 message,
             } => {
                 let bytes = message.as_bytes();
@@ -284,6 +286,11 @@ impl ControlPacket {
                 for (width, height) in screens.iter().take(6) {
                     w.extend_from_slice(&width.to_le_bytes());
                     w.extend_from_slice(&height.to_le_bytes());
+                }
+                for i in 0..screens.len().min(6) {
+                    let (x, y) = positions.get(i).copied().unwrap_or((0, 0));
+                    w.extend_from_slice(&x.to_le_bytes());
+                    w.extend_from_slice(&y.to_le_bytes());
                 }
             }
             Self::KeyframeRequest { monitor_index } => w.push(*monitor_index),
@@ -477,7 +484,7 @@ pub fn decode_packet(bytes: &[u8]) -> Result<ControlPacket, ProtocolError> {
             })
         }
         KIND_MONITOR_COMMAND => {
-            if p.len() != 10 || p[4] > 3 || (p[4] != 1 && p[5] >= 6) {
+            if p.len() != 10 || p[4] > 4 || (p[4] != 1 && p[5] >= 6) {
                 return Err(ProtocolError::Payload(kind));
             }
             let width = u16::from_le_bytes(p[6..8].try_into().unwrap());
@@ -506,18 +513,27 @@ pub fn decode_packet(bytes: &[u8]) -> Result<ControlPacket, ProtocolError> {
             }
             let end = 8 + p[7] as usize;
             let mut screens = Vec::new();
+            let mut positions = Vec::new();
             if p.len() > end {
                 let count = usize::from(p[end]);
-                if count > 6 || p.len() != end + 1 + count * 4 {
+                if count > 6 || (p.len() != end + 1 + count * 4 && p.len() != end + 1 + count * 8) {
                     return Err(ProtocolError::Payload(kind));
                 }
-                for v in p[end + 1..].chunks_exact(4) {
+                for v in p[end + 1..end + 1 + count * 4].chunks_exact(4) {
                     let width = u16::from_le_bytes(v[..2].try_into().unwrap());
                     let height = u16::from_le_bytes(v[2..].try_into().unwrap());
                     if width < 160 || height < 160 {
                         return Err(ProtocolError::Payload(kind));
                     }
                     screens.push((width, height));
+                }
+                if p.len() == end + 1 + count * 8 {
+                    for v in p[end + 1 + count * 4..].chunks_exact(4) {
+                        positions.push((
+                            i16::from_le_bytes(v[..2].try_into().unwrap()),
+                            i16::from_le_bytes(v[2..].try_into().unwrap()),
+                        ));
+                    }
                 }
             }
             Ok(ControlPacket::MonitorStatus {
@@ -526,6 +542,7 @@ pub fn decode_packet(bytes: &[u8]) -> Result<ControlPacket, ProtocolError> {
                 available: p[5],
                 owned: p[6],
                 screens,
+                positions,
                 message: String::from_utf8_lossy(&p[8..end]).into_owned(),
             })
         }
@@ -848,7 +865,7 @@ mod pointer_tests {
             assert_eq!(decode_packet(&packet.encode()), Ok(packet));
         }
         for (action, index, width, height) in [
-            (4, 0, 1920, 1080),
+            (5, 0, 1920, 1080),
             (3, 6, 1920, 1080),
             (1, 0, 319, 1080),
             (3, 0, 1921, 1080),
@@ -869,6 +886,7 @@ mod pointer_tests {
             available: 4,
             owned: 6,
             screens: vec![(1920, 1080), (2560, 1600)],
+            positions: vec![(0, 0), (1920, 0)],
             message: "Mode unavailable".into(),
         };
         assert_eq!(decode_packet(&packet.encode()), Ok(packet));

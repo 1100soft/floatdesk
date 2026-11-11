@@ -190,7 +190,7 @@ internal class DeskConnection(
                     }
                     is Packet.MonitorStatus -> {
                         if(incoming.address==pendingRemote?.address && incoming.port==pendingRemote?.port) main.post {
-                            if(monitorPending.compareAndSet(decoded.requestId,0)) {displayBusy.value=false;displayState.value=decoded}
+                            if((decoded.requestId==0 && monitorPending.get()==0) || (decoded.requestId!=0 && monitorPending.compareAndSet(decoded.requestId,0))) {displayBusy.value=false;displayState.value=decoded}
                         }
                     }
                     is Packet.Cursor -> onCursor(decoded.fragment)

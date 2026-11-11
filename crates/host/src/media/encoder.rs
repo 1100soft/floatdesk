@@ -7,6 +7,7 @@ use crate::core::{CapturedFrame, EncodeBackend, EncodedAccessUnit, EncoderConfig
 use crate::error::{Error, Result};
 use std::borrow::Cow;
 use std::process::Command;
+use std::sync::Arc;
 
 #[derive(Clone, Copy)]
 struct Profile {
@@ -109,8 +110,22 @@ fn inspect(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+pub struct EncodedOutput {
+    pipeline: Arc<Pipeline>,
+}
+impl EncodedOutput {
+    pub fn pull(&mut self) -> Result<Option<EncodedAccessUnit>> {
+        self.pull_wait(0)
+    }
+    pub fn pull_wait(&mut self, timeout: u64) -> Result<Option<EncodedAccessUnit>> {
+        Ok(self
+            .pipeline
+            .pull(timeout)?
+            .map(|bytes| EncodedAccessUnit { bytes }))
+    }
+}
 pub struct GstEncoder {
-    pipeline: Pipeline,
+    pipeline: Arc<Pipeline>,
     profile: Profile,
     config: EncoderConfig,
     input_size: (u32, u32),
@@ -118,6 +133,11 @@ pub struct GstEncoder {
 }
 
 impl GstEncoder {
+    pub fn output(&self) -> EncodedOutput {
+        EncodedOutput {
+            pipeline: Arc::clone(&self.pipeline),
+        }
+    }
     pub fn open(preference: &str, config: EncoderConfig) -> Result<Self> {
         Self::open_scaled(preference, config, (config.width, config.height))
     }
@@ -186,7 +206,7 @@ impl GstEncoder {
              ! {} name=enc \
              ! h264parse config-interval=-1 \
              ! video/x-h264,stream-format=byte-stream,alignment=au \
-             ! appsink name=sink emit-signals=false sync=false max-buffers=2 leaky-type=upstream",
+             ! appsink name=sink emit-signals=false sync=false max-buffers=2 leaky-type=none",
             profile.element
         );
         let pipeline = Pipeline::launch(&description)?;
@@ -207,7 +227,7 @@ impl GstEncoder {
         apply_bitrate(&pipeline, profile, config.bitrate_bps)?;
         pipeline.play()?;
         Ok(Self {
-            pipeline,
+            pipeline: Arc::new(pipeline),
             profile,
             config,
             input_size,
@@ -239,13 +259,6 @@ impl EncodeBackend for GstEncoder {
     fn set_bitrate(&mut self, bps: u32) -> Result<()> {
         self.config.bitrate_bps = bps;
         apply_bitrate(&self.pipeline, self.profile, bps)
-    }
-
-    fn pull(&mut self) -> Result<Option<EncodedAccessUnit>> {
-        Ok(self
-            .pipeline
-            .pull(0)?
-            .map(|bytes| EncodedAccessUnit { bytes }))
     }
 }
 
@@ -337,6 +350,30 @@ mod tests {
         encoder.submit(&synthetic(640, 360)).unwrap();
         assert!(encoder.pull_wait(2_000_000_000).unwrap().is_some());
         assert!(encoder.submit(&synthetic(320, 180)).is_err());
+    }
+    #[test]
+    fn split_output_keeps_pipeline_alive_after_producer_drops() {
+        if !inspect("x264enc") {
+            return;
+        }
+        let mut encoder = GstEncoder::open(
+            "x264enc",
+            EncoderConfig {
+                width: 320,
+                height: 180,
+                fps: 30,
+                bitrate_bps: 1_000_000,
+            },
+        )
+        .unwrap();
+        let mut output = encoder.output();
+        encoder.submit(&synthetic(320, 180)).unwrap();
+        drop(encoder);
+        let unit = output
+            .pull_wait(2_000_000_000)
+            .unwrap()
+            .expect("separate sender retained pipeline");
+        assert!(unit.bytes.windows(4).any(|v| v == [0, 0, 0, 1]));
     }
     #[test]
     fn raw_input_keeps_latest_frame_when_downstream_is_slow() {

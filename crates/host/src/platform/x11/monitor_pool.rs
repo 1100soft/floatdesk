@@ -60,6 +60,13 @@ pub fn parse_outputs(text: &str) -> Vec<Output> {
     }
     outputs
 }
+fn lowest_mode(output: &Output, width: u16, height: u16) -> Option<&(String, u16, u16, f32)> {
+    output
+        .modes
+        .iter()
+        .filter(|(_, w, h, hz)| *w == width && *h == height && hz.is_finite() && *hz > 0.0)
+        .min_by(|a, b| a.3.total_cmp(&b.3))
+}
 fn query() -> Result<Vec<Output>> {
     let out = Command::new("xrandr").arg("--query").output()?;
     if !out.status.success() {
@@ -177,6 +184,49 @@ impl MonitorPool {
             }
         })
     }
+    /// Arrangement editing changes position only, including explicitly dragged physical screens.
+    fn move_output(
+        &self,
+        index: u8,
+        x: i16,
+        y: i16,
+        sources: &[(String, MonitorRect)],
+    ) -> Result<()> {
+        if x < 0 || y < 0 {
+            return Err(Error::Msg(
+                "Screen positions must be nonnegative; move the other screen to make space.".into(),
+            ));
+        }
+        let (name, rect) = sources
+            .get(usize::from(index))
+            .ok_or_else(|| Error::Msg("Unknown screen".into()))?;
+        if i32::from(x) + rect.width as i32 > 16384 || i32::from(y) + rect.height as i32 > 16384 {
+            return Err(Error::Msg(
+                "Arrangement exceeds the supported 16384-pixel desktop bounds".into(),
+            ));
+        }
+        let outputs = query()?;
+        let output = outputs
+            .iter()
+            .find(|o| {
+                if name == "existing-0" {
+                    o.geometry == Some((rect.x, rect.y, rect.width, rect.height))
+                } else {
+                    o.name == *name
+                }
+            })
+            .ok_or_else(|| Error::Msg("Output changed; refresh the arrangement".into()))?;
+        let result = Command::new("xrandr")
+            .args(["--output", &output.name, "--pos", &format!("{x}x{y}")])
+            .output()?;
+        if !result.status.success() {
+            return Err(Error::Msg(format!(
+                "Cannot move screen: {}",
+                String::from_utf8_lossy(&result.stderr).trim()
+            )));
+        }
+        Ok(())
+    }
     pub fn apply(
         &mut self,
         action: u8,
@@ -185,6 +235,9 @@ impl MonitorPool {
         height: u16,
         sources: &[(String, MonitorRect)],
     ) -> Result<()> {
+        if action == 4 {
+            return self.move_output(index, width as i16, height as i16, sources);
+        }
         let outputs = query()?;
         let output = if action == 1 {
             if sources.len() >= 6 {
@@ -219,16 +272,11 @@ impl MonitorPool {
         if action == 2 {
             args.push("--off".into());
         } else {
-            let mode = output
-                .modes
-                .iter()
-                .filter(|(_, w, h, hz)| *w == width && *h == height && *hz >= 25.0 && *hz <= 61.0)
-                .min_by(|a, b| (a.3 - 60.0).abs().total_cmp(&(b.3 - 60.0).abs()))
-                .ok_or_else(|| {
-                    Error::Msg(format!(
-                        "{width}x{height} at a usable refresh rate is not provisioned"
-                    ))
-                })?;
+            let mode = lowest_mode(output, width, height).ok_or_else(|| {
+                Error::Msg(format!(
+                    "{width}x{height} at a usable refresh rate is not provisioned"
+                ))
+            })?;
             let (x, y) = output.geometry.map(|g| (g.0, g.1)).unwrap_or_else(|| {
                 (
                     outputs
@@ -248,36 +296,8 @@ impl MonitorPool {
                 format!("{x}x{y}"),
             ]);
         }
-        // Keep app-owned screens adjacent, beyond every unowned output. Never move
-        // physical/pre-existing screens, including when a managed resolution grows.
-        let mut layout = std::collections::BTreeMap::new();
-        for o in &outputs {
-            if self.owned.contains(&o.name) {
-                if let Some(g) = o.geometry {
-                    layout.insert(o.name.clone(), g.2);
-                }
-            }
-        }
-        if action == 2 {
-            layout.remove(&output.name);
-        } else {
-            layout.insert(output.name.clone(), u32::from(width));
-        }
-        let mut right = outputs
-            .iter()
-            .filter(|o| !self.owned.contains(&o.name))
-            .filter_map(|o| o.geometry.map(|g| g.0 + g.2 as i32))
-            .max()
-            .unwrap_or(0);
-        for (name, w) in &layout {
-            args.extend([
-                "--output".into(),
-                name.clone(),
-                "--pos".into(),
-                format!("{right}x0"),
-            ]);
-            right += *w as i32;
-        }
+        // Preserve the user's arrangement. Newly added outputs start to the right;
+        // resize/removal must not repack screens placed with the arrangement editor.
         let result = Command::new("xrandr").args(&args).output()?;
         if !result.status.success() {
             // XRandR can apply part of a multi-output request before reporting failure.
@@ -312,6 +332,12 @@ impl Drop for MonitorPool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn lowest_advertised_positive_refresh_is_selected() {
+        let output=parse_outputs("Virtual-1-1 connected\n   1920x1080_60 60.00\n   1920x1080_0.1 0.10\n   1280x720_0.1 0.10\n").remove(0);
+        assert_eq!(lowest_mode(&output, 1920, 1080).unwrap().3, 0.1);
+        assert!(lowest_mode(&output, 2560, 1600).is_none());
+    }
     #[test]
     fn combines_arrangement_and_bounds_stream_size() {
         let rect = |index, x, y, width, height| MonitorRect {

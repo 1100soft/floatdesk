@@ -79,5 +79,4 @@ pub trait EncodeBackend {
     fn submit(&mut self, frame: &CapturedFrame) -> Result<()>;
     fn request_keyframe(&mut self);
     fn set_bitrate(&mut self, bps: u32) -> Result<()>;
-    fn pull(&mut self) -> Result<Option<EncodedAccessUnit>>;
 }

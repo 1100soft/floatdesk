@@ -6,7 +6,7 @@ This tree is the LAN proof of concept: RandR 1.5 regions, MIT-SHM capture, XDama
 
 ## Host
 
-Use **Workspace → Screens** in the headset to add, resize or remove independent desktop screens from a pre-provisioned VKMS pool. Your existing four-output pool supports this without a reboot or privileged commands during use. See [multi-monitor setup and behavior](docs/multi-monitor.md).
+Use **Workspace → Screens** in the headset to add, resize or remove independent desktop screens from a pre-provisioned VKMS pool. Your existing four-output pool supports this without a reboot or privileged commands during use. Drag screen rectangles in Workspace to arrange them with snapping. External layout changes reload automatically. See [multi-monitor behavior](docs/multi-monitor.md) and [first-time setup](docs/virtual-display-setup.md).
 
 Requires an X11 session (`DISPLAY`) and GStreamer with an H.264 encoder (`x264enc` is the portable fallback; `vah264enc`, `vaapih264enc`, and `nvh264enc` are used automatically when present).
 

@@ -60,19 +60,48 @@ pub fn parse_outputs(text: &str) -> Vec<Output> {
     }
     outputs
 }
+// Sub-Hz scanout can stall Plasma configuration for an entire multi-second flip.
+const MIN_INTERACTIVE_REFRESH_HZ: f32 = 1.0;
 fn lowest_mode(output: &Output, width: u16, height: u16) -> Option<&(String, u16, u16, f32)> {
     output
         .modes
         .iter()
-        .filter(|(_, w, h, hz)| *w == width && *h == height && hz.is_finite() && *hz > 0.0)
+        .filter(|(_, w, h, hz)| {
+            *w == width && *h == height && hz.is_finite() && *hz >= MIN_INTERACTIVE_REFRESH_HZ
+        })
         .min_by(|a, b| a.3.total_cmp(&b.3))
 }
 fn query() -> Result<Vec<Output>> {
-    let out = Command::new("xrandr").arg("--query").output()?;
+    let out = Command::new("xrandr").arg("--current").output()?;
     if !out.status.success() {
         return Err(Error::Msg("Cannot query XRandR outputs".into()));
     }
     Ok(parse_outputs(&String::from_utf8_lossy(&out.stdout)))
+}
+fn ordered_sources(mut outputs: Vec<Output>) -> Result<Vec<(String, MonitorRect)>> {
+    outputs.sort_by_key(|o| (virtual_name(&o.name), o.name.clone()));
+    let mut result = Vec::new();
+    for output in outputs {
+        if let Some((x, y, width, height)) = output.geometry {
+            if result.len() == 6 {
+                break;
+            }
+            result.push((
+                output.name,
+                MonitorRect {
+                    index: result.len() as u8,
+                    x,
+                    y,
+                    width,
+                    height,
+                },
+            ));
+        }
+    }
+    if result.is_empty() {
+        return Err(Error::Msg("No active X11 outputs".into()));
+    }
+    Ok(result)
 }
 fn virtual_name(name: &str) -> bool {
     name.strip_prefix("Virtual-").is_some_and(|s| {
@@ -121,6 +150,132 @@ pub fn stream_size(rect: MonitorRect) -> (u16, u16) {
         ((f64::from(rect.height) * scale).floor() as u16 / 2 * 2).max(2),
     )
 }
+/// 0 unknown, 1 virtual, 2 physical, 3 built-in physical. No primary/order inference.
+pub fn output_role(name: &str) -> u8 {
+    if virtual_name(name) {
+        return 1;
+    }
+    let Ok(entries) = std::fs::read_dir("/sys/class/drm") else {
+        return 0;
+    };
+    for entry in entries.flatten() {
+        let full = entry.file_name().to_string_lossy().into_owned();
+        let Some((card, connector)) = full.split_once('-') else {
+            continue;
+        };
+        if !card
+            .strip_prefix("card")
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()))
+            || (connector != name
+                && connector
+                    .strip_prefix("HDMI-A-")
+                    .map(|n| format!("HDMI-{n}"))
+                    .as_deref()
+                    != Some(name))
+        {
+            continue;
+        }
+        let driver = std::fs::canonicalize(format!("/sys/class/drm/{card}/device/driver")).ok();
+        let driver = driver
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        if matches!(driver, "vkms" | "evdi") {
+            return 1;
+        }
+        if driver.is_empty() {
+            return 0;
+        }
+        if ["eDP-", "LVDS-", "DSI-"]
+            .iter()
+            .any(|p| name.starts_with(p))
+        {
+            return 3;
+        }
+        return 2;
+    }
+    0
+}
+fn plasma_snapshot(
+    outputs: &[Output],
+) -> Option<(serde_json::Value, std::collections::BTreeMap<String, u32>)> {
+    let mut result = std::collections::BTreeMap::new();
+    let Ok(reply) = Command::new("timeout")
+        .args(["1", "kscreen-doctor", "-j"])
+        .output()
+    else {
+        return None;
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&reply.stdout) else {
+        return None;
+    };
+    let Some(rows) = value["outputs"].as_array() else {
+        return None;
+    };
+    let active: BTreeSet<_> = outputs
+        .iter()
+        .filter(|o| o.geometry.is_some())
+        .map(|o| o.name.as_str())
+        .collect();
+    let reported: BTreeSet<_> = rows
+        .iter()
+        .filter(|o| o["enabled"].as_bool() == Some(true))
+        .filter_map(|o| o["name"].as_str())
+        .collect();
+    // Never address another X session's KScreen daemon (e.g. private Xvfb checks).
+    if active != reported {
+        return None;
+    }
+    for output in outputs.iter().filter(|o| o.geometry.is_some()) {
+        let Some(row) = rows
+            .iter()
+            .find(|r| r["name"].as_str() == Some(output.name.as_str()))
+        else {
+            return None;
+        };
+        let (x, y, w, h) = output.geometry.unwrap();
+        if row["pos"]["x"].as_i64() != Some(i64::from(x))
+            || row["pos"]["y"].as_i64() != Some(i64::from(y))
+            || row["size"]["width"].as_u64() != Some(u64::from(w))
+            || row["size"]["height"].as_u64() != Some(u64::from(h))
+        {
+            return None;
+        }
+    }
+    for row in rows {
+        if let (Some(name), Some(priority)) = (row["name"].as_str(), row["priority"].as_u64()) {
+            if active.contains(name) && (1..=100).contains(&priority) {
+                result.insert(name.into(), priority as u32);
+            }
+        }
+    }
+    Some((value, result))
+}
+fn plasma_transaction(
+    mut commands: Vec<String>,
+    priorities: std::collections::BTreeMap<String, u32>,
+) -> Result<()> {
+    let mut ordered: Vec<_> = priorities.into_iter().collect();
+    ordered.sort_by_key(|(_, p)| *p);
+    commands.extend(
+        ordered
+            .into_iter()
+            .enumerate()
+            .map(|(i, (n, _))| format!("output.{n}.priority.{}", i + 1)),
+    );
+    let result = Command::new("timeout")
+        .args(["3", "kscreen-doctor"])
+        .args(commands)
+        .output()?;
+    if !result.status.success() {
+        return Err(Error::Msg(format!(
+            "Plasma rejected screen change: {}",
+            String::from_utf8_lossy(&result.stderr).trim()
+        )));
+    }
+    Ok(())
+}
 pub struct MonitorPool {
     owned: BTreeSet<String>,
 }
@@ -130,40 +285,29 @@ impl MonitorPool {
             owned: BTreeSet::new(),
         }
     }
+    pub fn observer() -> Self {
+        Self {
+            owned: BTreeSet::new(),
+        }
+    }
     pub fn sources(&self) -> Result<Vec<(String, MonitorRect)>> {
-        let mut outputs = query()?;
-        outputs.sort_by_key(|o| (!o.primary, virtual_name(&o.name), o.name.clone()));
-        let mut result = Vec::new();
-        for output in outputs {
-            if let Some((x, y, width, height)) = output.geometry {
-                if result.iter().any(|(_, r): &(String, MonitorRect)| {
-                    r.x == x && r.y == y && r.width == width && r.height == height
-                }) {
-                    continue;
-                }
-                if result.len() == 6 {
-                    break;
-                }
-                result.push((
-                    output.name,
-                    MonitorRect {
-                        index: result.len() as u8,
-                        x,
-                        y,
-                        width,
-                        height,
-                    },
-                ));
+        ordered_sources(query()?)
+    }
+    pub fn identity(&self, sources: &[(String, MonitorRect)]) -> (Vec<String>, Vec<u8>, u8) {
+        let primary = query()
+            .ok()
+            .and_then(|rows| rows.into_iter().find(|o| o.primary))
+            .map(|o| o.name);
+        let names = sources.iter().map(|(n, _)| n.clone()).collect();
+        let roles = sources.iter().map(|(n, _)| output_role(n)).collect();
+        let mask = sources.iter().fold(0, |m, (n, r)| {
+            m | if Some(n) == primary.as_ref() {
+                1 << r.index
+            } else {
+                0
             }
-        }
-        if result.is_empty() {
-            return Err(Error::Msg("No active X11 outputs".into()));
-        }
-        // Keep the existing primary source identity used by saved headset layouts.
-        if let Some(first) = result.first_mut() {
-            first.0 = "existing-0".into();
-        }
-        Ok(result)
+        });
+        (names, roles, mask)
     }
     pub fn capacity(&self) -> u8 {
         query()
@@ -208,17 +352,24 @@ impl MonitorPool {
         let outputs = query()?;
         let output = outputs
             .iter()
-            .find(|o| {
-                if name == "existing-0" {
-                    o.geometry == Some((rect.x, rect.y, rect.width, rect.height))
-                } else {
-                    o.name == *name
-                }
-            })
+            .find(|o| o.name == *name)
             .ok_or_else(|| Error::Msg("Output changed; refresh the arrangement".into()))?;
-        let result = Command::new("xrandr")
-            .args(["--output", &output.name, "--pos", &format!("{x}x{y}")])
-            .output()?;
+        if let Some((_, priorities)) = plasma_snapshot(&outputs) {
+            return plasma_transaction(
+                vec![format!("output.{}.position.{x},{y}", output.name)],
+                priorities,
+            );
+        }
+        let mut args = vec![
+            "--output".into(),
+            output.name.clone(),
+            "--pos".into(),
+            format!("{x}x{y}"),
+        ];
+        if let Some(primary) = outputs.iter().find(|o| o.primary && o.geometry.is_some()) {
+            args.extend(["--output".into(), primary.name.clone(), "--primary".into()]);
+        }
+        let result = Command::new("xrandr").args(args).output()?;
         if !result.status.success() {
             return Err(Error::Msg(format!(
                 "Cannot move screen: {}",
@@ -268,6 +419,79 @@ impl MonitorPool {
                 .find(|o| &o.name == name)
                 .ok_or_else(|| Error::Msg("Output disappeared".into()))?
         };
+        if let Some((snapshot, mut priorities)) = plasma_snapshot(&outputs) {
+            let mut commands = Vec::new();
+            if action == 2 {
+                commands.push(format!("output.{}.disable", output.name));
+                priorities.remove(&output.name);
+            } else {
+                let selected = lowest_mode(output, width, height)
+                    .ok_or_else(|| Error::Msg(format!("{width}x{height} is unavailable")))?;
+                let mode = snapshot["outputs"]
+                    .as_array()
+                    .and_then(|rows| {
+                        rows.iter()
+                            .find(|r| r["name"].as_str() == Some(output.name.as_str()))
+                    })
+                    .and_then(|row| row["modes"].as_array())
+                    .and_then(|modes| {
+                        modes
+                            .iter()
+                            .filter(|m| {
+                                m["size"]["width"].as_u64() == Some(u64::from(width))
+                                    && m["size"]["height"].as_u64() == Some(u64::from(height))
+                            })
+                            .min_by(|a, b| {
+                                (a["refreshRate"].as_f64().unwrap_or(1e9) - f64::from(selected.3))
+                                    .abs()
+                                    .total_cmp(
+                                        &(b["refreshRate"].as_f64().unwrap_or(1e9)
+                                            - f64::from(selected.3))
+                                        .abs(),
+                                    )
+                            })
+                    })
+                    .filter(|m| {
+                        (m["refreshRate"].as_f64().unwrap_or(1e9) - f64::from(selected.3)).abs()
+                            < 0.1
+                    })
+                    .and_then(|m| m["id"].as_str())
+                    .ok_or_else(|| {
+                        Error::Msg("Requested mode is not available in Plasma".into())
+                    })?;
+                let (x, y) = output.geometry.map(|g| (g.0, g.1)).unwrap_or((
+                    outputs
+                        .iter()
+                        .filter_map(|o| o.geometry.map(|g| g.0 + g.2 as i32))
+                        .max()
+                        .unwrap_or(0),
+                    0,
+                ));
+                commands.extend([
+                    format!("output.{}.mode.{mode}", output.name),
+                    format!("output.{}.enable", output.name),
+                    format!("output.{}.position.{x},{y}", output.name),
+                ]);
+                if !priorities.contains_key(&output.name) {
+                    priorities.insert(
+                        output.name.clone(),
+                        priorities.values().max().copied().unwrap_or(0) + 1,
+                    );
+                }
+            }
+            // Claim a newly inactive output before the transaction: a timed-out
+            // desktop service can have applied part of the requested configuration.
+            if action == 1 {
+                self.owned.insert(output.name.clone());
+            }
+            plasma_transaction(commands, priorities)?;
+            if action == 2 {
+                self.owned.remove(&output.name);
+            } else {
+                self.owned.insert(output.name.clone());
+            }
+            return Ok(());
+        }
         let mut args = vec!["--output".to_string(), output.name.clone()];
         if action == 2 {
             args.push("--off".into());
@@ -296,6 +520,12 @@ impl MonitorPool {
                 format!("{x}x{y}"),
             ]);
         }
+        if let Some(primary) = outputs
+            .iter()
+            .find(|o| o.primary && (action != 2 || o.name != output.name))
+        {
+            args.extend(["--output".into(), primary.name.clone(), "--primary".into()]);
+        }
         // Preserve the user's arrangement. Newly added outputs start to the right;
         // resize/removal must not repack screens placed with the arrangement editor.
         let result = Command::new("xrandr").args(&args).output()?;
@@ -322,21 +552,63 @@ impl MonitorPool {
 }
 impl Drop for MonitorPool {
     fn drop(&mut self) {
-        for name in &self.owned {
-            let _ = Command::new("xrandr")
-                .args(["--output", name, "--off"])
-                .status();
+        if self.owned.is_empty() {
+            return;
         }
+        let outputs = query().unwrap_or_default();
+        if let Some((_, mut priorities)) = plasma_snapshot(&outputs) {
+            for name in &self.owned {
+                priorities.remove(name);
+            }
+            let commands = self
+                .owned
+                .iter()
+                .map(|n| format!("output.{n}.disable"))
+                .collect();
+            if plasma_transaction(commands, priorities).is_ok() {
+                return;
+            }
+        }
+        let mut args = Vec::new();
+        for name in &self.owned {
+            args.extend(["--output".into(), name.clone(), "--off".into()]);
+        }
+        let remaining: Vec<_> = outputs
+            .iter()
+            .filter(|o| o.geometry.is_some() && !self.owned.contains(&o.name))
+            .collect();
+        if let Some(primary) = remaining
+            .iter()
+            .find(|o| o.primary)
+            .or_else(|| remaining.first())
+        {
+            args.extend(["--output".into(), primary.name.clone(), "--primary".into()]);
+        }
+        let _ = Command::new("xrandr").args(args).output();
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn lowest_advertised_positive_refresh_is_selected() {
-        let output=parse_outputs("Virtual-1-1 connected\n   1920x1080_60 60.00\n   1920x1080_0.1 0.10\n   1280x720_0.1 0.10\n").remove(0);
-        assert_eq!(lowest_mode(&output, 1920, 1080).unwrap().3, 0.1);
+    fn identities_and_order_do_not_follow_primary_or_position() {
+        let mut rows = parse_outputs(
+            "Virtual-1-1 connected primary 1920x1080+0+0\neDP-1 connected 2560x1600+1920+0\n",
+        );
+        let before = ordered_sources(rows.clone()).unwrap();
+        rows[0].primary = false;
+        rows[1].primary = true;
+        assert_eq!(ordered_sources(rows).unwrap(), before);
+        assert_eq!(before[0].0, "eDP-1");
+        assert_eq!(before[1].0, "Virtual-1-1");
+        assert_eq!(output_role("Virtual-1-1"), 1);
+    }
+    #[test]
+    fn lowest_responsive_refresh_excludes_sub_hz() {
+        let output=parse_outputs("Virtual-1-1 connected\n   1920x1080_60 60.00\n   1920x1080_0.1 0.10\n   1920x1080_1 1.00\n   1280x720_0.1 0.10\n").remove(0);
+        assert_eq!(lowest_mode(&output, 1920, 1080).unwrap().3, 1.0);
         assert!(lowest_mode(&output, 2560, 1600).is_none());
+        assert!(lowest_mode(&output, 1280, 720).is_none());
     }
     #[test]
     fn combines_arrangement_and_bounds_stream_size() {

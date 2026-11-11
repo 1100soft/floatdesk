@@ -32,6 +32,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
+import androidx.compose.ui.Alignment
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -863,9 +865,20 @@ private fun DeskContent(
     val session = LocalSession.current
     val latest = rememberUpdatedState(workspace)
     val handInputNow=rememberUpdatedState(handInputAllowed)
+    val reloading by connection.reloading
     val layout = workspace.reconcileMonitors(monitors.map { Triple(it.name,it.width,it.height) }).layouts[workspace.activeLayout].orEmpty()
     if(displayControlsOpen) SpatialPanel(modifier=placedPanel(displayControlsPose,.95f,.70f,density,pixelDensity)) {
         MonitorManagerPanel(connection,onCloseDisplays)
+    }
+    if(reloading && layout.isNotEmpty()) {
+        val screen=layout.first()
+        val pose=Pose(transformPoint(screen.pose,floatArrayOf(0f,0f,.05f)),screen.pose.rotation)
+        SpatialPanel(modifier=placedPanel(pose,.40f,.10f,density,pixelDensity)) {
+            androidx.compose.foundation.layout.Row(Modifier.fillMaxSize().background(Color(0xEE1C2430)).padding(12.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
+                androidx.compose.material3.CircularProgressIndicator(Modifier.size(24.dp))
+                Text("Updating screens…",color=Color.White)
+            }
+        }
     }
     palmPanel?.takeIf { handInputAllowed }?.let { panel ->
         SpatialPanel(modifier = placedPanel(panel.pose, PALM_WIDTH * panel.unitsPerMeter, PALM_HEIGHT * panel.unitsPerMeter, density, pixelDensity)) {

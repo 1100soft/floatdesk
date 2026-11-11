@@ -26,5 +26,23 @@ try:
   if b[1]&128:break
  else:raise AssertionError('Recovery frame did not arrive on idle desktop')
  print('PASS requested recovery frame on idle desktop ms',round((time.monotonic()-start)*1000))
+ reference=b
+ seq=struct.unpack_from('>H',reference,2)[0];ssrc=struct.unpack_from('>I',reference,8)[0]
+ request=struct.pack('<BIH',0,ssrc,seq)
+ def matching(deadline):
+  while time.monotonic()<deadline:
+   try:received,_=v.recvfrom(2048)
+   except socket.timeout:continue
+   if received==reference:return True
+  return False
+ rogue=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+ rogue.sendto(b'FDC1'+struct.pack('<BBHII',1,14,0,7,0)+request,('127.0.0.1',control_port))
+ assert not matching(time.monotonic()+.25),'Repair accepted from an unbound control peer'
+ rogue.close()
+ send(14,request)
+ assert matching(time.monotonic()+1),'Cached repair packet was not retransmitted'
+ print('PASS byte-identical cached RTP repair and rejection of an unbound peer')
+
 finally:
- p.send_signal(signal.SIGINT);p.wait(timeout=12);x.terminate();x.wait(timeout=5);log.close();s.close();v.close()
+ p.send_signal(signal.SIGTERM);p.wait(timeout=12);x.terminate();x.wait(timeout=5);log.close();s.close();v.close()
+ assert p.returncode==0, "SIGTERM did not shut down gracefully"

@@ -42,7 +42,9 @@ internal fun MonitorManagerPanel(connection: DeskConnection,onClose:()->Unit) {
         monitors.firstOrNull()?.let { Text("Combined desktop — ${it.width} × ${it.height} streamed pixels",color=Color.White) }
         state.screens.forEachIndexed { index,(width,height) ->
             val managed=(state.owned and (1 shl index))!=0
-            Text("${if(index==0) "Computer screen" else "Screen ${index+1}"} — $width × $height",color=Color.White,fontSize=16.sp)
+            val role=when(state.roles.getOrNull(index)) {3->"Built-in display";2->"Physical display";1->"Virtual display";else->"Display"}
+            val name=state.names.getOrNull(index) ?: "Screen ${index+1}"
+            Text("${index+1}. $name · $role${if(state.primary and (1 shl index)!=0) " · Primary" else ""} — $width × $height",color=Color.White,fontSize=16.sp)
             if(managed) Row(horizontalArrangement=Arrangement.spacedBy(6.dp)) {
                 for((w,h) in listOf(1280 to 720,1920 to 1080,2560 to 1600))
                     Button(enabled=!busy && (w!=width || h!=height),onClick={connection.requestDisplays(3,index,w,h)}) {Text("$w × $h",fontSize=12.sp)}

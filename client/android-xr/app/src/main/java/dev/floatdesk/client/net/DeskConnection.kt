@@ -28,6 +28,9 @@ internal class DeskConnection(
 
     val displayState=mutableStateOf(Packet.MonitorStatus(0,true,0,0,"Checking available displays…"))
     val displayBusy=mutableStateOf(false)
+    val reloading=mutableStateOf(false)
+    private val videoPending=AtomicBoolean(false)
+    private val decoderGeneration=AtomicInteger()
     private val monitorSequence=AtomicInteger()
     private val monitorPending=AtomicInteger()
     private var currentMonitors=emptyList<MonitorHello>()
@@ -106,6 +109,7 @@ internal class DeskConnection(
         decoders.clear()
         currentMonitors=emptyList()
         monitorPending.set(0)
+        videoPending.set(false);decoderGeneration.incrementAndGet()
         videos.forEach { runCatching { it.close() } }
         videos = emptyList()
         thread?.join(500)
@@ -119,6 +123,7 @@ internal class DeskConnection(
             monitors.value = emptyList()
             cursors.value = emptyMap()
             displayBusy.value = false
+            reloading.value=false
             status.value = "Disconnected"
         }
     }
@@ -136,11 +141,17 @@ internal class DeskConnection(
         monitorPending.set(id);displayBusy.value=true
         val packet=Protocol.monitorCommand(id,action,index,width,height)
         handler.post { send(packet) }
-        for(delay in listOf(300L,900L)) handler.postDelayed({ if(monitorPending.get()==id) send(packet) },delay)
+        for(delay in listOf(300L,900L,1800L,3000L,5000L,8000L,12000L,18000L)) handler.postDelayed({ if(monitorPending.get()==id) send(packet) },delay)
+        main.postDelayed({ if(monitorPending.get()==id) {
+            displayState.value=displayState.value.copy(ok=true,message=if(action==0) "Checking screen state…" else "Applying screen changes…")
+        } },3000)
         main.postDelayed({ if(monitorPending.compareAndSet(id,0)) {
-            displayBusy.value=false
-            displayState.value=displayState.value.copy(ok=false,message="Display request timed out. Refresh before retrying a change.")
-        } },5000)
+            // An uncertain mutation is never reissued under a new ID. Reconcile
+            // with a read-only query automatically when the host responds again.
+            displayState.value=displayState.value.copy(ok=true,message="Waiting for the host; checking screen state…")
+            requestDisplays()
+        } },25000)
+
     }
 
     @Synchronized
@@ -188,6 +199,7 @@ internal class DeskConnection(
                         }
                         onHello(decoded, pendingRemote ?: InetSocketAddress(incoming.address, 47000))
                     }
+                    is Packet.StreamState -> {if(incoming.address==pendingRemote?.address && incoming.port==pendingRemote?.port) main.post {reloading.value=decoded.reloading || videoPending.get()}}
                     is Packet.MonitorStatus -> {
                         if(incoming.address==pendingRemote?.address && incoming.port==pendingRemote?.port) main.post {
                             if((decoded.requestId==0 && monitorPending.get()==0) || (decoded.requestId!=0 && monitorPending.compareAndSet(decoded.requestId,0))) {displayBusy.value=false;displayState.value=decoded}
@@ -226,13 +238,30 @@ internal class DeskConnection(
 
     @Synchronized
     private fun onHello(hello: Packet.HostHello, remote: InetSocketAddress) {
-        if (hello.monitors==currentMonitors && decoders.isNotEmpty()) return
+        if (hello.monitors==currentMonitors && decoders.isNotEmpty()) {
+            // A dropped one-shot progress notification must not leave an overlay
+            // behind after the host has returned to its normal heartbeat.
+            if(!videoPending.get() && monitorPending.get()==0) main.post {reloading.value=false}
+            return
+        }
+        main.post {reloading.value=true}
+        val sameFormat=hello.monitors.map {it.copy(ssrc=0)}==currentMonitors.map {it.copy(ssrc=0)} && decoders.isNotEmpty()
+        if(sameFormat) {
+            currentMonitors=hello.monitors;videoPending.set(true)
+            main.post {monitors.value=hello.monitors}
+            send(Protocol.keyframeRequest(0xff))
+            return
+        }
+        val generation=decoderGeneration.incrementAndGet()
         decoders.values.forEach { it.stop() };decoders.clear()
+        videoPending.set(true)
         videos=videos.mapIndexed { index,socket -> if(socket.isClosed) DatagramSocket(48000+index).apply {receiveBufferSize=8*1024*1024} else socket }
         currentMonitors=hello.monitors
         for (monitor in hello.monitors) {
             val video = videos.getOrNull(monitor.index) ?: continue
-            val decoder = MonitorDecoder(video, monitor.width, monitor.height, dumpFile, ::askKeyframe)
+            val decoder = MonitorDecoder(video, monitor.width, monitor.height, dumpFile, ::askKeyframe,onFrame={
+                if(decoderGeneration.get()==generation && videoPending.compareAndSet(true,false)) main.post {reloading.value=false}
+            },onNack={source,sequence->send(Protocol.videoNack(monitor.index,source,sequence))})
             activeSurfaces[monitor.index]?.let { decoder.attach(it) }
             decoder.punch(remote.address)
             decoder.setRenderingActive(renderingActive)

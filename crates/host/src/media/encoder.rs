@@ -167,14 +167,27 @@ impl GstEncoder {
 
     fn start(profile: Profile, config: EncoderConfig, input_size: (u32, u32)) -> Result<Self> {
         let max_bytes = (input_size.0 as u64 * input_size.1 as u64 * 4).saturating_mul(2);
+        // A fused, parallel conversion avoids the serial full-size conversion
+        // followed by a second scaling pass over a large combined desktop.
+        let conversion = if inspect("videoconvertscale") {
+            format!(
+                "videoconvertscale n-threads=4 ! video/x-raw,format={},width={},height={}",
+                profile.format, config.width, config.height
+            )
+        } else {
+            format!(
+                "videoconvert ! videoscale ! video/x-raw,format={},width={},height={}",
+                profile.format, config.width, config.height
+            )
+        };
         let description = format!(
             "{LIVE_SOURCE} max-bytes={max_bytes} \
-             ! videoconvert ! videoscale ! video/x-raw,format={},width={},height={} \
+             ! {conversion} \
              ! {} name=enc \
              ! h264parse config-interval=-1 \
              ! video/x-h264,stream-format=byte-stream,alignment=au \
              ! appsink name=sink emit-signals=false sync=false max-buffers=2 leaky-type=upstream",
-            profile.format, config.width, config.height, profile.element
+            profile.element
         );
         let pipeline = Pipeline::launch(&description)?;
         let caps = format!(

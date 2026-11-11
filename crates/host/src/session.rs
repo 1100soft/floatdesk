@@ -490,6 +490,34 @@ fn run(
     Ok(())
 }
 
+/// Bound UDP bursts while allowing a short packet train; do not delay control input.
+struct VideoPacer {
+    next: Instant,
+    bytes_per_second: f64,
+}
+impl VideoPacer {
+    fn new(bitrate: u32) -> Self {
+        Self {
+            next: Instant::now(),
+            bytes_per_second: f64::from(bitrate.saturating_mul(4).clamp(8_000_000, 80_000_000))
+                / 8.0,
+        }
+    }
+    fn reserve(&mut self, now: Instant, bytes: usize) -> Duration {
+        let burst = Duration::from_secs_f64(9600.0 / self.bytes_per_second);
+        let delay = self.next.saturating_duration_since(now + burst);
+        self.next =
+            self.next.max(now) + Duration::from_secs_f64(bytes as f64 / self.bytes_per_second);
+        delay
+    }
+    fn wait(&mut self, bytes: usize) {
+        let delay = self.reserve(Instant::now(), bytes);
+        if !delay.is_zero() {
+            thread::sleep(delay);
+        }
+    }
+}
+
 fn send_ready(
     encoder: &mut crate::media::GstEncoder,
     packetizer: &mut RtpH264Packetizer,
@@ -498,6 +526,7 @@ fn send_ready(
     shared: &Shared,
     timestamp: u32,
     wait_first: bool,
+    pacer: &mut VideoPacer,
 ) -> Result<()> {
     let mut waited = !wait_first;
     loop {
@@ -509,6 +538,7 @@ fn send_ready(
         };
         let Some(unit) = unit else { break };
         for packet in packetizer.packetize(&unit.bytes, timestamp) {
+            pacer.wait(packet.len());
             match socket.send_to(&packet, dest) {
                 Ok(sent) => {
                     shared.bytes.fetch_add(sent as u64, Ordering::Relaxed);
@@ -553,6 +583,7 @@ fn monitor_thread(
     let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))?;
     encoder.set_bitrate(bitrate.max(400_000))?;
     let interval = Duration::from_secs_f64(1.0 / f64::from(fps));
+    let mut pacer = VideoPacer::new(bitrate);
     let mut seen_generation = 0u64;
     let mut seen_cursor = 0u64;
     while !shared.stop.load(Ordering::Relaxed)
@@ -589,6 +620,22 @@ fn monitor_thread(
             seen_cursor = cursor_generation;
             capture.note_cursor();
         }
+        let dest = SocketAddr::new(
+            target.control.ip(),
+            target.video_port + u16::from(rect.index),
+        );
+        // Encoding is asynchronous. Always drain completed pictures, including when
+        // XDamage is idle or the next capture is not yet due.
+        send_ready(
+            &mut encoder,
+            packetizer,
+            &socket,
+            dest,
+            &shared,
+            rtp_timestamp(monotonic_ns(), epoch_ns()),
+            false,
+            &mut pacer,
+        )?;
         let Some(mut frame) = capture.poll(interval, force)? else {
             shared.skipped.fetch_add(1, Ordering::Relaxed);
             thread::sleep(Duration::from_millis(2));
@@ -598,22 +645,6 @@ fn monitor_thread(
             paint_cursor(&mut frame, rect.x, rect.y, &cursor);
         }
         let timestamp = rtp_timestamp(frame.monotonic_ns, epoch_ns());
-        let dest = SocketAddr::new(
-            target.control.ip(),
-            target.video_port + u16::from(rect.index),
-        );
-        // Pull before pushing. The encoder stops accepting input once its
-        // output queue is full, and skipping the pull on that failure left
-        // both sides waiting on each other.
-        send_ready(
-            &mut encoder,
-            packetizer,
-            &socket,
-            dest,
-            &shared,
-            timestamp,
-            false,
-        )?;
         if let Err(err) = encoder.submit(&frame) {
             tracing::debug!("encoder busy, frame dropped: {err}");
             encoder.request_keyframe();
@@ -625,6 +656,7 @@ fn monitor_thread(
                 &shared,
                 timestamp,
                 true,
+                &mut pacer,
             )?;
             continue;
         }
@@ -642,6 +674,7 @@ fn monitor_thread(
             &shared,
             timestamp,
             true,
+            &mut pacer,
         )?;
     }
     Ok(())
@@ -1236,5 +1269,24 @@ mod pointer_tests {
             click_position(&mut client, &monitors, peer, 0, 0.5, 0.5, 2),
             Some((150, 225))
         );
+    }
+}
+
+#[cfg(test)]
+mod video_pacing_tests {
+    use super::*;
+    #[test]
+    fn packet_train_is_bounded_without_saving_idle_credit() {
+        let mut pacer = VideoPacer::new(12_000_000);
+        let now = Instant::now();
+        pacer.next = now;
+        assert_eq!(pacer.reserve(now, 9600), Duration::ZERO);
+        assert_eq!(pacer.reserve(now, 1200), Duration::ZERO);
+        assert!(pacer.reserve(now, 1200) >= Duration::from_micros(199));
+        assert_eq!(
+            pacer.reserve(now + Duration::from_secs(1), 1200),
+            Duration::ZERO
+        );
+        assert!(pacer.next < now + Duration::from_millis(1001));
     }
 }

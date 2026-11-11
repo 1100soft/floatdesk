@@ -52,8 +52,7 @@ internal class FrozenMonitor private constructor(
         try {
             if (hidden) live.setEnabled(originallyEnabled)
         } finally {
-            entity.parent = null
-            model.close()
+            releaseOwnedGltf(model, entity)
         }
     }
 

@@ -103,10 +103,11 @@ internal class CurvedMonitorInput(val mesh: MonitorMesh,val entity: Entity) {
     fun close() { entity.parent=null }
     companion object {
         var last: CurvedMonitorInput? = null
+        var afterCreate: (() -> Unit)? = null
         suspend fun create(session: Session,parent: Entity,mesh: MonitorMesh,listener: (InputEvent)->Unit): CurvedMonitorInput {
             val entity=Entity(); entity.parent=parent
             entity.addComponent(InteractableComponent.create(session,listener))
-            return CurvedMonitorInput(mesh,entity).also { last=it }
+            return CurvedMonitorInput(mesh,entity).also { last=it;afterCreate?.invoke() }
         }
     }
 }
@@ -179,6 +180,13 @@ suspend fun main() {
     warp.syncCurvedInput(session)
     check(patch.entity.parent == null && input.primaryAlphaMaskTexture == null && input.component === component && input.enabled)
     warp.close(); check(input.component == null && input.parent === root && input.enabled)
+    warp.attach(session,input.getSurface(),screen,PixelDensity(),onEvent={})
+    warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false)
+    CurvedMonitorInput.afterCreate={warp.close()}
+    warp.syncCurvedInput(session)
+    check(CurvedMonitorInput.last!!.entity.parent==null && warp.displayEntity==null)
+    check(input.enabled) // Late collider completion must not disable the restored owner.
+    CurvedMonitorInput.afterCreate=null
     println("Passed: native matrix localization and independent left/right sequences, flat Compose surface/input/alpha/parent preserved, separate curved video and interaction ownership, mode-switch surface restoration, curvature freezes while held, video UVs, cleanup")
 }
 '''

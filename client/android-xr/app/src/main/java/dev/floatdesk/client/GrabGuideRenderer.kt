@@ -31,6 +31,8 @@ internal fun visibleGrabContact(contact: FloatArray, eye: FloatArray?, unitsPerM
 }
 
 /** Native meshes without Interactable/Movable components: guides must not capture hand input. */
+@Suppress("DEPRECATION")
+@android.annotation.SuppressLint("RestrictedApi")
 internal class GrabGuideRenderer private constructor(
     private val session: Session,
     private val models: List<GltfModel>,
@@ -59,7 +61,7 @@ internal class GrabGuideRenderer private constructor(
             val edgeCount = guide.outline.size
             val previous = groups.getOrNull(index)
             val group = if (previous?.parts?.size == edgeCount + 6) previous else {
-                previous?.let { old -> old.parts.forEach { it.parent = null }; old.root.parent = null }
+                previous?.let { old -> old.root.dispose() }
                 newGroup(edgeCount).also { if (index < groups.size) groups[index] = it else groups.add(it) }
             }
             group.root.parent = parent
@@ -190,12 +192,11 @@ internal class GrabGuideRenderer private constructor(
         if (closed) return
         closed = true
         groups.forEach { group ->
-            group.parts.forEach { it.parent = null }
-            group.root.parent = null
+            group.root.dispose()
         }
         (aimBeams+grabBeams+grabPoints).forEach { it.parent=null }
         aimBeams.clear(); grabBeams.clear(); grabPoints.clear()
-        pointerPoint?.parent = null; pointerPoint = null
+        pointerPoint?.dispose(); pointerPoint = null
         groups.clear()
         models.forEach { it.close() }
     }

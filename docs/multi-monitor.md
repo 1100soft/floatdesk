@@ -23,3 +23,9 @@ Monitor commands carry request IDs and are accepted only from the connected cont
 Validation includes Rust parser/protocol tests and `checks/monitor_management.py`, which checks Android/Rust wire fixtures and pose preservation through source changes. A live X11 test exercised two additions, retry deduplication, resolution change, index compaction, removal and graceful cleanup, receiving RTP on three independent ports. The physical display configuration matched its starting state afterward. Headset UI interaction and simultaneous multi-screen decoding still require a user device test.
 
 Gesture reliability remains deferred in [gesture-issues.md](gesture-issues.md); this work does not tune gestures or change the confirmed monitor coordinate conversion.
+
+## Native renderer lifetime fix — 11 November 2026
+
+The first device test confirmed screen management worked but reported repeated crashes. The crash buffer showed native Impress/SplitEngine aborts for unknown material instance IDs. Review found that curved colliders and frozen images detached their entities and immediately closed the model; detachment does not synchronously destroy the native instances. The same pattern existed in grab-guide shutdown. This is the leading explanation for those material errors, pending another device test.
+
+Owned glTF teardown now explicitly disposes native instances before closing their backing models, using the pinned SDK's restricted disposal API, which also clears its automatic-cleanup reference. Curved collider close is idempotent. A collider that finishes loading after its monitor owner has closed is immediately released and cannot disable or replace the restored input owner. The resource lifetime check exercises repeated close and failed construction with native-lifetime substitutes; the warp check covers late completion. These tests cannot establish that a native renderer crash is eliminated on hardware.

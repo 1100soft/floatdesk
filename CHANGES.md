@@ -100,3 +100,5 @@ Checkpoint validation on 10 November 2026: Android debug build and lint; all ten
 ## Dynamic screen pool — 10 November 2026
 
 The headset's Workspace button now opens screen management. With `serve --existing`, active XRandR outputs stream independently; Add/Remove/resolution commands manage only virtual outputs created by the current host process. The already-provisioned VKMS pool supplies real KDE desktop screens without privileged runtime setup. Capture/decoder reconfiguration and source-identity layout reconciliation preserve existing placements. Retried commands are deduplicated, and graceful host shutdown releases its outputs. See [multi-monitor behavior and limitations](docs/multi-monitor.md).
+
+11 November device follow-up: screen creation worked, but native renderer crashes reported unknown material instances. Curved colliders, snapshots and guide entities now release their native instances before their model resources. Late curved-collider loads reject disposed/replaced owners. Added lifetime and late-completion regressions; hardware stability remains to be rechecked.

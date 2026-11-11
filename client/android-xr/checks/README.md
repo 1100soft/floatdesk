@@ -116,3 +116,5 @@ Preserve the forward native event-matrix/root-scale coordinate conversion, match
 ### Screen management
 
 `python3 checks/monitor_management.py /path/to/gradle/lib` checks monitor-management wire fixtures and production layout reconciliation across add/remove/resize. Rust workspace tests validate command bounds and signed XRandR geometry. Neither synthetic check establishes simultaneous device decoder capacity; test Workspace → Screens on the headset. See [multi-monitor behavior](../../../docs/multi-monitor.md).
+
+`python3 checks/gltf_lifecycle.py /path/to/gradle/lib` compiles production curved-collider cleanup and its model-release helper against native-lifetime substitutes. It checks instance-before-model teardown, repeated close and failed setup. `monitor_warp.py` also simulates teardown during a suspended collider load. Native renderer stability still requires a sustained headset test, including multiple curved screens, resize/removal and grab/release.

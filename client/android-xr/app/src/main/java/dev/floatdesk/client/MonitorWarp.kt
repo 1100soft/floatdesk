@@ -72,7 +72,13 @@ internal class MonitorWarp : AutoCloseable {
         if (curvedInput?.mesh === sphere) { input?.setEnabled(false); return }
         val target = live ?: return
         val listener = inputListener ?: return
+        val owner = input
         val next = CurvedMonitorInput.create(session, target, sphere, listener)
+        // Loading suspends. A monitor removal/resize can close this owner meanwhile.
+        if (input !== owner || live !== target || mesh !== sphere) {
+            next.close()
+            return
+        }
         val old = curvedInput
         curvedInput = next
         old?.close()

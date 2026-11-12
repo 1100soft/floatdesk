@@ -20,6 +20,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.floatdesk.client.net.DeskConnection
@@ -37,11 +39,10 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
     var setup by remember { mutableStateOf(false) }
     MaterialTheme(colorScheme=darkColorScheme()) {
     Column(Modifier.fillMaxSize().background(Color(0xF01C2430)).padding(16.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
-        Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween) {
+        Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
             Text("Screens",color=Color.White,fontSize=22.sp)
-            IconButton(onClick=onClose,modifier=Modifier.semantics {contentDescription="Close workspace"}) {Text("×",fontSize=30.sp)}
+            IconButton(onClick=onClose,modifier=Modifier.background(MaterialTheme.colorScheme.surfaceContainerHighest,CircleShape).semantics {contentDescription="Close workspace"}) {Text("×",fontSize=30.sp)}
         }
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(8.dp)) {
         Text(if(busy) "Updating screens…" else "${sizes.size} desktop screens · $available available",color=Color.White)
         Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             Button(enabled=!busy && available>0,onClick={connection.requestDisplays(1)}) {Text("Add screen")}
@@ -54,6 +55,13 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
             Text(String.format(Locale.ROOT,"%,d pixels (%.2f MP) · capture %.2f MP",pixels,pixels/1e6,capturePixels/1e6),color=Color.White,fontSize=13.sp)
             if(host.setupRequired) Text("No virtual output backend is ready. Open the computer's Floatdesk tray → Virtual screen setup.",color=Color(0xFFFFD69A),fontSize=13.sp)
         }
+        monitors.firstOrNull()?.let {stream->
+            val sourceWidth=if(sizes.isEmpty()) stream.width else sizes.indices.maxOf {positions[it].first+sizes[it].first}-positions.minOf {it.first}
+            val percent=(100f*stream.width/sourceWidth.coerceAtLeast(1)).roundToInt()
+            Text("Stream ${stream.width} × ${stream.height} · $percent% scale",color=Color.White,fontSize=13.sp)
+        }
+        if(!state.ok) Text(state.message,color=Color(0xFFFFB4AB),fontSize=13.sp)
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(8.dp)) {
         if(setup) {
             Text("Virtual screen setup",color=Color.White,fontSize=18.sp)
             Text("On the computer, run: python3 scripts/virtual-display-setup.py --check\nIf no pool is available, use --write-bundle to prepare installation files. A compatible VKMS configfs kernel, administrator setup and a graphical-session restart are required. Existing pools are reused; Floatdesk never rebuilds kernel topology during use.",color=Color(0xFFB8D9EA),fontSize=13.sp)
@@ -63,7 +71,6 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
             Text(String.format(Locale.ROOT,"Visual spacing: %.1f%%",spacing*100),color=Color.White)
             androidx.compose.material3.Slider(value=spacing,onValueChange={onSpacing((it*1000).roundToInt()/1000f)},onValueChangeFinished=onSpacingFinished,valueRange=0f..0.15f,steps=149,enabled=!busy)
         }
-        monitors.firstOrNull()?.let { Text("Combined desktop — ${it.width} × ${it.height} streamed pixels",color=Color.White) }
         sizes.forEachIndexed { index,(width,height) ->
             val managed=screens?.getOrNull(index)?.managed ?: ((state.owned and (1 shl index))!=0)
             val role=when(screens?.getOrNull(index)?.role ?: state.roles.getOrNull(index)) {3->"Built-in display";2->"Physical display";1->"Virtual display";else->"Display"}
@@ -75,7 +82,6 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
                 Button(enabled=!busy,onClick={connection.requestDisplays(2,index)}) {Text("Remove")}
             }
         }
-        if(!state.ok || busy) Text(state.message,color=if(state.ok) Color(0xFFB8D9EA) else Color(0xFFFFB4AB),fontSize=13.sp)
         }
     }
     }

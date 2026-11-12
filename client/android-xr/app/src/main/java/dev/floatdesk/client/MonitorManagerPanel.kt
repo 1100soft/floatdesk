@@ -1,5 +1,7 @@
 package dev.floatdesk.client
 
+import kotlin.math.roundToInt
+import java.util.Locale
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -40,9 +42,9 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
         }
         ScreenArrangementEditor(state.screens,state.positions,busy,if(state.primary==0) 0 else Integer.numberOfTrailingZeros(state.primary)) {index,x,y->connection.requestDisplays(4,index,x,y)}
         if(state.screens.isNotEmpty()) {
-            Text("Visual spacing: ${(spacing*100).toInt()}%",color=Color.White)
-            androidx.compose.material3.Slider(value=spacing,onValueChange=onSpacing,onValueChangeFinished=onSpacingFinished,valueRange=0f..0.15f,enabled=!busy)
-            Text("Visual spacing keeps desktop edges connected. Empty space is transparent.",color=Color(0xFFB8D9EA),fontSize=12.sp)
+            Text(String.format(Locale.ROOT,"Visual spacing: %.1f%%",spacing*100),color=Color.White)
+            androidx.compose.material3.Slider(value=spacing,onValueChange={onSpacing((it*1000).roundToInt()/1000f)},onValueChangeFinished=onSpacingFinished,valueRange=0f..0.15f,steps=149,enabled=!busy)
+            Text("Reduces each screen’s width and height by this percentage, half on each edge. 10.0% leaves 90% of each dimension. Logical desktop edges stay connected; empty space is transparent.",color=Color(0xFFB8D9EA),fontSize=12.sp)
         }
         monitors.firstOrNull()?.let { Text("Combined desktop — ${it.width} × ${it.height} streamed pixels",color=Color.White) }
         state.screens.forEachIndexed { index,(width,height) ->

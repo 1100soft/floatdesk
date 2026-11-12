@@ -124,3 +124,5 @@ Sub-Hz modes are excluded from interactive selection after a real full-resolutio
 Layout edits now reject orphan screens, including corner-only attachment and deleting a bridge output. The host validates against fresh output geometry before mutation, with the editor rejecting invalid drops locally. Existing externally disconnected arrangements can be repaired incrementally.
 
 The client masks unused desktop areas to transparent in live video and snapshots. Workspace adds saved visual spacing with inverse mouse mapping; logical screen edges stay connected. Actual black screen content remains opaque. No gesture tuning is included.
+
+Visual spacing now explains its per-dimension reduction and uses matching 0.1% slider/display precision. Previously the continuous value was displayed as a truncated integer.

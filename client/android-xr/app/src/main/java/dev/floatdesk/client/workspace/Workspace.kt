@@ -168,7 +168,7 @@ private fun decode(json: JSONObject): WorkspaceFile {
         sphericalWarp = json.optBoolean("spherical_warp", false),
         eyeAiming = json.optBoolean("eye_aiming", json.optBoolean("mouse_control", false)),
         mouseGestures = json.optBoolean("mouse_gestures", false),
-        screenSpacing=json.optDouble("screen_spacing",0.0).toFloat().takeIf {it.isFinite()}?.coerceIn(0f,.15f) ?: 0f,
+        screenSpacing=json.optDouble("screen_spacing",0.0).toFloat().takeIf {it.isFinite()}?.coerceIn(0f,.15f)?.let { kotlin.math.round(it*1000)/1000f } ?: 0f,
     )
 }
 

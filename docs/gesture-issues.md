@@ -48,3 +48,9 @@ A separate host queue/pacing bug was fixed: capture start pacing improved a read
 5. Avoid speculative palm changes, new gesture delays, whole-hand reopening gates, or simultaneous threshold and transport changes. Any future calibration should be explicit and user-controlled.
 
 Multi-finger air swipes were tried and disabled at the user’s request because they were too easy to misfire. Wink activation and configurable host gesture/action mappings remain unimplemented future work. Pinch-hold scrolling and same-hand palm middle-pinch activation are the current design.
+
+### OS aiming selection — 12 November 2026
+
+The pinned Jetpack XR SDK exposes hand and gaze input sources, but no app-scoped override of Android XR's hand/eye aiming selection was found in its public SceneCore/runtime APIs. Mixed gaze-and-gesture events do not provide hover events. Floatdesk's custom screen targeting still uses native hand hover contacts; its own eye tracking and gesture processing do not force native hand-hover availability. Keeping identical hand targeting in mixed OS mode would require an independently generated hand ray and hit-test path, including two-hand grab acquisition. This is not implemented by changing session hand-tracking configuration or capturing pointers. Keep the working native coordinate conversion as the baseline.
+
+References: [input-source contract](https://developer.android.com/reference/kotlin/androidx/xr/scenecore/InputEvent.Source), [system aiming options](https://support.google.com/android-xr/answer/16637308).

@@ -328,11 +328,11 @@ impl X11Capture {
         self.rect.x < area_r && mine_r > area_x && self.rect.y < area_b && mine_b > area_y
     }
 
-    /// Socket the X server replies on. Closing it unblocks a grab that would
-    /// otherwise wait forever.
     pub fn pixel_size(&self) -> (u32, u32) {
         (self.width, self.height)
     }
+    /// Socket the X server replies on. Closing it unblocks a grab that would
+    /// otherwise wait forever.
     pub fn connection_fd(&self) -> i32 {
         use std::os::unix::io::AsRawFd;
         self.link.conn.stream().as_raw_fd()

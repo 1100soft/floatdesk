@@ -105,7 +105,7 @@ fn desktop_limits() -> (u32, u32) {
         })
         .unwrap_or((32767, 32767))
 }
-fn query() -> Result<Vec<Output>> {
+pub(super) fn query() -> Result<Vec<Output>> {
     let out = Command::new("xrandr").arg("--current").output()?;
     if !out.status.success() {
         return Err(Error::Msg("Cannot query XRandR outputs".into()));
@@ -134,7 +134,7 @@ fn ordered_sources(mut outputs: Vec<Output>) -> Result<Vec<(String, MonitorRect)
     }
     Ok(result)
 }
-fn virtual_name(name: &str) -> bool {
+pub(super) fn virtual_name(name: &str) -> bool {
     name.strip_prefix("Virtual-").is_some_and(|s| {
         !s.is_empty()
             && s.split('-')
@@ -747,6 +747,9 @@ impl MonitorPool {
         )?;
         let positions =
             moved_positions(&outputs, name, i32::from(x), i32::from(y), desktop_limits())?;
+        if super::arrange::move_positions(&positions)? {
+            return Ok(());
+        }
         if let Some((_, priorities)) = plasma_snapshot(&outputs) {
             return plasma_transaction(
                 positions

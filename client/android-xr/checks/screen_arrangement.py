@@ -8,6 +8,13 @@ root=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
 source=(root/'ScreenArrangement.kt').read_text().split('\n',1)[1]+'\n'+(root/'media/ScreenPresentation.kt').read_text().split('\n',1)[1]
 code=source+'''
 fun main() {
+ val drop=ArrangementDropHistory()
+ val a=DesktopScreen(100,0,100,100);val b=a.copy(x=150);val jitter=b.copy(x=158,y=8)
+ drop.begin(a,0);drop.record(b,200);drop.record(b,300);drop.record(jitter,380)
+ check(drop.finish(400)==b)
+ check(drop.finish(600)==jitter) // A deliberate held position eventually becomes the drop.
+ drop.begin(a,1000);drop.record(b,1200);check(drop.finish(1400)==b)
+ drop.clear();check(drop.finish(1500)==null)
  val full=ScreenPresentation()
  check(kotlin.math.abs(full.desktopPoint(.2f,.3f)!!.first-.2f)<.00001f)
  val layout=ScreenPresentation.from(listOf(100 to 100,100 to 100),listOf(-100 to 50,0 to 150),0f)

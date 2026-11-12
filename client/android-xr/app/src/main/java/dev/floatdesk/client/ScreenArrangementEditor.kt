@@ -22,6 +22,7 @@ import kotlin.math.roundToInt
 internal fun ScreenArrangementEditor(sizes:List<Pair<Int,Int>>,positions:List<Pair<Int,Int>>,busy:Boolean,primary:Int=0,limits:Pair<Int,Int> = 32767 to 32767,onMove:(Int,Int,Int)->Unit) {
     if(sizes.isEmpty() || sizes.size!=positions.size) return
     val screens=remember(sizes,positions) {sizes.mapIndexed {i,(w,h)->DesktopScreen(positions[i].first,positions[i].second,w,h)}}
+    val dropHistory=remember(screens) {ArrangementDropHistory()}
     var dragging by remember(screens) {mutableIntStateOf(-1)}
     var raw by remember(screens) {mutableStateOf(0f to 0f)}
     var preview by remember(screens) {mutableStateOf<DesktopScreen?>(null)}
@@ -45,18 +46,21 @@ internal fun ScreenArrangementEditor(sizes:List<Pair<Int,Int>>,positions:List<Pa
                 .border(2.dp,if(dragging==index && !validPreview || dragging!=index && (!connected[index] || overlaps[index])) Color(0xFFFF6B6B) else if(dragging==index) Color.Cyan else Color(0xFF8DAAC6))
                 .pointerInput(screens,busy,scale) {
                     if(!busy) detectDragGestures(
-                        onDragStart={dragging=index;raw=screen.x.toFloat() to screen.y.toFloat();preview=screen},
-                        onDragCancel={dragging=-1;preview=null},
-                        onDragEnd={
-                            val moved=preview
+                        orientationLock=null,
+                        onDragStart={_,start,_->dragging=index;raw=screen.x.toFloat() to screen.y.toFloat();preview=screen;dropHistory.begin(screen,start.uptimeMillis)},
+                        onDragCancel={dragging=-1;preview=null;dropHistory.clear()},
+                        onDragEnd={release->
+                            val moved=dropHistory.finish(release.uptimeMillis)
+                            dropHistory.clear()
                             if(moved!=null && canMoveScreen(screens,index,moved,primary,limits) && (moved.x!=screen.x || moved.y!=screen.y)) {
-                                waitingForApply=true;onMove(index,moved.x,moved.y)
+                                preview=moved;waitingForApply=true;onMove(index,moved.x,moved.y)
                             } else {dragging=-1;preview=null}
                         },
                         onDrag={change,delta->
                             change.consume()
                             raw=(raw.first+delta.x/density/scale) to (raw.second+delta.y/density/scale)
                             preview=snapScreen(screen.copy(x=raw.first.roundToInt(),y=raw.second.roundToInt()),screens.filterIndexed {i,_->i!=index},(14f/scale).roundToInt().coerceIn(24,160))
+                            preview?.let {dropHistory.record(it,change.uptimeMillis)}
                         },
                     )
                 },contentAlignment=Alignment.Center) {

@@ -52,3 +52,16 @@ internal fun arrangementViewport(screens:List<DesktopScreen>,width:Float,height:
     val scale=minOf(width/(right-left+screens.maxOf {it.width}*2f),height/(bottom-top+screens.maxOf {it.height}*2f)).coerceAtLeast(.001f)
     return ArrangementViewport(scale,(width-(left+right)*scale)/2,(height-(top+bottom)*scale)/2)
 }
+
+/** Preview stays live; release discards the final 100 ms of pinch-opening aim motion. */
+internal class ArrangementDropHistory(private val releaseWindowMs:Long=100) {
+    private val samples=java.util.ArrayDeque<Pair<Long,DesktopScreen>>()
+    fun begin(screen:DesktopScreen,at:Long) {samples.clear();record(screen,at)}
+    fun record(screen:DesktopScreen,at:Long) {
+        val time=maxOf(at,samples.peekLast()?.first ?: at)
+        samples.addLast(time to screen)
+        while(samples.size>64 || samples.size>2 && samples.elementAt(1).first<time-500) samples.removeFirst()
+    }
+    fun finish(at:Long):DesktopScreen? = samples.lastOrNull {it.first<=at-releaseWindowMs}?.second ?: samples.peekFirst()?.second
+    fun clear()=samples.clear()
+}

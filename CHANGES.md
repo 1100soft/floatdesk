@@ -136,3 +136,9 @@ The host now selects the lowest positive advertised virtual refresh, including s
 Workspace now has a pinned × close control, concise pixel totals and high-contrast resolution inputs. Resolution changes reflow connected output positions as needed and verify the resulting dimensions. Live video returns to opaque composition with exact geometric holes for transparent gaps, preserving the continuous native-ray path. Unanchored layouts persist a viewer reference, restore relative to the new XR session, and save atomically on pause/stop. Regression checks cover these geometry, blending and persistence contracts.
 
 Workspace’s × control now has a circular background. Status, core actions, content/capture pixel totals and stream dimensions/scale stay fixed while arrangement and resolution controls scroll. Capture quality and gaze-centered projection feasibility are documented; stream packing and spherical projection are unchanged.
+
+### Layout latency and release jitter
+
+Position edits now suspend virtual scanout inside a guarded native RandR transaction before changing framebuffer bounds, then restore the exact original modes. This avoids repeated low-rate waits across intermediate configurations. A live production move measured 6.2 seconds; the earlier KScreen bounds-change comparison took 93 seconds. Refresh rates remain unchanged. Add/remove/resolution changes retain the desktop backend, and driver pending-scanout waits can still delay position changes. Partial failures attempt to restore the original layout.
+
+Arrangement drops discard the final 100 ms of pinch-opening aim movement using input timestamps; preview remains live and sample history is bounded. Packed atlas streaming and view-adaptive detail remain proposals, with tradeoffs documented in `docs/multi-monitor.md`.

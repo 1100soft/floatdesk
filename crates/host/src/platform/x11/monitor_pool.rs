@@ -9,6 +9,7 @@ pub struct Output {
     pub name: String,
     pub primary: bool,
     pub quarter_turn: bool,
+    pub current_rate: Option<f32>,
     pub geometry: Option<(i32, i32, u32, u32)>,
     pub modes: Vec<(String, u16, u16, f32)>,
 }
@@ -35,6 +36,7 @@ pub fn parse_outputs(text: &str) -> Vec<Output> {
             if words[1] == "connected" {
                 outputs.push(Output {
                     name: words[0].into(),
+                    current_rate: None,
                     primary: words.contains(&"primary"),
                     quarter_turn: words
                         .iter()
@@ -58,6 +60,9 @@ pub fn parse_outputs(text: &str) -> Vec<Output> {
             };
             for rate in &words[1..] {
                 if let Ok(hz) = rate.trim_end_matches(['*', '+']).parse::<f32>() {
+                    if rate.contains('*') {
+                        output.current_rate = Some(hz);
+                    }
                     output.modes.push((words[0].into(), w, h, hz));
                 }
             }
@@ -65,16 +70,40 @@ pub fn parse_outputs(text: &str) -> Vec<Output> {
     }
     outputs
 }
-// Sub-Hz scanout can stall Plasma configuration for an entire multi-second flip.
-const MIN_INTERACTIVE_REFRESH_HZ: f32 = 1.0;
+// Always honor the lowest advertised positive rate; configuration runs off the control loop.
+const MIN_INTERACTIVE_REFRESH_HZ: f32 = 0.0;
 fn lowest_mode(output: &Output, width: u16, height: u16) -> Option<&(String, u16, u16, f32)> {
     output
         .modes
         .iter()
         .filter(|(_, w, h, hz)| {
-            *w == width && *h == height && hz.is_finite() && *hz >= MIN_INTERACTIVE_REFRESH_HZ
+            *w == width && *h == height && hz.is_finite() && *hz > MIN_INTERACTIVE_REFRESH_HZ
         })
         .min_by(|a, b| a.3.total_cmp(&b.3))
+}
+fn desktop_limits() -> (u32, u32) {
+    let text = Command::new("xrandr")
+        .arg("--current")
+        .output()
+        .ok()
+        .map(|r| String::from_utf8_lossy(&r.stdout).into_owned())
+        .unwrap_or_default();
+    let words: Vec<_> = text
+        .lines()
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .collect();
+    words
+        .iter()
+        .position(|w| *w == "maximum")
+        .and_then(|i| {
+            Some((
+                words.get(i + 1)?.parse().ok()?,
+                words.get(i + 3)?.parse().ok()?,
+            ))
+        })
+        .unwrap_or((32767, 32767))
 }
 fn query() -> Result<Vec<Output>> {
     let out = Command::new("xrandr").arg("--current").output()?;
@@ -88,13 +117,10 @@ fn ordered_sources(mut outputs: Vec<Output>) -> Result<Vec<(String, MonitorRect)
     let mut result = Vec::new();
     for output in outputs {
         if let Some((x, y, width, height)) = output.geometry {
-            if result.len() == 6 {
-                break;
-            }
             result.push((
                 output.name,
                 MonitorRect {
-                    index: result.len() as u8,
+                    index: u8::try_from(result.len()).unwrap_or(u8::MAX),
                     x,
                     y,
                     width,
@@ -262,6 +288,7 @@ fn moved_positions(
     name: &str,
     x: i32,
     y: i32,
+    limits: (u32, u32),
 ) -> Result<Vec<(String, i32, i32)>> {
     let placed: Vec<_> = outputs
         .iter()
@@ -280,11 +307,11 @@ fn moved_positions(
     let left = placed.iter().map(|r| r.1).min().unwrap_or(0).min(0);
     let top = placed.iter().map(|r| r.2).min().unwrap_or(0).min(0);
     if placed.iter().any(|r| {
-        i64::from(r.1) - i64::from(left) + i64::from(r.3) > 16384
-            || i64::from(r.2) - i64::from(top) + i64::from(r.4) > 16384
+        i64::from(r.1) - i64::from(left) + i64::from(r.3) > i64::from(limits.0)
+            || i64::from(r.2) - i64::from(top) + i64::from(r.4) > i64::from(limits.1)
     }) {
         return Err(Error::Msg(
-            "Arrangement exceeds the supported 16384-pixel desktop bounds".into(),
+            "Arrangement exceeds the X server’s framebuffer dimensions".into(),
         ));
     }
     Ok(placed
@@ -416,7 +443,7 @@ fn plasma_transaction(
             .map(|(i, (n, _))| format!("output.{n}.priority.{}", i + 1)),
     );
     let result = Command::new("timeout")
-        .args(["3", "kscreen-doctor"])
+        .args(["120", "kscreen-doctor"])
         .args(commands)
         .output()?;
     if !result.status.success() {
@@ -449,6 +476,7 @@ impl MonitorPool {
             .ok()
             .and_then(|rows| rows.into_iter().find(|o| o.primary))
             .map(|o| o.name);
+        let sources = &sources[..sources.len().min(6)];
         let names = sources.iter().map(|(n, _)| n.clone()).collect();
         let roles = sources.iter().map(|(n, _)| output_role(n)).collect();
         let mask = sources.iter().fold(0, |m, (n, r)| {
@@ -466,12 +494,43 @@ impl MonitorPool {
                 o.iter()
                     .filter(|o| virtual_name(&o.name) && o.geometry.is_none())
                     .count()
-                    .min(5) as u8
+                    .min(255) as u8
             })
             .unwrap_or(0)
     }
+    pub fn workspace_info(&self, request_id: u32, busy: bool, fps: u32) -> serde_json::Value {
+        let outputs = query().unwrap_or_default();
+        let screens:Vec<_>=outputs.iter().filter_map(|o|o.geometry.map(|(x,y,w,h)| {
+            let modes: BTreeSet<_>=o.modes.iter().filter(|m|m.3.is_finite() && m.3>0.0).map(|m|(m.1,m.2)).collect();
+            serde_json::json!({"name":o.name,"x":x,"y":y,"width":w,"height":h,"refreshHz":o.current_rate,"managed":self.owned.contains(&o.name),"primary":o.primary,"role":output_role(&o.name),"modes":modes})
+        })).collect();
+        let available = outputs
+            .iter()
+            .filter(|o| virtual_name(&o.name) && o.geometry.is_none())
+            .count();
+        let mem = std::fs::read_to_string("/proc/meminfo")
+            .unwrap_or_default()
+            .lines()
+            .find(|l| l.starts_with("MemAvailable:"))
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0)
+            * 1024;
+        let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let estimated = if mem > 0 {
+            (mem / 128).min(cpus as u64 * 1_000_000 * 60 / u64::from(fps.max(1)))
+        } else {
+            0
+        };
+        let modes: BTreeSet<_> = outputs
+            .iter()
+            .filter(|o| virtual_name(&o.name))
+            .flat_map(|o| o.modes.iter().filter(|m| m.3 > 0.0).map(|m| (m.1, m.2)))
+            .collect();
+        serde_json::json!({"type":"status","requestId":request_id,"busy":busy,"screens":screens,"available":available,"modes":modes,"availableMemoryBytes":mem,"cpuThreads":cpus,"recommendedPixels":estimated,"targetFps":fps,"estimate":"Rough planning estimate: available memory / 128 bytes per desktop pixel and 1 megapixel per CPU thread at 60 FPS. Advisory only; GPU, content and network can dominate.","desktopLimits":desktop_limits(),"setupRequired":!outputs.iter().any(|o|virtual_name(&o.name))})
+    }
     pub fn owned_mask(&self, sources: &[(String, MonitorRect)]) -> u8 {
-        sources.iter().fold(0, |mask, (name, r)| {
+        sources.iter().take(6).fold(0, |mask, (name, r)| {
             mask | if self.owned.contains(name) {
                 1 << r.index
             } else {
@@ -482,13 +541,13 @@ impl MonitorPool {
     /// Arrangement editing changes position only, including explicitly dragged physical screens.
     fn move_output(
         &self,
-        index: u8,
+        index: usize,
         x: i16,
         y: i16,
         sources: &[(String, MonitorRect)],
     ) -> Result<()> {
         let (name, _) = sources
-            .get(usize::from(index))
+            .get(index)
             .ok_or_else(|| Error::Msg("Unknown screen".into()))?;
         let outputs = query()?;
         let output = outputs
@@ -503,7 +562,8 @@ impl MonitorPool {
             &output.name,
             Some((i32::from(x), i32::from(y), current.2, current.3)),
         )?;
-        let positions = moved_positions(&outputs, name, i32::from(x), i32::from(y))?;
+        let positions =
+            moved_positions(&outputs, name, i32::from(x), i32::from(y), desktop_limits())?;
         if let Some((_, priorities)) = plasma_snapshot(&outputs) {
             return plasma_transaction(
                 positions
@@ -532,7 +592,7 @@ impl MonitorPool {
     pub fn apply(
         &mut self,
         action: u8,
-        index: u8,
+        index: usize,
         width: u16,
         height: u16,
         sources: &[(String, MonitorRect)],
@@ -540,11 +600,37 @@ impl MonitorPool {
         if action == 4 {
             return self.move_output(index, width as i16, height as i16, sources);
         }
-        let outputs = query()?;
-        let output = if action == 1 {
-            if sources.len() >= 6 {
-                return Err(Error::Msg("At most six screens can be streamed".into()));
+        let mut outputs = query()?;
+        if action == 1 || action == 3 {
+            let candidate = if action == 1 {
+                outputs
+                    .iter()
+                    .find(|o| virtual_name(&o.name) && o.geometry.is_none())
+            } else {
+                sources.get(index).and_then(|(n, _)| {
+                    outputs
+                        .iter()
+                        .find(|o| o.name == *n && self.owned.contains(n))
+                })
+            };
+            if candidate.is_some_and(|o| lowest_mode(o, width, height).is_none()) {
+                let script = std::env::var_os("FLOATDESK_DATA_DIR")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| {
+                        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+                    })
+                    .join("scripts/vkms/modes.py");
+                let status = Command::new("python3")
+                    .arg(script)
+                    .args(["--resolution", &width.to_string(), &height.to_string()])
+                    .status()?;
+                if !status.success() {
+                    return Err(Error::Msg("Could not provision requested X11 mode".into()));
+                }
+                outputs = query()?;
             }
+        }
+        let output = if action == 1 {
             outputs
                 .iter()
                 .find(|o| virtual_name(&o.name) && o.geometry.is_none())
@@ -556,8 +642,7 @@ impl MonitorPool {
                 })?
         } else {
             let name = &sources
-                .iter()
-                .find(|(_, r)| r.index == index)
+                .get(index)
                 .ok_or_else(|| Error::Msg("Unknown screen".into()))?
                 .0;
             if !self.owned.contains(name) {
@@ -776,14 +861,14 @@ mod tests {
         assert!(validate_connectivity(&rows, "Virtual-1-1", Some((0, 0, 100, 100))).is_err());
         assert!(validate_connectivity(&rows, "Virtual-1-1", Some((-100, 0, 100, 100))).is_ok());
         assert_eq!(
-            moved_positions(&rows, "Virtual-1-1", -100, 0).unwrap(),
+            moved_positions(&rows, "Virtual-1-1", -100, 0, (16384, 16384)).unwrap(),
             vec![("eDP-1".into(), 100, 0), ("Virtual-1-1".into(), 0, 0)]
         );
         assert_eq!(
-            moved_positions(&rows, "Virtual-1-1", 0, -100).unwrap(),
+            moved_positions(&rows, "Virtual-1-1", 0, -100, (16384, 16384)).unwrap(),
             vec![("eDP-1".into(), 0, 100), ("Virtual-1-1".into(), 0, 0)]
         );
-        assert!(moved_positions(&rows, "Virtual-1-1", -16384, 0).is_err());
+        assert!(moved_positions(&rows, "Virtual-1-1", -16384, 0, (16384, 16384)).is_err());
     }
     #[test]
     fn identities_and_order_do_not_follow_primary_or_position() {
@@ -799,11 +884,11 @@ mod tests {
         assert_eq!(output_role("Virtual-1-1"), 1);
     }
     #[test]
-    fn lowest_responsive_refresh_excludes_sub_hz() {
+    fn lowest_refresh_includes_sub_hz() {
         let output=parse_outputs("Virtual-1-1 connected\n   1920x1080_60 60.00\n   1920x1080_0.1 0.10\n   1920x1080_1 1.00\n   1280x720_0.1 0.10\n").remove(0);
-        assert_eq!(lowest_mode(&output, 1920, 1080).unwrap().3, 1.0);
+        assert_eq!(lowest_mode(&output, 1920, 1080).unwrap().3, 0.1);
         assert!(lowest_mode(&output, 2560, 1600).is_none());
-        assert!(lowest_mode(&output, 1280, 720).is_none());
+        assert_eq!(lowest_mode(&output, 1280, 720).unwrap().3, 0.1);
     }
     #[test]
     fn combines_arrangement_and_bounds_stream_size() {

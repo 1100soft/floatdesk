@@ -23,6 +23,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Open the desktop tray with service controls, output status and virtual-display setup.
+    Tray,
     /// Report RandR, capture extensions, and H.264 encoders. Does not change the screen.
     Doctor,
     /// Create logical monitors and stream them until Ctrl-C.
@@ -93,6 +95,19 @@ fn main() {
 
 fn run(cli: Cli) -> Result<()> {
     match cli.command {
+        Command::Tray => {
+            let root = std::env::var_os("FLOATDESK_DATA_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+            let status = std::process::Command::new("python3")
+                .arg(root.join("scripts/floatdesk-tray.py"))
+                .status()?;
+            if !status.success() {
+                return Err(crate::error::Error::Msg(
+                    "Tray failed; install PySide6 for the selected Python interpreter".into(),
+                ));
+            }
+        }
         Command::Doctor => {
             let report = platform::x11::doctor_report()?;
             for line in report.lines {

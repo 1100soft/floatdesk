@@ -41,7 +41,7 @@ fun main() {
  check(snapScreen(DesktopScreen(200,310,1280,720),listOf(first),64).y==360)
  check(snapScreen(DesktopScreen(2250,400,1920,1080),listOf(first),64)==DesktopScreen(2250,400,1920,1080))
  check(snapScreen(DesktopScreen(-20,-40,1920,1080),emptyList(),64)==DesktopScreen(-20,-40,1920,1080))
- check(snapScreen(DesktopScreen(20000,20000,1920,1080),emptyList(),64)==DesktopScreen(16384,16384,1920,1080))
+ check(snapScreen(DesktopScreen(20000,20000,1920,1080),emptyList(),64)==DesktopScreen(20000,20000,1920,1080))
 }
 '''
 lib=Path(sys.argv[1]);stdlib=next(lib.glob('kotlin-stdlib-*.jar'))

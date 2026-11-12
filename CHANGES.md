@@ -128,3 +128,7 @@ The client masks unused desktop areas to transparent in live video and snapshots
 Visual spacing now explains its per-dimension reduction and uses matching 0.1% slider/display precision. Previously the continuous value was displayed as a truncated integer.
 
 Screen edits now reject overlapping output rectangles as well as orphan screens. The arrangement map centers/fits the screen union with space on every side, and adds edge-to-midpoint snapping. Moving beyond the top/left translates the full logical arrangement atomically to valid X11 coordinates while retaining screen priorities.
+
+### Host capabilities and tray
+
+The host now selects the lowest positive advertised virtual refresh, including sub-Hz modes. Slow display changes execute in a worker instead of blocking control/repair/heartbeat processing. Workspace receives a named output catalogue with actual modes and refresh, supports custom mode provisioning, and shows an advisory memory/CPU pixel estimate. The fixed client count/resolution choices and six-rectangle mask restriction are removed. A Python/PySide6 tray provides service controls, logs, output status and authorized first-time setup; server startup also attempts unprivileged backend preparation. Real kernel, X11, decoder and transport limits remain.

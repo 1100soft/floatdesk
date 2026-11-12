@@ -32,6 +32,7 @@ pub const KIND_MONITOR_COMMAND: u8 = 11;
 pub const KIND_MONITOR_STATUS: u8 = 12;
 pub const KIND_STREAM_STATE: u8 = 13;
 pub const KIND_VIDEO_NACK: u8 = 14;
+pub const KIND_WORKSPACE: u8 = 15;
 pub const BEACON_PORT: u16 = 47001;
 
 const CURSOR_FIXED: usize = 38;
@@ -123,6 +124,9 @@ pub enum ControlPacket {
         y: f32,
         sequence: u32,
     },
+    Workspace {
+        json: String,
+    },
     MonitorCommand {
         request_id: u32,
         action: u8,
@@ -183,6 +187,7 @@ impl ControlPacket {
             Self::ClientHello { .. } => KIND_CLIENT_HELLO,
             Self::HostHello { .. } => KIND_HOST_HELLO,
             Self::Cursor(_) => KIND_CURSOR,
+            Self::Workspace { .. } => KIND_WORKSPACE,
             Self::MonitorCommand { .. } => KIND_MONITOR_COMMAND,
             Self::MonitorStatus { .. } => KIND_MONITOR_STATUS,
             Self::StreamState { .. } => KIND_STREAM_STATE,
@@ -200,6 +205,7 @@ impl ControlPacket {
     fn encode_payload(&self) -> Vec<u8> {
         let mut w = Vec::new();
         match self {
+            Self::Workspace { json } => w.extend_from_slice(json.as_bytes()),
             Self::ClientHello { name, video_port } => {
                 write_name(&mut w, name);
                 w.extend_from_slice(&video_port.to_le_bytes());
@@ -518,6 +524,16 @@ pub fn decode_packet(bytes: &[u8]) -> Result<ControlPacket, ProtocolError> {
                 sequence: u32::from_le_bytes(p[9..13].try_into().unwrap()),
             })
         }
+        KIND_WORKSPACE => {
+            if p.len() > 60000 {
+                return Err(ProtocolError::Payload(kind));
+            }
+            Ok(ControlPacket::Workspace {
+                json: std::str::from_utf8(p)
+                    .map_err(|_| ProtocolError::Payload(kind))?
+                    .into(),
+            })
+        }
         KIND_MONITOR_COMMAND => {
             if p.len() != 10 || p[4] > 4 || (p[4] != 1 && p[5] >= 6) {
                 return Err(ProtocolError::Payload(kind));
@@ -768,6 +784,18 @@ fn read_name(p: &[u8]) -> Option<(String, &[u8])> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn workspace_json_roundtrip_and_utf8_validation() {
+        let packet = ControlPacket::Workspace {
+            json: "{\"type\":\"status\"}".into(),
+        };
+        assert!(
+            matches!(decode_packet(&packet.encode()).unwrap(),ControlPacket::Workspace{json} if json.contains("status"))
+        );
+        let mut invalid = ControlPacket::Workspace { json: "x".into() }.encode();
+        *invalid.last_mut().unwrap() = 255;
+        assert!(decode_packet(&invalid).is_err());
+    }
     #[test]
     fn client_hello_roundtrip_and_magic() {
         let packet = ControlPacket::ClientHello {

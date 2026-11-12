@@ -11,8 +11,8 @@ internal fun snapScreen(screen:DesktopScreen,others:List<DesktopScreen>,threshol
         return candidates.minByOrNull {abs(it-start)}?.takeIf {abs(it-start)<=threshold} ?: start
     }
     return screen.copy(
-        x=axis(screen.x,screen.width,others.map {it.x to it.width}).coerceIn(-16384,16384),
-        y=axis(screen.y,screen.height,others.map {it.y to it.height}).coerceIn(-16384,16384),
+        x=axis(screen.x,screen.width,others.map {it.x to it.width}).coerceIn(-32767,32767),
+        y=axis(screen.y,screen.height,others.map {it.y to it.height}).coerceIn(-32767,32767),
     )
 }
 
@@ -29,12 +29,12 @@ internal fun connectedScreens(screens:List<DesktopScreen>,primary:Int):List<Bool
     }
     return reached
 }
-internal fun canMoveScreen(screens:List<DesktopScreen>,index:Int,moved:DesktopScreen,primary:Int):Boolean {
+internal fun canMoveScreen(screens:List<DesktopScreen>,index:Int,moved:DesktopScreen,primary:Int,limits:Pair<Int,Int> = 32767 to 32767):Boolean {
     val proposed=screens.mapIndexed {i,r->if(i==index) moved else r}
     if(overlappingScreens(proposed).any {it}) return false
     if(proposed.maxOf {it.x+it.width}-proposed.minOf {it.x}<1 ||
-       proposed.maxOf {it.x+it.width}-minOf(0,proposed.minOf {it.x})>16384 ||
-       proposed.maxOf {it.y+it.height}-minOf(0,proposed.minOf {it.y})>16384) return false
+       proposed.maxOf {it.x+it.width}-minOf(0,proposed.minOf {it.x})>limits.first ||
+       proposed.maxOf {it.y+it.height}-minOf(0,proposed.minOf {it.y})>limits.second) return false
     val previous=connectedScreens(screens,primary).count {!it}
     val next=connectedScreens(screens.mapIndexed {i,r->if(i==index) moved else r},primary).count {!it}
     return next==0 || previous>0 && next<previous

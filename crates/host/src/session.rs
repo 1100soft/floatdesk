@@ -128,6 +128,14 @@ pub fn serve(opts: ServeOpts) -> Result<()> {
     let _epoch = epoch_ns();
     let mut display = X11Display::open()?;
     let mut pool = MonitorPool::new();
+    if opts.existing {
+        let root = std::env::var_os("FLOATDESK_DATA_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+        let _ = std::process::Command::new("python3")
+            .arg(root.join("scripts/auto-virtual-displays.py"))
+            .status();
+    }
     let sources = if opts.existing {
         match pool.sources() {
             Ok(sources) => sources,
@@ -292,6 +300,7 @@ fn display_status(
     ok: bool,
     message: String,
 ) -> ControlPacket {
+    let sources = &sources[..sources.len().min(6)];
     let (names, roles, primary) = pool.map_or((Vec::new(), Vec::new(), 0), |p| p.identity(sources));
     ControlPacket::MonitorStatus {
         request_id,
@@ -311,6 +320,48 @@ fn display_status(
             .collect(),
         message,
     }
+}
+
+fn publish_workspace(
+    pool: Option<&MonitorPool>,
+    socket: &UdpSocket,
+    to: SocketAddr,
+    id: u32,
+    busy: bool,
+    fps: u32,
+) {
+    if let Some(pool) = pool {
+        let json = pool.workspace_info(id, busy, fps).to_string();
+        if json.len() <= 60000 {
+            let _ = socket.send_to(&ControlPacket::Workspace { json }.encode(), to);
+        }
+    }
+}
+fn update_streams(
+    shared: &Arc<Shared>,
+    socket: &UdpSocket,
+    opts: &ServeOpts,
+    sources: &[(String, MonitorRect)],
+    monitors: &mut Vec<MonitorRect>,
+    hellos: &mut Vec<MonitorHello>,
+    threads: &mut Vec<thread::JoinHandle<()>>,
+) -> Result<()> {
+    *shared.screens.write().unwrap_or_else(|e| e.into_inner()) =
+        sources.iter().map(|(_, r)| *r).collect();
+    let next = vec![desktop_rect(sources)?];
+    if next != *monitors {
+        stop_streams(shared, threads);
+        *monitors = next;
+        *hellos = source_hellos(monitors, sources);
+        for r in monitors.iter() {
+            shared.stream_active[r.index as usize].store(true, Ordering::Relaxed);
+        }
+        *threads = launch_streams(shared, monitors, hellos, opts);
+        send_hello(shared, socket, hellos);
+    } else {
+        send_reload(shared, socket, false);
+    }
+    Ok(())
 }
 
 fn run(
@@ -415,6 +466,11 @@ fn run(
     let mut last_stats = Instant::now();
     let mut last_progress = [0u64; 6];
     let started = Instant::now();
+    let mut pending_display: Option<(
+        SocketAddr,
+        u32,
+        thread::JoinHandle<(MonitorPool, Result<()>)>,
+    )> = None;
     let mut scratch = [0u8; 2048];
     while !shared.stop.load(Ordering::Relaxed) {
         if opts
@@ -426,14 +482,50 @@ fn run(
         loop {
             match socket.recv_from(&mut scratch) {
                 Ok((size, from)) => {
-                    if let Ok(ControlPacket::MonitorCommand {
-                        request_id,
-                        action,
-                        index,
-                        width,
-                        height,
-                    }) = floatdesk_protocol::decode_packet(&scratch[..size])
-                    {
+                    let packet = floatdesk_protocol::decode_packet(&scratch[..size]);
+                    let command = match &packet {
+                        Ok(ControlPacket::MonitorCommand {
+                            request_id,
+                            action,
+                            index,
+                            width,
+                            height,
+                        }) => Some((*request_id, *action, usize::from(*index), *width, *height)),
+                        Ok(ControlPacket::Workspace { json }) => {
+                            serde_json::from_str::<serde_json::Value>(json)
+                                .ok()
+                                .and_then(|v| {
+                                    if v["type"] != "command" {
+                                        return None;
+                                    }
+                                    let id = u32::try_from(v["requestId"].as_u64()?).ok()?;
+                                    let action = u8::try_from(v["action"].as_u64()?).ok()?;
+                                    if action > 4 {
+                                        return None;
+                                    }
+                                    let index = if action == 0 || action == 1 {
+                                        0
+                                    } else {
+                                        sources.iter().position(|(n, _)| {
+                                            Some(n.as_str()) == v["name"].as_str()
+                                        })?
+                                    };
+                                    let width = if action == 4 {
+                                        i16::try_from(v["width"].as_i64()?).ok()? as u16
+                                    } else {
+                                        u16::try_from(v["width"].as_u64()?).ok()?
+                                    };
+                                    let height = if action == 4 {
+                                        i16::try_from(v["height"].as_i64()?).ok()? as u16
+                                    } else {
+                                        u16::try_from(v["height"].as_u64()?).ok()?
+                                    };
+                                    Some((id, action, index, width, height))
+                                })
+                        }
+                        _ => None,
+                    };
+                    if let Some((request_id, action, index, width, height)) = command {
                         let allowed = shared
                             .client
                             .read()
@@ -450,73 +542,66 @@ fn run(
                             let _ = socket.send_to(reply, from);
                             continue;
                         }
+                        if pending_display.is_some() {
+                            continue;
+                        }
+                        if action != 0 {
+                            if let Some(owner) = pool.as_deref_mut() {
+                                let mut worker_pool = std::mem::replace(owner, MonitorPool::new());
+                                let source_snapshot = sources.clone();
+                                pointer.release();
+                                send_reload(&shared, &socket, true);
+                                let worker = thread::spawn(move || {
+                                    let result = worker_pool.apply(
+                                        action,
+                                        index,
+                                        width,
+                                        height,
+                                        &source_snapshot,
+                                    );
+                                    (worker_pool, result)
+                                });
+                                pending_display = Some((from, request_id, worker));
+                                continue;
+                            }
+                        }
                         let mut ok = true;
                         let mut message = String::from("Displays ready");
-                        let refreshed = if action == 0 {
-                            pool.as_deref().map(|p| p.sources())
-                        } else {
-                            None
-                        };
-                        let topology_changed =
-                            matches!(&refreshed, Some(Ok(next)) if next != &sources);
-                        if let Some(Err(error)) = &refreshed {
+                        if let Some(p) = pool.as_deref() {
+                            match p.sources() {
+                                Ok(next) => {
+                                    sources = next;
+                                    update_streams(
+                                        &shared,
+                                        &socket,
+                                        opts,
+                                        &sources,
+                                        &mut monitors,
+                                        &mut hellos,
+                                        &mut threads,
+                                    )?;
+                                }
+                                Err(error) => {
+                                    ok = false;
+                                    message = error.to_string();
+                                }
+                            }
+                        } else if action != 0 {
                             ok = false;
-                            message = error.to_string();
+                            message = "Display management requires --existing".into();
                         }
-                        if action != 0 || topology_changed {
-                            pointer.release();
-                            send_reload(&shared, &socket, true);
-                            let previous_bounds = monitors.clone();
-                            let result = if action == 0 {
-                                Ok(())
-                            } else {
-                                pool.as_deref_mut()
-                                    .ok_or_else(|| {
-                                        Error::Msg("Display management requires --existing".into())
-                                    })
-                                    .and_then(|p| p.apply(action, index, width, height, &sources))
-                            };
-                            if let Err(error) = result {
-                                ok = false;
-                                message = error.to_string();
-                            }
-                            if let Some(p) = pool.as_deref() {
-                                match p.sources() {
-                                    Ok(next) => {
-                                        sources = next;
-                                        monitors = vec![desktop_rect(&sources)?];
-                                    }
-                                    Err(error) => {
-                                        ok = false;
-                                        message = error.to_string();
-                                    }
-                                }
-                            }
-                            *shared.screens.write().unwrap_or_else(|e| e.into_inner()) =
-                                if sources.is_empty() {
-                                    monitors.clone()
-                                } else {
-                                    sources.iter().map(|(_, r)| *r).collect()
-                                };
-                            topology_epoch = Instant::now();
-                            if monitors != previous_bounds {
-                                stop_streams(&shared, &mut threads);
-                                hellos = source_hellos(&monitors, &sources);
-                                for r in &monitors {
-                                    shared.stream_active[r.index as usize]
-                                        .store(true, Ordering::Relaxed);
-                                }
-                                threads = launch_streams(&shared, &monitors, &hellos, opts);
-                                send_hello(&shared, &socket, &hellos);
-                            } else {
-                                send_reload(&shared, &socket, false);
-                            }
-                        }
-
                         let reply =
                             display_status(pool.as_deref(), &sources, request_id, ok, message)
                                 .encode();
                         let _ = socket.send_to(&reply, from);
+                        publish_workspace(
+                            pool.as_deref(),
+                            &socket,
+                            from,
+                            request_id,
+                            false,
+                            opts.fps,
+                        );
                         replies.push_back((from, request_id, reply));
                         if replies.len() > 32 {
                             replies.pop_front();
@@ -537,8 +622,50 @@ fn run(
                 Err(err) => return Err(err.into()),
             }
         }
+        if pending_display
+            .as_ref()
+            .is_some_and(|(_, _, w)| w.is_finished())
+        {
+            let (from, id, worker) = pending_display.take().unwrap();
+            let (finished, result) = worker
+                .join()
+                .map_err(|_| Error::Msg("Display worker panicked".into()))?;
+            if let Some(owner) = pool.as_deref_mut() {
+                *owner = finished;
+            }
+            let mut ok = result.is_ok();
+            let mut message = result
+                .err()
+                .map_or_else(|| "Displays ready".into(), |e| e.to_string());
+            if let Some(p) = pool.as_deref() {
+                match p.sources() {
+                    Ok(next) => sources = next,
+                    Err(e) => {
+                        ok = false;
+                        message = e.to_string();
+                    }
+                }
+            }
+            update_streams(
+                &shared,
+                &socket,
+                opts,
+                &sources,
+                &mut monitors,
+                &mut hellos,
+                &mut threads,
+            )?;
+            topology_epoch = Instant::now();
+            let reply = display_status(pool.as_deref(), &sources, id, ok, message).encode();
+            let _ = socket.send_to(&reply, from);
+            publish_workspace(pool.as_deref(), &socket, from, id, false, opts.fps);
+            replies.push_back((from, id, reply));
+            if replies.len() > 32 {
+                replies.pop_front();
+            }
+        }
         if let Ok((observed, next)) = topology_rx.try_recv() {
-            if observed > topology_epoch && next != sources {
+            if pending_display.is_none() && observed > topology_epoch && next != sources {
                 tracing::info!("desktop arrangement changed; reconfiguring capture");
                 pointer.release();
                 send_reload(&shared, &socket, true);
@@ -573,7 +700,7 @@ fn run(
                     );
                     let _ = socket.send_to(&status.encode(), client.control);
                 }
-            } else {
+            } else if pending_display.is_none() {
                 send_reload(&shared, &socket, false);
             }
         }
@@ -582,6 +709,18 @@ fn run(
             send_hello(&shared, &socket, &hellos);
             if !opts.listen.ip().is_loopback() {
                 send_beacon(opts.listen.port());
+            }
+            if pending_display.is_none() {
+                if let Some(client) = shared
+                    .client
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                {
+                    publish_workspace(pool.as_deref(), &socket, client.control, 0, false, opts.fps);
+                }
+            } else {
+                send_reload(&shared, &socket, true);
             }
             last_hello = Instant::now();
         }
@@ -623,6 +762,13 @@ fn run(
             last_stats = Instant::now();
         }
         thread::sleep(Duration::from_millis(8));
+    }
+    if let Some((_, _, worker)) = pending_display.take() {
+        if let Ok((finished, _)) = worker.join() {
+            if let Some(owner) = pool.as_deref_mut() {
+                *owner = finished;
+            }
+        }
     }
     shared.stop.store(true, Ordering::Relaxed);
     pointer.release();

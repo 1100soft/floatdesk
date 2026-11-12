@@ -133,12 +133,17 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"video"),0)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(program,"textureMatrix"),1,false,transform,0)
         val mapping=presentation
-        GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"screenCount"),mapping.rects.size/4)
-        GLES20.glUniform4fv(GLES20.glGetUniformLocation(program,"screenRects[0]"),mapping.rects.size/4,mapping.rects,0)
+        GLES20.glClearColor(0f,0f,0f,0f);GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(program,"contentScale"),1f-mapping.spacing.coerceIn(0f,.15f))
         val position=GLES20.glGetAttribLocation(program,"position")
         GLES20.glEnableVertexAttribArray(position); GLES20.glVertexAttribPointer(position,2,GLES20.GL_FLOAT,false,0,vertices)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP,0,4)
+        // Submit bounded uniform batches, rather than imposing an output-count limit.
+        for(start in 0 until mapping.rects.size/4 step 6) {
+            val count=minOf(6,mapping.rects.size/4-start)
+            GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"screenCount"),count)
+            GLES20.glUniform4fv(GLES20.glGetUniformLocation(program,"screenRects[0]"),count,mapping.rects,start*4)
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP,0,4)
+        }
         drawInk(w[0],h[0])
         check(EGL14.eglSwapBuffers(display,window)) { "video swap failed" }
         lastDraw=System.nanoTime()
@@ -235,6 +240,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             varying vec2 uv;
             void main() {
                 vec2 point=vec2(uv.x,1.0-uv.y);
+                bool found=false;
                 gl_FragColor=vec4(0.0);
                 for(int i=0;i<6;i++) {
                     if(i<screenCount) {
@@ -244,10 +250,12 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                         if(source.x>=rect.x && source.x<=rect.z && source.y>=rect.y && source.y<=rect.w) {
                             vec2 sample=(textureMatrix*vec4(source.x,1.0-source.y,0.0,1.0)).xy;
                             gl_FragColor=vec4(texture2D(video,sample).rgb,1.0);
+                            found=true;
                             break;
                         }
                     }
                 }
+                if(!found) discard;
             }
         """
         private const val INK_VERTEX="""

@@ -29,6 +29,7 @@ internal class DeskConnection(
 
     val displayState=mutableStateOf(Packet.MonitorStatus(0,true,0,0,"Checking available displays…"))
     val displayBusy=mutableStateOf(false)
+    val workspaceInfo=mutableStateOf<WorkspaceInfo?>(null)
     private val screenPresentation=AtomicReference(ScreenPresentation())
     private var screenSpacing=0f
     val reloading=mutableStateOf(false)
@@ -111,6 +112,7 @@ internal class DeskConnection(
         decoders.values.forEach { it.stop() }
         decoders.clear()
         currentMonitors=emptyList()
+        screenPresentation.set(ScreenPresentation())
         monitorPending.set(0)
         videoPending.set(false);decoderGeneration.incrementAndGet()
         videos.forEach { runCatching { it.close() } }
@@ -126,6 +128,7 @@ internal class DeskConnection(
             monitors.value = emptyList()
             cursors.value = emptyMap()
             displayBusy.value = false
+            workspaceInfo.value=null
             reloading.value=false
             status.value = "Disconnected"
         }
@@ -142,7 +145,7 @@ internal class DeskConnection(
         if(!monitorPending.compareAndSet(0,-1)) return
         val id=monitorSequence.incrementAndGet()
         monitorPending.set(id);displayBusy.value=true
-        val packet=Protocol.monitorCommand(id,action,index,width,height)
+        val packet=monitorCommand(id,action,index,width,height)
         handler.post { send(packet) }
         for(delay in listOf(300L,900L,1800L,3000L,5000L,8000L,12000L,18000L)) handler.postDelayed({ if(monitorPending.get()==id) send(packet) },delay)
         main.postDelayed({ if(monitorPending.get()==id) {
@@ -157,6 +160,12 @@ internal class DeskConnection(
 
     }
 
+    private fun monitorCommand(id:Int,action:Int,index:Int,width:Int,height:Int):ByteArray {
+        val info=workspaceInfo.value ?: return Protocol.monitorCommand(id,action,index,width,height)
+        val name=info.screens.getOrNull(index)?.name ?: ""
+        return Protocol.workspace(org.json.JSONObject().put("type","command").put("requestId",id).put("action",action).put("name",name).put("width",width).put("height",height).toString())
+    }
+
     @Synchronized
     fun attachSurface(index: Int, surface: Surface) {
         activeSurfaces[index]=surface
@@ -168,7 +177,7 @@ internal class DeskConnection(
     fun configurePresentation(spacing:Float) {
         screenSpacing=spacing
         val state=displayState.value
-        val value=if(currentMonitors.size>1) ScreenPresentation() else ScreenPresentation.from(state.screens,state.positions,spacing)
+        val value=if(currentMonitors.size>1) ScreenPresentation() else workspaceInfo.value?.let {info->ScreenPresentation.from(info.screens.map {it.width to it.height},info.screens.map {it.x to it.y},spacing)} ?: ScreenPresentation.from(state.screens,state.positions,spacing)
         screenPresentation.set(value);decoders.values.forEach {it.presentation(value)}
     }
     fun desktopPoint(monitor:Int,u:Float,v:Float):Pair<Float,Float>? =
@@ -216,6 +225,11 @@ internal class DeskConnection(
                     is Packet.MonitorStatus -> {
                         if(incoming.address==pendingRemote?.address && incoming.port==pendingRemote?.port) main.post {
                             if((decoded.requestId==0 && monitorPending.get()==0) || (decoded.requestId!=0 && monitorPending.compareAndSet(decoded.requestId,0))) {displayBusy.value=false;displayState.value=decoded;configurePresentation(screenSpacing)}
+                        }
+                    }
+                    is Packet.Workspace -> {
+                        if(incoming.address==pendingRemote?.address && incoming.port==pendingRemote?.port) {
+                            WorkspaceInfo.parse(decoded.json)?.let {info->main.post {workspaceInfo.value=info;configurePresentation(screenSpacing)}}
                         }
                     }
                     is Packet.Cursor -> onCursor(decoded.fragment)

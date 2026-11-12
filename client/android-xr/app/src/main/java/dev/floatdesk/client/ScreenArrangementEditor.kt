@@ -19,7 +19,7 @@ import androidx.compose.ui.zIndex
 import kotlin.math.roundToInt
 
 @Composable
-internal fun ScreenArrangementEditor(sizes:List<Pair<Int,Int>>,positions:List<Pair<Int,Int>>,busy:Boolean,primary:Int=0,onMove:(Int,Int,Int)->Unit) {
+internal fun ScreenArrangementEditor(sizes:List<Pair<Int,Int>>,positions:List<Pair<Int,Int>>,busy:Boolean,primary:Int=0,limits:Pair<Int,Int> = 32767 to 32767,onMove:(Int,Int,Int)->Unit) {
     if(sizes.isEmpty() || sizes.size!=positions.size) return
     val screens=remember(sizes,positions) {sizes.mapIndexed {i,(w,h)->DesktopScreen(positions[i].first,positions[i].second,w,h)}}
     var dragging by remember(screens) {mutableIntStateOf(-1)}
@@ -29,7 +29,7 @@ internal fun ScreenArrangementEditor(sizes:List<Pair<Int,Int>>,positions:List<Pa
     LaunchedEffect(busy,screens) {if(!busy && waitingForApply) {dragging=-1;preview=null;waitingForApply=false}}
     val connected=connectedScreens(screens,primary)
     val overlaps=overlappingScreens(screens)
-    val validPreview=preview?.let {dragging in screens.indices && canMoveScreen(screens,dragging,it,primary)} ?: true
+    val validPreview=preview?.let {dragging in screens.indices && canMoveScreen(screens,dragging,it,primary,limits)} ?: true
     val density=LocalDensity.current.density
     Text("Drag screens; release to apply. Edges, centres and half-screen positions snap into alignment.",color=Color.White,fontSize=13.sp)
     if(overlaps.any {it}) Text("Overlapping screens: move them apart.",color=Color(0xFFFFB4AB),fontSize=13.sp)
@@ -50,7 +50,7 @@ internal fun ScreenArrangementEditor(sizes:List<Pair<Int,Int>>,positions:List<Pa
                         onDragCancel={dragging=-1;preview=null},
                         onDragEnd={
                             val moved=preview
-                            if(moved!=null && canMoveScreen(screens,index,moved,primary) && (moved.x!=screen.x || moved.y!=screen.y)) {
+                            if(moved!=null && canMoveScreen(screens,index,moved,primary,limits) && (moved.x!=screen.x || moved.y!=screen.y)) {
                                 waitingForApply=true;onMove(index,moved.x,moved.y)
                             } else {dragging=-1;preview=null}
                         },

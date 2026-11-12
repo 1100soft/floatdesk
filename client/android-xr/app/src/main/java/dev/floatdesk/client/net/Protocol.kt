@@ -66,6 +66,8 @@ internal object Protocol {
         return frame(KIND_TOUCHPAD_STATE,payload.array())
     }
 
+    fun workspace(json:String):ByteArray=frame(15,json.toByteArray(Charsets.UTF_8))
+
     fun monitorCommand(id: Int,action: Int,index: Int,width: Int,height: Int): ByteArray {
         require(action in 0..4 && index in 0..5)
         val p=ByteBuffer.allocate(10).order(ByteOrder.LITTLE_ENDIAN)
@@ -92,6 +94,7 @@ internal object Protocol {
         if (payloadLen < 0 || bytes.size != HEADER + payloadLen) return null
         val payload = bytes.copyOfRange(HEADER, bytes.size)
         return when (kind) {
+            15 -> if(payload.size<=60000) Packet.Workspace(String(payload,Charsets.UTF_8)) else null
             KIND_HOST_HELLO -> decodeHostHello(payload)
             KIND_CURSOR -> decodeCursor(payload)
             KIND_BEACON -> decodeBeacon(payload)
@@ -239,6 +242,7 @@ internal data class CursorFragment(
 )
 
 internal sealed interface Packet {
+    data class Workspace(val json:String):Packet
     data class MonitorStatus(val requestId:Int,val ok:Boolean,val available:Int,val owned:Int,val message:String,val screens:List<Pair<Int,Int>> = emptyList(),val positions:List<Pair<Int,Int>> = emptyList(),val names:List<String> = emptyList(),val roles:List<Int> = emptyList(),val primary:Int=0):Packet
     data class StreamState(val reloading:Boolean):Packet
     data class HostHello(val sessionId: Long, val monitors: List<MonitorHello>) : Packet

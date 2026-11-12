@@ -6,7 +6,9 @@ This tree is the LAN proof of concept: RandR 1.5 regions, MIT-SHM capture, XDama
 
 ## Host
 
-Use **Workspace → Screens** in the headset to add, resize or remove independent desktop screens from a pre-provisioned VKMS pool. A pre-provisioned pool supports this without a reboot or privileged commands during use. Drag screen rectangles in Workspace to arrange them with snapping. External layout changes reload automatically. See [multi-monitor behavior](docs/multi-monitor.md) and [first-time setup](docs/virtual-display-setup.md).
+Run `floatdesk tray` (requires PySide6), or install a desktop launcher with `python3 scripts/install-tray.py`. The tray offers service controls, output status, logs and first-time backend setup.
+
+Use **Workspace → Screens** in the headset to add, resize or remove independent desktop screens from a pre-provisioned VKMS pool. A pre-provisioned pool supports this without a reboot or privileged commands during use. Drag screen rectangles in Workspace to arrange them with snapping. Workspace lists actual modes, accepts custom dimensions, and shows an advisory resource estimate without imposing a product count/resolution limit. External layout changes reload automatically. See [multi-monitor behavior](docs/multi-monitor.md) and [first-time setup](docs/virtual-display-setup.md).
 
 Requires an X11 session (`DISPLAY`) and GStreamer with an H.264 encoder (`x264enc` is the portable fallback; `vah264enc`, `vaapih264enc`, and `nvh264enc` are used automatically when present).
 
@@ -19,7 +21,7 @@ cargo build --release
 
 `doctor` only reads the server. `trial` creates one 1280×720 logical monitor named `Floatdesk-1`, checks that RandR lists it, and restores the framebuffer. `serve` enlarges the X screen, adds `Floatdesk-N` monitors with no physical output, and waits for a client hello on UDP `47000`.
 
-`--existing` captures the bounding rectangle of active XRandR outputs (up to six), preserving their relative placement in one XR screen. It leaves their modes unchanged until you explicitly add or resize a Floatdesk-managed screen. It also works for a loopback test:
+`--existing` captures the bounding rectangle of active XRandR outputs , preserving their relative placement in one XR screen. It leaves their modes unchanged until you explicitly add or resize a Floatdesk-managed screen. It also works for a loopback test:
 
 ```bash
 ./target/release/floatdesk recv --host 127.0.0.1:47000 --output /tmp/floatdesk.h264 --seconds 5 &

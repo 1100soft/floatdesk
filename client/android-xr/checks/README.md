@@ -132,3 +132,7 @@ Two Rust capture checks require explicit selection: `benchmark_full_vs_scaled_re
 `screen_arrangement.py` also checks primary-rooted edge connectivity, bridge/corner rejection and inverse pointer mapping through visual screen insets. Rust monitor-pool tests validate move/resize/removal safeguards and repairs of externally disconnected configurations. `frozen_frame.py` verifies alpha-masked snapshots. `video_compositor_device.py` exercises actual EGL alpha output for holes, opaque black desktop pixels, spacing and redraws without a new decoded frame, plus existing orientation/overlay/decoder-idle checks. It does not open an Activity.
 
 Arrangement checks also cover overlap rejection, half-screen offset snaps, centered viewport transforms and room beyond the top/left edges. Host tests cover normalized top/left moves and desktop bounds.
+
+### Host capabilities and lowest-rate configuration
+
+`python3 scripts/check-display-worker.py` from the repository root uses private Xvfb and synthetic XRandR/KScreen commands. A deliberately slow, sub-Hz named-output operation must keep control heartbeats available, tolerate a same-ID retry, and report its actual low rate. The native compositor check also parses nine outputs and verifies that mask batches preserve both early and late screens. Setup bundle generation with nine outputs and shell/Python syntax checks do not execute privileged installers.

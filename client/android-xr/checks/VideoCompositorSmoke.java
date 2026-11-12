@@ -5,6 +5,7 @@ import android.media.Image;
 import android.media.ImageReader;
 import android.os.SystemClock;
 import dev.floatdesk.client.media.VideoAim;
+import dev.floatdesk.client.net.WorkspaceInfo;
 import dev.floatdesk.client.media.ScreenPresentation;
 import dev.floatdesk.client.media.VideoCompositor;
 import java.nio.ByteBuffer;
@@ -27,6 +28,12 @@ public final class VideoCompositorSmoke {
     }
     static void require(boolean value,String message) { if(!value) throw new AssertionError(message); }
     public static void main(String[] args) throws Exception {
+        StringBuilder json=new StringBuilder("{\"type\":\"status\",\"available\":12,\"modes\":[[3840,2160]],\"availableMemoryBytes\":8000000000,\"cpuThreads\":8,\"recommendedPixels\":8000000,\"targetFps\":60,\"estimate\":\"advisory\",\"setupRequired\":false,\"screens\":[");
+        for(int i=0;i<9;i++) {if(i>0)json.append(',');json.append("{\"name\":\"Virtual-").append(i).append("\",\"width\":3840,\"height\":2160,\"x\":").append(i*3840).append(",\"y\":0,\"managed\":true,\"primary\":false,\"role\":1,\"refreshHz\":0.1,\"modes\":[[3840,2160]]}");}
+        json.append("]}");
+        WorkspaceInfo info=WorkspaceInfo.Companion.parse(json.toString());
+        require(info!=null && info.getScreens().size()==9 && info.getAvailable()==12,"Workspace catalogue retained a fixed screen limit");
+        require(info.getScreens().get(8).getRefreshHz()==.1,"Low refresh metadata lost precision");
         ImageReader first=ImageReader.newInstance(64,48,PixelFormat.RGBA_8888,4);
         ImageReader second=ImageReader.newInstance(64,48,PixelFormat.RGBA_8888,4);
         VideoCompositor compositor=new VideoCompositor(64,48);
@@ -76,6 +83,10 @@ public final class VideoCompositorSmoke {
             try(Image image=frame(first)) {require(pixel(image,32,24)[3]>250,"Actual black desktop was made transparent");}
             compositor.presentation(new ScreenPresentation(new float[]{0f,0f,1f,1f},0f));
             try(Image image=frame(first)) {require(pixel(image,1,24)[3]>250,"Presentation change did not redraw retained frame");}
+            float[] many=new float[9*4];
+            for(int i=0;i<9;i++){many[i*4]=i/9f;many[i*4+1]=0;many[i*4+2]=(i+1)/9f;many[i*4+3]=1;}
+            compositor.presentation(new ScreenPresentation(many,0f));
+            try(Image image=frame(first)) {require(pixel(image,62,24)[3]>250,"Uniform batching dropped screen nine");require(pixel(image,1,24)[3]>250,"Later batches erased earlier screens");}
             compositor.output(second.getSurface());
             try(Image image=frame(second)) {
                 require(pixel(image,16,8)[3]>250,"Surface handoff lost the retained video frame");

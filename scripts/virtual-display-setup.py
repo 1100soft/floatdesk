@@ -64,8 +64,8 @@ set -eu
 [ "$(id -u)" = 0 ] || { echo "Run this installer as administrator after reviewing the bundle"; exit 1; }
 cd -- "$(dirname -- "$0")"
 modinfo -p vkms | grep -q create_default_dev || { echo "Kernel lacks VKMS configfs support"; exit 1; }
-if [ -d /sys/kernel/config/vkms ] && [ -n "$(ls -A /sys/kernel/config/vkms)" ]; then
-    echo "A VKMS topology already exists. Reuse its pool instead of installing another."; exit 1
+if [ -d /sys/kernel/config/vkms ] && [ -n "$(find /sys/kernel/config/vkms -mindepth 1 -maxdepth 1 ! -name floatdesk -print -quit)" ]; then
+    echo "Another application owns the VKMS topology. Reuse its pool; it will not be replaced."; exit 1
 fi
 install -d /usr/local/libexec
 install -m 755 floatdesk-topology.py floatdesk-xrandr.py floatdesk-vkms-boot /usr/local/libexec/
@@ -87,7 +87,7 @@ systemctl --user enable floatdesk-xrandr.service
 echo "Mode publication enabled for graphical login. Inspect provider linking after reboot."
 ''')
     (folder/'README.txt').write_text('''Review these files first. Requires Linux with VKMS configfs, X11, systemd, xrandr and cvt.
-1. Existing pool? Reuse it instead. Do not install this bundle over another topology service.
+1. Existing third-party pool? Reuse it instead. Do not install this bundle over another topology service. A Floatdesk-owned pool can be resized at next boot.
 2. As administrator: sh install-system.sh. As desktop user: sh install-user.sh.
 3. Reboot when convenient. No script here reboots or restarts the graphical session for you.
 4. If Virtual-* outputs are absent, run /usr/local/libexec/floatdesk-xrandr.py --providers.
@@ -105,8 +105,9 @@ if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check',action='store_true')
     parser.add_argument('--write-bundle',type=Path)
-    parser.add_argument('--count',type=int,choices=range(1,6),default=4)
+    parser.add_argument('--count',type=int,default=4)
     args=parser.parse_args()
+    if args.count<1:parser.error("count must be positive")
     if args.check or args.write_bundle is None:
         check()
     if args.write_bundle:

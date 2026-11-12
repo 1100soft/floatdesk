@@ -38,8 +38,11 @@ public final class DecoderIdleSmoke {
         Object callback=Proxy.newProxyInstance(function.getClassLoader(),new Class<?>[]{function},
             (proxy,method,values)->Class.forName("kotlin.Unit").getField("INSTANCE").get(null));
         Class<?> type=Class.forName("dev.floatdesk.client.media.MonitorDecoder");
-        Object decoder=type.getConstructor(DatagramSocket.class,int.class,int.class,java.io.File.class,function)
-            .newInstance(socket,320,240,null,callback);
+        Class<?> function2=Class.forName("kotlin.jvm.functions.Function2");
+        Object repair=Proxy.newProxyInstance(function2.getClassLoader(),new Class<?>[]{function2},
+            (proxy,method,values)->Class.forName("kotlin.Unit").getField("INSTANCE").get(null));
+        Object decoder=type.getConstructor(DatagramSocket.class,int.class,int.class,java.io.File.class,function,function,function2)
+            .newInstance(socket,320,240,null,callback,callback,repair);
         try {
             type.getMethod("attach",Surface.class).invoke(decoder,reader.getSurface());
             ((AtomicReference<byte[]>)field(decoder,"sps")).set(Base64.getDecoder().decode("Z0LADdoFB+wEQAAAAwBAAAAMo8UKqA=="));

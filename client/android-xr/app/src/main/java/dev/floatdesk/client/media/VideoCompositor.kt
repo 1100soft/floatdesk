@@ -24,9 +24,11 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     private val handler=Handler(thread.looper)
     private val ready=CountDownLatch(1)
     private val redrawPosted=AtomicBoolean(false)
+    private val presentationPosted=AtomicBoolean(false)
     @Volatile private var closed=false
     @Volatile private var failure: Throwable?=null
     @Volatile private var aim=VideoAim()
+    @Volatile private var presentation=ScreenPresentation()
     private var display=EGL14.EGL_NO_DISPLAY
     private var context=EGL14.EGL_NO_CONTEXT
     private var pbuffer=EGL14.EGL_NO_SURFACE
@@ -111,6 +113,13 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         }
     }
 
+    fun presentation(value:ScreenPresentation) {
+        val before=presentation
+        if(before.spacing==value.spacing && before.rects.contentEquals(value.rects)) return
+        presentation=value
+        if(!closed && presentationPosted.compareAndSet(false,true)) handler.post {presentationPosted.set(false);if(!closed) guard {draw()}}
+    }
+
     private fun guard(block: () -> Unit) {
         try { block() } catch(error: Exception) { Log.e("Floatdesk","live video compositor failed",error) }
     }
@@ -123,6 +132,10 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0); GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,textureId)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"video"),0)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(program,"textureMatrix"),1,false,transform,0)
+        val mapping=presentation
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"screenCount"),mapping.rects.size/4)
+        GLES20.glUniform4fv(GLES20.glGetUniformLocation(program,"screenRects[0]"),mapping.rects.size/4,mapping.rects,0)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(program,"contentScale"),1f-mapping.spacing.coerceIn(0f,.15f))
         val position=GLES20.glGetAttribLocation(program,"position")
         GLES20.glEnableVertexAttribArray(position); GLES20.glVertexAttribPointer(position,2,GLES20.GL_FLOAT,false,0,vertices)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP,0,4)
@@ -158,7 +171,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         val buffer=ByteBuffer.allocateDirect(values.size*4).order(ByteOrder.nativeOrder()).asFloatBuffer()
             .put(values.toFloatArray()).also { it.position(0) }
         GLES20.glUseProgram(inkProgram)
-        GLES20.glEnable(GLES20.GL_BLEND); GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA,GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        GLES20.glEnable(GLES20.GL_BLEND); GLES20.glBlendFuncSeparate(GLES20.GL_SRC_ALPHA,GLES20.GL_ONE_MINUS_SRC_ALPHA,GLES20.GL_ONE,GLES20.GL_ONE_MINUS_SRC_ALPHA)
         val p=GLES20.glGetAttribLocation(inkProgram,"position")
         val a=GLES20.glGetAttribLocation(inkProgram,"alpha")
         GLES20.glEnableVertexAttribArray(p); GLES20.glEnableVertexAttribArray(a)
@@ -213,10 +226,29 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         """
         private const val FRAGMENT="""
             #extension GL_OES_EGL_image_external : require
-            precision mediump float;
+            precision highp float;
             uniform samplerExternalOES video;
-            varying vec2 sampleUV;
-            void main() { gl_FragColor=vec4(texture2D(video,sampleUV).rgb,1.0); }
+            uniform mat4 textureMatrix;
+            uniform int screenCount;
+            uniform vec4 screenRects[6];
+            uniform float contentScale;
+            varying vec2 uv;
+            void main() {
+                vec2 point=vec2(uv.x,1.0-uv.y);
+                gl_FragColor=vec4(0.0);
+                for(int i=0;i<6;i++) {
+                    if(i<screenCount) {
+                        vec4 rect=screenRects[i];
+                        vec2 center=(rect.xy+rect.zw)*0.5;
+                        vec2 source=center+(point-center)/contentScale;
+                        if(source.x>=rect.x && source.x<=rect.z && source.y>=rect.y && source.y<=rect.w) {
+                            vec2 sample=(textureMatrix*vec4(source.x,1.0-source.y,0.0,1.0)).xy;
+                            gl_FragColor=vec4(texture2D(video,sample).rgb,1.0);
+                            break;
+                        }
+                    }
+                }
+            }
         """
         private const val INK_VERTEX="""
             attribute vec2 position;

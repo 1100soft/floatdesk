@@ -43,6 +43,7 @@ fun main() {
     check(!restart.consumeRestart())
     check(restart.push(sourced(0,2),14,1001).size == 1)
     check(restart.consumeRestart()); check(!restart.consumeRestart())
+    check(restart.push(sourced(30001,1),14,1002).isEmpty());check(!restart.consumeRestart()) // Late old-source traffic cannot flip the active stream back.
     check(restart.push(sourced(0,2),14,1002).isEmpty()) // A duplicate is still discarded.
     check(restart.push(sourced(20000,2),14,1003).size == 1)
     check(restart.push(sourced(0,2),14,3004).size == 1) // Same source, reset after downtime.
@@ -52,6 +53,21 @@ fun main() {
     partial.restart()
     check(partial.accept(packet(0,true,0x65,2)) != null)
     check(!partial.consumeLoss())
+    val repair=RtpReorder()
+    val reassemble=H264Depacketizer()
+    val start=packet(200,false,0x7c,0x85,1)
+    repair.push(start,start.size,1000).forEach {reassemble.accept(it)}
+    check(reassemble.incomplete())
+    check(repair.repair(1020,true)?.second==201) // Missing final packet on a static desktop.
+    val finish=packet(201,true,0x7c,0x45,2)
+    val complete=repair.push(finish,finish.size,1021).mapNotNull {reassemble.accept(it)}
+    check(complete.size==1 && !reassemble.incomplete() && !reassemble.consumeLoss())
+    val gap=RtpReorder()
+    gap.push(packet(10,true,0x65),13,2000)
+    check(gap.push(packet(12,true,0x41),13,2001).isEmpty())
+    check(gap.repair(2001,false)?.second==11)
+    check(gap.repair(2002,false)==null) // Bounded requests.
+    check(gap.push(packet(11,true,0x41),13,2003).size==2)
     println("RTP checks passed: host source/sequence restart, duplicate rejection, partial-frame reset,  AU assembly, sequence wrap, fragment loss, partial-AU rejection, reorder")
 }
 '''

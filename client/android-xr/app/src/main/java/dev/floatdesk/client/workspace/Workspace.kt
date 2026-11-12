@@ -42,6 +42,7 @@ internal data class WorkspaceFile(
     val sphericalWarp: Boolean = false,
     val eyeAiming: Boolean = false,
     val mouseGestures: Boolean = false,
+    val screenSpacing:Float=0f,
 )
 
 internal class WorkspaceStore(private val file: File) {
@@ -126,6 +127,7 @@ private fun encode(workspace: WorkspaceFile): JSONObject {
         .put("spherical_warp", workspace.sphericalWarp)
         .put("eye_aiming", workspace.eyeAiming)
         .put("mouse_gestures", workspace.mouseGestures)
+        .put("screen_spacing",workspace.screenSpacing.toDouble())
 }
 
 private fun encodeMonitor(monitor: MonitorPlacement): JSONObject {
@@ -166,6 +168,7 @@ private fun decode(json: JSONObject): WorkspaceFile {
         sphericalWarp = json.optBoolean("spherical_warp", false),
         eyeAiming = json.optBoolean("eye_aiming", json.optBoolean("mouse_control", false)),
         mouseGestures = json.optBoolean("mouse_gestures", false),
+        screenSpacing=json.optDouble("screen_spacing",0.0).toFloat().takeIf {it.isFinite()}?.coerceIn(0f,.15f)?.let { kotlin.math.round(it*1000)/1000f } ?: 0f,
     )
 }
 
@@ -215,4 +218,21 @@ private fun floatArray(json: JSONObject, name: String, size: Int): FloatArray {
     for (i in 0 until minOf(size, array.length())) out[i] = array.optDouble(i).toFloat()
     if (size == 4 && array.length() < 4) out[3] = 1f
     return out
+}
+
+/** Reconcile stable source identities without resetting poses when a display is added or removed. */
+internal fun WorkspaceFile.reconcileMonitors(sources:List<Triple<String,Int,Int>>): WorkspaceFile {
+    val old=layouts[activeLayout].orEmpty()
+    val defaults=deskLayout(sources)
+    var right=old.maxOfOrNull { it.pose.position[0]+it.physicalWidthM*.5f } ?: -.34f
+    val next=sources.mapIndexed { index,(id,w,h) ->
+        val prior=old.firstOrNull { it.hostSourceId==id }
+        if(prior!=null) prior.copy(pixelWidth=w,pixelHeight=h,physicalHeightM=prior.physicalWidthM*h/w.coerceAtLeast(1)) else {
+            val fresh=defaults[index]
+            val x=right+.04f+fresh.physicalWidthM*.5f;right=x+fresh.physicalWidthM*.5f
+            fresh.copy(pose=Pose(floatArrayOf(x,0f,-1.2f)))
+        }
+    }.toMutableList()
+    if(old==next) return this
+    return copy(layouts=layouts.toMutableMap().also { it[activeLayout]=next })
 }

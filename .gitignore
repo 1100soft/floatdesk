@@ -10,3 +10,7 @@ captures
 
 # Local headset checkpoints and troubleshooting captures
 /.agent-artifacts/
+
+# Local Kotlin compiler sessions and Python bytecode
+.kotlin/
+__pycache__/

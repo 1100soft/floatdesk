@@ -1,10 +1,12 @@
 # Floatdesk
 
-An X11-first host that places logical monitors in an Android XR workspace. Each monitor is its own H.264 stream. The host composites the cursor into the video and schedules frames when the pointer moves, even on an otherwise static desktop. All monitors share one workspace coordinate space.
+An X11-first host that places logical monitors in an Android XR workspace. In existing-desktop mode, active outputs form one H.264 stream and one XR screen, following the X11 arrangement. The host composites the cursor into the video and schedules frames when the pointer moves, even on an otherwise static desktop. All monitors share one workspace coordinate space.
 
 This tree is the LAN proof of concept: RandR 1.5 regions, MIT-SHM capture, XDamage, XFixes, GStreamer H.264, and RTP/UDP. It is not encrypted. Keep it on a trusted network. The session boundary (`DisplayBackend`, `CaptureBackend`, `CursorBackend`, `EncodeBackend`) is where Wayland, Windows, macOS, and a WebRTC transport plug in later.
 
 ## Host
+
+Use **Workspace → Screens** in the headset to add, resize or remove independent desktop screens from a pre-provisioned VKMS pool. A pre-provisioned pool supports this without a reboot or privileged commands during use. Drag screen rectangles in Workspace to arrange them with snapping. External layout changes reload automatically. See [multi-monitor behavior](docs/multi-monitor.md) and [first-time setup](docs/virtual-display-setup.md).
 
 Requires an X11 session (`DISPLAY`) and GStreamer with an H.264 encoder (`x264enc` is the portable fallback; `vah264enc`, `vaapih264enc`, and `nvh264enc` are used automatically when present).
 
@@ -17,7 +19,7 @@ cargo build --release
 
 `doctor` only reads the server. `trial` creates one 1280×720 logical monitor named `Floatdesk-1`, checks that RandR lists it, and restores the framebuffer. `serve` enlarges the X screen, adds `Floatdesk-N` monitors with no physical output, and waits for a client hello on UDP `47000`.
 
-`--existing` streams the current primary CRTC and does not resize the screen. That is the right mode for a loopback test:
+`--existing` captures the bounding rectangle of active XRandR outputs (up to six), preserving their relative placement in one XR screen. It leaves their modes unchanged until you explicitly add or resize a Floatdesk-managed screen. It also works for a loopback test:
 
 ```bash
 ./target/release/floatdesk recv --host 127.0.0.1:47000 --output /tmp/floatdesk.h264 --seconds 5 &
@@ -44,7 +46,7 @@ floatdesk restore
 
 ## Android XR client
 
-`client/android-xr` is a Jetpack XR app. It decodes each RTP stream with `MediaCodec` straight into a `SpatialExternalSurface`, receives the cursor within the video, and stores monitor poses in the workspace. Room anchoring is available when supported by the headset.
+`client/android-xr` is a Jetpack XR app. It decodes RTP video with `MediaCodec` into a `SpatialExternalSurface`, receives the cursor within the video, and stores screen poses in the workspace. Room anchoring is available when supported by the headset.
 
 The headset finds the computer on the LAN by itself. `floatdesk serve` announces itself once a second. Open the app and wait until the status says it found the machine. There is no address to type.
 
@@ -54,7 +56,7 @@ Pinch two well-separated points on a monitor to manipulate it in 3D. Hand transl
 
 Use **Enable spherical / Disable spherical** on the palm panel to curve each monitor horizontally and vertically onto a sphere centered between your eyes. The screen center stays in place and an equal-edge angular mesh keeps neighboring grid rays uniformly spaced in both axes as you move your head. The setting is saved with the workspace. During a grab, the curved shape freezes with the image to keep the contact points rigid; it refits to your viewpoint on release.
 
-Hand-ray mouse aiming is always available. **Enable eye mouse / Disable eye mouse** on the palm panel controls only gaze aiming: with no hand ray on a monitor, enabled gaze aims the mouse; one hand ray takes priority; two hand rays stop mouse movement and preview the miniature grab guides before pinching. Flat mode replaces the bright system reticle with a faint marker in one-hand mode. Spherical mode currently keeps the original SDK pointer styling while its input regression is investigated. Eye aiming uses an adaptive filter and small deadband to reduce jitter while following deliberate gaze changes. Grant eye-tracking permission when enabling it. Keep Android XR's aiming method on **Use hand aiming only**; the app reads gaze independently. Denied or unavailable gaze does not disable hand aiming. Android XR still controls its own ray beam. A faint app-rendered beam remains visible while a tracked hand has a valid monitor contact. Stationary tracked hands have no contact expiry; after a native hover-exit, moving more than 15 mm or rotating more than 5 degrees clears the retained target. The entire beam uses one thin transparent native custom-mesh surface, avoiding a seam between native and video-rendered portions. The contact ring is composited into live video; it cannot recover unavailable native aiming or tracking.
+Hand-ray mouse aiming is always available. **Enable eye mouse / Disable eye mouse** on the palm panel controls only gaze aiming: with no hand ray on a monitor, enabled gaze aims the mouse; one hand ray takes priority; two hand rays stop mouse movement and preview the miniature grab guides before pinching. The image hides the system target marker in both flat and spherical modes; cyan and violet app beams identify the two hands. Eye aiming uses an adaptive filter and small deadband to reduce jitter while following deliberate gaze changes. Grant eye-tracking permission when enabling it. Keep Android XR's aiming method on **Use hand aiming only**; the app reads gaze independently. Denied or unavailable gaze does not disable hand aiming. Android XR still controls its own ray beam. A faint app-rendered beam remains visible while a tracked hand has a valid monitor contact. Stationary tracked hands have no contact expiry; after a native hover-exit, moving more than 15 mm or rotating more than 5 degrees clears the retained target. The entire beam uses one thin transparent native custom-mesh surface, avoiding a seam between native and video-rendered portions. The contact ring is composited into live video; it cannot recover unavailable native aiming or tracking.
 
 Mouse distances are measured between tracked joint positions, not the physical skin gap. Contact and release use the same fixed threshold: left index/middle 15.5/15 mm, right index/middle 12.5/14 mm. Each mouse gesture rearms independently when its own closed condition becomes false, without requiring other fingers to open. Palm-button pinch tuning is separate.
 
@@ -72,7 +74,7 @@ Use the exposed border of the system rectangle for one-hand repositioning and it
 
 What changed after the first LAN proof of concept is recorded in [CHANGES.md](CHANGES.md). Regression checks and the limits of those checks are in [the Android checks README](client/android-xr/checks/README.md).
 
-Plasma does not treat a RandR monitor with no physical output as a desktop, so a virtual `Floatdesk-N` region stays empty. Stream the laptop panel instead:
+Plasma does not treat a RandR monitor with no physical output as a desktop, so a legacy virtual `Floatdesk-N` region stays empty. Use the VKMS screen controls above for independent desktops, or stream existing outputs:
 
 ```bash
 ./target/release/floatdesk serve --existing

@@ -25,6 +25,8 @@ internal class H264Depacketizer {
     private var lost = false
     private var damaged = false
 
+    fun incomplete():Boolean = fuOpen || nals.isNotEmpty()
+
     fun consumeLoss(): Boolean = lost.also { lost = false }
 
     fun restart() {
@@ -146,8 +148,10 @@ private class RtpReorder {
     private var nextSeq = -1
     private var holeSince = 0L
     private var source: Int? = null
+    private val retiredSources=linkedSetOf<Int>()
     private var lastPacketMs = 0L
     private var restarted = false
+    private var lastRepairMs=0L
 
     fun consumeRestart(): Boolean = restarted.also { restarted = false }
 
@@ -155,9 +159,13 @@ private class RtpReorder {
         if (length < 12) return emptyList()
         val seq = ((packet[2].toInt() and 0xFF) shl 8) or (packet[3].toInt() and 0xFF)
         val ssrc = (8..11).fold(0) { value, index -> (value shl 8) or (packet[index].toInt() and 0xFF) }
+        if(ssrc in retiredSources) return emptyList()
         val behindAfterIdle = nextSeq >= 0 && ((seq - nextSeq) and 0xFFFF) > 0x8000 && nowMs - lastPacketMs >= 1000
         if (source != ssrc || behindAfterIdle) {
-            if (source != null) restarted = true
+            if (source != null) {
+                restarted = true
+                if(source!=ssrc) {retiredSources.add(source!!);if(retiredSources.size>4) retiredSources.remove(retiredSources.first())}
+            }
             source = ssrc
             held.clear()
             nextSeq = seq
@@ -167,13 +175,25 @@ private class RtpReorder {
         if (nextSeq < 0) nextSeq = seq
         val ahead = (seq - nextSeq) and 0xFFFF
         if (ahead > 0x8000) return flush(nowMs)
-        if (ahead > 48) {
+        if (ahead > 256) {
             held.clear()
             nextSeq = seq
             holeSince = 0L
         }
         held[seq] = packet.copyOf(length)
         return flush(nowMs)
+    }
+
+    fun expiredTail(nowMs:Long)=held.isEmpty() && nextSeq>=0 && nowMs-lastPacketMs>200
+
+    fun repair(nowMs:Long,incomplete:Boolean):Pair<Int,Int>? {
+        val id=source ?: return null
+        if(nextSeq<0 || nowMs-lastRepairMs<8) return null
+        val gap=held.isNotEmpty() && !held.containsKey(nextSeq)
+        val tail=incomplete && held.isEmpty() && nowMs-lastPacketMs in 20..180
+        if(!gap && !tail) return null
+        lastRepairMs=nowMs
+        return id to nextSeq
     }
 
     fun flush(nowMs: Long): List<ByteArray> {
@@ -188,7 +208,7 @@ private class RtpReorder {
             }
             if (held.isEmpty() || nextSeq < 0) break
             if (holeSince == 0L) holeSince = nowMs
-            if (nowMs - holeSince < 40 && held.size < 24) break
+            if (nowMs - holeSince < 60 && held.size < 256) break
             nextSeq = (nextSeq + 1) and 0xFFFF
             holeSince = nowMs
         }
@@ -202,6 +222,8 @@ internal class MonitorDecoder(
     private val height: Int,
     private val dumpFile: File? = null,
     private val onGap: () -> Unit = {},
+    private val onFrame: () -> Unit = {},
+    private val onNack:(Int,Int)->Unit={_,_->},
 ) {
     private val renderingActive=AtomicBoolean(true)
     private val running = AtomicBoolean(true)
@@ -212,6 +234,7 @@ internal class MonitorDecoder(
     private val awaitingKey = AtomicBoolean(true)
     @Volatile private var compositor: VideoCompositor? = null
     private val aim = AtomicReference(VideoAim())
+    private val presentation=AtomicReference(ScreenPresentation())
     private var receiveThread: Thread? = null
     private var decodeThread: Thread? = null
 
@@ -231,6 +254,8 @@ internal class MonitorDecoder(
         pending.clear()
         if(active) recover("visible stream resumed") else awaitingKey.set(true)
     }
+
+    fun presentation(value:ScreenPresentation) {presentation.set(value);compositor?.presentation(value)}
 
     fun overlay(value: VideoAim) { aim.set(value); compositor?.overlay(value) }
 
@@ -256,7 +281,7 @@ internal class MonitorDecoder(
         val packet = java.net.DatagramPacket(buffer, buffer.size)
         var packets = 0
         runCatching { socket.receiveBufferSize = 8 * 1024 * 1024 }
-        socket.soTimeout = 50
+        socket.soTimeout = 20
         while (running.get()) {
             val ready = try {
                 packet.setLength(buffer.size)
@@ -300,6 +325,11 @@ internal class MonitorDecoder(
                     }
                 }
             }
+            val now=System.currentTimeMillis()
+            reorder.repair(now,depacketizer.incomplete())?.let {(source,sequence)->onNack(source,sequence)}
+            if(depacketizer.incomplete() && reorder.expiredTail(now)) {
+                depacketizer.restart();recover("Video repair timed out")
+            }
         }
     }
 
@@ -319,6 +349,7 @@ internal class MonitorDecoder(
             .onFailure { Log.e(TAG,"Live video compositor unavailable; using direct decode",it) }.getOrNull()
         compositor=renderer
         renderer?.overlay(aim.get())
+        renderer?.presentation(presentation.get())
         var displayedSurface: Surface?=null
         while (running.get()) {
             if(!renderingActive.get()) {
@@ -354,7 +385,8 @@ internal class MonitorDecoder(
                 codecSurface = target
                 Log.i(TAG, "decoder ${if (codec == null) "failed" else "started"} ${width}x$height")
             }
-            val active = codec ?: continue
+            val active=codec
+            if(active==null) {if(surfaceReady) onGap();continue}
             val keyframe = isKeyframe(accessUnit)
             if (keyframe) sawKeyframe = true
             if (!sawKeyframe) {
@@ -432,6 +464,7 @@ internal class MonitorDecoder(
                         if (byteDump && realFrame) saveLuma(codec, index, info)
                         codec.releaseOutputBuffer(index, !byteDump && realFrame)
                         if (realFrame) {
+                            onFrame()
                             rendered += 1
                             val total = already + rendered
                             if (total == 1 || total % 30 == 0) {

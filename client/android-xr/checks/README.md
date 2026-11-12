@@ -112,3 +112,21 @@ FLOATDESK_UINPUT_TEST=1 cargo test --offline -p floatdesk platform::touchpad::te
 The capture benchmark reads the selected live X11 screen into memory for two seconds, writes no screenshots and emits no input. It closes only its own X11 client socket to verify idle polling propagates failure. A prior 2560×1600 observation improved from ~40 to ~58 fps after capture-start pacing; that excludes encode/network/display latency. The uinput test creates a passive device and checks classification without emitting touches.
 
 Preserve the forward native event-matrix/root-scale coordinate conversion, matching live/frozen curved meshes, native frame behind the image, immediate grab release restoration, and working palm presentation. Rerun center/edge grabs, flat/curved toggling and native handles on the device only when interaction work resumes. Ignored `.agent-artifacts/` holds local baselines, including the user-confirmed smooth-stream APK/source checkpoint. They are not portable regression fixtures or committed artifacts.
+
+### Screen management
+
+`python3 checks/monitor_management.py /path/to/gradle/lib` checks monitor-management wire fixtures and production layout reconciliation across add/remove/resize. Rust workspace tests validate command bounds and signed XRandR geometry. Neither synthetic check establishes simultaneous device decoder capacity; test Workspace → Screens on the headset. See [multi-monitor behavior](../../../docs/multi-monitor.md).
+
+`python3 checks/gltf_lifecycle.py /path/to/gradle/lib` compiles production curved-collider cleanup and its model-release helper against native-lifetime substitutes. It checks instance-before-model teardown, repeated close and failed setup. `monitor_warp.py` also simulates teardown during a suspended collider load. Native renderer stability still requires a sustained headset test, including multiple curved screens, resize/removal and grab/release.
+
+From the repository root, `python3 scripts/check-static-stream.py` runs the release host on a private 5120 × 3200 Xvfb desktop and checks complete RTP output and recovery without desktop activity. It needs Xvfb, x264enc and a release build; it does not read the real desktop or save video. Rust workspace tests include deterministic bounded packet pacing and idle-credit checks.
+
+`python3 checks/screen_arrangement.py /path/to/gradle/lib` covers production edge/centre/adjacency snapping and desktop bounds. Monitor-management wire fixtures include per-output positions. Rust tests cover lowest advertised refresh selection and independent encoder-output lifetime. External-topology reload was tested with a spare live VKMS output; private Xvfb does not support the required output-position/transform change, so the static-stream check remains limited to static output and IDR recovery.
+
+`python3 checks/display_requests.py /path/to/gradle/lib` uses a deterministic handler clock to verify original-ID retries, automatic read-only reconciliation and late-reply isolation. `rtp.py` now covers missing-tail repair, bounded requests and retired-source rejection. The static stream test also checks byte-identical cached retransmission and rejection of an unbound peer.
+
+Two Rust capture checks require explicit selection: `benchmark_full_vs_scaled_readback` only reads the chosen X11 desktop and prints timing metadata; `server_downscale_keeps_crop_and_child_pixels` draws synthetic colors/windows and must run **only on private Xvfb with `FLOATDESK_SYNTHETIC_DISPLAY=1`**. Do not run the latter against the real desktop. The source includes an explicit environment guard. Normal Rust tests skip both.
+
+### Connected layouts and transparent presentation
+
+`screen_arrangement.py` also checks primary-rooted edge connectivity, bridge/corner rejection and inverse pointer mapping through visual screen insets. Rust monitor-pool tests validate move/resize/removal safeguards and repairs of externally disconnected configurations. `frozen_frame.py` verifies alpha-masked snapshots. `video_compositor_device.py` exercises actual EGL alpha output for holes, opaque black desktop pixels, spacing and redraws without a new decoded frame, plus existing orientation/overlay/decoder-idle checks. It does not open an Activity.

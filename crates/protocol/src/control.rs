@@ -28,6 +28,10 @@ pub const KIND_BEACON: u8 = 7;
 pub const KIND_POINTER_MOVE: u8 = 8;
 pub const KIND_POINTER_CLICK: u8 = 9;
 pub const KIND_TOUCHPAD_STATE: u8 = 10;
+pub const KIND_MONITOR_COMMAND: u8 = 11;
+pub const KIND_MONITOR_STATUS: u8 = 12;
+pub const KIND_STREAM_STATE: u8 = 13;
+pub const KIND_VIDEO_NACK: u8 = 14;
 pub const BEACON_PORT: u16 = 47001;
 
 const CURSOR_FIXED: usize = 38;
@@ -119,6 +123,33 @@ pub enum ControlPacket {
         y: f32,
         sequence: u32,
     },
+    MonitorCommand {
+        request_id: u32,
+        action: u8,
+        index: u8,
+        width: u16,
+        height: u16,
+    },
+    VideoNack {
+        monitor_index: u8,
+        ssrc: u32,
+        sequence: u16,
+    },
+    StreamState {
+        reloading: bool,
+    },
+    MonitorStatus {
+        request_id: u32,
+        ok: bool,
+        available: u8,
+        owned: u8,
+        screens: Vec<(u16, u16)>,
+        positions: Vec<(i16, i16)>,
+        names: Vec<String>,
+        roles: Vec<u8>,
+        primary: u8,
+        message: String,
+    },
     KeyframeRequest {
         monitor_index: u8,
     },
@@ -152,6 +183,10 @@ impl ControlPacket {
             Self::ClientHello { .. } => KIND_CLIENT_HELLO,
             Self::HostHello { .. } => KIND_HOST_HELLO,
             Self::Cursor(_) => KIND_CURSOR,
+            Self::MonitorCommand { .. } => KIND_MONITOR_COMMAND,
+            Self::MonitorStatus { .. } => KIND_MONITOR_STATUS,
+            Self::StreamState { .. } => KIND_STREAM_STATE,
+            Self::VideoNack { .. } => KIND_VIDEO_NACK,
             Self::PointerMove { .. } => KIND_POINTER_MOVE,
             Self::PointerClick { .. } => KIND_POINTER_CLICK,
             Self::TouchpadState { .. } => KIND_TOUCHPAD_STATE,
@@ -235,6 +270,63 @@ impl ControlPacket {
                 w.extend_from_slice(&x.to_le_bytes());
                 w.extend_from_slice(&y.to_le_bytes());
                 w.extend_from_slice(&sequence.to_le_bytes());
+            }
+            Self::MonitorCommand {
+                request_id,
+                action,
+                index,
+                width,
+                height,
+            } => {
+                w.extend_from_slice(&request_id.to_le_bytes());
+                w.extend_from_slice(&[*action, *index]);
+                w.extend_from_slice(&width.to_le_bytes());
+                w.extend_from_slice(&height.to_le_bytes());
+            }
+            Self::VideoNack {
+                monitor_index,
+                ssrc,
+                sequence,
+            } => {
+                w.push(*monitor_index);
+                w.extend_from_slice(&ssrc.to_le_bytes());
+                w.extend_from_slice(&sequence.to_le_bytes());
+            }
+            Self::StreamState { reloading } => w.push(u8::from(*reloading)),
+            Self::MonitorStatus {
+                request_id,
+                ok,
+                available,
+                owned,
+                screens,
+                positions,
+                names,
+                roles,
+                primary,
+                message,
+            } => {
+                let bytes = message.as_bytes();
+                let count = bytes.len().min(240);
+                w.extend_from_slice(&request_id.to_le_bytes());
+                w.extend_from_slice(&[u8::from(*ok), *available, *owned, count as u8]);
+                w.extend_from_slice(&bytes[..count]);
+                w.push(screens.len().min(6) as u8);
+                for (width, height) in screens.iter().take(6) {
+                    w.extend_from_slice(&width.to_le_bytes());
+                    w.extend_from_slice(&height.to_le_bytes());
+                }
+                for i in 0..screens.len().min(6) {
+                    let (x, y) = positions.get(i).copied().unwrap_or((0, 0));
+                    w.extend_from_slice(&x.to_le_bytes());
+                    w.extend_from_slice(&y.to_le_bytes());
+                }
+                if names.len() == screens.len() && !names.is_empty() {
+                    w.extend_from_slice(&[1, *primary]);
+                    for (i, name) in names.iter().take(6).enumerate() {
+                        w.push(*roles.get(i).unwrap_or(&0));
+                        write_name(&mut w, name);
+                    }
+                }
             }
             Self::KeyframeRequest { monitor_index } => w.push(*monitor_index),
             Self::Layout { monitors } => {
@@ -424,6 +516,116 @@ pub fn decode_packet(bytes: &[u8]) -> Result<ControlPacket, ProtocolError> {
                 x,
                 y,
                 sequence: u32::from_le_bytes(p[9..13].try_into().unwrap()),
+            })
+        }
+        KIND_MONITOR_COMMAND => {
+            if p.len() != 10 || p[4] > 4 || (p[4] != 1 && p[5] >= 6) {
+                return Err(ProtocolError::Payload(kind));
+            }
+            let width = u16::from_le_bytes(p[6..8].try_into().unwrap());
+            let height = u16::from_le_bytes(p[8..10].try_into().unwrap());
+            if matches!(p[4], 1 | 3)
+                && (width < 320
+                    || height < 200
+                    || width > 3840
+                    || height > 2160
+                    || width % 2 != 0
+                    || height % 2 != 0)
+            {
+                return Err(ProtocolError::Payload(kind));
+            }
+            Ok(ControlPacket::MonitorCommand {
+                request_id: u32::from_le_bytes(p[..4].try_into().unwrap()),
+                action: p[4],
+                index: p[5],
+                width,
+                height,
+            })
+        }
+        KIND_VIDEO_NACK => {
+            if p.len() != 7 || p[0] >= 6 {
+                return Err(ProtocolError::Payload(kind));
+            }
+            Ok(ControlPacket::VideoNack {
+                monitor_index: p[0],
+                ssrc: u32::from_le_bytes(p[1..5].try_into().unwrap()),
+                sequence: u16::from_le_bytes(p[5..7].try_into().unwrap()),
+            })
+        }
+        KIND_STREAM_STATE => {
+            if p.len() != 1 || p[0] > 1 {
+                return Err(ProtocolError::Payload(kind));
+            }
+            Ok(ControlPacket::StreamState {
+                reloading: p[0] != 0,
+            })
+        }
+        KIND_MONITOR_STATUS => {
+            if p.len() < 8 || p[4] > 1 || p.len() < 8 + p[7] as usize {
+                return Err(ProtocolError::Payload(kind));
+            }
+            let end = 8 + p[7] as usize;
+            let mut screens = Vec::new();
+            let mut positions = Vec::new();
+            let mut names = Vec::new();
+            let mut roles = Vec::new();
+            let mut primary = 0;
+            if p.len() > end {
+                let count = usize::from(p[end]);
+                if count > 6 || (p.len() != end + 1 + count * 4 && p.len() < end + 1 + count * 8) {
+                    return Err(ProtocolError::Payload(kind));
+                }
+                for v in p[end + 1..end + 1 + count * 4].chunks_exact(4) {
+                    let width = u16::from_le_bytes(v[..2].try_into().unwrap());
+                    let height = u16::from_le_bytes(v[2..].try_into().unwrap());
+                    if width < 160 || height < 160 {
+                        return Err(ProtocolError::Payload(kind));
+                    }
+                    screens.push((width, height));
+                }
+                if p.len() >= end + 1 + count * 8 {
+                    for v in p[end + 1 + count * 4..end + 1 + count * 8].chunks_exact(4) {
+                        positions.push((
+                            i16::from_le_bytes(v[..2].try_into().unwrap()),
+                            i16::from_le_bytes(v[2..].try_into().unwrap()),
+                        ));
+                    }
+                }
+                let extension = end + 1 + count * 8;
+                if p.len() > extension {
+                    let mut rest = &p[extension..];
+                    if rest.len() < 2 || rest[0] != 1 || rest[1] & !((1u16 << count) - 1) as u8 != 0
+                    {
+                        return Err(ProtocolError::Payload(kind));
+                    }
+                    primary = rest[1];
+                    rest = &rest[2..];
+                    for _ in 0..count {
+                        if rest.is_empty() || rest[0] > 3 {
+                            return Err(ProtocolError::Payload(kind));
+                        }
+                        roles.push(rest[0]);
+                        let (name, next) =
+                            read_name(&rest[1..]).ok_or(ProtocolError::Payload(kind))?;
+                        names.push(name);
+                        rest = next;
+                    }
+                    if !rest.is_empty() {
+                        return Err(ProtocolError::Payload(kind));
+                    }
+                }
+            }
+            Ok(ControlPacket::MonitorStatus {
+                request_id: u32::from_le_bytes(p[..4].try_into().unwrap()),
+                ok: p[4] != 0,
+                available: p[5],
+                owned: p[6],
+                screens,
+                positions,
+                names,
+                roles,
+                primary,
+                message: String::from_utf8_lossy(&p[8..end]).into_owned(),
             })
         }
         KIND_KEYFRAME_REQUEST => {
@@ -731,6 +933,71 @@ mod pointer_tests {
                 Err(ProtocolError::Payload(KIND_TOUCHPAD_STATE))
             );
         }
+    }
+    #[test]
+    fn repair_and_reload_roundtrip() {
+        for packet in [
+            ControlPacket::VideoNack {
+                monitor_index: 0,
+                ssrc: u32::MAX,
+                sequence: u16::MAX,
+            },
+            ControlPacket::StreamState { reloading: true },
+            ControlPacket::StreamState { reloading: false },
+        ] {
+            assert_eq!(decode_packet(&packet.encode()), Ok(packet));
+        }
+        assert!(decode_packet(
+            &ControlPacket::VideoNack {
+                monitor_index: 6,
+                ssrc: 1,
+                sequence: 0
+            }
+            .encode()
+        )
+        .is_err());
+    }
+    #[test]
+    fn monitor_management_roundtrip_and_validation() {
+        for action in 0..=3 {
+            let packet = ControlPacket::MonitorCommand {
+                request_id: u32::MAX,
+                action,
+                index: 1,
+                width: 1920,
+                height: 1080,
+            };
+            assert_eq!(decode_packet(&packet.encode()), Ok(packet));
+        }
+        for (action, index, width, height) in [
+            (5, 0, 1920, 1080),
+            (3, 6, 1920, 1080),
+            (1, 0, 319, 1080),
+            (3, 0, 1921, 1080),
+            (1, 0, 1920, 2162),
+        ] {
+            let p = ControlPacket::MonitorCommand {
+                request_id: 1,
+                action,
+                index,
+                width,
+                height,
+            };
+            assert!(decode_packet(&p.encode()).is_err());
+        }
+        let packet = ControlPacket::MonitorStatus {
+            request_id: 7,
+            ok: false,
+            available: 4,
+            owned: 6,
+            screens: vec![(1920, 1080), (2560, 1600)],
+            positions: vec![(0, 0), (1920, 0)],
+            names: vec!["eDP-1".into(), "Virtual-1-1".into()],
+            roles: vec![3, 1],
+            primary: 2,
+            message: "Mode unavailable".into(),
+        };
+        assert_eq!(decode_packet(&packet.encode()), Ok(packet));
     }
     #[test]
     fn click_and_drag_wire_validation() {

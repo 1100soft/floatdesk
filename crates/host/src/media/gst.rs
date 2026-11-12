@@ -165,6 +165,10 @@ pub struct Pipeline {
 }
 
 unsafe impl Send for Pipeline {}
+// GStreamer appsrc submission and appsink pulling are designed for separate
+// threads. Handles/API pointers are immutable; Arc keeps the pipeline alive
+// until both producer and consumer finish, before Drop changes its state.
+unsafe impl Sync for Pipeline {}
 
 impl Pipeline {
     pub fn launch(description: &str) -> Result<Self> {

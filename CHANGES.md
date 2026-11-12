@@ -96,3 +96,33 @@ This checkpoint adds direct hand/gaze mouse routing, optional click/drag/scroll 
 Verification commands and their limits are documented in [the checks README](client/android-xr/checks/README.md). Hardware quick-pinch reliability is explicitly not established by the automated checks. Local troubleshooting captures/build backups remain ignored; this checkpoint contains no raw personal desktop images or logs.
 
 Checkpoint validation on 10 November 2026: Android debug build and lint; all ten JVM checks; Rust workspace tests/release build/format check; private-Xvfb XTest checks; read-only live capture/reconnection and passive uinput classification; and offscreen headset EGL/MediaCodec pause/resume checks passed. The Android unit-test task has no test sources. Clippy completes with existing warnings in unchanged code; it is not a warning-free result. Gesture reliability remains deferred despite these checks.
+
+## Dynamic screen pool — 10 November 2026
+
+The headset's Workspace button now opens screen management. With `serve --existing`, active XRandR outputs stream independently; Add/Remove/resolution commands manage only virtual outputs created by the current host process. The already-provisioned VKMS pool supplies real KDE desktop screens without privileged runtime setup. Capture/decoder reconfiguration and source-identity layout reconciliation preserve existing placements. Retried commands are deduplicated, and graceful host shutdown releases its outputs. See [multi-monitor behavior and limitations](docs/multi-monitor.md).
+
+11 November device follow-up: screen creation worked, but native renderer crashes reported unknown material instances. Curved colliders, snapshots and guide entities now release their native instances before their model resources. Late curved-collider loads reject disposed/replaced owners. Added lifetime and late-completion regressions; hardware stability remains to be rechecked.
+
+11 November combined-desktop follow-up: the lifetime fix did not eliminate the reported native material crash. Existing-desktop mode now captures the X11 arrangement as one object/stream, with one spherical projection. Output inventory remains separate for Add/Remove/resolution management. Video fits within 4096 × 2160 while mouse input maps to full desktop bounds. Stability remains pending a sustained headset test.
+
+11 November streaming follow-up: completed encoded pictures drain even without a new XDamage capture; video packet trains are paced to reduce UDP bursts. Conversion/scaling uses the measured faster fused four-worker path, with the prior path as fallback. Packet-loss recovery remains necessary on lossy links. Added pacing regression; validated static large-desktop output/recovery on private Xvfb. Device smoothness remains pending retest.
+
+Workspace now includes a draggable desktop arrangement map with stronger edge/centre snapping and apply-on-release position commands. External X11 layout changes are detected in a background worker and reload capture/catalogue without opening Workspace. Virtual modes use the lowest advertised positive refresh rate. Addition/removal/resolution edits preserve deliberate positions.
+
+The encoder's sender runs independently of capture; its bounded compressed queue applies backpressure instead of dropping H.264 reference frames. Raw input still replaces obsolete frames. Setup assistance adds read-only diagnostics and reviewable boot/login installation bundles, without modifying the existing VKMS installation. Distribution-specific provider automation remains release work.
+
+Connector names/DRM roles now identify screens independently of primary selection and position; mirrored outputs stay listed. Plasma changes apply enablement/mode/position/priorities in one transaction, preserving the existing order. Cached XRandR observation is faster, unchanged desktop bounds avoid video restart, same-format source changes reuse decoding, and reconfiguration has a visible progress indicator. Display requests retry safely and reconcile automatically instead of warning users to refresh.
+
+XRender downscales before SHM readback, with fallback; measured readback time fell from ~53 to ~26 ms on the current desktop. Cursor scaling preserves full-resolution input mapping. Bounded packet retransmission repairs isolated losses and incomplete frame tails before keyframe fallback, rejecting unbound peers, inactive sources and late retired-source traffic. These improve known bottlenecks without establishing stall-free playback on every link.
+
+Sub-Hz modes are excluded from interactive selection after a real full-resolution Plasma transaction exposed a multi-second flip wait (`@0` mode). The lowest responsive supported rate is retained. Partially applied additions retain management ownership, and SIGTERM/SIGHUP now shut the host down gracefully.
+
+12 November: blank non-screen pixels in the combined desktop before encoding, preventing stale window fragments in gaps. Cached clipping follows arrangement changes without changing the stream geometry or decoding path. Pixel-centre coverage avoids seams at fractional shared edges; the cursor is clipped too.
+
+### Connected screen layout and XR gaps — 12 November 2026
+
+Layout edits now reject orphan screens, including corner-only attachment and deleting a bridge output. The host validates against fresh output geometry before mutation, with the editor rejecting invalid drops locally. Existing externally disconnected arrangements can be repaired incrementally.
+
+The client masks unused desktop areas to transparent in live video and snapshots. Workspace adds saved visual spacing with inverse mouse mapping; logical screen edges stay connected. Actual black screen content remains opaque. No gesture tuning is included.
+
+Visual spacing now explains its per-dimension reduction and uses matching 0.1% slider/display precision. Previously the continuous value was displayed as a truncated integer.

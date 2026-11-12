@@ -1,0 +1,95 @@
+# Dynamic desktop screens
+
+Open the palm panel, choose **Workspace**, then use **Screens**. Add creates a 1920 × 1080 desktop screen. Each added screen offers 1280 × 720, 1920 × 1080 and 2560 × 1600, plus Remove. Modes must already be advertised by that output; unsupported choices report an error. The host chooses the lowest responsive advertised rate for that resolution, excluding sub-Hz modes (minimum 1 Hz). On the tested pool this is generally around 10 Hz; it is independent of the host's capture FPS setting. Low display refresh can still affect source application/compositor repaint timing, so it is not a guarantee of lower streaming latency. External arrangement changes automatically reload capture after two stable observations (normally about one second). Refresh is also available. The visual editor applies a snapped position on drag release, preserving resolution and refresh.
+
+Run the host with `serve --existing`. It reads up to six active XRandR outputs and captures their bounding rectangle as **one desktop object**, preserving the system arrangement, including vertical offsets, gaps and overlaps. Two 1920 × 1080 outputs side by side produce one 3840 × 1080 screen. Stacked outputs produce a taller screen. Moving, resizing or spherically warping this object applies to the complete desktop, with no seams between independently projected screens. Mouse coordinates map across the original desktop rectangle.
+
+The single H.264 stream fits within 4096 × 2160, preserving aspect ratio to even-pixel precision. Larger desktops are downscaled; the actual system output resolutions and pointer coordinates remain unchanged. This trades fine text detail for bounded encoder/decoder dimensions. The Screens panel distinguishes streamed dimensions from the per-output resolutions and still manages each added desktop output separately. Capture cost grows with the full desktop area even when video is downscaled.
+
+Adding/removing/changing resolution rebuilds capture and decoding; a brief video interruption is expected. Refresh rereads the system arrangement. The combined object keeps its historical canvas identity (`existing-0`) and its saved pose/physical width; height adapts to the combined aspect ratio. Older independent placements disappear from the active layout. Saved layouts store placement, not an instruction to recreate desktop outputs automatically. Legacy `serve --monitors` logical-region mode remains separate.
+
+## VKMS pool
+
+The supplied `vkms_flexible_monitors_kde_x11.ipynb` is reference material, not an installer executed by Floatdesk. Its configfs service provisions independent VKMS connectors/CRTCs before Xorg, links the provider and advertises modes. This machine already has four inactive `Virtual-1-*` outputs. Floatdesk activates that pool through unprivileged XRandR commands; it does not run notebook cells, use sudo, rebuild modules, change boot configuration or reboot.
+
+This produces real KDE desktop outputs, unlike RandR logical monitor regions with no backing output. Use **Screen setup** for readiness checks and a reviewable installation bundle; see [virtual-display setup](virtual-display-setup.md). Creating a larger kernel/Xorg pool remains an administrator setup step before the graphical session starts. If no unused `Virtual-*` output exists, Add is unavailable. The current implementation supports X11 and numeric `Virtual-*` output names; it does not provision VKMS or manage Wayland displays.
+
+Physical and already-active outputs are included in the combined desktop but cannot be resized or removed from the app. Only outputs added by the current Floatdesk host process are manageable. New outputs start to the right of active outputs. Existing positions survive addition, resolution changes and removal; use the editor to close gaps or correct overlaps. Position edits may move physical outputs when explicitly dragged, but never change their modes. Coordinates are nonnegative; move a screen right/down first to make space for another on its left/top. Existing desktop windows may be rearranged by KDE when outputs are added or removed.
+
+Added outputs remain active across headset reconnects and are disabled on graceful host shutdown. Host service restart ends that ownership session. SIGKILL, power loss or a crash can leave outputs enabled; disable those specific virtual outputs in KDE Display Configuration before restarting if they should return to the available pool. Floatdesk does not adopt or disable pre-existing screens automatically.
+
+## Control and validation
+
+Monitor commands carry request IDs and are accepted only from the connected control peer. The host caches replies so retransmitted Add requests do not create duplicate screens. Dimensions and action/index values are bounded. Timed-out requests are reconciled by an automatic read-only refresh before another change. This uses the existing trusted-LAN UDP transport, without authentication or encryption.
+
+Validation includes Rust parser/protocol tests and `checks/monitor_management.py`, which checks Android/Rust wire fixtures and pose preservation through source changes. A live X11 test exercised two additions, retry deduplication, resolution change, index compaction, removal and graceful cleanup, receiving RTP on three independent ports. The physical display configuration matched its starting state afterward. The user confirmed adding, resizing and removing outputs in the headset; existing-desktop mode now uses one combined decoder rather than independent per-output decoding.
+
+Gesture reliability remains deferred in [gesture-issues.md](gesture-issues.md); this work does not tune gestures or change the confirmed monitor coordinate conversion.
+
+## Native renderer lifetime fix — 11 November 2026
+
+The first device test confirmed screen management worked but reported repeated crashes. The crash buffer showed native Impress/SplitEngine aborts for unknown material instance IDs. Review found that curved colliders and frozen images detached their entities and immediately closed the model; detachment does not synchronously destroy the native instances. The same pattern existed in grab-guide shutdown. This is the leading explanation for those material errors, pending another device test.
+
+Owned glTF teardown now explicitly disposes native instances before closing their backing models, using the pinned SDK's restricted disposal API, which also clears its automatic-cleanup reference. Curved collider close is idempotent. A collider that finishes loading after its monitor owner has closed is immediately released and cannot disable or replace the restored input owner. The resource lifetime check exercises repeated close and failed construction with native-lifetime substitutes; the warp check covers late completion. These tests cannot establish that a native renderer crash is eliminated on hardware.
+
+## Combined desktop follow-up — 11 November 2026
+
+The user reported another unknown-material native crash after the lifetime fix; that fix alone did **not** establish stability. Existing-desktop mode now uses a single capture, decoder, video surface, interaction patch and spherical projection for the whole system arrangement. This reduces independent renderer lifetimes but is not proof that the native failure is eliminated. A sustained headset test remains required.
+
+The extended monitor status carries a bounded per-output size inventory separately from the single stream's hello. Management indices still refer to desktop outputs; mouse stream index zero refers to the combined capture rectangle. Rust tests cover side-by-side, stacked and negative-offset arrangements, aspect-preserving size limits, and scaled encoding. Live testing checks one stream through add/resize/remove, retry deduplication, protection of the physical output, and restoration of the starting arrangement.
+
+## Large-desktop stalls — 11 November 2026
+
+The user confirmed the combined object works, but video and the visible mouse cursor intermittently freeze more often with additional outputs. Headset logs showed recurring RTP loss/recovery requests while XR display/input frame logs continued. The host also only drained its asynchronous encoder after obtaining another capture, leaving completed pictures unsent when XDamage was idle or the capture interval was not due.
+
+The host now drains ready video before polling for another capture. A bounded packet pacer spreads large H.264 units rather than dumping an unrestricted UDP burst, while input processing remains on its separate session thread. Pacing permits a 9,600-byte packet train at four times configured bitrate, bounded to 8–80 Mbps; it is burst control, not adaptive congestion control. It cannot repair actual packet loss.
+
+Conversion/scaling uses `videoconvertscale n-threads=4` where available, with the previous software path as fallback. A local 30-frame synthetic 5120 × 3200 to 3456 × 2160 comparison measured 0.98 s for fused processing versus 1.57 s for the previous separate stages. VA postprocessing was tested and rejected on this machine because that path took 11.77 s. These are pipeline throughput measurements, not end-to-end LAN latency guarantees.
+
+Rust tests cover bounded pacing/idle credit and the encoder paths. An isolated static Xvfb desktop at 5120 × 3200 delivered a complete frame without further activity and answered an explicit recovery request (171 ms initial and 105 ms recovery in that run). Actual Wi-Fi smoothness still needs user confirmation. Large X11 captures still read the complete unscaled desktop; capture cost is not eliminated by smaller encoded dimensions.
+
+## Layout editor and streaming continuity follow-up
+
+The Workspace screen map uses the same per-output coordinates as X11. Dragging previews locally; release submits one position command. Snapping aligns adjacent or corresponding edges and centres, using a visual threshold converted to desktop pixels. Position changes are permitted for all listed outputs; only app-owned outputs can be resized or removed. No repacking overwrites deliberate arrangement edits.
+
+A background worker queries arrangement independently of the input loop, debounces two stable observations and rejects observations from before the last app command. External moves/resizes update capture bounds, RTP source identity and the pushed screen catalogue automatically. The app accepts unsolicited catalogues while no command is pending. A fresh source identity also resets decoding when a layout changes but the stream dimensions remain the same.
+
+Video sending now runs separately from X11 capture/submission. The compressed output queue is bounded but lossless: backpressure replaces obsolete raw inputs, rather than silently discarding H.264 reference pictures and waiting for IDR recovery. Shared GStreamer lifetime lasts through both workers; shutdown joins the sender before releasing resources. Packet pacing remains active. This removes two avoidable sources of stalls but cannot guarantee a stall-free Wi-Fi link.
+
+Validation includes snapping and wire regression checks, separate output ownership, static-desktop/recovery output, and a live spare-output test: automatic external-layout reload without Workspace, explicit movement, lowest advertised mode and continued video, followed by restoration of the original desktop arrangement. The tested 1280 × 720 mode selected 9.79 Hz as the lowest actually advertised. Setup generation and shell/Python syntax were checked; administrator installation and generic provider linking were not executed on this already-configured machine.
+
+## Identity, priority and reload fixes
+
+The screen catalogue now retains real connector names with roles derived from DRM/driver information (built-in, physical, virtual or unknown). The primary marker is separate metadata. Neither catalogue order nor the word “computer” is inferred from the current primary or a screen's position. Mirrored outputs remain individually listed. The combined canvas still uses its historical `existing-0` saved-layout key; this key does not identify a physical output.
+
+On a coherent Plasma/X11 configuration, Add/Remove/mode/position operations use one `kscreen-doctor` transaction with all existing output priorities retained in relative order; new screens append after them. The snapshot is matched to the current XRandR geometry before applying a full configuration, avoiding stale or other-session KScreen data. Generic X11 uses XRandR and explicitly retains the active primary. Removing the primary necessarily selects the next remaining output. A live test caught promotion of new outputs through the earlier XRandR path; the corrected atomic path passed addition/movement/cleanup priority checks.
+
+The watcher uses cached `xrandr --current` information rather than hardware probing, with a 150 ms poll interval and two-observation debounce. It announces updates at first observation. Changes inside unchanged combined bounds update the catalogue without restarting video. Same-format RTP changes reuse the decoder. An “Updating screens…” indicator covers actual reconfiguration until video resumes. The client retries a command with its original operation ID, then reconciles uncertain state with read-only queries; the old “Refresh before retrying” warning is removed.
+
+## Readback and packet repair
+
+Larger desktops are downscaled into an XRender offscreen pixmap before MIT-SHM readback when supported, with a full-desktop/software-scaling fallback. Logical desktop coordinates remain full resolution. Cursor position, shape and hotspot are scaled into the captured frame. On this machine's 5120 × 3200 desktop, a read-only 15-frame comparison measured roughly 53 ms/full readback versus 26 ms/scaled readback. This measures capture cost, not guaranteed streaming FPS. A private synthetic Xvfb check verifies crop, colors, child windows and output dimensions.
+
+The host retains the latest 2,048 RTP packets in memory for bounded repair requests from the connected control peer. Requests must match the active stream/source and are rate-limited to 64 per 100 ms. The client requests missing packets within a 60 ms reorder window, including a missing final fragment on an otherwise static screen; unsuccessful tail repair falls back to keyframe recovery after 200 ms. Late packets from recently retired sources cannot switch a new stream back to an old one. The decoder also requests recovery if initial codec parameters are absent.
+
+Automated checks cover exact repair wire layout, same-ID retries/read-only reconciliation, independent connector/primary metadata, repaired fragments/tails, old-source rejection, cursor scaling and byte-identical network retransmission with unauthorized-peer rejection. Rust workspace tests, Android build/lint and private offscreen device checks supplement these tests. The user subsequently confirmed much smoother videos and pointer movement. Reload-indicator placement still needs user confirmation; packet repair does not eliminate sustained congestion or hardware limits.
+
+### Sub-Hz configuration delay
+
+A final full-resolution restore exposed a 2560 × 1600 sub-Hz mode which Plasma labelled `@0`; its configuration transaction exceeded the interactive timeout and partially enabled the output. The policy now excludes rates below 1 Hz rather than presenting them as useful interactive modes. This retains low refresh where practical without the approximately ten-second flip wait of 0.1 Hz. A new output is claimed before a Plasma transaction so a partial/uncertain application remains manageable and can be cleaned up.
+
+The host also handles SIGTERM/SIGHUP through the graceful shutdown path, so normal user-service stops release app-owned virtual outputs. This does not make crash leftovers automatically owned: deliberate restoration of the current task's screens re-established management while preserving the verified user layout, primary and priorities.
+
+## Clip unused desktop space — 12 November 2026
+
+The combined bounding rectangle can contain gaps in nonrectangular arrangements. Those pixels may hold stale X11 window content, so the host now clears pixels outside the union of active screen rectangles before encoding. The host clears gaps to black before encoding to remove stale pixels. The client subsequently makes non-screen areas transparent using the output catalogue, as described below.
+
+The clipping map follows real output positions and handles downscaled capture, offsets, overlapping/mirrored outputs and fractional screen edges without introducing seams between adjacent screens. It is cached as row spans and applied after cursor composition. An arrangement change updates the map and schedules a fresh frame even without XDamage, including when the outer bounds remain unchanged. Rectangular coverage requires no clearing. Tests cover L-shaped layouts, scaled/offset unions, same-bounds changes, stride padding and fractional adjacency/gaps.
+
+## Connected layouts and transparent spacing — 12 November 2026
+
+App layout changes must keep every screen connected to the primary through shared edges or overlapping area. Corner-only contact is insufficient. The editor marks invalid drops red and cancels them; the host independently validates moves, additions, resolution changes and removals before changing the system configuration. Removing a bridge screen is rejected. A pre-existing disconnected layout created outside Floatdesk can be repaired one island at a time, provided each change reduces the number of orphan screens. Floatdesk does not silently rearrange external configurations.
+
+Unused areas of the combined desktop are transparent in both live video and grab snapshots. This uses output rectangles rather than a black color key, so black content on a real screen remains opaque. **Visual spacing** in Workspace uniformly insets each screen around its center, preserving its aspect ratio, without moving logical desktop edges. The percentage is the reduction of each screen’s width and height, split equally between opposite edges: 10.0% leaves 90% of each dimension, with a 5% inset per edge. The slider and saved setting use 0.1 percentage-point steps, matching the displayed decimal precision. The setting is saved in the workspace. Pointer coordinates are remapped to the displayed content; visual gaps do not aim the desktop mouse. The combined monitor's outer frame and manipulation geometry remain one object.
+
+The compositor applies the mask and spacing in its existing GPU pass, without another decoder or CPU frame copy. JVM checks cover layout connectivity and inverse pointer mapping; the offscreen device check covers transparent gaps, opaque black content, source orientation and presentation updates without a new video frame.

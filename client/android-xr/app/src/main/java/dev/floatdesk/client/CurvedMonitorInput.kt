@@ -18,11 +18,14 @@ internal class CurvedMonitorInput private constructor(
     private val component: InteractableComponent,
     private val pointer: SpatialPointerComponent,
 ) : AutoCloseable {
+    private var closed = false
+
     override fun close() {
+        if (closed) return
+        closed = true
         entity.removeComponent(pointer)
         entity.removeComponent(component)
-        entity.parent = null
-        model.close()
+        releaseOwnedGltf(model, entity)
     }
 
     companion object {
@@ -43,8 +46,7 @@ internal class CurvedMonitorInput private constructor(
                 pointer.spatialPointerIcon=SpatialPointerIcon.NONE
                 return CurvedMonitorInput(mesh, created, model, component,pointer)
             } catch (failure: Throwable) {
-                entity?.parent = null
-                model.close()
+                releaseOwnedGltf(model, entity)
                 throw failure
             }
         }

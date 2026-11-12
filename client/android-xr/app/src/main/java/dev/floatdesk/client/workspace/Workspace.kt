@@ -43,10 +43,12 @@ internal data class WorkspaceFile(
     val eyeAiming: Boolean = false,
     val mouseGestures: Boolean = false,
     val screenSpacing:Float=0f,
+    val viewerReference:Pose?=null,
 )
 
 internal class WorkspaceStore(private val file: File) {
     private val lock = Any()
+    @Volatile var viewerReference:Pose?=null
 
     fun load(): WorkspaceFile = synchronized(lock) {
         if (!file.exists()) return WorkspaceFile()
@@ -55,7 +57,10 @@ internal class WorkspaceStore(private val file: File) {
 
     fun save(workspace: WorkspaceFile) = synchronized(lock) {
         file.parentFile?.mkdirs()
-        file.writeText(encode(workspace).toString(2))
+        val temporary=File(file.parentFile,file.name+".tmp")
+        temporary.writeText(encode(workspace.copy(viewerReference=viewerReference ?: workspace.viewerReference)).toString(2))
+        java.nio.file.Files.move(temporary.toPath(),file.toPath(),java.nio.file.StandardCopyOption.REPLACE_EXISTING,java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+
     }
 }
 
@@ -128,6 +133,7 @@ private fun encode(workspace: WorkspaceFile): JSONObject {
         .put("eye_aiming", workspace.eyeAiming)
         .put("mouse_gestures", workspace.mouseGestures)
         .put("screen_spacing",workspace.screenSpacing.toDouble())
+        .put("viewer_reference",workspace.viewerReference?.let {JSONObject().put("position",JSONArray(it.position.toList())).put("rotation",JSONArray(it.rotation.toList()))})
 }
 
 private fun encodeMonitor(monitor: MonitorPlacement): JSONObject {
@@ -168,6 +174,7 @@ private fun decode(json: JSONObject): WorkspaceFile {
         sphericalWarp = json.optBoolean("spherical_warp", false),
         eyeAiming = json.optBoolean("eye_aiming", json.optBoolean("mouse_control", false)),
         mouseGestures = json.optBoolean("mouse_gestures", false),
+        viewerReference=json.optJSONObject("viewer_reference")?.let {Pose(floatArray(it,"position",3),floatArray(it,"rotation",4))},
         screenSpacing=json.optDouble("screen_spacing",0.0).toFloat().takeIf {it.isFinite()}?.coerceIn(0f,.15f)?.let { kotlin.math.round(it*1000)/1000f } ?: 0f,
     )
 }

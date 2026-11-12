@@ -6,7 +6,7 @@ import sys
 import tempfile
 
 folder = Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client'
-mesh = (folder/'MonitorMesh.kt').read_text().split('\n', 1)[1]
+mesh = (folder/'MonitorMesh.kt').read_text().split('\n', 1)[1]+'\n'+(folder/'VideoGeometry.kt').read_text().split('\n',1)[1]
 warp = (folder/'MonitorWarp.kt').read_text()
 warp = warp[warp.index('internal class MonitorWarp'):].replace('@SuppressLint("RestrictedApi")', '').replace('androidx.xr.runtime.math.IntSize2d','IntSize2d').replace('android.os.SystemClock','SystemClock')
 stubs = '''
@@ -121,10 +121,12 @@ suspend fun main() {
     val output = warp.attach(session,input.getSurface(),screen)
     val video = session.scene.entities.single { it.getSurface() === output }
     check(video === input && output === input.getSurface())
+    check(input.mediaBlendingMode==SurfaceEntity.MediaBlendingMode.OPAQUE)
     check(input.enabled && input.getAlpha() == .8f)
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false)
     val curvedVideo=session.scene.entities.last()
     check(curvedVideo !== input && input.shape is SurfaceEntity.Shape.Quad)
+    check(curvedVideo.mediaBlendingMode==SurfaceEntity.MediaBlendingMode.OPAQUE)
     check(warp.outputSurface === curvedVideo.getSurface())
     val resizedScreen=screen.copy(physicalWidthM=.96f,physicalHeightM=.54f)
     val heldShape=curvedVideo.shape

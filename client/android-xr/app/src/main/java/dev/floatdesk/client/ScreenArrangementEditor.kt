@@ -31,7 +31,6 @@ internal fun ScreenArrangementEditor(sizes:List<Pair<Int,Int>>,positions:List<Pa
     val overlaps=overlappingScreens(screens)
     val validPreview=preview?.let {dragging in screens.indices && canMoveScreen(screens,dragging,it,primary,limits)} ?: true
     val density=LocalDensity.current.density
-    Text("Drag screens; release to apply. Edges, centres and half-screen positions snap into alignment.",color=Color.White,fontSize=13.sp)
     if(overlaps.any {it}) Text("Overlapping screens: move them apart.",color=Color(0xFFFFB4AB),fontSize=13.sp)
     if(connected.any {!it}) Text("Disconnected screens: reconnect them to the main group.",color=Color(0xFFFFB4AB),fontSize=13.sp)
     BoxWithConstraints(Modifier.fillMaxWidth().height(220.dp).clipToBounds().background(Color(0xFF101720))) {

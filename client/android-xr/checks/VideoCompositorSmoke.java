@@ -9,6 +9,8 @@ import dev.floatdesk.client.net.WorkspaceInfo;
 import dev.floatdesk.client.media.ScreenPresentation;
 import dev.floatdesk.client.media.VideoCompositor;
 import java.nio.ByteBuffer;
+import dev.floatdesk.client.workspace.WorkspaceStore;
+import dev.floatdesk.client.workspace.Pose;
 
 /** Offscreen device check: never opens an Activity or touches the user's desktop. */
 public final class VideoCompositorSmoke {
@@ -28,6 +30,16 @@ public final class VideoCompositorSmoke {
     }
     static void require(boolean value,String message) { if(!value) throw new AssertionError(message); }
     public static void main(String[] args) throws Exception {
+        java.io.File workspaceFile=new java.io.File("/data/local/tmp/floatdesk-workspace-smoke.json");
+        workspaceFile.delete();
+        try {
+            WorkspaceStore store=new WorkspaceStore(workspaceFile);
+            store.setViewerReference(new Pose(new float[]{1f,2f,3f},new float[]{0f,0f,0f,1f}));
+            store.save(store.load());
+            WorkspaceStore reloaded=new WorkspaceStore(workspaceFile);
+            require(reloaded.load().getViewerReference()!=null && reloaded.load().getViewerReference().getPosition()[2]==3f,"Viewer reference lost on disk reload");
+            require(!new java.io.File(workspaceFile+".tmp").exists(),"Workspace save did not atomically replace file");
+        } finally {workspaceFile.delete();}
         StringBuilder json=new StringBuilder("{\"type\":\"status\",\"available\":12,\"modes\":[[3840,2160]],\"availableMemoryBytes\":8000000000,\"cpuThreads\":8,\"recommendedPixels\":8000000,\"targetFps\":60,\"estimate\":\"advisory\",\"setupRequired\":false,\"screens\":[");
         for(int i=0;i<9;i++) {if(i>0)json.append(',');json.append("{\"name\":\"Virtual-").append(i).append("\",\"width\":3840,\"height\":2160,\"x\":").append(i*3840).append(",\"y\":0,\"managed\":true,\"primary\":false,\"role\":1,\"refreshHz\":0.1,\"modes\":[[3840,2160]]}");}
         json.append("]}");

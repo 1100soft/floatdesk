@@ -39,6 +39,18 @@ internal class MonitorWarp : AutoCloseable {
     private var mask: Texture? = null
     private var ownerEnabled=true
     private var directInteraction = false
+    private var screenRects=floatArrayOf(0f,0f,1f,1f)
+    private var spacing=0f
+    private var presentationDirty=true
+    fun presentation(rects:FloatArray,inset:Float) {
+        if(!screenRects.contentEquals(rects) || spacing!=inset) {screenRects=rects.copyOf();spacing=inset;presentationDirty=true}
+    }
+    @SuppressLint("RestrictedApi")
+    private fun videoShape(width:Float,height:Float,sphere:MonitorMesh?):SurfaceEntity.Shape {
+        if(sphere==null && videoCoverageIsFull(screenRects,spacing)) return SurfaceEntity.Shape.Quad(FloatSize2d(width,height))
+        val geometry=clippedVideoGeometry(width,height,sphere,screenRects,spacing)
+        return SurfaceEntity.Shape.CustomMesh(SurfaceEntity.Shape.TriangleMesh(FloatBuffer.wrap(geometry.positions),FloatBuffer.wrap(geometry.texCoords),IntBuffer.wrap(geometry.indices)))
+    }
     private var hoverWindow=0L
     private val hoverActions=mutableMapOf<String,Int>()
     private val hoverCounts=mutableMapOf<String,Int>()
@@ -55,7 +67,7 @@ internal class MonitorWarp : AutoCloseable {
             curvedInput?.close(); curvedInput = null
             input?.setEnabled(ownerEnabled)
             input?.primaryAlphaMaskTexture = null
-            input?.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.TRANSPARENT
+            input?.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE
             if (!directInteraction) interaction?.let { component ->
                 check(input?.addComponent(component) == true)
                 directInteraction = true
@@ -97,7 +109,7 @@ internal class MonitorWarp : AutoCloseable {
             .firstOrNull { it.getSurface() === inputSurface }
             ?: error("Could not find monitor input entity")
         target.setSurfacePixelDimensions(androidx.xr.runtime.math.IntSize2d(placement.pixelWidth,placement.pixelHeight))
-        target.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.TRANSPARENT
+        target.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE
         input = target
         ownerEnabled=target.isEnabled(false)
         live = target
@@ -199,17 +211,17 @@ internal class MonitorWarp : AutoCloseable {
         val usable = enabled
         if (!usable) {
             if (live !== original) { live?.parent = null; live = original }
-            if (mesh != null || flatWidth != placement.physicalWidthM || flatHeight != placement.physicalHeightM) {
-                val shape = SurfaceEntity.Shape.Quad(FloatSize2d(placement.physicalWidthM, placement.physicalHeightM))
+            if (presentationDirty || mesh != null || flatWidth != placement.physicalWidthM || flatHeight != placement.physicalHeightM) {
+                val shape = videoShape(placement.physicalWidthM,placement.physicalHeightM,null)
                 applyShape(original, shape)
                 flatWidth = placement.physicalWidthM; flatHeight = placement.physicalHeightM
-                mesh = null
+                mesh = null;presentationDirty=false
             }
             return
         }
         if (viewer == null) return
         val previous = mesh
-        val changed = previous == null || previous.width != placement.physicalWidthM || previous.height != placement.physicalHeightM ||
+        val changed = presentationDirty || previous == null || previous.width != placement.physicalWidthM || previous.height != placement.physicalHeightM ||
             viewer.indices.any { kotlin.math.abs(viewer[it] - previous.eye[it]) > 0.01f }
         if (changed) {
             val next = MonitorMesh(placement.physicalWidthM, placement.physicalHeightM, viewer)
@@ -220,14 +232,13 @@ internal class MonitorWarp : AutoCloseable {
                 fun sag(point: FloatArray) = (0..2).sumOf { (point[it]*viewer[it]/next.radius).toDouble() }.toFloat()
                 Log.i("Floatdesk","warp geometry viewer=${viewer.contentToString()} sdkViewer=$sdkEye radius=${next.radius} image=${placement.pixelWidth}x${placement.pixelHeight} extent=${next.width}x${next.height} horizontalSag=${sag(h)} verticalSag=${sag(v)}")
             }
-            val shape = SurfaceEntity.Shape.CustomMesh(SurfaceEntity.Shape.TriangleMesh(
-                FloatBuffer.wrap(next.positions), FloatBuffer.wrap(next.videoTexCoords), IntBuffer.wrap(next.indices)))
+            val shape = videoShape(next.width,next.height,next)
             val target = if (live === original) SurfaceEntity.create(session,
                 shape = shape, pose = original.getPose(), parent = original.parent,
                 superSampling = SurfaceEntity.SuperSampling.NONE).also {
                 it.setScale(original.getScale())
                 it.setSurfacePixelDimensions(androidx.xr.runtime.math.IntSize2d(placement.pixelWidth,placement.pixelHeight))
-                it.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.TRANSPARENT
+                it.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE
                 val pointer=SpatialPointerComponent.create(session)
                 check(it.addComponent(pointer))
                 pointer.spatialPointerIcon=SpatialPointerIcon.NONE
@@ -235,7 +246,7 @@ internal class MonitorWarp : AutoCloseable {
             } else live!!
             applyShape(target, shape)
             flatWidth = next.width; flatHeight = next.height
-            mesh = next
+            mesh = next;presentationDirty=false
         } else if (live?.shape !== appliedShape) {
             appliedShape?.let { applyShape(live!!, it) }
         }

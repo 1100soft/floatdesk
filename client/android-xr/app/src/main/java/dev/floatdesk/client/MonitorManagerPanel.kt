@@ -11,6 +11,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.IconButton
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.ui.Modifier
@@ -29,26 +34,24 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
     val sizes=screens?.map {it.width to it.height} ?: state.screens
     val positions=screens?.map {it.x to it.y} ?: state.positions
     val available=info?.available ?: state.available
-    var addSize by remember {mutableStateOf(1920 to 1080)}
     var setup by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxSize().background(Color(0xF01C2430)).padding(16.dp).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+    MaterialTheme(colorScheme=darkColorScheme()) {
+    Column(Modifier.fillMaxSize().background(Color(0xF01C2430)).padding(16.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween) {
             Text("Screens",color=Color.White,fontSize=22.sp)
-            Button(onClick=onClose) {Text("Close")}
+            IconButton(onClick=onClose,modifier=Modifier.semantics {contentDescription="Close workspace"}) {Text("×",fontSize=30.sp)}
         }
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(8.dp)) {
         Text(if(busy) "Updating screens…" else "${sizes.size} desktop screens · $available available",color=Color.White)
         Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-            Button(enabled=!busy && available>0,onClick={connection.requestDisplays(1,0,addSize.first,addSize.second)}) {Text("Add screen")}
+            Button(enabled=!busy && available>0,onClick={connection.requestDisplays(1)}) {Text("Add screen")}
             Button(enabled=!busy,onClick={connection.requestDisplays()}) {Text("Refresh")}
             Button(onClick={setup=!setup}) {Text("Screen setup")}
         }
-        ResolutionChoice(addSize,info?.modes.orEmpty(),!busy) {addSize=it}
         info?.let {host->
             val pixels=sizes.sumOf {it.first.toLong()*it.second}
             val capturePixels=if(sizes.isEmpty()) 0L else (sizes.indices.maxOf {positions[it].first+sizes[it].first}-positions.minOf {it.first}).toLong()*(sizes.indices.maxOf {positions[it].second+sizes[it].second}-positions.minOf {it.second})
-            Text(String.format(Locale.ROOT,"Content: %.1f MP · capture area: %.1f MP · estimate: %.1f MP at %d FPS",pixels/1e6,capturePixels/1e6,host.recommendedPixels/1e6,host.fps),color=Color.White,fontSize=13.sp)
-            Text(String.format(Locale.ROOT,"%d CPU threads · %.1f GiB memory available. %s",host.cpuThreads,host.memoryBytes/1073741824.0,host.estimate),color=Color(0xFFB8D9EA),fontSize=12.sp)
-            if(capturePixels>host.recommendedPixels && host.recommendedPixels>0) Text("Above the estimate; playback may be slower. You can still add or enlarge screens.",color=Color(0xFFFFD69A),fontSize=12.sp)
+            Text(String.format(Locale.ROOT,"%,d pixels (%.2f MP) · capture %.2f MP",pixels,pixels/1e6,capturePixels/1e6),color=Color.White,fontSize=13.sp)
             if(host.setupRequired) Text("No virtual output backend is ready. Open the computer's Floatdesk tray → Virtual screen setup.",color=Color(0xFFFFD69A),fontSize=13.sp)
         }
         if(setup) {
@@ -59,7 +62,6 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
         if(sizes.isNotEmpty()) {
             Text(String.format(Locale.ROOT,"Visual spacing: %.1f%%",spacing*100),color=Color.White)
             androidx.compose.material3.Slider(value=spacing,onValueChange={onSpacing((it*1000).roundToInt()/1000f)},onValueChangeFinished=onSpacingFinished,valueRange=0f..0.15f,steps=149,enabled=!busy)
-            Text("Reduces each screen’s width and height by this percentage, half on each edge. 10.0% leaves 90% of each dimension. Logical desktop edges stay connected; empty space is transparent.",color=Color(0xFFB8D9EA),fontSize=12.sp)
         }
         monitors.firstOrNull()?.let { Text("Combined desktop — ${it.width} × ${it.height} streamed pixels",color=Color.White) }
         sizes.forEachIndexed { index,(width,height) ->
@@ -73,8 +75,9 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
                 Button(enabled=!busy,onClick={connection.requestDisplays(2,index)}) {Text("Remove")}
             }
         }
-        Text(state.message,color=if(state.ok) Color(0xFFB8D9EA) else Color(0xFFFFB4AB),fontSize=13.sp)
-        Text("Resolution/removal is limited to app-added screens. Position edits affect the selected screen. Added screens are released when the host closes.",color=Color(0xFFB8D9EA),fontSize=12.sp)
+        if(!state.ok || busy) Text(state.message,color=if(state.ok) Color(0xFFB8D9EA) else Color(0xFFFFB4AB),fontSize=13.sp)
+        }
+    }
     }
 }
 
@@ -91,6 +94,7 @@ private fun ResolutionChoice(current:Pair<Int,Int>,modes:List<Pair<Int,Int>>,ena
             }
         }
     }
+    Text(String.format(Locale.ROOT,"%,d pixels",(width.toIntOrNull()?.toLong() ?: 0)*(height.toIntOrNull()?.toLong() ?: 0)),color=MaterialTheme.colorScheme.onSurface,fontSize=12.sp)
     Row(horizontalArrangement=Arrangement.spacedBy(6.dp)) {
         androidx.compose.material3.OutlinedTextField(width,{width=it.filter(Char::isDigit)},Modifier.weight(1f),label={Text("Width")},singleLine=true,enabled=enabled)
         androidx.compose.material3.OutlinedTextField(height,{height=it.filter(Char::isDigit)},Modifier.weight(1f),label={Text("Height")},singleLine=true,enabled=enabled)

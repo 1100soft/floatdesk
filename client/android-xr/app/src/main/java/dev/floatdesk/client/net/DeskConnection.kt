@@ -180,6 +180,7 @@ internal class DeskConnection(
         val value=if(currentMonitors.size>1) ScreenPresentation() else workspaceInfo.value?.let {info->ScreenPresentation.from(info.screens.map {it.width to it.height},info.screens.map {it.x to it.y},spacing)} ?: ScreenPresentation.from(state.screens,state.positions,spacing)
         screenPresentation.set(value);decoders.values.forEach {it.presentation(value)}
     }
+    fun presentation():ScreenPresentation=screenPresentation.get()
     fun desktopPoint(monitor:Int,u:Float,v:Float):Pair<Float,Float>? =
         if(monitors.value.size==1 && monitor==0) screenPresentation.get().desktopPoint(u,v) else u to v
 

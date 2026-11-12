@@ -106,6 +106,7 @@ import dev.floatdesk.client.workspace.PanelPlacement
 import dev.floatdesk.client.workspace.Pose
 import dev.floatdesk.client.workspace.WorkspaceFile
 import dev.floatdesk.client.workspace.WorkspaceStore
+import dev.floatdesk.client.workspace.restoreViewer
 import dev.floatdesk.client.workspace.reconcileMonitors
 import dev.floatdesk.client.workspace.deskLayout
 import dev.floatdesk.client.workspace.monitorPlaced
@@ -174,10 +175,14 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     LaunchedEffect(connection) { connection.start(context) }
     DisposableEffect(connection) { onDispose { connection.disconnect() } }
     val session = LocalSession.current
+    var workspace by remember { mutableStateOf(store.load()) }
+    val workspaceAtLifecycle=rememberUpdatedState(workspace)
+    var restoreViewerPending by remember {mutableStateOf(true)}
     SessionHolder.session = session
     DisposableEffect(session,connection) {
         val current = session
         val observer = LifecycleEventObserver { _, event ->
+            if(event==Lifecycle.Event.ON_PAUSE || event==Lifecycle.Event.ON_STOP) store.save(workspaceAtLifecycle.value)
             connection.setRenderingActive(current?.lifecycleOwner?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.STARTED)==true)
             if (current != null && event == Lifecycle.Event.ON_RESUME) {
                 runCatching { current.configure(Config.Builder(current.config).setHandTracking(HandTrackingMode.BOTH).build()) }
@@ -189,7 +194,6 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             current?.lifecycleOwner?.lifecycle?.removeObserver(observer)
         }
     }
-    var workspace by remember { mutableStateOf(store.load()) }
     LaunchedEffect(workspace.screenSpacing) {connection.configurePresentation(workspace.screenSpacing)}
     val pointerControl = remember { PointerControl() }
     val gazeStabilizer = remember { GazeStabilizer() }
@@ -223,6 +227,8 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
         val current = session
         val listener = Runnable {
             Log.w("Floatdesk","XR activity origin changed; cancelling gestures")
+            workspace=workspace.copy(viewerReference=store.viewerReference ?: workspace.viewerReference)
+            restoreViewerPending=true
             grabs.values.forEach { it.cancel() }
             manipulating = false
             suppressFist = true
@@ -513,6 +519,14 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             val reliable = trackingGuard.update(handTracking.nowMs, candidateHead?.takeIf { trackingAvailable }?.translation?.toArray(),
                 candidateHead?.let { floatArrayOf(it.rotation.x,it.rotation.y,it.rotation.z,it.rotation.w) },unitsPerMeter)
             val head = candidateHead?.takeIf { reliable }
+            if(head!=null) {
+                val reference=head.toWorkspacePose()
+                if(restoreViewerPending && !workspace.layouts[workspace.activeLayout].isNullOrEmpty()) {
+                    workspace=workspace.restoreViewer(reference)
+                    restoreViewerPending=false
+                }
+                store.viewerReference=reference
+            }
             if (!reliable) {
                 // Head quality controls follow, not availability of independently tracked hands.
                 followLock = null
@@ -914,6 +928,7 @@ private fun DeskContent(
                     }
                     // Freeze before the platform DOWN arrives: replacing a native canvas while
                     // the user starts pinching can cancel its input acquisition.
+                    connection.presentation().let {warp.presentation(it.rects,it.spacing)}
                     warp.update(current, root, handTracking.points["VIEWER"] ?: handTracking.points["HEAD"], screen, file.sphericalWarp,
                         hands.busy || (file.sphericalWarp && handTracking.pinched.isNotEmpty()),forceUpdate=!hands.busy && (nativeGeometryPending || !warp.matchesSize(screen)))
                     warp.syncCurvedInput(current)

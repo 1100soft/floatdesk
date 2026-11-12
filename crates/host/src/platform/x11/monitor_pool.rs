@@ -319,6 +319,189 @@ fn moved_positions(
         .map(|(n, x, y, _, _)| (n, x - left, y - top))
         .collect())
 }
+fn resize_layout(
+    outputs: &[Output],
+    name: &str,
+    width: u32,
+    height: u32,
+    limits: (u32, u32),
+) -> Result<Vec<Output>> {
+    let mut proposed = outputs.to_vec();
+    let target = proposed
+        .iter_mut()
+        .find(|o| o.name == name)
+        .ok_or_else(|| Error::Msg("Unknown screen".into()))?;
+    let old = target
+        .geometry
+        .ok_or_else(|| Error::Msg("Screen is inactive".into()))?;
+    target.geometry = Some((old.0, old.1, width, height));
+    if validate_connectivity(&proposed, name, target_geometry(&proposed, name)).is_ok() {
+        return Ok(proposed);
+    }
+    let active: Vec<_> = proposed
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| o.geometry.is_some())
+        .map(|(i, _)| i)
+        .collect();
+    let root = active
+        .iter()
+        .copied()
+        .find(|i| proposed[*i].primary)
+        .unwrap_or(active[0]);
+    let mut placed = vec![root];
+    let mut remaining: Vec<_> = active.into_iter().filter(|i| *i != root).collect();
+    fn touch(a: (i32, i32, u32, u32), b: (i32, i32, u32, u32)) -> bool {
+        let dx = (a.0 + i32::try_from(a.2).unwrap()).min(b.0 + b.2 as i32) - a.0.max(b.0);
+        let dy = (a.1 + a.3 as i32).min(b.1 + b.3 as i32) - a.1.max(b.1);
+        (dx == 0 && dy > 0) || (dy == 0 && dx > 0)
+    }
+    fn overlap(a: (i32, i32, u32, u32), b: (i32, i32, u32, u32)) -> bool {
+        (a.0 + a.2 as i32).min(b.0 + b.2 as i32) > a.0.max(b.0)
+            && (a.1 + a.3 as i32).min(b.1 + b.3 as i32) > a.1.max(b.1)
+    }
+    while !remaining.is_empty() {
+        let which = remaining
+            .iter()
+            .position(|i| {
+                placed
+                    .iter()
+                    .any(|j| touch(outputs[*i].geometry.unwrap(), outputs[*j].geometry.unwrap()))
+            })
+            .unwrap_or(0);
+        let i = remaining.remove(which);
+        let (ox, oy, w, h) = proposed[i].geometry.unwrap();
+        let mut best = None;
+        for j in &placed {
+            let a = proposed[*j].geometry.unwrap();
+            let olda = outputs[*j].geometry.unwrap();
+            let oldb = outputs[i].geometry.unwrap();
+            let x_values = [
+                ox,
+                a.0 - w as i32,
+                a.0 + a.2 as i32,
+                a.0,
+                a.0 + a.2 as i32 - w as i32,
+                a.0 + (a.2 as i32 - w as i32) / 2,
+            ];
+            let y_values = [
+                oy,
+                a.1 - h as i32,
+                a.1 + a.3 as i32,
+                a.1,
+                a.1 + a.3 as i32 - h as i32,
+                a.1 + (a.3 as i32 - h as i32) / 2,
+            ];
+            for x in x_values {
+                for y in y_values {
+                    let b = (x, y, w, h);
+                    if !touch(a, b)
+                        || placed
+                            .iter()
+                            .any(|k| overlap(proposed[*k].geometry.unwrap(), b))
+                    {
+                        continue;
+                    }
+                    let left = placed
+                        .iter()
+                        .map(|k| proposed[*k].geometry.unwrap().0)
+                        .chain([x])
+                        .min()
+                        .unwrap()
+                        .min(0);
+                    let top = placed
+                        .iter()
+                        .map(|k| proposed[*k].geometry.unwrap().1)
+                        .chain([y])
+                        .min()
+                        .unwrap()
+                        .min(0);
+                    let right = placed
+                        .iter()
+                        .map(|k| {
+                            let g = proposed[*k].geometry.unwrap();
+                            g.0 + g.2 as i32
+                        })
+                        .chain([x + w as i32])
+                        .max()
+                        .unwrap();
+                    let bottom = placed
+                        .iter()
+                        .map(|k| {
+                            let g = proposed[*k].geometry.unwrap();
+                            g.1 + g.3 as i32
+                        })
+                        .chain([y + h as i32])
+                        .max()
+                        .unwrap();
+                    if right - left > limits.0 as i32 || bottom - top > limits.1 as i32 {
+                        continue;
+                    }
+                    let cost = i64::from((x - ox).abs())
+                        + i64::from((y - oy).abs())
+                        + if touch(olda, oldb) { 0 } else { 1_000_000 };
+                    if best
+                        .as_ref()
+                        .is_none_or(|(previous, _, _)| cost < *previous)
+                    {
+                        best = Some((cost, x, y));
+                    }
+                }
+            }
+        }
+        let (_, x, y) = best
+            .ok_or_else(|| Error::Msg("Resolution cannot fit the available framebuffer".into()))?;
+        proposed[i].geometry = Some((x, y, w, h));
+        placed.push(i);
+    }
+    let positions = moved_positions(
+        &proposed,
+        name,
+        proposed
+            .iter()
+            .find(|o| o.name == name)
+            .unwrap()
+            .geometry
+            .unwrap()
+            .0,
+        proposed
+            .iter()
+            .find(|o| o.name == name)
+            .unwrap()
+            .geometry
+            .unwrap()
+            .1,
+        limits,
+    )?;
+    for (n, x, y) in positions {
+        let row = proposed.iter_mut().find(|o| o.name == n).unwrap();
+        let g = row.geometry.unwrap();
+        row.geometry = Some((x, y, g.2, g.3));
+    }
+    validate_connectivity(&proposed, name, target_geometry(&proposed, name))?;
+    Ok(proposed)
+}
+fn target_geometry(outputs: &[Output], name: &str) -> Option<(i32, i32, u32, u32)> {
+    outputs
+        .iter()
+        .find(|o| o.name == name)
+        .and_then(|o| o.geometry)
+}
+
+fn verify_resolution(name: &str, expected: (u32, u32)) -> Result<()> {
+    let current = query()?
+        .into_iter()
+        .find(|o| o.name == name)
+        .and_then(|o| o.geometry)
+        .map(|g| (g.2, g.3));
+    if current != Some(expected) {
+        return Err(Error::Msg(format!(
+            "Display did not apply {}×{}; current size is {:?}",
+            expected.0, expected.1, current
+        )));
+    }
+    Ok(())
+}
 fn added_position(outputs: &[Output]) -> (i32, i32) {
     outputs
         .iter()
@@ -655,24 +838,39 @@ impl MonitorPool {
                 .find(|o| &o.name == name)
                 .ok_or_else(|| Error::Msg("Output disappeared".into()))?
         };
-        let position = output
-            .geometry
+        let dimensions = if output.quarter_turn {
+            (u32::from(height), u32::from(width))
+        } else {
+            (u32::from(width), u32::from(height))
+        };
+        let planned = if action == 3 {
+            Some(resize_layout(
+                &outputs,
+                &output.name,
+                dimensions.0,
+                dimensions.1,
+                desktop_limits(),
+            )?)
+        } else {
+            None
+        };
+        let position = planned
+            .as_ref()
+            .and_then(|p| target_geometry(p, &output.name))
+            .or(output.geometry)
             .map(|g| (g.0, g.1))
             .unwrap_or_else(|| added_position(&outputs));
-        validate_connectivity(
-            &outputs,
-            &output.name,
-            if action == 2 {
-                None
-            } else {
-                let (w, h) = if output.quarter_turn {
-                    (height, width)
+        if planned.is_none() {
+            validate_connectivity(
+                &outputs,
+                &output.name,
+                if action == 2 {
+                    None
                 } else {
-                    (width, height)
-                };
-                Some((position.0, position.1, u32::from(w), u32::from(h)))
-            },
-        )?;
+                    Some((position.0, position.1, dimensions.0, dimensions.1))
+                },
+            )?;
+        }
         if let Some((snapshot, mut priorities)) = plasma_snapshot(&outputs) {
             let mut commands = Vec::new();
             if action == 2 {
@@ -726,12 +924,22 @@ impl MonitorPool {
                     );
                 }
             }
+            if let Some(layout) = &planned {
+                for row in layout.iter().filter(|o| o.name != output.name) {
+                    if let Some((x, y, _, _)) = row.geometry {
+                        commands.push(format!("output.{}.position.{x},{y}", row.name));
+                    }
+                }
+            }
             // Claim a newly inactive output before the transaction: a timed-out
             // desktop service can have applied part of the requested configuration.
             if action == 1 {
                 self.owned.insert(output.name.clone());
             }
             plasma_transaction(commands, priorities)?;
+            if action != 2 {
+                verify_resolution(&output.name, dimensions)?;
+            }
             if action == 2 {
                 self.owned.remove(&output.name);
             } else {
@@ -757,6 +965,18 @@ impl MonitorPool {
                 "--pos".into(),
                 format!("{x}x{y}"),
             ]);
+        }
+        if let Some(layout) = &planned {
+            for row in layout.iter().filter(|o| o.name != output.name) {
+                if let Some((x, y, _, _)) = row.geometry {
+                    args.extend([
+                        "--output".into(),
+                        row.name.clone(),
+                        "--pos".into(),
+                        format!("{x}x{y}"),
+                    ]);
+                }
+            }
         }
         if let Some(primary) = outputs
             .iter()
@@ -784,6 +1004,7 @@ impl MonitorPool {
             self.owned.remove(&output.name);
         } else {
             self.owned.insert(output.name.clone());
+            verify_resolution(&output.name, dimensions)?;
         }
         Ok(())
     }
@@ -882,6 +1103,24 @@ mod tests {
         assert_eq!(before[0].0, "eDP-1");
         assert_eq!(before[1].0, "Virtual-1-1");
         assert_eq!(output_role("Virtual-1-1"), 1);
+    }
+    #[test]
+    fn resize_reflows_connected_chain_without_overlaps() {
+        let rows=parse_outputs("eDP-1 connected primary 100x100+0+0\nVirtual-1-1 connected 100x100+100+0\nVirtual-1-2 connected 100x100+200+0\n");
+        for (w, h) in [(50, 50), (200, 200), (150, 50)] {
+            let planned = resize_layout(&rows, "Virtual-1-1", w, h, (16384, 16384)).unwrap();
+            assert_eq!(
+                target_geometry(&planned, "Virtual-1-1").map(|r| (r.2, r.3)),
+                Some((w, h))
+            );
+            assert!(validate_connectivity(
+                &planned,
+                "Virtual-1-1",
+                target_geometry(&planned, "Virtual-1-1")
+            )
+            .is_ok());
+            assert_eq!(planned[0].primary, true);
+        }
     }
     #[test]
     fn lowest_refresh_includes_sub_hz() {

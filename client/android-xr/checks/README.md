@@ -136,3 +136,5 @@ Arrangement checks also cover overlap rejection, half-screen offset snaps, cente
 ### Host capabilities and lowest-rate configuration
 
 `python3 scripts/check-display-worker.py` from the repository root uses private Xvfb and synthetic XRandR/KScreen commands. A deliberately slow, sub-Hz named-output operation must keep control heartbeats available, tolerate a same-ID retry, and report its actual low rate. The native compositor check also parses nine outputs and verifies that mask batches preserve both early and late screens. Setup bundle generation with nine outputs and shell/Python syntax checks do not execute privileged installers.
+
+`workspace_regressions.py` validates exact flat/curved mesh coverage holes, the full-coverage geometry fast path and viewer-relative restart translation/rotation with retained screen dimensions. `monitor_warp.py` explicitly requires opaque live video in both modes to catch the transparency-path beam regression. `video_compositor_device.py` also performs a real atomic save/reload of the viewer reference in an isolated temporary file. None of these checks launch an Activity or overwrite the user's workspace.

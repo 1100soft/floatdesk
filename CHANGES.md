@@ -118,3 +118,9 @@ XRender downscales before SHM readback, with fallback; measured readback time fe
 Sub-Hz modes are excluded from interactive selection after a real full-resolution Plasma transaction exposed a multi-second flip wait (`@0` mode). The lowest responsive supported rate is retained. Partially applied additions retain management ownership, and SIGTERM/SIGHUP now shut the host down gracefully.
 
 12 November: blank non-screen pixels in the combined desktop before encoding, preventing stale window fragments in gaps. Cached clipping follows arrangement changes without changing the stream geometry or decoding path. Pixel-centre coverage avoids seams at fractional shared edges; the cursor is clipped too.
+
+### Connected screen layout and XR gaps — 12 November 2026
+
+Layout edits now reject orphan screens, including corner-only attachment and deleting a bridge output. The host validates against fresh output geometry before mutation, with the editor rejecting invalid drops locally. Existing externally disconnected arrangements can be repaired incrementally.
+
+The client masks unused desktop areas to transparent in live video and snapshots. Workspace adds saved visual spacing with inverse mouse mapping; logical screen edges stay connected. Actual black screen content remains opaque. No gesture tuning is included.

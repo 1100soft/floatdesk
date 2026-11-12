@@ -8,6 +8,7 @@ use std::process::Command;
 pub struct Output {
     pub name: String,
     pub primary: bool,
+    pub quarter_turn: bool,
     pub geometry: Option<(i32, i32, u32, u32)>,
     pub modes: Vec<(String, u16, u16, f32)>,
 }
@@ -35,6 +36,10 @@ pub fn parse_outputs(text: &str) -> Vec<Output> {
                 outputs.push(Output {
                     name: words[0].into(),
                     primary: words.contains(&"primary"),
+                    quarter_turn: words
+                        .iter()
+                        .take_while(|w| !w.starts_with('('))
+                        .any(|w| matches!(*w, "left" | "right")),
                     geometry: words.iter().find_map(|v| geometry(v)),
                     modes: Vec::new(),
                 });
@@ -150,6 +155,102 @@ pub fn stream_size(rect: MonitorRect) -> (u16, u16) {
         ((f64::from(rect.height) * scale).floor() as u16 / 2 * 2).max(2),
     )
 }
+fn reachable_screens(rects: &[MonitorRect], root: usize) -> Vec<bool> {
+    let mut reached = vec![false; rects.len()];
+    if rects.is_empty() {
+        return reached;
+    }
+    let root = root.min(rects.len() - 1);
+    reached[root] = true;
+    let mut pending = vec![root];
+    while let Some(i) = pending.pop() {
+        for j in 0..rects.len() {
+            let a = rects[i];
+            let b = rects[j];
+            let dx = (i64::from(a.x) + i64::from(a.width)).min(i64::from(b.x) + i64::from(b.width))
+                - i64::from(a.x.max(b.x));
+            let dy = (i64::from(a.y) + i64::from(a.height))
+                .min(i64::from(b.y) + i64::from(b.height))
+                - i64::from(a.y.max(b.y));
+            if !reached[j] && ((dx > 0 && dy >= 0) || (dy > 0 && dx >= 0)) {
+                reached[j] = true;
+                pending.push(j);
+            }
+        }
+    }
+    reached
+}
+fn validate_connectivity(
+    outputs: &[Output],
+    name: &str,
+    placement: Option<(i32, i32, u32, u32)>,
+) -> Result<()> {
+    let before: Vec<_> = outputs
+        .iter()
+        .filter_map(|o| {
+            o.geometry.map(|g| {
+                (
+                    o.name.as_str(),
+                    MonitorRect {
+                        index: 0,
+                        x: g.0,
+                        y: g.1,
+                        width: g.2,
+                        height: g.3,
+                    },
+                )
+            })
+        })
+        .collect();
+    let primary = outputs
+        .iter()
+        .find(|o| o.primary && o.geometry.is_some())
+        .map(|o| o.name.as_str())
+        .or_else(|| before.first().map(|(n, _)| *n));
+    let mut after: Vec<_> = before.iter().filter(|(n, _)| *n != name).copied().collect();
+    if let Some((x, y, width, height)) = placement {
+        after.push((
+            name,
+            MonitorRect {
+                index: 0,
+                x,
+                y,
+                width,
+                height,
+            },
+        ));
+    }
+    if after.is_empty() {
+        return Err(Error::Msg("Keep at least one active screen".into()));
+    }
+    let count = |items: &[(&str, MonitorRect)]| {
+        let root = items
+            .iter()
+            .position(|(n, _)| Some(*n) == primary)
+            .unwrap_or(0);
+        reachable_screens(&items.iter().map(|(_, r)| *r).collect::<Vec<_>>(), root)
+            .into_iter()
+            .filter(|v| !*v)
+            .count()
+    };
+    let orphaned = count(&after);
+    let previous = count(&before);
+    if orphaned == 0
+        || (primary != Some(name) || placement.is_some()) && previous > 0 && orphaned < previous
+    {
+        return Ok(());
+    }
+    Err(Error::Msg("Screens must stay connected to the primary through shared edges. This change would leave a disconnected screen.".into()))
+}
+fn added_position(outputs: &[Output]) -> (i32, i32) {
+    outputs
+        .iter()
+        .filter_map(|o| o.geometry)
+        .max_by_key(|g| (i64::from(g.0) + i64::from(g.2), std::cmp::Reverse(g.1)))
+        .map(|g| (g.0 + g.2 as i32, g.1))
+        .unwrap_or((0, 0))
+}
+
 /// 0 unknown, 1 virtual, 2 physical, 3 built-in physical. No primary/order inference.
 pub fn output_role(name: &str) -> u8 {
     if virtual_name(name) {
@@ -354,6 +455,14 @@ impl MonitorPool {
             .iter()
             .find(|o| o.name == *name)
             .ok_or_else(|| Error::Msg("Output changed; refresh the arrangement".into()))?;
+        let current = output
+            .geometry
+            .ok_or_else(|| Error::Msg("Screen is no longer active".into()))?;
+        validate_connectivity(
+            &outputs,
+            &output.name,
+            Some((i32::from(x), i32::from(y), current.2, current.3)),
+        )?;
         if let Some((_, priorities)) = plasma_snapshot(&outputs) {
             return plasma_transaction(
                 vec![format!("output.{}.position.{x},{y}", output.name)],
@@ -419,6 +528,24 @@ impl MonitorPool {
                 .find(|o| &o.name == name)
                 .ok_or_else(|| Error::Msg("Output disappeared".into()))?
         };
+        let position = output
+            .geometry
+            .map(|g| (g.0, g.1))
+            .unwrap_or_else(|| added_position(&outputs));
+        validate_connectivity(
+            &outputs,
+            &output.name,
+            if action == 2 {
+                None
+            } else {
+                let (w, h) = if output.quarter_turn {
+                    (height, width)
+                } else {
+                    (width, height)
+                };
+                Some((position.0, position.1, u32::from(w), u32::from(h)))
+            },
+        )?;
         if let Some((snapshot, mut priorities)) = plasma_snapshot(&outputs) {
             let mut commands = Vec::new();
             if action == 2 {
@@ -459,14 +586,7 @@ impl MonitorPool {
                     .ok_or_else(|| {
                         Error::Msg("Requested mode is not available in Plasma".into())
                     })?;
-                let (x, y) = output.geometry.map(|g| (g.0, g.1)).unwrap_or((
-                    outputs
-                        .iter()
-                        .filter_map(|o| o.geometry.map(|g| g.0 + g.2 as i32))
-                        .max()
-                        .unwrap_or(0),
-                    0,
-                ));
+                let (x, y) = position;
                 commands.extend([
                     format!("output.{}.mode.{mode}", output.name),
                     format!("output.{}.enable", output.name),
@@ -501,16 +621,7 @@ impl MonitorPool {
                     "{width}x{height} at a usable refresh rate is not provisioned"
                 ))
             })?;
-            let (x, y) = output.geometry.map(|g| (g.0, g.1)).unwrap_or_else(|| {
-                (
-                    outputs
-                        .iter()
-                        .filter_map(|o| o.geometry.map(|g| g.0 + g.2 as i32))
-                        .max()
-                        .unwrap_or(0),
-                    0,
-                )
-            });
+            let (x, y) = position;
             args.extend([
                 "--mode".into(),
                 mode.0.clone(),
@@ -590,6 +701,30 @@ impl Drop for MonitorPool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rejects_orphans_corner_contacts_and_bridge_removal() {
+        let rows=parse_outputs("eDP-1 connected primary 100x100+0+0\nVirtual-1-1 connected 100x100+100+0\nVirtual-1-2 connected 100x100+200+0\n");
+        assert!(validate_connectivity(&rows, "Virtual-1-1", None).is_err());
+        assert!(validate_connectivity(&rows, "Virtual-1-2", Some((201, 0, 100, 100))).is_err());
+        assert!(validate_connectivity(&rows, "Virtual-1-2", Some((200, 100, 100, 100))).is_err());
+        assert!(validate_connectivity(&rows, "Virtual-1-2", Some((0, 100, 100, 100))).is_ok());
+        assert!(validate_connectivity(&rows, "Virtual-1-2", None).is_ok());
+        assert!(validate_connectivity(&rows, "Virtual-1-1", Some((100, 0, 90, 100))).is_err());
+        assert!(validate_connectivity(&rows, "Virtual-1-1", Some((90, 0, 120, 100))).is_ok());
+    }
+    #[test]
+    fn add_attaches_to_actual_rightmost_screen_and_invalid_layout_can_be_repaired() {
+        let rows = parse_outputs(
+            "eDP-1 connected primary 100x100+0+0\nVirtual-1-1 connected 100x100+100+80\n",
+        );
+        assert_eq!(added_position(&rows), (200, 80));
+        assert!(validate_connectivity(&rows, "Virtual-1-2", Some((200, 80, 100, 100))).is_ok());
+        let invalid=parse_outputs("eDP-1 connected primary 100x100+0+0\nVirtual-1-1 connected 100x100+200+0\nVirtual-1-2 connected 100x100+400+0\n");
+        assert!(validate_connectivity(&invalid, "Virtual-1-1", Some((100, 0, 100, 100))).is_ok());
+        assert!(
+            validate_connectivity(&invalid, "Virtual-1-1", Some((300, 100, 100, 100))).is_err()
+        );
+    }
     #[test]
     fn identities_and_order_do_not_follow_primary_or_position() {
         let mut rows = parse_outputs(

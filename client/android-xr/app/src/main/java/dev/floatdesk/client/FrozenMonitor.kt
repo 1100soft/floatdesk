@@ -69,7 +69,7 @@ internal class FrozenMonitor private constructor(
                         check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it))
                         it.toByteArray()
                     }
-                    frozenFrameGlb(png, mesh)
+                    frozenFrameGlb(png, mesh,transparent=true)
                 }
             } finally { bitmap.recycle() }
             val model = GltfModel.create(session, bytes, "floatdesk-frozen-${System.nanoTime()}")
@@ -106,7 +106,7 @@ internal class FrozenMonitor private constructor(
 }
 
 /** Flat or spherical image mesh with an embedded PNG, normalized for monitor entity scaling. */
-internal fun frozenFrameGlb(png: ByteArray, mesh: MonitorMesh? = null, interactionOnly: Boolean = false): ByteArray {
+internal fun frozenFrameGlb(png: ByteArray, mesh: MonitorMesh? = null, interactionOnly: Boolean = false,transparent:Boolean=false): ByteArray {
     val positions = mesh?.positions?.mapIndexed { index, v -> v / (if (index % 3 == 1) mesh.height else mesh.width) }?.toFloatArray()
         ?: floatArrayOf(-.5f,-.5f,0f, .5f,-.5f,0f, .5f,.5f,0f, -.5f,.5f,0f)
     val uv = mesh?.texCoords ?: floatArrayOf(0f,1f, 1f,1f, 1f,0f, 0f,0f)
@@ -127,7 +127,7 @@ internal fun frozenFrameGlb(png: ByteArray, mesh: MonitorMesh? = null, interacti
     val minimum = (0..2).map { axis -> positions.indices.filter { it % 3 == axis }.minOf { positions[it] } }
     val maximum = (0..2).map { axis -> positions.indices.filter { it % 3 == axis }.maxOf { positions[it] } }
     val color = if (interactionOnly) ",\"baseColorFactor\":[1,1,1,0]" else ""
-    val alpha = if (interactionOnly) "BLEND" else "OPAQUE"
+    val alpha = if (interactionOnly) "BLEND" else if(transparent) "MASK" else "OPAQUE"
     val json = """{"asset":{"version":"2.0"},"extensionsUsed":["KHR_materials_unlit"],
       "scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],
       "meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2},"indices":3,"material":0}]}],

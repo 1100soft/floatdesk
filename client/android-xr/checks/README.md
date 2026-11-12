@@ -126,3 +126,7 @@ From the repository root, `python3 scripts/check-static-stream.py` runs the rele
 `python3 checks/display_requests.py /path/to/gradle/lib` uses a deterministic handler clock to verify original-ID retries, automatic read-only reconciliation and late-reply isolation. `rtp.py` now covers missing-tail repair, bounded requests and retired-source rejection. The static stream test also checks byte-identical cached retransmission and rejection of an unbound peer.
 
 Two Rust capture checks require explicit selection: `benchmark_full_vs_scaled_readback` only reads the chosen X11 desktop and prints timing metadata; `server_downscale_keeps_crop_and_child_pixels` draws synthetic colors/windows and must run **only on private Xvfb with `FLOATDESK_SYNTHETIC_DISPLAY=1`**. Do not run the latter against the real desktop. The source includes an explicit environment guard. Normal Rust tests skip both.
+
+### Connected layouts and transparent presentation
+
+`screen_arrangement.py` also checks primary-rooted edge connectivity, bridge/corner rejection and inverse pointer mapping through visual screen insets. Rust monitor-pool tests validate move/resize/removal safeguards and repairs of externally disconnected configurations. `frozen_frame.py` verifies alpha-masked snapshots. `video_compositor_device.py` exercises actual EGL alpha output for holes, opaque black desktop pixels, spacing and redraws without a new decoded frame, plus existing orientation/overlay/decoder-idle checks. It does not open an Activity.

@@ -18,7 +18,7 @@ import androidx.compose.ui.unit.sp
 import dev.floatdesk.client.net.DeskConnection
 
 @Composable
-internal fun MonitorManagerPanel(connection: DeskConnection,onClose:()->Unit) {
+internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpacing:(Float)->Unit,onSpacingFinished:()->Unit,onClose:()->Unit) {
     val monitors by connection.monitors
     val state by connection.displayState
     val busy by connection.displayBusy
@@ -38,7 +38,12 @@ internal fun MonitorManagerPanel(connection: DeskConnection,onClose:()->Unit) {
             Text("Virtual screen setup",color=Color.White,fontSize=18.sp)
             Text("On the computer, run: python3 scripts/virtual-display-setup.py --check\nIf no pool is available, use --write-bundle to prepare installation files. A compatible VKMS configfs kernel, administrator setup and a graphical-session restart are required. Existing pools are reused; Floatdesk never rebuilds kernel topology during use.",color=Color(0xFFB8D9EA),fontSize=13.sp)
         }
-        ScreenArrangementEditor(state.screens,state.positions,busy) {index,x,y->connection.requestDisplays(4,index,x,y)}
+        ScreenArrangementEditor(state.screens,state.positions,busy,if(state.primary==0) 0 else Integer.numberOfTrailingZeros(state.primary)) {index,x,y->connection.requestDisplays(4,index,x,y)}
+        if(state.screens.isNotEmpty()) {
+            Text("Visual spacing: ${(spacing*100).toInt()}%",color=Color.White)
+            androidx.compose.material3.Slider(value=spacing,onValueChange=onSpacing,onValueChangeFinished=onSpacingFinished,valueRange=0f..0.15f,enabled=!busy)
+            Text("Visual spacing keeps desktop edges connected. Empty space is transparent.",color=Color(0xFFB8D9EA),fontSize=12.sp)
+        }
         monitors.firstOrNull()?.let { Text("Combined desktop — ${it.width} × ${it.height} streamed pixels",color=Color.White) }
         state.screens.forEachIndexed { index,(width,height) ->
             val managed=(state.owned and (1 shl index))!=0

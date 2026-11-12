@@ -55,7 +55,7 @@ internal class MonitorWarp : AutoCloseable {
             curvedInput?.close(); curvedInput = null
             input?.setEnabled(ownerEnabled)
             input?.primaryAlphaMaskTexture = null
-            input?.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE
+            input?.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.TRANSPARENT
             if (!directInteraction) interaction?.let { component ->
                 check(input?.addComponent(component) == true)
                 directInteraction = true
@@ -97,7 +97,7 @@ internal class MonitorWarp : AutoCloseable {
             .firstOrNull { it.getSurface() === inputSurface }
             ?: error("Could not find monitor input entity")
         target.setSurfacePixelDimensions(androidx.xr.runtime.math.IntSize2d(placement.pixelWidth,placement.pixelHeight))
-        target.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE
+        target.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.TRANSPARENT
         input = target
         ownerEnabled=target.isEnabled(false)
         live = target
@@ -227,7 +227,7 @@ internal class MonitorWarp : AutoCloseable {
                 superSampling = SurfaceEntity.SuperSampling.NONE).also {
                 it.setScale(original.getScale())
                 it.setSurfacePixelDimensions(androidx.xr.runtime.math.IntSize2d(placement.pixelWidth,placement.pixelHeight))
-                it.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE
+                it.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.TRANSPARENT
                 val pointer=SpatialPointerComponent.create(session)
                 check(it.addComponent(pointer))
                 pointer.spatialPointerIcon=SpatialPointerIcon.NONE

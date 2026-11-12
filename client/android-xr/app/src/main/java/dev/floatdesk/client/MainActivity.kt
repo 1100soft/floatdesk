@@ -190,6 +190,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
         }
     }
     var workspace by remember { mutableStateOf(store.load()) }
+    LaunchedEffect(workspace.screenSpacing) {connection.configurePresentation(workspace.screenSpacing)}
     val pointerControl = remember { PointerControl() }
     val gazeStabilizer = remember { GazeStabilizer() }
     val mouseGestures = remember { MouseGestures { Log.i("Floatdesk",it) } }
@@ -655,7 +656,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                     store.save(workspace)
                 }
             }
-            val hoverHands = pointerControl.hands(grips.keys,handTracking.nowMs,aimPoses)
+            val hoverHands = pointerControl.hands(grips.keys,handTracking.nowMs,aimPoses).filterValues {connection.desktopPoint(it.monitor,it.u,it.v)!=null}
             val eyeRays = if (trackingAvailable && deviceState != null) gazeEyes.mapNotNull { eye ->
                 val state=eye.state.value
                 if(!state.isOpen || state.trackingState!=TrackingState.TRACKING) null else {
@@ -677,7 +678,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 val same = gazeTargets.filter { it.monitor == first.monitor }
                 first.copy(u=same.map { it.u }.average().toFloat(),v=same.map { it.v }.average().toFloat())
             }
-            val gazeTarget=if(hoverHands.isEmpty()) gazeStabilizer.update(rawGazeTarget,handTracking.nowMs) else { gazeStabilizer.reset(); null }
+            val gazeTarget=if(hoverHands.isEmpty()) gazeStabilizer.update(rawGazeTarget?.takeIf {connection.desktopPoint(it.monitor,it.u,it.v)!=null},handTracking.nowMs) else { gazeStabilizer.reset(); null }
             val monitorGrab=grabs.values.any { it.engaged }
             val nativeManipulation=manipulating && grabs.values.none { it.busy }
             val choice = pointerControl.choose(workspace.eyeAiming,gazeTarget,hoverHands,monitorGrab || nativeManipulation,handTracking.nowMs)
@@ -707,11 +708,11 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                     Log.i("Floatdesk","mouse drag=${mouse.dragging}")
                     lastMouseDragging=mouse.dragging
                 }
-                mouse.target?.let { connection.movePointer(it.monitor,it.u,it.v,mouse.dragging) }
+                mouse.target?.let {target->connection.desktopPoint(target.monitor,target.u,target.v)?.let {(u,v)->connection.movePointer(target.monitor,u,v,mouse.dragging)}}
                 mouse.click?.let {
                     if(it.button==3) clickView.playSoundEffect(android.view.SoundEffectConstants.CLICK)
                     Log.i("Floatdesk","mouse click button=${it.button}")
-                    connection.clickPointer(it.target.monitor,it.target.u,it.target.v,it.button)
+                    connection.desktopPoint(it.target.monitor,it.target.u,it.target.v)?.let {(u,v)->connection.clickPointer(it.target.monitor,u,v,it.button)}
                 }
             }
             for((index,placement) in workspace.layouts[workspace.activeLayout].orEmpty().withIndex()) {
@@ -731,7 +732,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                     // The desktop cursor is the target marker; avoid a second dot over it.
                     renderer.updatePointer(root,null,handTracking.points["HEAD"],handTracking.unitsPerMeter)
                     val draw: ()->Unit = {
-                        val contactsNow=pointerControl.hands(grips.keys,SystemClock.uptimeMillis(),aimPoses)
+                        val contactsNow=pointerControl.hands(grips.keys,SystemClock.uptimeMillis(),aimPoses).filterValues {connection.desktopPoint(it.monitor,it.u,it.v)!=null}
                         val show=contactsNow.size==1 && palmPanel==null && !monitorGrab && !nativeManipulation
                         val rays=(if(show) contactsNow else emptyMap()).mapNotNull { (side,hit) ->
                             val origin=grips[side]; val placement=workspace.monitorAt(hit.monitor)
@@ -868,7 +869,7 @@ private fun DeskContent(
     val reloading by connection.reloading
     val layout = workspace.reconcileMonitors(monitors.map { Triple(it.name,it.width,it.height) }).layouts[workspace.activeLayout].orEmpty()
     if(displayControlsOpen) SpatialPanel(modifier=placedPanel(displayControlsPose,.95f,.70f,density,pixelDensity)) {
-        MonitorManagerPanel(connection,onCloseDisplays)
+        MonitorManagerPanel(connection,workspace.screenSpacing,{onWorkspace(workspace.copy(screenSpacing=it))},{store.save(latest.value)},onCloseDisplays)
     }
     if(reloading && layout.isNotEmpty()) {
         val screen=layout.first()

@@ -5,6 +5,7 @@ import android.media.Image;
 import android.media.ImageReader;
 import android.os.SystemClock;
 import dev.floatdesk.client.media.VideoAim;
+import dev.floatdesk.client.media.ScreenPresentation;
 import dev.floatdesk.client.media.VideoCompositor;
 import java.nio.ByteBuffer;
 
@@ -22,7 +23,7 @@ public final class VideoCompositorSmoke {
     static int[] pixel(Image image,int x,int y) {
         Image.Plane p=image.getPlanes()[0]; ByteBuffer b=p.getBuffer();
         int offset=y*p.getRowStride()+x*p.getPixelStride();
-        return new int[]{b.get(offset)&255,b.get(offset+1)&255,b.get(offset+2)&255};
+        return new int[]{b.get(offset)&255,b.get(offset+1)&255,b.get(offset+2)&255,b.get(offset+3)&255};
     }
     static void require(boolean value,String message) { if(!value) throw new AssertionError(message); }
     public static void main(String[] args) throws Exception {
@@ -58,9 +59,26 @@ public final class VideoCompositorSmoke {
             try(Image unchanged=first.acquireLatestImage()) {
                 require(unchanged==null,"Unchanged empty overlays requeued stale video frames");
             }
+            compositor.presentation(new ScreenPresentation(new float[]{0f,0f,.5f,.5f,.5f,.5f,1f,1f},0f));
+            try(Image image=frame(first)) {
+                require(pixel(image,16,8)[3]>250,"Real screen became transparent");
+                require(pixel(image,48,8)[3]==0,"Non-screen gap is not transparent");
+                require(pixel(image,16,40)[3]==0,"Lower gap is not transparent");
+                require(pixel(image,48,40)[2]>220,"Layout mask flipped source pixels");
+            }
+            compositor.presentation(new ScreenPresentation(new float[]{0f,0f,1f,1f},.15f));
+            try(Image image=frame(first)) {
+                require(pixel(image,1,24)[3]==0,"Visual spacing did not inset screen");
+                require(pixel(image,16,8)[0]>220,"Inset screen lost upright image");
+            }
+            Canvas black=compositor.getInput().lockCanvas(null);black.drawColor(Color.BLACK);
+            compositor.getInput().unlockCanvasAndPost(black);
+            try(Image image=frame(first)) {require(pixel(image,32,24)[3]>250,"Actual black desktop was made transparent");}
+            compositor.presentation(new ScreenPresentation(new float[]{0f,0f,1f,1f},0f));
+            try(Image image=frame(first)) {require(pixel(image,1,24)[3]>250,"Presentation change did not redraw retained frame");}
             compositor.output(second.getSurface());
             try(Image image=frame(second)) {
-                require(pixel(image,16,8)[0]>220,"Surface handoff lost the retained video frame");
+                require(pixel(image,16,8)[3]>250,"Surface handoff lost the retained video frame");
             }
             System.out.println("PASS: real headset EGL video orientation, ray/ring pixels, overlay clearing, unchanged-overlay suppression and output handoff without a new decoder frame");
         } finally { compositor.close(); first.close(); second.close(); }

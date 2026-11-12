@@ -42,6 +42,7 @@ internal data class WorkspaceFile(
     val sphericalWarp: Boolean = false,
     val eyeAiming: Boolean = false,
     val mouseGestures: Boolean = false,
+    val screenSpacing:Float=0f,
 )
 
 internal class WorkspaceStore(private val file: File) {
@@ -126,6 +127,7 @@ private fun encode(workspace: WorkspaceFile): JSONObject {
         .put("spherical_warp", workspace.sphericalWarp)
         .put("eye_aiming", workspace.eyeAiming)
         .put("mouse_gestures", workspace.mouseGestures)
+        .put("screen_spacing",workspace.screenSpacing.toDouble())
 }
 
 private fun encodeMonitor(monitor: MonitorPlacement): JSONObject {
@@ -166,6 +168,7 @@ private fun decode(json: JSONObject): WorkspaceFile {
         sphericalWarp = json.optBoolean("spherical_warp", false),
         eyeAiming = json.optBoolean("eye_aiming", json.optBoolean("mouse_control", false)),
         mouseGestures = json.optBoolean("mouse_gestures", false),
+        screenSpacing=json.optDouble("screen_spacing",0.0).toFloat().takeIf {it.isFinite()}?.coerceIn(0f,.15f) ?: 0f,
     )
 }
 

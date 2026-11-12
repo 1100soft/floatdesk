@@ -11,6 +11,7 @@ import android.view.Surface
 import androidx.compose.runtime.mutableStateOf
 import dev.floatdesk.client.media.MonitorDecoder
 import dev.floatdesk.client.media.VideoAim
+import dev.floatdesk.client.media.ScreenPresentation
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
@@ -28,6 +29,8 @@ internal class DeskConnection(
 
     val displayState=mutableStateOf(Packet.MonitorStatus(0,true,0,0,"Checking available displays…"))
     val displayBusy=mutableStateOf(false)
+    private val screenPresentation=AtomicReference(ScreenPresentation())
+    private var screenSpacing=0f
     val reloading=mutableStateOf(false)
     private val videoPending=AtomicBoolean(false)
     private val decoderGeneration=AtomicInteger()
@@ -161,6 +164,16 @@ internal class DeskConnection(
         send(Protocol.keyframeRequest(index))
     }
 
+    @Synchronized
+    fun configurePresentation(spacing:Float) {
+        screenSpacing=spacing
+        val state=displayState.value
+        val value=if(currentMonitors.size>1) ScreenPresentation() else ScreenPresentation.from(state.screens,state.positions,spacing)
+        screenPresentation.set(value);decoders.values.forEach {it.presentation(value)}
+    }
+    fun desktopPoint(monitor:Int,u:Float,v:Float):Pair<Float,Float>? =
+        if(monitors.value.size==1 && monitor==0) screenPresentation.get().desktopPoint(u,v) else u to v
+
     fun aimOverlay(index: Int,value: VideoAim) { decoders[index]?.overlay(value) }
 
     @Synchronized
@@ -202,7 +215,7 @@ internal class DeskConnection(
                     is Packet.StreamState -> {if(incoming.address==pendingRemote?.address && incoming.port==pendingRemote?.port) main.post {reloading.value=decoded.reloading || videoPending.get()}}
                     is Packet.MonitorStatus -> {
                         if(incoming.address==pendingRemote?.address && incoming.port==pendingRemote?.port) main.post {
-                            if((decoded.requestId==0 && monitorPending.get()==0) || (decoded.requestId!=0 && monitorPending.compareAndSet(decoded.requestId,0))) {displayBusy.value=false;displayState.value=decoded}
+                            if((decoded.requestId==0 && monitorPending.get()==0) || (decoded.requestId!=0 && monitorPending.compareAndSet(decoded.requestId,0))) {displayBusy.value=false;displayState.value=decoded;configurePresentation(screenSpacing)}
                         }
                     }
                     is Packet.Cursor -> onCursor(decoded.fragment)
@@ -262,6 +275,7 @@ internal class DeskConnection(
             val decoder = MonitorDecoder(video, monitor.width, monitor.height, dumpFile, ::askKeyframe,onFrame={
                 if(decoderGeneration.get()==generation && videoPending.compareAndSet(true,false)) main.post {reloading.value=false}
             },onNack={source,sequence->send(Protocol.videoNack(monitor.index,source,sequence))})
+            decoder.presentation(if(hello.monitors.size>1) ScreenPresentation() else screenPresentation.get())
             activeSurfaces[monitor.index]?.let { decoder.attach(it) }
             decoder.punch(remote.address)
             decoder.setRenderingActive(renderingActive)

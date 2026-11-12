@@ -234,6 +234,7 @@ internal class MonitorDecoder(
     private val awaitingKey = AtomicBoolean(true)
     @Volatile private var compositor: VideoCompositor? = null
     private val aim = AtomicReference(VideoAim())
+    private val presentation=AtomicReference(ScreenPresentation())
     private var receiveThread: Thread? = null
     private var decodeThread: Thread? = null
 
@@ -253,6 +254,8 @@ internal class MonitorDecoder(
         pending.clear()
         if(active) recover("visible stream resumed") else awaitingKey.set(true)
     }
+
+    fun presentation(value:ScreenPresentation) {presentation.set(value);compositor?.presentation(value)}
 
     fun overlay(value: VideoAim) { aim.set(value); compositor?.overlay(value) }
 
@@ -346,6 +349,7 @@ internal class MonitorDecoder(
             .onFailure { Log.e(TAG,"Live video compositor unavailable; using direct decode",it) }.getOrNull()
         compositor=renderer
         renderer?.overlay(aim.get())
+        renderer?.presentation(presentation.get())
         var displayedSurface: Surface?=null
         while (running.get()) {
             if(!renderingActive.get()) {

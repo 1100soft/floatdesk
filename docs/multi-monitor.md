@@ -20,7 +20,7 @@ Added outputs remain active across headset reconnects and are disabled on gracef
 
 ## Control and validation
 
-Monitor commands carry request IDs and are accepted only from the connected control peer. The host caches replies so retransmitted Add requests do not create duplicate screens. Dimensions and action/index values are bounded. A timeout asks the user to Refresh before issuing another change. This uses the existing trusted-LAN UDP transport, without authentication or encryption.
+Monitor commands carry request IDs and are accepted only from the connected control peer. The host caches replies so retransmitted Add requests do not create duplicate screens. Dimensions and action/index values are bounded. Timed-out requests are reconciled by an automatic read-only refresh before another change. This uses the existing trusted-LAN UDP transport, without authentication or encryption.
 
 Validation includes Rust parser/protocol tests and `checks/monitor_management.py`, which checks Android/Rust wire fixtures and pose preservation through source changes. A live X11 test exercised two additions, retry deduplication, resolution change, index compaction, removal and graceful cleanup, receiving RTP on three independent ports. The physical display configuration matched its starting state afterward. Headset UI interaction and simultaneous multi-screen decoding still require a user device test.
 
@@ -85,3 +85,11 @@ The host also handles SIGTERM/SIGHUP through the graceful shutdown path, so norm
 The combined bounding rectangle can contain gaps in nonrectangular arrangements. Those pixels may hold stale X11 window content, so the host now clears pixels outside the union of active screen rectangles before encoding. Gaps are blank black in the existing opaque video surface. This clips the image rather than adding transparency or changing spherical/input geometry.
 
 The clipping map follows real output positions and handles downscaled capture, offsets, overlapping/mirrored outputs and fractional screen edges without introducing seams between adjacent screens. It is cached as row spans and applied after cursor composition. An arrangement change updates the map and schedules a fresh frame even without XDamage, including when the outer bounds remain unchanged. Rectangular coverage requires no clearing. Tests cover L-shaped layouts, scaled/offset unions, same-bounds changes, stride padding and fractional adjacency/gaps.
+
+## Connected layouts and transparent spacing — 12 November 2026
+
+App layout changes must keep every screen connected to the primary through shared edges or overlapping area. Corner-only contact is insufficient. The editor marks invalid drops red and cancels them; the host independently validates moves, additions, resolution changes and removals before changing the system configuration. Removing a bridge screen is rejected. A pre-existing disconnected layout created outside Floatdesk can be repaired one island at a time, provided each change reduces the number of orphan screens. Floatdesk does not silently rearrange external configurations.
+
+Unused areas of the combined desktop are transparent in both live video and grab snapshots. This uses output rectangles rather than a black color key, so black content on a real screen remains opaque. **Visual spacing** in Workspace uniformly insets each screen around its center, preserving its aspect ratio, without moving logical desktop edges. The setting is saved in the workspace. Pointer coordinates are remapped to the displayed content; visual gaps do not aim the desktop mouse. The combined monitor's outer frame and manipulation geometry remain one object.
+
+The compositor applies the mask and spacing in its existing GPU pass, without another decoder or CPU frame copy. JVM checks cover layout connectivity and inverse pointer mapping; the offscreen device check covers transparent gaps, opaque black content, source orientation and presentation updates without a new video frame.

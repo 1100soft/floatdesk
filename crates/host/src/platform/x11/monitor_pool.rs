@@ -223,6 +223,19 @@ fn validate_connectivity(
     if after.is_empty() {
         return Err(Error::Msg("Keep at least one active screen".into()));
     }
+    for (i, (_, a)) in after.iter().enumerate() {
+        for (_, b) in after.iter().skip(i + 1) {
+            if (i64::from(a.x) + i64::from(a.width)).min(i64::from(b.x) + i64::from(b.width))
+                > i64::from(a.x.max(b.x))
+                && (i64::from(a.y) + i64::from(a.height)).min(i64::from(b.y) + i64::from(b.height))
+                    > i64::from(a.y.max(b.y))
+            {
+                return Err(Error::Msg(
+                    "Screens cannot overlap. Place them against a shared edge.".into(),
+                ));
+            }
+        }
+    }
     let count = |items: &[(&str, MonitorRect)]| {
         let root = items
             .iter()
@@ -241,6 +254,43 @@ fn validate_connectivity(
         return Ok(());
     }
     Err(Error::Msg("Screens must stay connected to the primary through shared edges. This change would leave a disconnected screen.".into()))
+}
+// X11 needs nonnegative positions: moving past top/left translates the entire
+// proposed layout in one transaction, preserving relative placement and priority.
+fn moved_positions(
+    outputs: &[Output],
+    name: &str,
+    x: i32,
+    y: i32,
+) -> Result<Vec<(String, i32, i32)>> {
+    let placed: Vec<_> = outputs
+        .iter()
+        .filter_map(|o| {
+            o.geometry.map(|g| {
+                (
+                    o.name.clone(),
+                    if o.name == name { x } else { g.0 },
+                    if o.name == name { y } else { g.1 },
+                    g.2,
+                    g.3,
+                )
+            })
+        })
+        .collect();
+    let left = placed.iter().map(|r| r.1).min().unwrap_or(0).min(0);
+    let top = placed.iter().map(|r| r.2).min().unwrap_or(0).min(0);
+    if placed.iter().any(|r| {
+        i64::from(r.1) - i64::from(left) + i64::from(r.3) > 16384
+            || i64::from(r.2) - i64::from(top) + i64::from(r.4) > 16384
+    }) {
+        return Err(Error::Msg(
+            "Arrangement exceeds the supported 16384-pixel desktop bounds".into(),
+        ));
+    }
+    Ok(placed
+        .into_iter()
+        .map(|(n, x, y, _, _)| (n, x - left, y - top))
+        .collect())
 }
 fn added_position(outputs: &[Output]) -> (i32, i32) {
     outputs
@@ -437,19 +487,9 @@ impl MonitorPool {
         y: i16,
         sources: &[(String, MonitorRect)],
     ) -> Result<()> {
-        if x < 0 || y < 0 {
-            return Err(Error::Msg(
-                "Screen positions must be nonnegative; move the other screen to make space.".into(),
-            ));
-        }
-        let (name, rect) = sources
+        let (name, _) = sources
             .get(usize::from(index))
             .ok_or_else(|| Error::Msg("Unknown screen".into()))?;
-        if i32::from(x) + rect.width as i32 > 16384 || i32::from(y) + rect.height as i32 > 16384 {
-            return Err(Error::Msg(
-                "Arrangement exceeds the supported 16384-pixel desktop bounds".into(),
-            ));
-        }
         let outputs = query()?;
         let output = outputs
             .iter()
@@ -463,18 +503,20 @@ impl MonitorPool {
             &output.name,
             Some((i32::from(x), i32::from(y), current.2, current.3)),
         )?;
+        let positions = moved_positions(&outputs, name, i32::from(x), i32::from(y))?;
         if let Some((_, priorities)) = plasma_snapshot(&outputs) {
             return plasma_transaction(
-                vec![format!("output.{}.position.{x},{y}", output.name)],
+                positions
+                    .iter()
+                    .map(|(n, x, y)| format!("output.{n}.position.{x},{y}"))
+                    .collect(),
                 priorities,
             );
         }
-        let mut args = vec![
-            "--output".into(),
-            output.name.clone(),
-            "--pos".into(),
-            format!("{x}x{y}"),
-        ];
+        let mut args = Vec::new();
+        for (n, x, y) in positions {
+            args.extend(["--output".into(), n, "--pos".into(), format!("{x}x{y}")]);
+        }
         if let Some(primary) = outputs.iter().find(|o| o.primary && o.geometry.is_some()) {
             args.extend(["--output".into(), primary.name.clone(), "--primary".into()]);
         }
@@ -710,7 +752,7 @@ mod tests {
         assert!(validate_connectivity(&rows, "Virtual-1-2", Some((0, 100, 100, 100))).is_ok());
         assert!(validate_connectivity(&rows, "Virtual-1-2", None).is_ok());
         assert!(validate_connectivity(&rows, "Virtual-1-1", Some((100, 0, 90, 100))).is_err());
-        assert!(validate_connectivity(&rows, "Virtual-1-1", Some((90, 0, 120, 100))).is_ok());
+        assert!(validate_connectivity(&rows, "Virtual-1-1", Some((90, 0, 120, 100))).is_err());
     }
     #[test]
     fn add_attaches_to_actual_rightmost_screen_and_invalid_layout_can_be_repaired() {
@@ -724,6 +766,24 @@ mod tests {
         assert!(
             validate_connectivity(&invalid, "Virtual-1-1", Some((300, 100, 100, 100))).is_err()
         );
+    }
+    #[test]
+    fn rejects_overlap_and_translates_top_left_moves() {
+        let rows = parse_outputs(
+            "eDP-1 connected primary 100x100+0+0\nVirtual-1-1 connected 100x100+100+0\n",
+        );
+        assert!(validate_connectivity(&rows, "Virtual-1-1", Some((99, 0, 100, 100))).is_err());
+        assert!(validate_connectivity(&rows, "Virtual-1-1", Some((0, 0, 100, 100))).is_err());
+        assert!(validate_connectivity(&rows, "Virtual-1-1", Some((-100, 0, 100, 100))).is_ok());
+        assert_eq!(
+            moved_positions(&rows, "Virtual-1-1", -100, 0).unwrap(),
+            vec![("eDP-1".into(), 100, 0), ("Virtual-1-1".into(), 0, 0)]
+        );
+        assert_eq!(
+            moved_positions(&rows, "Virtual-1-1", 0, -100).unwrap(),
+            vec![("eDP-1".into(), 0, 100), ("Virtual-1-1".into(), 0, 0)]
+        );
+        assert!(moved_positions(&rows, "Virtual-1-1", -16384, 0).is_err());
     }
     #[test]
     fn identities_and_order_do_not_follow_primary_or_position() {

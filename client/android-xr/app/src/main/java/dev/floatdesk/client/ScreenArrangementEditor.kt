@@ -28,21 +28,22 @@ internal fun ScreenArrangementEditor(sizes:List<Pair<Int,Int>>,positions:List<Pa
     var waitingForApply by remember(screens) {mutableStateOf(false)}
     LaunchedEffect(busy,screens) {if(!busy && waitingForApply) {dragging=-1;preview=null;waitingForApply=false}}
     val connected=connectedScreens(screens,primary)
+    val overlaps=overlappingScreens(screens)
     val validPreview=preview?.let {dragging in screens.indices && canMoveScreen(screens,dragging,it,primary)} ?: true
     val density=LocalDensity.current.density
-    Text("Drag screens; release to apply. Edges and centres snap into alignment.",color=Color.White,fontSize=13.sp)
+    Text("Drag screens; release to apply. Edges, centres and half-screen positions snap into alignment.",color=Color.White,fontSize=13.sp)
+    if(overlaps.any {it}) Text("Overlapping screens: move them apart.",color=Color(0xFFFFB4AB),fontSize=13.sp)
     if(connected.any {!it}) Text("Disconnected screens: reconnect them to the main group.",color=Color(0xFFFFB4AB),fontSize=13.sp)
     BoxWithConstraints(Modifier.fillMaxWidth().height(220.dp).clipToBounds().background(Color(0xFF101720))) {
-        val extentW=(screens.maxOf {it.x+it.width}*1.2f).coerceAtLeast(1f)
-        val extentH=(screens.maxOf {it.y+it.height}*1.2f).coerceAtLeast(1f)
-        val scale=minOf((maxWidth.value-24)/extentW,196f/extentH).coerceAtLeast(.001f)
+        val viewport=arrangementViewport(screens,maxWidth.value,220f)
+        val scale=viewport.scale
         screens.forEachIndexed {index,screen ->
             val shown=if(dragging==index) preview ?: screen else screen
-            Box(Modifier.offset {IntOffset(((12+shown.x*scale)*density).roundToInt(),((12+shown.y*scale)*density).roundToInt())}
+            Box(Modifier.offset {IntOffset(((viewport.offsetX+shown.x*scale)*density).roundToInt(),((viewport.offsetY+shown.y*scale)*density).roundToInt())}
                 .size((shown.width*scale).dp,(shown.height*scale).dp)
                 .zIndex(if(dragging==index) 1f else 0f)
                 .background(if(dragging==index) Color(0xFF205976) else Color(0xFF293A50))
-                .border(2.dp,if(dragging==index && !validPreview || dragging!=index && !connected[index]) Color(0xFFFF6B6B) else if(dragging==index) Color.Cyan else Color(0xFF8DAAC6))
+                .border(2.dp,if(dragging==index && !validPreview || dragging!=index && (!connected[index] || overlaps[index])) Color(0xFFFF6B6B) else if(dragging==index) Color.Cyan else Color(0xFF8DAAC6))
                 .pointerInput(screens,busy,scale) {
                     if(!busy) detectDragGestures(
                         onDragStart={dragging=index;raw=screen.x.toFloat() to screen.y.toFloat();preview=screen},
@@ -64,5 +65,5 @@ internal fun ScreenArrangementEditor(sizes:List<Pair<Int,Int>>,positions:List<Pa
             }
         }
     }
-    preview?.let {Text(if(validPreview) "Screen ${dragging+1}: ${it.x}, ${it.y}" else "Keep screens connected through a shared edge.",color=if(validPreview) Color.Cyan else Color(0xFFFF6B6B),fontSize=12.sp)}
+    preview?.let {Text(if(validPreview) "Screen ${dragging+1}: ${it.x}, ${it.y}" else "Screens must share an edge without overlapping.",color=if(validPreview) Color.Cyan else Color(0xFFFF6B6B),fontSize=12.sp)}
 }

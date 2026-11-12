@@ -126,3 +126,5 @@ Layout edits now reject orphan screens, including corner-only attachment and del
 The client masks unused desktop areas to transparent in live video and snapshots. Workspace adds saved visual spacing with inverse mouse mapping; logical screen edges stay connected. Actual black screen content remains opaque. No gesture tuning is included.
 
 Visual spacing now explains its per-dimension reduction and uses matching 0.1% slider/display precision. Previously the continuous value was displayed as a truncated integer.
+
+Screen edits now reject overlapping output rectangles as well as orphan screens. The arrangement map centers/fits the screen union with space on every side, and adds edge-to-midpoint snapping. Moving beyond the top/left translates the full logical arrangement atomically to valid X11 coordinates while retaining screen priorities.

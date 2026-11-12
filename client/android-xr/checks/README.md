@@ -130,3 +130,5 @@ Two Rust capture checks require explicit selection: `benchmark_full_vs_scaled_re
 ### Connected layouts and transparent presentation
 
 `screen_arrangement.py` also checks primary-rooted edge connectivity, bridge/corner rejection and inverse pointer mapping through visual screen insets. Rust monitor-pool tests validate move/resize/removal safeguards and repairs of externally disconnected configurations. `frozen_frame.py` verifies alpha-masked snapshots. `video_compositor_device.py` exercises actual EGL alpha output for holes, opaque black desktop pixels, spacing and redraws without a new decoded frame, plus existing orientation/overlay/decoder-idle checks. It does not open an Activity.
+
+Arrangement checks also cover overlap rejection, half-screen offset snaps, centered viewport transforms and room beyond the top/left edges. Host tests cover normalized top/left moves and desktop bounds.

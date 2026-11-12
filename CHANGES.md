@@ -150,3 +150,7 @@ Spherical mode now reshapes surface vertices using a head-centered tangent-plane
 Native input uses one reusable shared-material triangle grid, transformed to follow the current surface without loading/destroying GLTF models on head turns. Transform reconstruction and resource-identity checks cover the grid. Geometry freezes during actual interaction and resumes on release; tiny backing-frame size changes from float roundoff do not replace its material. Native hit behavior and long-running stability still need headset confirmation.
 
 Substantial pose changes after a sustained tracking gap restore unanchored layouts relative to the last trusted viewer. The system warning remains under Android XR control. Adaptive/cropped streaming remains unimplemented.
+
+### Recover discovery across network interfaces
+
+A Wi-Fi beacon followed by Ethernet control replies could leave the client on Updating screens indefinitely, with no decoder started. Discovery now retries other fresh addresses advertised under the selected host name while retaining strict reply-endpoint matching. Healthy connections stay pinned. Beacon polling no longer adds a 200 ms wait per control packet. A real UDP regression reproduces asymmetric reply routing, and live selection of the reply interface restored video reception and resolved the pending screen query.

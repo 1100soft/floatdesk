@@ -39,6 +39,8 @@ internal class DeskConnection(
     private val monitorSequence=AtomicInteger()
     private val monitorPending=AtomicInteger()
     private var currentMonitors=emptyList<MonitorHello>()
+    private val hostDiscovery=HostDiscovery()
+    private var lastAcceptedHello=0L
     private val activeSurfaces=ConcurrentHashMap<Int,Surface>()
     private val main = Handler(Looper.getMainLooper())
     private val assembler = CursorAssembler()
@@ -78,7 +80,7 @@ internal class DeskConnection(
             control = DatagramSocket().apply { broadcast = true }
             beacon = DatagramSocket(47001).apply {
                 broadcast = true
-                soTimeout = 200
+                soTimeout = 1 // Beacon polling must not stall each control packet for 200 ms.
             }
         } catch (err: Exception) {
             opened.forEach { it.close() }
@@ -124,6 +126,7 @@ internal class DeskConnection(
         control = null
         beacon = null
         pendingRemote = null
+        hostDiscovery.clear();lastAcceptedHello=0L
         multicastLock?.let { if (it.isHeld) it.release() }
         multicastLock = null
         main.post {
@@ -205,6 +208,13 @@ internal class DeskConnection(
         var lastHello = 0L
         while (running) {
             pollBeacon()
+            val discoveryNow=android.os.SystemClock.elapsedRealtime()
+            val selected=hostDiscovery.select(pendingRemote,currentMonitors.isNotEmpty() && discoveryNow-lastAcceptedHello<5000,discoveryNow)
+            if(selected!=null && selected!=pendingRemote) {
+                Log.i("Floatdesk","Retrying host interface $pendingRemote -> $selected")
+                pendingRemote=selected
+                lastHello=0L
+            }
             val now = System.currentTimeMillis()
             if (pendingRemote == null && now - lastHello > 1000) {
                 val hello = Protocol.clientHello("floatdesk", 48000)
@@ -220,10 +230,11 @@ internal class DeskConnection(
                 val decoded = Protocol.decode(buffer.copyOf(incoming.length)) ?: continue
                 when (decoded) {
                     is Packet.HostHello -> {
-                        if(pendingRemote!=null && incoming.address!=pendingRemote?.address) continue
+                        if(pendingRemote!=null && (incoming.address!=pendingRemote?.address || incoming.port!=pendingRemote?.port)) continue
                         if (pendingRemote == null) {
-                            pendingRemote = InetSocketAddress(incoming.address, 47000)
+                            pendingRemote = InetSocketAddress(incoming.address, incoming.port)
                         }
+                        lastAcceptedHello=android.os.SystemClock.elapsedRealtime()
                         onHello(decoded, pendingRemote ?: InetSocketAddress(incoming.address, 47000))
                     }
                     is Packet.StreamState -> {if(incoming.address==pendingRemote?.address && incoming.port==pendingRemote?.port) main.post {reloading.value=decoded.reloading || videoPending.get()}}
@@ -260,8 +271,10 @@ internal class DeskConnection(
             return
         }
         val decoded = Protocol.decode(buffer.copyOf(packet.length)) ?: return
-        if (decoded is Packet.Beacon && pendingRemote == null) {
+        if (decoded is Packet.Beacon) {
             val remote = InetSocketAddress(packet.address, decoded.listenPort)
+            hostDiscovery.observe(remote,decoded.name,android.os.SystemClock.elapsedRealtime())
+            if(pendingRemote!=null)return
             pendingRemote = remote
             val label = decoded.name.ifEmpty { packet.address.hostAddress ?: "computer" }
             main.post { status.value = "Found $label" }
@@ -276,6 +289,7 @@ internal class DeskConnection(
             if(!videoPending.get() && monitorPending.get()==0) main.post {reloading.value=false}
             return
         }
+        Log.i("Floatdesk","Host handshake from $remote: ${hello.monitors.size} video stream(s)")
         main.post {reloading.value=true}
         val sameFormat=hello.monitors.map {it.copy(ssrc=0)}==currentMonitors.map {it.copy(ssrc=0)} && decoders.isNotEmpty()
         if(sameFormat) {

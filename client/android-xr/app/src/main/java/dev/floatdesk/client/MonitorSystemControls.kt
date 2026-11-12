@@ -48,7 +48,9 @@ internal class MonitorSystemControls : AutoCloseable {
         frameWidth=frame.width
         val padding=.02f*unitsPerMeter
         val nextWidth=frame.width+2f*padding;val nextHeight=frame.height+2f*padding
-        val geometryChanged=shapeWidth!=nextWidth || shapeHeight!=nextHeight
+        val geometryChanged=!shapeWidth.isFinite() || !shapeHeight.isFinite() ||
+            kotlin.math.abs(shapeWidth-nextWidth)>maxOf(.00001f,kotlin.math.abs(nextWidth)*.0001f) ||
+            kotlin.math.abs(shapeHeight-nextHeight)>maxOf(.00001f,kotlin.math.abs(nextHeight)*.0001f)
         val boundsChanged=geometryChanged || canonicalWidth!=width || canonicalHeight!=height
         if(entity==null) {
             val token=++generation
@@ -101,7 +103,7 @@ internal class MonitorSystemControls : AutoCloseable {
             it.affordanceSize=FloatSize3d(frame.width,frame.height,.001f)
         }
         if(geometryChanged) movable?.size=FloatSize3d(nextWidth,nextHeight,.001f)
-        shapeWidth=nextWidth;shapeHeight=nextHeight;canonicalWidth=width;canonicalHeight=height
+        if(geometryChanged) {shapeWidth=nextWidth;shapeHeight=nextHeight};canonicalWidth=width;canonicalHeight=height
     }
 
     override fun close() {

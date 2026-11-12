@@ -10,19 +10,23 @@ internal fun viewerInMonitor(viewer: FloatArray, position: FloatArray, rotation:
     return floatArrayOf(x+qw*tx+qy*tz-qz*ty,y+qw*ty+qz*tx-qx*tz,z+qw*tz+qx*ty-qy*tx)
 }
 
-/** Equal adjacent-ray angular steps on a viewer-centered sphere (a spherical quadrilateral net). */
+/** Viewer-centered sphere with optional tangent-plane vertex projection around the viewed pixel. */
 internal class MonitorMesh(
     val width: Float,
     val height: Float,
     val eye: FloatArray,
     val columns: Int = 64,
     val rows: Int = 40,
+    val focus:FloatArray?=null,
 ) {
     val radius = sqrt(eye.sumOf { (it * it).toDouble() }).toFloat()
     val normal = FloatArray(3) { eye[it] / radius }
     val tangentX = floatArrayOf(1f-normal[0]*normal[0]/(1f+normal[2]), -normal[0]*normal[1]/(1f+normal[2]), -normal[0])
     val tangentY = floatArrayOf(-normal[0]*normal[1]/(1f+normal[2]), 1f-normal[1]*normal[1]/(1f+normal[2]), -normal[1])
     var projection:ViewProjection?=null
+    var frameNormal=normal;private set
+    var frameTangentX=tangentX;private set
+    var frameTangentY=tangentY;private set
     // Keep one angular pixel scale in both axes; limit extreme fields uniformly to avoid folds.
     val radiansPerMeter = minOf(1f/radius, 2.2f/sqrt(width*width+height*height))
     val positions = FloatArray((columns + 1) * (rows + 1) * 3)
@@ -69,6 +73,29 @@ internal class MonitorMesh(
             for (axis in 0..2) positions[vertex*3+axis]=eye[axis]+radius*(vx*tangentX[axis]+vy*tangentY[axis]+vz*normal[axis])
             texCoords[vertex*2]=col.toFloat()/columns
             texCoords[vertex*2+1]=row.toFloat()/rows
+        }
+        // Gnomonic (tangent-plane) projection: locally undistorted at the viewed point.
+        // Keep that point on the reference sphere so changing focus does not chase itself.
+        focus?.let { centre ->
+            require(centre.size==2 && centre.all { it.isFinite() })
+            val anchor=project(floatArrayOf(centre[0],centre[1],0f))
+            val n=FloatArray(3) { (eye[it]-anchor[it])/radius }
+            fun cross(a:FloatArray,b:FloatArray)=floatArrayOf(a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0])
+            val turn=cross(normal,n)
+            val cosine=(0..2).sumOf { (normal[it]*n[it]).toDouble() }.toFloat()
+            fun transport(t:FloatArray):FloatArray {
+                val first=cross(turn,t);val second=cross(turn,first)
+                return FloatArray(3) { t[it]+first[it]+second[it]/(1f+cosine).coerceAtLeast(.001f) }
+            }
+            val tx=transport(tangentX);val ty=transport(tangentY)
+            frameNormal=n;frameTangentX=tx;frameTangentY=ty
+            for(row in 0..rows) for(col in 0..columns) {
+                val x=((col.toFloat()/columns-.5f)*width-centre[0])*radiansPerMeter
+                val y=((.5f-row.toFloat()/rows)*height-centre[1])*radiansPerMeter
+                val length=sqrt(1f+x*x+y*y)
+                val vertex=row*(columns+1)+col
+                for(axis in 0..2) positions[vertex*3+axis]=eye[axis]+radius*(-n[axis]+x*tx[axis]+y*ty[axis])/length
+            }
         }
         var offset=0
         for (row in 0 until rows) for (col in 0 until columns) {
@@ -169,7 +196,7 @@ internal fun monitorRayHit(origin: FloatArray, direction: FloatArray, width: Flo
 
 /** Use the collision event's own transform, not a potentially different scene-reference pose. */
 internal fun eventMatrixHit(hit: FloatArray, matrix: FloatArray,
-                            width: Float, height: Float, mesh: MonitorMesh?, inputScale: Float = 1f): FloatArray? {
+                            width: Float, height: Float, mesh: MonitorMesh?, inputScale: Float = 1f, rayDirection:FloatArray?=null): FloatArray? {
     if (!inputScale.isFinite() || inputScale <= 0f) return null
     val unscaled = FloatArray(3) { hit[it]/inputScale }
     fun transform(m: FloatArray): FloatArray {
@@ -178,7 +205,19 @@ internal fun eventMatrixHit(hit: FloatArray, matrix: FloatArray,
     }
     fun error(p: FloatArray): Float = if (mesh == null) kotlin.math.abs(p[2]) else
         kotlin.math.abs(kotlin.math.sqrt((0..2).sumOf { val d=p[it]-mesh.eye[it]; (d*d).toDouble() }).toFloat()-mesh.radius)
-    return transform(matrix).takeIf { p ->
+    var transformed=transform(matrix)
+    if(rayDirection!=null && mesh!=null) {
+        val nativeDistance=sqrt((0..2).sumOf {val d=transformed[it]-mesh.eye[it];(d*d).toDouble()}).toFloat()
+        if(!nativeDistance.isFinite() || kotlin.math.abs(nativeDistance-mesh.radius)>maxOf(.02f,mesh.radius*.02f)) return null
+        val ray=FloatArray(3){axis->matrix[axis]*rayDirection[0]+matrix[4+axis]*rayDirection[1]+matrix[8+axis]*rayDirection[2]}
+        val length=sqrt(ray.sumOf {(it*it).toDouble()}).toFloat()
+        if(!length.isFinite() || length<1e-8f)return null
+        for(i in ray.indices)ray[i]/=length
+        val margin=maxOf(.03f,mesh.radius*.04f)
+        val start=FloatArray(3){transformed[it]-ray[it]*margin}
+        transformed=monitorRayHit(start,ray,width,height,mesh) ?: return null
+    }
+    return transformed.takeIf { p ->
         if (!p.all { it.isFinite() } || error(p) > .015f) false else {
             val flat = if (mesh == null) p else mesh.unproject(p)
             flat != null && kotlin.math.abs(flat[0]) <= width*.5f+.001f && kotlin.math.abs(flat[1]) <= height*.5f+.001f
@@ -258,6 +297,42 @@ internal class ViewProjection(val columns:Int,val rows:Int,val sourceUV:FloatArr
                 bounds[i+2]=cx+(rects[i+2]-cx)*scale;bounds[i+3]=cy+(rects[i+3]-cy)*scale
             }
             return ViewProjection(mesh.columns,mesh.rows,uv,bounds)
+        }
+    }
+}
+
+internal data class InteractionPatch(val center:FloatArray,val rotation:FloatArray,val scale:FloatArray,val childRotation:FloatArray)
+/** Exact triangle affine transform via two rotations and diagonal scale (2D SVD). */
+internal fun interactionPatches(mesh:MonitorMesh,columns:Int=12,rows:Int=8):List<InteractionPatch> {
+    fun sub(a:FloatArray,b:FloatArray)=FloatArray(3){a[it]-b[it]}
+    fun dot(a:FloatArray,b:FloatArray)=(0..2).sumOf {(a[it]*b[it]).toDouble()}.toFloat()
+    fun cross(a:FloatArray,b:FloatArray)=floatArrayOf(a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0])
+    fun unit(a:FloatArray):FloatArray {val l=sqrt(dot(a,a));return FloatArray(3){a[it]/l}}
+    fun quaternion(x:FloatArray,y:FloatArray,z:FloatArray):FloatArray {
+        val trace=x[0]+y[1]+z[2]
+        return if(trace>0) {val t=sqrt(trace+1)*2;floatArrayOf((y[2]-z[1])/t,(z[0]-x[2])/t,(x[1]-y[0])/t,t/4)}
+        else if(x[0]>y[1] && x[0]>z[2]) {val t=sqrt(1+x[0]-y[1]-z[2])*2;floatArrayOf(t/4,(y[0]+x[1])/t,(z[0]+x[2])/t,(y[2]-z[1])/t)}
+        else if(y[1]>z[2]) {val t=sqrt(1+y[1]-x[0]-z[2])*2;floatArrayOf((y[0]+x[1])/t,t/4,(z[1]+y[2])/t,(z[0]-x[2])/t)}
+        else {val t=sqrt(1+z[2]-x[0]-y[1])*2;floatArrayOf((z[0]+x[2])/t,(z[1]+y[2])/t,t/4,(x[1]-y[0])/t)}
+    }
+    fun triangle(a:FloatArray,b:FloatArray,c:FloatArray):InteractionPatch {
+        val first=sub(b,a);val second=sub(c,a);val right=unit(first)
+        val normal=unit(cross(first,second));val up=unit(cross(normal,right))
+        val l=dot(first,right).toDouble();val shear=dot(second,right).toDouble();val h=dot(second,up).toDouble()
+        val angle=.5*kotlin.math.atan2(2*l*shear,l*l-shear*shear-h*h)
+        val co=kotlin.math.cos(angle);val si=kotlin.math.sin(angle)
+        val sx=kotlin.math.hypot(l*co+shear*si,h*si)
+        val sy=l*h/sx
+        val ux=(l*co+shear*si)/sx;val uy=h*si/sx
+        val x=FloatArray(3){(right[it]*ux+up[it]*uy).toFloat()}
+        val y=FloatArray(3){(-right[it]*uy+up[it]*ux).toFloat()}
+        return InteractionPatch(a,quaternion(x,y,normal),floatArrayOf(sx.toFloat(),sy.toFloat(),1f),floatArrayOf(0f,0f,-kotlin.math.sin(angle/2).toFloat(),kotlin.math.cos(angle/2).toFloat()))
+    }
+    return buildList {
+        for(row in 0 until rows) for(col in 0 until columns) {
+            fun p(x:Int,y:Int)=mesh.project(floatArrayOf(((col+x).toFloat()/columns-.5f)*mesh.width,(.5f-(row+y).toFloat()/rows)*mesh.height,0f))
+            val a=p(0,0);val b=p(1,0);val c=p(0,1);val d=p(1,1)
+            add(triangle(a,c,b));add(triangle(b,c,d))
         }
     }
 }

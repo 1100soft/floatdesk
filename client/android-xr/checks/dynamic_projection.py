@@ -8,41 +8,43 @@ fun main() {
  fun length(a:FloatArray)=kotlin.math.sqrt(a.sumOf {(it*it).toDouble()}).toFloat()
  fun minus(a:FloatArray,b:FloatArray)=FloatArray(3){a[it]-b[it]}
  fun near(a:FloatArray,b:FloatArray,tolerance:Float=.0002f) {check(length(minus(a,b))<tolerance){"${a.contentToString()} != ${b.contentToString()}"}}
+ fun dot(a:FloatArray,b:FloatArray)=(0..2).sumOf {(a[it]*b[it]).toDouble()}.toFloat()
  for(eye in listOf(floatArrayOf(0f,0f,1.2f),floatArrayOf(.4f,-.3f,.8f))) {
-  val mesh=MonitorMesh(1.8f,1.1f,eye)
-  val positions=mesh.positions.copyOf();val uv=mesh.texCoords.copyOf()
-  for(focus in listOf(floatArrayOf(0f,0f),floatArrayOf(.45f,.22f),floatArrayOf(-.45f,-.22f))) {
-   for(rects in listOf(floatArrayOf(0f,0f,1f,1f),floatArrayOf(0f,0f,.5f,.5f,.5f,.5f,1f,1f))) {
-    val map=ViewProjection.create(mesh,focus,rects,0f);mesh.projection=map
-    check(mesh.positions.contentEquals(positions) && mesh.texCoords.contentEquals(uv))
-    for(i in mesh.positions.indices step 3) check(kotlin.math.abs(length(minus(mesh.positions.copyOfRange(i,i+3),eye))-mesh.radius)<.00001f)
-    for(i in 0..30) for(j in 0..20) {
-     val u=i/30f;val v=j/20f;val mapped=map.source(u,v);val inverse=map.inverse(mapped[0],mapped[1])
-     check(kotlin.math.abs(inverse[0]-u)<.00002f && kotlin.math.abs(inverse[1]-v)<.00002f)
-     check(kotlin.math.abs(mapped[0]-u)<=.01401f && kotlin.math.abs(mapped[1]-v)<=.01401f)
-    }
-    for(k in rects.indices step 4) for(t in listOf(0f,.25f,.5f,.75f,1f)) {
-     val x=rects[k]+t*(rects[k+2]-rects[k]);val y=rects[k+1]+t*(rects[k+3]-rects[k+1])
-     for(p in listOf(floatArrayOf(x,rects[k+1]),floatArrayOf(x,rects[k+3]),floatArrayOf(rects[k],y),floatArrayOf(rects[k+2],y))) {
-      val mapped=map.source(p[0],p[1]);check(kotlin.math.abs(mapped[0]-p[0])<.000001f && kotlin.math.abs(mapped[1]-p[1])<.000001f)
-     }
-    }
-    for(x in listOf(-.85f,-.45f,0f,.45f,.85f)) for(y in listOf(-.5f,0f,.5f)) {
-     val pixel=floatArrayOf(x,y,0f);val hit=mesh.project(pixel)
-     near(mesh.unproject(hit)!!,pixel)
-     near(monitorRayHit(eye,minus(hit,eye),mesh.width,mesh.height,mesh)!!,hit)
+  var previous:FloatArray?=null
+  for(focus in listOf(floatArrayOf(-.9f,0f),floatArrayOf(0f,0f),floatArrayOf(.9f,0f),floatArrayOf(.6f,.4f))) {
+   val mesh=MonitorMesh(1.8f,1.1f,eye,focus=focus)
+   check(previous==null || !previous.contentEquals(mesh.positions));previous=mesh.positions.copyOf()
+   for(i in mesh.positions.indices step 3) check(kotlin.math.abs(length(minus(mesh.positions.copyOfRange(i,i+3),eye))-mesh.radius)<.00001f)
+   // Camera-space perspective: each edge must be a straight line, including at either viewed end.
+   fun camera(p:FloatArray):FloatArray {val ray=minus(p,eye);val z=-dot(ray,mesh.frameNormal);return floatArrayOf(dot(ray,mesh.frameTangentX)/z,dot(ray,mesh.frameTangentY)/z)}
+   for(edge in 0..3) {
+    val points=(0..20).map {i->val t=i/20f;val x=when(edge){0->-.9f;1->.9f;else->-.9f+1.8f*t};val y=when(edge){2->-.55f;3->.55f;else->-.55f+1.1f*t};camera(mesh.project(floatArrayOf(x,y,0f)))}
+    val first=points.first();val last=points.last()
+    for(p in points) check(kotlin.math.abs((p[0]-first[0])*(last[1]-first[1])-(p[1]-first[1])*(last[0]-first[0]))<.0001f)
+   }
+   val patches=interactionPatches(mesh);check(patches.size==192)
+   fun rotate(v:FloatArray,q:FloatArray):FloatArray {
+    val t=floatArrayOf(2*(q[1]*v[2]-q[2]*v[1]),2*(q[2]*v[0]-q[0]*v[2]),2*(q[0]*v[1]-q[1]*v[0]))
+    return floatArrayOf(v[0]+q[3]*t[0]+q[1]*t[2]-q[2]*t[1],v[1]+q[3]*t[1]+q[2]*t[0]-q[0]*t[2],v[2]+q[3]*t[2]+q[0]*t[1]-q[1]*t[0])
+   }
+   for(row in 0 until 8) for(col in 0 until 12) for(part in 0..1) {
+    fun p(x:Int,y:Int)=mesh.project(floatArrayOf(((col+x)/12f-.5f)*mesh.width,(.5f-(row+y)/8f)*mesh.height,0f))
+    val expected=if(part==0) listOf(p(0,0),p(0,1),p(1,0)) else listOf(p(1,0),p(0,1),p(1,1))
+    val patch=patches[(row*12+col)*2+part]
+    for((index,v) in listOf(floatArrayOf(0f,0f,0f),floatArrayOf(1f,0f,0f),floatArrayOf(0f,1f,0f)).withIndex()) {
+     val child=rotate(v,patch.childRotation);val scaled=FloatArray(3){child[it]*patch.scale[it]};val parent=rotate(scaled,patch.rotation)
+     near(FloatArray(3){patch.center[it]+parent[it]},expected[index])
     }
    }
+   val identity=floatArrayOf(1f,0f,0f,0f,0f,1f,0f,0f,0f,0f,1f,0f,0f,0f,0f,1f)
+   for(x in listOf(-.89f,-.45f,0f,.45f,.89f)) for(y in listOf(-.54f,0f,.54f)) {
+    val pixel=floatArrayOf(x,y,0f);val hit=mesh.project(pixel);near(mesh.unproject(hit)!!,pixel)
+    // A coarse patch hit on the same hand ray must resolve the exact visible contact.
+    val origin=floatArrayOf(.15f,-.1f,eye[2]-.1f);val direction=minus(hit,origin)
+    val patchHit=FloatArray(3){hit[it]-.005f*direction[it]}
+    near(eventMatrixHit(patchHit,identity,mesh.width,mesh.height,mesh,rayDirection=direction)!!,hit)
+   }
   }
- }
- val thin=MonitorMesh(1.8f,1.1f,floatArrayOf(0f,0f,1.2f))
- val strips=FloatArray(17*4) {i->when(i%4){0->(i/4)/17f;1->0f;2->(i/4+1)/17f;else->1f}}
- val thinMap=ViewProjection.create(thin,floatArrayOf(.5f,.2f),strips,.15f)
- for(k in thinMap.bounds.indices step 4) for(t in 0..20) {
-  val u=thinMap.bounds[k]+t/20f*(thinMap.bounds[k+2]-thinMap.bounds[k]);val v=.4f
-  val mapped=thinMap.source(u,v)
-  check(mapped[0]>=thinMap.bounds[k]-.000001f && mapped[0]<=thinMap.bounds[k+2]+.000001f)
-  val inverse=thinMap.inverse(mapped[0],mapped[1]);check(kotlin.math.abs(inverse[0]-u)<.00002f)
  }
  val recovery=TrackingRecovery();val p=floatArrayOf(0f,0f,0f);val q=floatArrayOf(0f,0f,0f,1f)
  check(recovery.update(0,true,p,q,1f)==null)
@@ -56,7 +58,7 @@ fun main() {
  check(recovery.update(920,true,floatArrayOf(2f,0f,0f),q,1f)==null)
  recovery.update(940,false,null,null,1f)
  check(recovery.update(1300,true,floatArrayOf(2f,0f,0f),floatArrayOf(0f,.70710677f,0f,.70710677f),1f)!=null)
- println("PASS fixed sphere/UV geometry, bounded GPU lookup, exact screen boundaries, inverse mapping and ray hits, tracking gap/jump recovery")
+ println("PASS changing sphere vertices, perspective-straight left/right/top/bottom edges, constant eye radius, reusable interaction patches and exact hand-ray resolution, tracking gap/jump recovery")
 }
 '''
 lib=Path(sys.argv[1]);stdlib=next(lib.glob('kotlin-stdlib-*.jar'))

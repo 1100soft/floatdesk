@@ -143,8 +143,10 @@ Position edits now suspend virtual scanout inside a guarded native RandR transac
 
 Arrangement drops discard the final 100 ms of pinch-opening aim movement using input timestamps; preview remains live and sample history is bounded. Packed atlas streaming and view-adaptive detail remain proposals, with tradeoffs documented in `docs/multi-monitor.md`.
 
-### View-centered correction and lost-tracking recovery
+### Dynamic spherical geometry and lost-tracking recovery
 
-Spherical mode retains its equal-angular geometry and uses a bounded GPU lookup for a partial head-directed texture correction. The full tangent-mesh experiment was removed because it appeared planar and repeatedly replaced native interaction models. Head-direction updates now reuse the native video surface, sphere, collider and GPU lookup texture. Input inversion shares the texture correction, gaps/boundaries stay fixed, and updates resume after an actual gesture releases. The native backing frame skips redundant shape/affordance updates.
+Spherical mode now reshapes surface vertices using a head-centered tangent-plane projection onto the viewer-centered sphere. Camera-space checks establish straight edges when either end is viewed, while every vertex retains eye-center distance. Texture-only correction is disabled. Video, snapshots, exact hand-ray resolution and backing controls share the geometry.
+
+Native input uses one reusable shared-material triangle grid, transformed to follow the current surface without loading/destroying GLTF models on head turns. Transform reconstruction and resource-identity checks cover the grid. Geometry freezes during actual interaction and resumes on release; tiny backing-frame size changes from float roundoff do not replace its material. Native hit behavior and long-running stability still need headset confirmation.
 
 Substantial pose changes after a sustained tracking gap restore unanchored layouts relative to the last trusted viewer. The system warning remains under Android XR control. Adaptive/cropped streaming remains unimplemented.

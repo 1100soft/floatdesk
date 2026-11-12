@@ -106,23 +106,24 @@ internal class FrozenMonitor private constructor(
 }
 
 /** Flat or spherical image mesh with an embedded PNG, normalized for monitor entity scaling. */
-internal fun frozenFrameGlb(png: ByteArray, mesh: MonitorMesh? = null, interactionOnly: Boolean = false,transparent:Boolean=false): ByteArray {
+internal fun frozenFrameGlb(png: ByteArray, mesh: MonitorMesh? = null, interactionOnly: Boolean = false,transparent:Boolean=false,interactionTriangle:Boolean=false): ByteArray {
     val positions = mesh?.positions?.mapIndexed { index, v -> v / (if (index % 3 == 1) mesh.height else mesh.width) }?.toFloatArray()
-        ?: floatArrayOf(-.5f,-.5f,0f, .5f,-.5f,0f, .5f,.5f,0f, -.5f,.5f,0f)
-    val uv = mesh?.texCoords ?: floatArrayOf(0f,1f, 1f,1f, 1f,0f, 0f,0f)
-    val indices = mesh?.indices ?: intArrayOf(0,1,2,0,2,3)
+        ?: if(interactionTriangle) floatArrayOf(0f,0f,0f,1f,0f,0f,0f,1f,0f) else floatArrayOf(-.5f,-.5f,0f, .5f,-.5f,0f, .5f,.5f,0f, -.5f,.5f,0f)
+    val uv = mesh?.texCoords ?: if(interactionTriangle) floatArrayOf(0f,0f,1f,0f,0f,1f) else floatArrayOf(0f,1f, 1f,1f, 1f,0f, 0f,0f)
+    val indices = mesh?.indices ?: if(interactionTriangle) intArrayOf(0,1,2) else intArrayOf(0,1,2,0,2,3)
     val count = positions.size / 3
     require(count <= 65535)
     val positionBytes = positions.size * 4
     val uvOffset = positionBytes * 2
     val indexOffset = uvOffset + uv.size * 4
-    val pngOffset = indexOffset + indices.size * 2
+    val pngOffset = (indexOffset + indices.size * 2+3)/4*4
     val rawLength = pngOffset + png.size
     val binary = ByteBuffer.allocate((rawLength + 3) / 4 * 4).order(ByteOrder.LITTLE_ENDIAN)
     for (v in positions) binary.putFloat(v)
     repeat(count) { binary.putFloat(0f); binary.putFloat(0f); binary.putFloat(1f) }
     for (v in uv) binary.putFloat(v)
     for (v in indices) binary.putShort(v.toShort())
+    while(binary.position()<pngOffset) binary.put(0.toByte())
     binary.put(png)
     val minimum = (0..2).map { axis -> positions.indices.filter { it % 3 == axis }.minOf { positions[it] } }
     val maximum = (0..2).map { axis -> positions.indices.filter { it % 3 == axis }.maxOf { positions[it] } }
@@ -143,5 +144,23 @@ internal fun frozenFrameGlb(png: ByteArray, mesh: MonitorMesh? = null, interacti
         putInt(jsonLength); putInt(0x4e4f534a); put(json)
         repeat(jsonLength - json.size) { put(32.toByte()) }
         putInt(binary.capacity()); putInt(0x004e4942); put(binary.array())
+    }.array()
+}
+
+/** One triangle mesh/material shared by all independently transformed collider nodes. */
+internal fun interactionGridGlb(png:ByteArray,columns:Int=12,rows:Int=8):ByteArray {
+    val original=frozenFrameGlb(png,interactionOnly=true,interactionTriangle=true)
+    val header=ByteBuffer.wrap(original).order(ByteOrder.LITTLE_ENDIAN)
+    val oldLength=header.getInt(12)
+    val oldJson=String(original,20,oldLength,Charsets.UTF_8)
+    val count=columns*rows*2
+    val json=oldJson.replace("\"nodes\":[0]","\"nodes\":["+(0 until count).joinToString(","){(it*2).toString()}+"]")
+        .replace("\"nodes\":[{\"mesh\":0}]","\"nodes\":["+(0 until count).joinToString(","){"{\"children\":[${it*2+1}],\"name\":\"patch-$it\"},{\"mesh\":0}"}+"]")
+        .trimEnd().toByteArray()
+    val length=(json.size+3)/4*4
+    val binary=original.copyOfRange(20+oldLength,original.size)
+    return ByteBuffer.allocate(20+length+binary.size).order(ByteOrder.LITTLE_ENDIAN).apply {
+        putInt(0x46546c67);putInt(2);putInt(capacity());putInt(length);putInt(0x4e4f534a);put(json)
+        repeat(length-json.size){put(32.toByte())};put(binary)
     }.array()
 }

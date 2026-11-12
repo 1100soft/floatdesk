@@ -944,7 +944,7 @@ private fun DeskContent(
                     // the user starts pinching can cancel its input acquisition.
                     connection.presentation().let {warp.presentation(it.rects,it.spacing)}
                     warp.update(current, root, handTracking.points["VIEWER"] ?: handTracking.points["HEAD"], screen, file.sphericalWarp,
-                        hands.busy || nativeMove || nativeResize || handTracking.pointerHeld || (file.sphericalWarp && handTracking.pinched.isNotEmpty()),forceUpdate=!hands.busy && (nativeGeometryPending || !warp.matchesSize(screen)),viewDirection=handTracking.points["VIEW_DIRECTION"],freezeProjection=hands.busy || nativeMove || nativeResize || handTracking.pointerHeld)
+                        hands.busy || nativeMove || nativeResize || handTracking.pointerHeld,forceUpdate=!hands.busy && (nativeGeometryPending || !warp.matchesSize(screen)),viewDirection=handTracking.points["VIEW_DIRECTION"],freezeProjection=hands.busy || nativeMove || nativeResize || handTracking.pointerHeld)
                     warp.syncCurvedInput(current)
                     // Collider creation suspends: a newer resize event may arrive while awaiting it.
                     // Clear the pending update only after matching the latest canonical size.
@@ -981,7 +981,7 @@ private fun DeskContent(
                         if(end) { nativeMove=false;moveBefore=null;nativeGeometryPending=true;onManipulate(false) }
                     })
                     pointerControl.meshes[index] = warp.mesh
-                    connection.projection(index,warp.mesh?.projection)
+                    connection.projection(index,null) // Geometry projection uses the original streamed pixels.
                     warp.outputSurface?.let { display ->
                         if (videoSurface.get() !== display) {
                             videoSurface.set(display)

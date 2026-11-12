@@ -12,6 +12,7 @@ import java.nio.ByteBuffer
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import dev.floatdesk.client.ViewProjection
 import java.util.concurrent.atomic.AtomicReference
 
 private const val TAG = "Floatdesk"
@@ -235,6 +236,7 @@ internal class MonitorDecoder(
     @Volatile private var compositor: VideoCompositor? = null
     private val aim = AtomicReference(VideoAim())
     private val presentation=AtomicReference(ScreenPresentation())
+    private val projection=AtomicReference<ViewProjection?>(null)
     private var receiveThread: Thread? = null
     private var decodeThread: Thread? = null
 
@@ -255,6 +257,7 @@ internal class MonitorDecoder(
         if(active) recover("visible stream resumed") else awaitingKey.set(true)
     }
 
+    fun projection(value:ViewProjection?) {projection.set(value);compositor?.projection(value)}
     fun presentation(value:ScreenPresentation) {presentation.set(value);compositor?.presentation(value)}
 
     fun overlay(value: VideoAim) { aim.set(value); compositor?.overlay(value) }
@@ -350,6 +353,7 @@ internal class MonitorDecoder(
         compositor=renderer
         renderer?.overlay(aim.get())
         renderer?.presentation(presentation.get())
+        renderer?.projection(projection.get())
         var displayedSurface: Surface?=null
         while (running.get()) {
             if(!renderingActive.get()) {

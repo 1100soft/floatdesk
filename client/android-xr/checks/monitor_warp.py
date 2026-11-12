@@ -127,7 +127,7 @@ suspend fun main() {
     val stableOutput=warp.outputSurface
     SystemClock.now=1000L
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false,viewDirection=floatArrayOf(.1f,0f,-1f))
-    check(warp.mesh!!.focus!=null && warp.outputSurface===stableOutput)
+    check(warp.mesh!!.projection!=null && warp.outputSurface===stableOutput)
     val projected=warp.mesh
     SystemClock.now=1200L
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,true,viewDirection=floatArrayOf(-.2f,0f,-1f))
@@ -179,6 +179,17 @@ suspend fun main() {
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false)
     warp.syncCurvedInput(session)
     val patch=CurvedMonitorInput.last!!
+    val fixedMesh=warp.mesh;val fixedShape=warp.displayEntity!!.shape
+    SystemClock.now+=1000L
+    warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false,viewDirection=floatArrayOf(.2f,0f,-1f))
+    warp.syncCurvedInput(session)
+    check(warp.mesh===fixedMesh && warp.displayEntity!!.shape===fixedShape && CurvedMonitorInput.last===patch)
+    check(warp.mesh!!.projection!=null) // View correction uses GPU pixels, not native geometry/model churn.
+    val beforeCorrection=warp.mesh!!.projection
+    SystemClock.now+=1000L
+    warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,true,viewDirection=floatArrayOf(-.2f,0f,-1f),freezeProjection=false)
+    warp.syncCurvedInput(session)
+    check(warp.mesh!!.projection!==beforeCorrection && CurvedMonitorInput.last===patch)
     check(patch.entity.parent === session.scene.entities.last())
     check(input.primaryAlphaMaskTexture != null && input.component == null && !input.enabled)
     check(session.scene.entities.last().enabled)

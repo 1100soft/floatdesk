@@ -9,6 +9,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.Surface
 import androidx.compose.runtime.mutableStateOf
+import dev.floatdesk.client.ViewProjection
 import dev.floatdesk.client.media.MonitorDecoder
 import dev.floatdesk.client.media.VideoAim
 import dev.floatdesk.client.media.ScreenPresentation
@@ -43,6 +44,7 @@ internal class DeskConnection(
     private val assembler = CursorAssembler()
     @Volatile private var renderingActive=true
     private val decoders = HashMap<Int, MonitorDecoder>()
+    private val viewProjections=HashMap<Int,ViewProjection?>()
     private val pendingCursors = ConcurrentHashMap<Int, CursorView>()
     private val cursorSeq = AtomicInteger()
     private val pointerSeq = AtomicInteger()
@@ -184,6 +186,8 @@ internal class DeskConnection(
     fun desktopPoint(monitor:Int,u:Float,v:Float):Pair<Float,Float>? =
         if(monitors.value.size==1 && monitor==0) screenPresentation.get().desktopPoint(u,v) else u to v
 
+    @Synchronized
+    fun projection(index:Int,value:ViewProjection?) {viewProjections[index]=value;decoders[index]?.projection(value)}
     fun aimOverlay(index: Int,value: VideoAim) { decoders[index]?.overlay(value) }
 
     @Synchronized
@@ -291,6 +295,7 @@ internal class DeskConnection(
                 if(decoderGeneration.get()==generation && videoPending.compareAndSet(true,false)) main.post {reloading.value=false}
             },onNack={source,sequence->send(Protocol.videoNack(monitor.index,source,sequence))})
             decoder.presentation(if(hello.monitors.size>1) ScreenPresentation() else screenPresentation.get())
+            decoder.projection(viewProjections[monitor.index])
             activeSurfaces[monitor.index]?.let { decoder.attach(it) }
             decoder.punch(remote.address)
             decoder.setRenderingActive(renderingActive)

@@ -143,6 +143,8 @@ Position edits now suspend virtual scanout inside a guarded native RandR transac
 
 Arrangement drops discard the final 100 ms of pinch-opening aim movement using input timestamps; preview remains live and sample history is bounded. Packed atlas streaming and view-adaptive detail remain proposals, with tradeoffs documented in `docs/multi-monitor.md`.
 
-### View-centered spherical projection and lost-tracking recovery
+### View-centered correction and lost-tracking recovery
 
-Spherical mode now follows the head-directed view with a smoothed tangent projection on the same viewer-centered sphere. Shared mesh geometry keeps video, hit testing, frozen grabs and behind-image native controls aligned. Projection freezes during aiming and interaction; updates are bounded to 10 Hz without replacing the decoder surface. Substantial pose changes after a sustained tracking gap restore unanchored layouts relative to the last trusted viewer. The system warning remains under Android XR control. This is rendering and recovery work; adaptive/cropped streaming remains unimplemented.
+Spherical mode retains its equal-angular geometry and uses a bounded GPU lookup for a partial head-directed texture correction. The full tangent-mesh experiment was removed because it appeared planar and repeatedly replaced native interaction models. Head-direction updates now reuse the native video surface, sphere, collider and GPU lookup texture. Input inversion shares the texture correction, gaps/boundaries stay fixed, and updates resume after an actual gesture releases. The native backing frame skips redundant shape/affordance updates.
+
+Substantial pose changes after a sustained tracking gap restore unanchored layouts relative to the last trusted viewer. The system warning remains under Android XR control. Adaptive/cropped streaming remains unimplemented.

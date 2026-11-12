@@ -27,6 +27,10 @@ internal class MonitorSystemControls : AutoCloseable {
     private var movable: MovableComponent?=null
     private var generation=0L
     private var frameWidth=1f
+    private var shapeWidth=Float.NaN
+    private var shapeHeight=Float.NaN
+    private var canonicalWidth=Float.NaN
+    private var canonicalHeight=Float.NaN
     private var resizeStartWidth: Float?=null
     private var moving=false
     private var listener: ((ResizeEvent,Float)->Unit)?=null
@@ -43,6 +47,9 @@ internal class MonitorSystemControls : AutoCloseable {
         val frame=mesh?.let(::curvedResizeFrame) ?: flatResizeFrame(width,height,viewer)
         frameWidth=frame.width
         val padding=.02f*unitsPerMeter
+        val nextWidth=frame.width+2f*padding;val nextHeight=frame.height+2f*padding
+        val geometryChanged=shapeWidth!=nextWidth || shapeHeight!=nextHeight
+        val boundsChanged=geometryChanged || canonicalWidth!=width || canonicalHeight!=height
         if(entity==null) {
             val token=++generation
             val root=SurfaceEntity.create(session,shape=SurfaceEntity.Shape.Quad(FloatSize2d(frame.width+2f*padding,frame.height+2f*padding)),
@@ -57,7 +64,7 @@ internal class MonitorSystemControls : AutoCloseable {
                     if(event.resizeState==ResizeEvent.ResizeState.START) resizeStartWidth=event.newSize.width.takeIf { it.isFinite() && it>0f } ?: frameWidth
                     val start=resizeStartWidth
                     if(start!=null && start>0f) listener?.invoke(event,event.newSize.width/start)
-                    if(event.resizeState==ResizeEvent.ResizeState.END) resizeStartWidth=null
+                    if(event.resizeState==ResizeEvent.ResizeState.END) {resizeStartWidth=null;shapeWidth=Float.NaN}
                 }
             })
             resize.affordanceSize=FloatSize3d(frame.width,frame.height,.001f)
@@ -85,15 +92,16 @@ internal class MonitorSystemControls : AutoCloseable {
         entity?.let {
             it.parent=video.parent;it.setPose(video.getPose().compose(Pose(offset,Quaternion.fromLookTowards(normal,up))))
             it.setScale(scale);it.setEnabled(enabled)
-            it.shape=SurfaceEntity.Shape.Quad(FloatSize2d(frame.width+2f*padding,frame.height+2f*padding))
+            if(geometryChanged) it.shape=SurfaceEntity.Shape.Quad(FloatSize2d(nextWidth,nextHeight))
         }
-        component?.let {
+        if(boundsChanged) component?.let {
             val x=frame.width/width;val y=frame.height/height
             it.minimumEntitySize=FloatSize3d(.28f*x,.16f*y,.001f)
             it.maximumEntitySize=FloatSize3d(2.4f*x,1.5f*y,.001f)
             it.affordanceSize=FloatSize3d(frame.width,frame.height,.001f)
         }
-        movable?.size=FloatSize3d(frame.width+2f*padding,frame.height+2f*padding,.001f)
+        if(geometryChanged) movable?.size=FloatSize3d(nextWidth,nextHeight,.001f)
+        shapeWidth=nextWidth;shapeHeight=nextHeight;canonicalWidth=width;canonicalHeight=height
     }
 
     override fun close() {
@@ -101,5 +109,6 @@ internal class MonitorSystemControls : AutoCloseable {
         component?.let { entity?.removeComponent(it) };movable?.let { entity?.removeComponent(it) }
         entity?.parent=null
         entity=null;component=null;movable=null;listener=null;moveListener=null;resizeStartWidth=null
+        shapeWidth=Float.NaN;shapeHeight=Float.NaN;canonicalWidth=Float.NaN;canonicalHeight=Float.NaN
     }
 }

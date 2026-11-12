@@ -8,6 +8,7 @@ import dev.floatdesk.client.media.VideoAim;
 import dev.floatdesk.client.net.WorkspaceInfo;
 import dev.floatdesk.client.media.ScreenPresentation;
 import dev.floatdesk.client.media.VideoCompositor;
+import dev.floatdesk.client.ViewProjection;
 import java.nio.ByteBuffer;
 import dev.floatdesk.client.workspace.WorkspaceStore;
 import dev.floatdesk.client.workspace.Pose;
@@ -61,6 +62,21 @@ public final class VideoCompositorSmoke {
                 require(top[0]>220 && top[2]<20,"Video top is flipped or corrupt");
                 require(bottom[2]>220 && bottom[0]<20,"Video bottom is flipped or corrupt");
             }
+            float[] lookup=new float[18];
+            for(int i=0;i<9;i++){lookup[i*2]=(i%3)/2f;lookup[i*2+1]=.75f;}
+            java.lang.reflect.Field lookupId=VideoCompositor.class.getDeclaredField("lookupTexture");lookupId.setAccessible(true);
+            int firstLookup=0;
+            for(int iteration=0;iteration<20;iteration++) {
+                compositor.projection(new ViewProjection(2,2,lookup.clone(),new float[]{0f,0f,1f,1f}));
+                try(Image image=frame(first)) {
+                    require(pixel(image,32,23)[2]>200,"GPU projection lookup did not move source pixels");
+                    require(pixel(image,1,8)[0]>220,"Projection moved a fixed screen boundary");
+                }
+                int id=lookupId.getInt(compositor);
+                if(iteration==0)firstLookup=id;else require(id==firstLookup,"Projection allocated another GPU lookup texture");
+            }
+            compositor.projection(null);
+            try(Image image=frame(first)){require(pixel(image,32,23)[0]>220,"Disabling projection did not restore retained image");}
             compositor.overlay(new VideoAim(new float[]{.1f,.25f,.9f,.25f},new float[]{.5f,.5f},2f,.18f));
             SystemClock.sleep(40);
             try(Image image=frame(first)) {

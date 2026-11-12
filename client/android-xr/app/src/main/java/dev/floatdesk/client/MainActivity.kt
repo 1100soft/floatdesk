@@ -714,7 +714,6 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 lastPointerMode = choice.mode
             }
             dimPointer = choice.mode == PointerMode.HAND
-            handTracking.aiming=choice.mode==PointerMode.HAND || choice.mode==PointerMode.PREVIEW
             val gestureBlocked=displayControlsOpen || choice.mode==PointerMode.PREVIEW || choice.mode==PointerMode.GRAB || palmPanel!=null
             for(frame in pinchFrames.drain(handTracking.nowMs)) {
                 val samples=frame.samples.filterKeys { it in mouseSamples }.mapValues { (side,sample) ->
@@ -945,7 +944,7 @@ private fun DeskContent(
                     // the user starts pinching can cancel its input acquisition.
                     connection.presentation().let {warp.presentation(it.rects,it.spacing)}
                     warp.update(current, root, handTracking.points["VIEWER"] ?: handTracking.points["HEAD"], screen, file.sphericalWarp,
-                        hands.busy || nativeMove || nativeResize || handTracking.aiming || handTracking.pointerHeld || (file.sphericalWarp && handTracking.pinched.isNotEmpty()),forceUpdate=!hands.busy && (nativeGeometryPending || !warp.matchesSize(screen)),viewDirection=handTracking.points["VIEW_DIRECTION"])
+                        hands.busy || nativeMove || nativeResize || handTracking.pointerHeld || (file.sphericalWarp && handTracking.pinched.isNotEmpty()),forceUpdate=!hands.busy && (nativeGeometryPending || !warp.matchesSize(screen)),viewDirection=handTracking.points["VIEW_DIRECTION"],freezeProjection=hands.busy || nativeMove || nativeResize || handTracking.pointerHeld)
                     warp.syncCurvedInput(current)
                     // Collider creation suspends: a newer resize event may arrive while awaiting it.
                     // Clear the pending update only after matching the latest canonical size.
@@ -982,6 +981,7 @@ private fun DeskContent(
                         if(end) { nativeMove=false;moveBefore=null;nativeGeometryPending=true;onManipulate(false) }
                     })
                     pointerControl.meshes[index] = warp.mesh
+                    connection.projection(index,warp.mesh?.projection)
                     warp.outputSurface?.let { display ->
                         if (videoSurface.get() !== display) {
                             videoSurface.set(display)
@@ -1441,7 +1441,6 @@ private class GrabTracking {
     val points = mutableMapOf<String, FloatArray>()
     val pinched = mutableSetOf<String>()
     var pointerHeld=false
-    var aiming=false
     var unitsPerMeter = 1f
     var nowMs = 0L
 }

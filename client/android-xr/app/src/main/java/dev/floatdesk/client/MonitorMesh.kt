@@ -17,15 +17,12 @@ internal class MonitorMesh(
     val eye: FloatArray,
     val columns: Int = 64,
     val rows: Int = 40,
-    val focus: FloatArray? = null,
 ) {
     val radius = sqrt(eye.sumOf { (it * it).toDouble() }).toFloat()
     val normal = FloatArray(3) { eye[it] / radius }
     val tangentX = floatArrayOf(1f-normal[0]*normal[0]/(1f+normal[2]), -normal[0]*normal[1]/(1f+normal[2]), -normal[0])
     val tangentY = floatArrayOf(-normal[0]*normal[1]/(1f+normal[2]), 1f-normal[1]*normal[1]/(1f+normal[2]), -normal[1])
-    var frameNormal=normal; private set
-    var frameTangentX=tangentX; private set
-    var frameTangentY=tangentY; private set
+    var projection:ViewProjection?=null
     // Keep one angular pixel scale in both axes; limit extreme fields uniformly to avoid folds.
     val radiansPerMeter = minOf(1f/radius, 2.2f/sqrt(width*width+height*height))
     val positions = FloatArray((columns + 1) * (rows + 1) * 3)
@@ -73,29 +70,6 @@ internal class MonitorMesh(
             texCoords[vertex*2]=col.toFloat()/columns
             texCoords[vertex*2+1]=row.toFloat()/rows
         }
-        // Gnomonic (tangent-plane) projection: locally undistorted at the viewed point.
-        // Keep that point on the reference sphere so changing focus does not chase itself.
-        focus?.let { centre ->
-            require(centre.size==2 && centre.all { it.isFinite() })
-            val anchor=project(floatArrayOf(centre[0],centre[1],0f))
-            val n=FloatArray(3) { (eye[it]-anchor[it])/radius }
-            fun cross(a:FloatArray,b:FloatArray)=floatArrayOf(a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0])
-            val turn=cross(normal,n)
-            val cosine=(0..2).sumOf { (normal[it]*n[it]).toDouble() }.toFloat()
-            fun transport(t:FloatArray):FloatArray {
-                val first=cross(turn,t);val second=cross(turn,first)
-                return FloatArray(3) { t[it]+first[it]+second[it]/(1f+cosine).coerceAtLeast(.001f) }
-            }
-            val tx=transport(tangentX);val ty=transport(tangentY)
-            frameNormal=n;frameTangentX=tx;frameTangentY=ty
-            for(row in 0..rows) for(col in 0..columns) {
-                val x=((col.toFloat()/columns-.5f)*width-centre[0])*radiansPerMeter
-                val y=((.5f-row.toFloat()/rows)*height-centre[1])*radiansPerMeter
-                val length=sqrt(1f+x*x+y*y)
-                val vertex=row*(columns+1)+col
-                for(axis in 0..2) positions[vertex*3+axis]=eye[axis]+radius*(-n[axis]+x*tx[axis]+y*ty[axis])/length
-            }
-        }
         var offset=0
         for (row in 0 until rows) for (col in 0 until columns) {
             val a=row*(columns+1)+col
@@ -111,7 +85,11 @@ internal class MonitorMesh(
     }
 
     /** Interpolate texture pixels on the same triangles used by video, then normalize to the sphere. */
-    fun project(flat: FloatArray): FloatArray {
+    fun project(flat: FloatArray, applyProjection:Boolean=true): FloatArray {
+        if(applyProjection && projection!=null) {
+            val uv=projection!!.inverse(flat[0]/width+.5f,.5f-flat[1]/height)
+            return project(floatArrayOf((uv[0]-.5f)*width,(.5f-uv[1])*height,0f),false)
+        }
         val u=(flat[0]/width+.5f)*columns; val v=(.5f-flat[1]/height)*rows
         val col=kotlin.math.floor(u).toInt().coerceIn(0,columns-1)
         val row=kotlin.math.floor(v).toInt().coerceIn(0,rows-1)
@@ -124,7 +102,7 @@ internal class MonitorMesh(
     }
 
     /** Invert the actual texture triangles, so curved ray contacts retain their exact image pixels. */
-    fun unproject(hit: FloatArray): FloatArray? {
+    fun unproject(hit: FloatArray, applyProjection:Boolean=true): FloatArray? {
         val direction=FloatArray(3) { hit[it]-eye[it] }
         fun triangle(i0: Int,i1: Int,i2: Int): FloatArray? {
             val e1x=positions[i1*3]-positions[i0*3]; val e1y=positions[i1*3+1]-positions[i0*3+1]; val e1z=positions[i1*3+2]-positions[i0*3+2]
@@ -140,7 +118,8 @@ internal class MonitorMesh(
             if(v < -.0001f || u+v > 1.0001f || (e2x*qx+e2y*qy+e2z*qz)/determinant <= 0f) return null
             val imageU=texCoords[i0*2]*(1f-u-v)+texCoords[i1*2]*u+texCoords[i2*2]*v
             val imageV=texCoords[i0*2+1]*(1f-u-v)+texCoords[i1*2+1]*u+texCoords[i2*2+1]*v
-            return floatArrayOf((imageU-.5f)*width,(.5f-imageV)*height,0f)
+            val uv=if(applyProjection) projection?.source(imageU,imageV) else null
+            return floatArrayOf(((uv?.get(0) ?: imageU)-.5f)*width,(.5f-(uv?.get(1) ?: imageV))*height,0f)
         }
         // Most hits need only the few triangles surrounding the nearest vertex.
         var nearest=0; var best=Float.POSITIVE_INFINITY
@@ -203,6 +182,82 @@ internal fun eventMatrixHit(hit: FloatArray, matrix: FloatArray,
         if (!p.all { it.isFinite() } || error(p) > .015f) false else {
             val flat = if (mesh == null) p else mesh.unproject(p)
             flat != null && kotlin.math.abs(flat[0]) <= width*.5f+.001f && kotlin.math.abs(flat[1]) <= height*.5f+.001f
+        }
+    }
+}
+
+/** Immutable, bounded GPU lookup: physical surface UV -> source presentation UV.
+ * Sphere vertices, native colliders and output boundaries never change with focus.
+ */
+internal class ViewProjection(val columns:Int,val rows:Int,val sourceUV:FloatArray,val bounds:FloatArray) {
+    init { require(columns>0 && rows>0 && sourceUV.size==(columns+1)*(rows+1)*2 && sourceUV.all {it.isFinite() && it in 0f..1f}) }
+    val encodedRgba=ByteArray((columns+1)*(rows+1)*4).also { out ->
+        for(i in 0 until sourceUV.size/2) for(axis in 0..1) {
+            val value=(sourceUV[i*2+axis]*65535f+.5f).toInt().coerceIn(0,65535)
+            out[i*4+axis*2]=(value ushr 8).toByte();out[i*4+axis*2+1]=value.toByte()
+        }
+    }
+    fun source(u:Float,v:Float):FloatArray {
+        var rect=-1
+        for(i in bounds.indices step 4) if(u>=bounds[i] && u<=bounds[i+2] && v>=bounds[i+1] && v<=bounds[i+3]) {rect=i;break}
+        if(rect<0)return floatArrayOf(u,v)
+        val x=u.coerceIn(0f,1f)*columns;val y=v.coerceIn(0f,1f)*rows
+        val col=kotlin.math.floor(x).toInt().coerceIn(0,columns-1);val row=kotlin.math.floor(y).toInt().coerceIn(0,rows-1)
+        val fx=x-col;val fy=y-row
+        fun lookup(axis:Int):Float {
+            fun p(dx:Int,dy:Int)=sourceUV[((row+dy)*(columns+1)+col+dx)*2+axis]
+            return (p(0,0)*(1-fx)+p(1,0)*fx)*(1-fy)+(p(0,1)*(1-fx)+p(1,1)*fx)*fy
+        }
+        val wx=kotlin.math.sin(Math.PI*(u-bounds[rect])/(bounds[rect+2]-bounds[rect])).toFloat()
+        val wy=kotlin.math.sin(Math.PI*(v-bounds[rect+1])/(bounds[rect+3]-bounds[rect+1])).toFloat()
+        val weight=wx*wx*wy*wy
+        val maxX=.04f*(bounds[rect+2]-bounds[rect]);val maxY=.04f*(bounds[rect+3]-bounds[rect+1])
+        return floatArrayOf(u+(lookup(0)-u).coerceIn(-maxX,maxX)*weight,v+(lookup(1)-v).coerceIn(-maxY,maxY)*weight)
+    }
+    fun inverse(u:Float,v:Float):FloatArray {
+        var x=u;var y=v
+        for(i in 0 until 16) {
+            val mapped=source(x,y)
+            val dx=u-mapped[0];val dy=v-mapped[1]
+            if(kotlin.math.abs(dx)+kotlin.math.abs(dy)<.0000001f) break
+            x=(x+dx).coerceIn(0f,1f);y=(y+dy).coerceIn(0f,1f)
+        }
+        return floatArrayOf(x,y)
+    }
+    companion object {
+        fun create(mesh:MonitorMesh,focus:FloatArray,rects:FloatArray,spacing:Float):ViewProjection {
+            val anchor=mesh.project(floatArrayOf(focus[0],focus[1],0f),false)
+            val normal=FloatArray(3){(mesh.eye[it]-anchor[it])/mesh.radius}
+            fun cross(a:FloatArray,b:FloatArray)=floatArrayOf(a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0])
+            fun dot(a:FloatArray,b:FloatArray)=(0..2).sumOf {(a[it]*b[it]).toDouble()}.toFloat()
+            val turn=cross(mesh.normal,normal);val cosine=dot(mesh.normal,normal)
+            fun transport(t:FloatArray):FloatArray {val a=cross(turn,t);val b=cross(turn,a);return FloatArray(3){t[it]+a[it]+b[it]/(1+cosine).coerceAtLeast(.001f)}}
+            val tx=transport(mesh.tangentX);val ty=transport(mesh.tangentY)
+            val uv=FloatArray(mesh.texCoords.size)
+            for(i in 0 until uv.size/2) {
+                val u=mesh.texCoords[i*2];val v=mesh.texCoords[i*2+1]
+                val ray=FloatArray(3){(mesh.positions[i*3+it]-mesh.eye[it])/mesh.radius}
+                val denominator=-dot(ray,normal)
+                var dx=0f;var dy=0f
+                if(denominator>.3f) {
+                    val x=focus[0]+dot(ray,tx)/(denominator*mesh.radiansPerMeter)
+                    val y=focus[1]+dot(ray,ty)/(denominator*mesh.radiansPerMeter)
+                    val ax=((u-.5f)*mesh.width-focus[0])*mesh.radiansPerMeter
+                    val ay=((.5f-v)*mesh.height-focus[1])*mesh.radiansPerMeter
+                    val falloff=kotlin.math.exp(-(ax*ax+ay*ay)/.5f)
+                    // Correct only a local fraction; full gnomonic remapping looks planar.
+                    dx=(x/mesh.width+.5f-u).coerceIn(-.04f,.04f)*.35f*falloff
+                    dy=(.5f-y/mesh.height-v).coerceIn(-.04f,.04f)*.35f*falloff
+                }
+                uv[i*2]=(u+dx).coerceIn(0f,1f);uv[i*2+1]=(v+dy).coerceIn(0f,1f)
+            }
+            val bounds=FloatArray(rects.size)
+            for(i in rects.indices step 4) {
+                val cx=(rects[i]+rects[i+2])*.5f;val cy=(rects[i+1]+rects[i+3])*.5f;val scale=1-spacing
+                bounds[i]=cx+(rects[i]-cx)*scale;bounds[i+1]=cy+(rects[i+1]-cy)*scale
+                bounds[i+2]=cx+(rects[i+2]-cx)*scale;bounds[i+3]=cy+(rects[i+3]-cy)*scale
+            }
+            return ViewProjection(mesh.columns,mesh.rows,uv,bounds)
         }
     }
 }

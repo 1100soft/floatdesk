@@ -42,7 +42,8 @@ internal class MonitorWarp : AutoCloseable {
     private var screenRects=floatArrayOf(0f,0f,1f,1f)
     private var spacing=0f
     private var presentationDirty=true
-    private var referenceMesh:MonitorMesh?=null
+    private var focus:FloatArray?=null
+    private var projectionShape:MonitorMesh?=null
     private var projectionUpdatedAt=0L
     private var geometryUpdatedAt=0L
     fun presentation(rects:FloatArray,inset:Float) {
@@ -195,7 +196,7 @@ internal class MonitorWarp : AutoCloseable {
 
     @SuppressLint("RestrictedApi") // CustomMesh is available in the pinned SceneCore 1.0 runtime.
     fun update(session: Session, root: Entity, eye: FloatArray?, placement: MonitorPlacement,
-               enabled: Boolean, held: Boolean, forceUpdate: Boolean = false, viewDirection:FloatArray? = null) {
+               enabled: Boolean, held: Boolean, forceUpdate: Boolean = false, viewDirection:FloatArray? = null, freezeProjection:Boolean=held) {
         val original = input ?: return
         if (live !== original) live?.let {
             it.parent = original.parent
@@ -204,7 +205,10 @@ internal class MonitorWarp : AutoCloseable {
         }
         // A captured shape must remain rigid while either contact is held.
         val modeChanged=enabled != (mesh!=null)
-        if (held && !forceUpdate && !modeChanged) return
+        if (held && !forceUpdate && !modeChanged) {
+            if(!freezeProjection) updateProjection(eye,viewDirection,placement)
+            return
+        }
         val candidateViewer = eye?.let { viewerInMonitor(it,placement.pose.position,placement.pose.rotation) }
         val viewer=candidateViewer?.takeIf { it[2]>.10f && kotlin.math.sqrt(it.sumOf { v->(v*v).toDouble() })>.15 }
             ?: mesh?.eye?.takeIf { forceUpdate }
@@ -218,7 +222,7 @@ internal class MonitorWarp : AutoCloseable {
                 val shape = videoShape(placement.physicalWidthM,placement.physicalHeightM,null)
                 applyShape(original, shape)
                 flatWidth = placement.physicalWidthM; flatHeight = placement.physicalHeightM
-                mesh = null;presentationDirty=false
+                mesh = null;focus=null;presentationDirty=false
             }
             return
         }
@@ -226,33 +230,11 @@ internal class MonitorWarp : AutoCloseable {
         val previous = mesh
         val now=android.os.SystemClock.uptimeMillis()
         if(viewDirection!=null && previous!=null && !forceUpdate && !presentationDirty && matchesSize(placement) && now-geometryUpdatedAt<100) return
-        var reference=referenceMesh
-        if(reference==null || reference.width!=placement.physicalWidthM || reference.height!=placement.physicalHeightM ||
-            viewer.indices.any { kotlin.math.abs(viewer[it]-reference!!.eye[it])>.01f }) {
-            reference=MonitorMesh(placement.physicalWidthM,placement.physicalHeightM,viewer)
-            referenceMesh=reference
-        }
-        var focus=previous?.focus?.let { old -> floatArrayOf(
-            old[0].coerceIn(-reference!!.width*.48f,reference.width*.48f),
-            old[1].coerceIn(-reference.height*.48f,reference.height*.48f)) }
-        if(!held && eye!=null && viewDirection!=null && viewDirection.size==3 && viewDirection.all { it.isFinite() } &&
-            (previous==null || now-projectionUpdatedAt>=100)) {
-            val endpoint=FloatArray(3) { eye[it]+viewDirection[it] }
-            val localEnd=viewerInMonitor(endpoint,placement.pose.position,placement.pose.rotation)
-            val direction=FloatArray(3) { localEnd[it]-viewer[it] }
-            val hit=monitorRayHit(viewer,direction,reference!!.width,reference.height,reference)
-            val desired=hit?.let { reference.unproject(it) }
-            if(desired!=null) {
-                val next=floatArrayOf(desired[0].coerceIn(-reference.width*.48f,reference.width*.48f),desired[1].coerceIn(-reference.height*.48f,reference.height*.48f))
-                focus=focus?.let { old -> FloatArray(2) { old[it]+.35f*(next[it]-old[it]) } } ?: next
-                projectionUpdatedAt=now
-            }
-        }
-        val focusChanged=focus!=null && (previous?.focus==null || (0..1).any { kotlin.math.abs(focus!![it]-previous.focus!![it])>.001f })
-        val changed = focusChanged || presentationDirty || previous == null || previous.width != placement.physicalWidthM || previous.height != placement.physicalHeightM ||
+        val changed = presentationDirty || previous == null || previous.width != placement.physicalWidthM || previous.height != placement.physicalHeightM ||
             viewer.indices.any { kotlin.math.abs(viewer[it] - previous.eye[it]) > 0.01f }
         if (changed) {
-            val next = MonitorMesh(placement.physicalWidthM, placement.physicalHeightM, viewer,focus=focus)
+            val next = MonitorMesh(placement.physicalWidthM, placement.physicalHeightM, viewer)
+            next.projection=previous?.projection
             if (previous == null || previous.width != next.width || previous.height != next.height) {
                 val sdkEye = eye?.let { root.transformPoseTo(Pose(Vector3(it[0],it[1],it[2])),original).translation }
                 val h=next.project(floatArrayOf(next.width*.5f,0f,0f))
@@ -278,6 +260,30 @@ internal class MonitorWarp : AutoCloseable {
         } else if (live?.shape !== appliedShape) {
             appliedShape?.let { applyShape(live!!, it) }
         }
+        if(!freezeProjection) updateProjection(eye,viewDirection,placement)
+    }
+
+    private fun updateProjection(eye:FloatArray?,viewDirection:FloatArray?,placement:MonitorPlacement) {
+        val sphere=mesh ?: return
+        val now=android.os.SystemClock.uptimeMillis()
+        val viewer=eye?.let {viewerInMonitor(it,placement.pose.position,placement.pose.rotation)} ?: return
+        if(eye!=null && viewDirection!=null && now-projectionUpdatedAt>=100) {
+            val endpoint=FloatArray(3){eye[it]+viewDirection[it]}
+            val localEnd=viewerInMonitor(endpoint,placement.pose.position,placement.pose.rotation)
+            val hit=monitorRayHit(viewer,FloatArray(3){localEnd[it]-viewer[it]},sphere.width,sphere.height,sphere)
+            val desired=hit?.let {sphere.unproject(it,false)}
+            if(desired!=null) {
+                val old=focus?.let {floatArrayOf(it[0].coerceIn(-sphere.width*.48f,sphere.width*.48f),it[1].coerceIn(-sphere.height*.48f,sphere.height*.48f))}
+                val next=floatArrayOf(desired[0].coerceIn(-sphere.width*.48f,sphere.width*.48f),desired[1].coerceIn(-sphere.height*.48f,sphere.height*.48f))
+                val selected=if(old==null) next else FloatArray(2){old[it]+.35f*(next[it]-old[it])}
+                if(old==null || projectionShape!==sphere || sphere.projection==null || (0..1).any {kotlin.math.abs(selected[it]-old[it])>.001f}) {
+                    focus=selected
+                    sphere.projection=ViewProjection.create(sphere,selected,screenRects,spacing)
+                    projectionShape=sphere
+                }
+            }
+            projectionUpdatedAt=now
+        }
     }
 
     @SuppressLint("RestrictedApi")
@@ -296,7 +302,8 @@ internal class MonitorWarp : AutoCloseable {
         live = null
         input = null
         mesh = null
-        referenceMesh = null
+        focus = null
+        projectionShape=null
         projectionUpdatedAt=0L
         geometryUpdatedAt=0L
         appliedShape = null

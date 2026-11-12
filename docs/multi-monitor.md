@@ -79,3 +79,9 @@ Automated checks cover exact repair wire layout, same-ID retries/read-only recon
 A final full-resolution restore exposed a 2560 × 1600 sub-Hz mode which Plasma labelled `@0`; its configuration transaction exceeded the interactive timeout and partially enabled the output. The policy now excludes rates below 1 Hz rather than presenting them as useful interactive modes. This retains low refresh where practical without the approximately ten-second flip wait of 0.1 Hz. A new output is claimed before a Plasma transaction so a partial/uncertain application remains manageable and can be cleaned up.
 
 The host also handles SIGTERM/SIGHUP through the graceful shutdown path, so normal user-service stops release app-owned virtual outputs. This does not make crash leftovers automatically owned: deliberate restoration of the current task's screens re-established management while preserving the verified user layout, primary and priorities.
+
+## Clip unused desktop space — 12 November 2026
+
+The combined bounding rectangle can contain gaps in nonrectangular arrangements. Those pixels may hold stale X11 window content, so the host now clears pixels outside the union of active screen rectangles before encoding. Gaps are blank black in the existing opaque video surface. This clips the image rather than adding transparency or changing spherical/input geometry.
+
+The clipping map follows real output positions and handles downscaled capture, offsets, overlapping/mirrored outputs and fractional screen edges without introducing seams between adjacent screens. It is cached as row spans and applied after cursor composition. An arrangement change updates the map and schedules a fresh frame even without XDamage, including when the outer bounds remain unchanged. Rectangular coverage requires no clearing. Tests cover L-shaped layouts, scaled/offset unions, same-bounds changes, stride padding and fractional adjacency/gaps.

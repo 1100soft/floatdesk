@@ -116,3 +116,5 @@ Connector names/DRM roles now identify screens independently of primary selectio
 XRender downscales before SHM readback, with fallback; measured readback time fell from ~53 to ~26 ms on the current desktop. Cursor scaling preserves full-resolution input mapping. Bounded packet retransmission repairs isolated losses and incomplete frame tails before keyframe fallback, rejecting unbound peers, inactive sources and late retired-source traffic. These improve known bottlenecks without establishing stall-free playback on every link.
 
 Sub-Hz modes are excluded from interactive selection after a real full-resolution Plasma transaction exposed a multi-second flip wait (`@0` mode). The lowest responsive supported rate is retained. Partially applied additions retain management ownership, and SIGTERM/SIGHUP now shut the host down gracefully.
+
+12 November: blank non-screen pixels in the combined desktop before encoding, preventing stale window fragments in gaps. Cached clipping follows arrangement changes without changing the stream geometry or decoding path. Pixel-centre coverage avoids seams at fractional shared edges; the cursor is clipped too.

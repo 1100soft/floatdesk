@@ -108,6 +108,7 @@ struct Shared {
     repairs: Mutex<std::collections::VecDeque<CachedRtp>>,
     repair_window: Mutex<(Instant, u16)>,
     repaired: AtomicU64,
+    screens: RwLock<Vec<MonitorRect>>,
     client: RwLock<Option<ClientTarget>>,
     session_id: u64,
     keys: [AtomicBool; 6],
@@ -329,6 +330,11 @@ fn run(
         repairs: Mutex::new(std::collections::VecDeque::new()),
         repair_window: Mutex::new((Instant::now(), 0)),
         repaired: AtomicU64::new(0),
+        screens: RwLock::new(if sources.is_empty() {
+            monitors.clone()
+        } else {
+            sources.iter().map(|(_, r)| *r).collect()
+        }),
         client: RwLock::new(None),
         session_id,
         keys: std::array::from_fn(|_| AtomicBool::new(false)),
@@ -486,6 +492,12 @@ fn run(
                                     }
                                 }
                             }
+                            *shared.screens.write().unwrap_or_else(|e| e.into_inner()) =
+                                if sources.is_empty() {
+                                    monitors.clone()
+                                } else {
+                                    sources.iter().map(|(_, r)| *r).collect()
+                                };
                             topology_epoch = Instant::now();
                             if monitors != previous_bounds {
                                 stop_streams(&shared, &mut threads);
@@ -532,6 +544,8 @@ fn run(
                 send_reload(&shared, &socket, true);
                 let previous_bounds = monitors.clone();
                 sources = next;
+                *shared.screens.write().unwrap_or_else(|e| e.into_inner()) =
+                    sources.iter().map(|(_, r)| *r).collect();
                 monitors = vec![desktop_rect(&sources)?];
                 if monitors != previous_bounds {
                     stop_streams(&shared, &mut threads);
@@ -781,6 +795,8 @@ fn monitor_thread(
         let result = (|| {
             let mut seen_generation = 0;
             let mut seen_cursor = 0;
+            let mut clip: Option<(Vec<MonitorRect>, crate::media::desktop_mask::DesktopMask)> =
+                None;
             while !done.load(Ordering::Relaxed)
                 && !shared.stop.load(Ordering::Relaxed)
                 && shared.stream_active[rect.index as usize].load(Ordering::Relaxed)
@@ -795,6 +811,22 @@ fn monitor_thread(
                     thread::sleep(Duration::from_millis(20));
                     continue;
                 };
+                let screens = shared
+                    .screens
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                if clip
+                    .as_ref()
+                    .is_none_or(|(previous, _)| previous != &screens)
+                {
+                    let (w, h) = capture.pixel_size();
+                    clip = Some((
+                        screens.clone(),
+                        crate::media::desktop_mask::DesktopMask::new(rect, w, h, &screens),
+                    ));
+                    capture.note_cursor(); // Refresh the mask even on an otherwise static desktop.
+                }
                 let requested = shared.keys[rect.index as usize].swap(false, Ordering::Relaxed);
                 let force = target.generation != seen_generation || requested;
                 seen_generation = target.generation;
@@ -819,6 +851,9 @@ fn monitor_thread(
                     capture_age_ns = monotonic_ns().saturating_sub(frame.monotonic_ns),
                     "submitting capture"
                 );
+                if let Some((_, mask)) = &clip {
+                    mask.apply(&mut frame);
+                }
                 encoder.submit(&frame)?;
                 shared.captured.fetch_add(1, Ordering::Relaxed);
             }

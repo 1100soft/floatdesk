@@ -17,11 +17,15 @@ internal class MonitorMesh(
     val eye: FloatArray,
     val columns: Int = 64,
     val rows: Int = 40,
+    val focus: FloatArray? = null,
 ) {
     val radius = sqrt(eye.sumOf { (it * it).toDouble() }).toFloat()
     val normal = FloatArray(3) { eye[it] / radius }
     val tangentX = floatArrayOf(1f-normal[0]*normal[0]/(1f+normal[2]), -normal[0]*normal[1]/(1f+normal[2]), -normal[0])
     val tangentY = floatArrayOf(-normal[0]*normal[1]/(1f+normal[2]), 1f-normal[1]*normal[1]/(1f+normal[2]), -normal[1])
+    var frameNormal=normal; private set
+    var frameTangentX=tangentX; private set
+    var frameTangentY=tangentY; private set
     // Keep one angular pixel scale in both axes; limit extreme fields uniformly to avoid folds.
     val radiansPerMeter = minOf(1f/radius, 2.2f/sqrt(width*width+height*height))
     val positions = FloatArray((columns + 1) * (rows + 1) * 3)
@@ -68,6 +72,29 @@ internal class MonitorMesh(
             for (axis in 0..2) positions[vertex*3+axis]=eye[axis]+radius*(vx*tangentX[axis]+vy*tangentY[axis]+vz*normal[axis])
             texCoords[vertex*2]=col.toFloat()/columns
             texCoords[vertex*2+1]=row.toFloat()/rows
+        }
+        // Gnomonic (tangent-plane) projection: locally undistorted at the viewed point.
+        // Keep that point on the reference sphere so changing focus does not chase itself.
+        focus?.let { centre ->
+            require(centre.size==2 && centre.all { it.isFinite() })
+            val anchor=project(floatArrayOf(centre[0],centre[1],0f))
+            val n=FloatArray(3) { (eye[it]-anchor[it])/radius }
+            fun cross(a:FloatArray,b:FloatArray)=floatArrayOf(a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0])
+            val turn=cross(normal,n)
+            val cosine=(0..2).sumOf { (normal[it]*n[it]).toDouble() }.toFloat()
+            fun transport(t:FloatArray):FloatArray {
+                val first=cross(turn,t);val second=cross(turn,first)
+                return FloatArray(3) { t[it]+first[it]+second[it]/(1f+cosine).coerceAtLeast(.001f) }
+            }
+            val tx=transport(tangentX);val ty=transport(tangentY)
+            frameNormal=n;frameTangentX=tx;frameTangentY=ty
+            for(row in 0..rows) for(col in 0..columns) {
+                val x=((col.toFloat()/columns-.5f)*width-centre[0])*radiansPerMeter
+                val y=((.5f-row.toFloat()/rows)*height-centre[1])*radiansPerMeter
+                val length=sqrt(1f+x*x+y*y)
+                val vertex=row*(columns+1)+col
+                for(axis in 0..2) positions[vertex*3+axis]=eye[axis]+radius*(-n[axis]+x*tx[axis]+y*ty[axis])/length
+            }
         }
         var offset=0
         for (row in 0 until rows) for (col in 0 until columns) {

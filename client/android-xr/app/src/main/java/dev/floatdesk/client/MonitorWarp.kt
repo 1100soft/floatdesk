@@ -42,6 +42,9 @@ internal class MonitorWarp : AutoCloseable {
     private var screenRects=floatArrayOf(0f,0f,1f,1f)
     private var spacing=0f
     private var presentationDirty=true
+    private var referenceMesh:MonitorMesh?=null
+    private var projectionUpdatedAt=0L
+    private var geometryUpdatedAt=0L
     fun presentation(rects:FloatArray,inset:Float) {
         if(!screenRects.contentEquals(rects) || spacing!=inset) {screenRects=rects.copyOf();spacing=inset;presentationDirty=true}
     }
@@ -192,7 +195,7 @@ internal class MonitorWarp : AutoCloseable {
 
     @SuppressLint("RestrictedApi") // CustomMesh is available in the pinned SceneCore 1.0 runtime.
     fun update(session: Session, root: Entity, eye: FloatArray?, placement: MonitorPlacement,
-               enabled: Boolean, held: Boolean, forceUpdate: Boolean = false) {
+               enabled: Boolean, held: Boolean, forceUpdate: Boolean = false, viewDirection:FloatArray? = null) {
         val original = input ?: return
         if (live !== original) live?.let {
             it.parent = original.parent
@@ -221,10 +224,35 @@ internal class MonitorWarp : AutoCloseable {
         }
         if (viewer == null) return
         val previous = mesh
-        val changed = presentationDirty || previous == null || previous.width != placement.physicalWidthM || previous.height != placement.physicalHeightM ||
+        val now=android.os.SystemClock.uptimeMillis()
+        if(viewDirection!=null && previous!=null && !forceUpdate && !presentationDirty && matchesSize(placement) && now-geometryUpdatedAt<100) return
+        var reference=referenceMesh
+        if(reference==null || reference.width!=placement.physicalWidthM || reference.height!=placement.physicalHeightM ||
+            viewer.indices.any { kotlin.math.abs(viewer[it]-reference!!.eye[it])>.01f }) {
+            reference=MonitorMesh(placement.physicalWidthM,placement.physicalHeightM,viewer)
+            referenceMesh=reference
+        }
+        var focus=previous?.focus?.let { old -> floatArrayOf(
+            old[0].coerceIn(-reference!!.width*.48f,reference.width*.48f),
+            old[1].coerceIn(-reference.height*.48f,reference.height*.48f)) }
+        if(!held && eye!=null && viewDirection!=null && viewDirection.size==3 && viewDirection.all { it.isFinite() } &&
+            (previous==null || now-projectionUpdatedAt>=100)) {
+            val endpoint=FloatArray(3) { eye[it]+viewDirection[it] }
+            val localEnd=viewerInMonitor(endpoint,placement.pose.position,placement.pose.rotation)
+            val direction=FloatArray(3) { localEnd[it]-viewer[it] }
+            val hit=monitorRayHit(viewer,direction,reference!!.width,reference.height,reference)
+            val desired=hit?.let { reference.unproject(it) }
+            if(desired!=null) {
+                val next=floatArrayOf(desired[0].coerceIn(-reference.width*.48f,reference.width*.48f),desired[1].coerceIn(-reference.height*.48f,reference.height*.48f))
+                focus=focus?.let { old -> FloatArray(2) { old[it]+.35f*(next[it]-old[it]) } } ?: next
+                projectionUpdatedAt=now
+            }
+        }
+        val focusChanged=focus!=null && (previous?.focus==null || (0..1).any { kotlin.math.abs(focus!![it]-previous.focus!![it])>.001f })
+        val changed = focusChanged || presentationDirty || previous == null || previous.width != placement.physicalWidthM || previous.height != placement.physicalHeightM ||
             viewer.indices.any { kotlin.math.abs(viewer[it] - previous.eye[it]) > 0.01f }
         if (changed) {
-            val next = MonitorMesh(placement.physicalWidthM, placement.physicalHeightM, viewer)
+            val next = MonitorMesh(placement.physicalWidthM, placement.physicalHeightM, viewer,focus=focus)
             if (previous == null || previous.width != next.width || previous.height != next.height) {
                 val sdkEye = eye?.let { root.transformPoseTo(Pose(Vector3(it[0],it[1],it[2])),original).translation }
                 val h=next.project(floatArrayOf(next.width*.5f,0f,0f))
@@ -246,7 +274,7 @@ internal class MonitorWarp : AutoCloseable {
             } else live!!
             applyShape(target, shape)
             flatWidth = next.width; flatHeight = next.height
-            mesh = next;presentationDirty=false
+            mesh = next;presentationDirty=false;geometryUpdatedAt=now
         } else if (live?.shape !== appliedShape) {
             appliedShape?.let { applyShape(live!!, it) }
         }
@@ -268,6 +296,9 @@ internal class MonitorWarp : AutoCloseable {
         live = null
         input = null
         mesh = null
+        referenceMesh = null
+        projectionUpdatedAt=0L
+        geometryUpdatedAt=0L
         appliedShape = null
     }
 }

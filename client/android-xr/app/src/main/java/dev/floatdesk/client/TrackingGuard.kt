@@ -24,3 +24,22 @@ internal class TrackingGuard {
         return !discontinuity && now-stableSince!! >= 300
     }
 }
+
+/** Remember the pre-loss viewer; rebase only after a stable, substantially different recovery. */
+internal class TrackingRecovery {
+    private var position:FloatArray?=null
+    private var rotation:FloatArray?=null
+    private var lostAt:Long?=null
+    fun update(now:Long,reliable:Boolean,p:FloatArray?,q:FloatArray?,unitsPerMeter:Float):Pair<FloatArray,FloatArray>? {
+        if(!reliable || p==null || q==null) {
+            if(position!=null && lostAt==null) lostAt=now
+            return null
+        }
+        val before=position;val orientation=rotation;val lost=lostAt
+        position=p.copyOf();rotation=q.copyOf();lostAt=null
+        if(before==null || orientation==null || lost==null || now-lost<250 || unitsPerMeter<=0f) return null
+        val distance=kotlin.math.sqrt((0..2).sumOf {val d=(p[it]-before[it])/unitsPerMeter;(d*d).toDouble()})
+        val cosine=kotlin.math.abs((0..3).sumOf {(q[it]*orientation[it]).toDouble()}).coerceIn(0.0,1.0)
+        return if(distance>.25 || 2*kotlin.math.acos(cosine)>.5) before to orientation else null
+    }
+}

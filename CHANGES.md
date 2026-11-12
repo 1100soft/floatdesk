@@ -142,3 +142,7 @@ Workspace’s × control now has a circular background. Status, core actions, co
 Position edits now suspend virtual scanout inside a guarded native RandR transaction before changing framebuffer bounds, then restore the exact original modes. This avoids repeated low-rate waits across intermediate configurations. A live production move measured 6.2 seconds; the earlier KScreen bounds-change comparison took 93 seconds. Refresh rates remain unchanged. Add/remove/resolution changes retain the desktop backend, and driver pending-scanout waits can still delay position changes. Partial failures attempt to restore the original layout.
 
 Arrangement drops discard the final 100 ms of pinch-opening aim movement using input timestamps; preview remains live and sample history is bounded. Packed atlas streaming and view-adaptive detail remain proposals, with tradeoffs documented in `docs/multi-monitor.md`.
+
+### View-centered spherical projection and lost-tracking recovery
+
+Spherical mode now follows the head-directed view with a smoothed tangent projection on the same viewer-centered sphere. Shared mesh geometry keeps video, hit testing, frozen grabs and behind-image native controls aligned. Projection freezes during aiming and interaction; updates are bounded to 10 Hz without replacing the decoder surface. Substantial pose changes after a sustained tracking gap restore unanchored layouts relative to the last trusted viewer. The system warning remains under Android XR control. This is rendering and recovery work; adaptive/cropped streaming remains unimplemented.

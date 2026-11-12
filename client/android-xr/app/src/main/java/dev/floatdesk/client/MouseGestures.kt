@@ -21,6 +21,7 @@ internal class MouseGestures(private val diagnostic: (String)->Unit = {}) {
     private val chordClosed=mutableSetOf<String>()
     private val armed=mutableMapOf<String,MutableSet<Int>>()
     private var hold: Hold? = null
+    val engaged:Boolean get() = hold!=null || dragging || scrolling
     private var scrolling=false
     private var scrollOrigin: FloatArray?=null
     private var scrollPrevious: FloatArray?=null

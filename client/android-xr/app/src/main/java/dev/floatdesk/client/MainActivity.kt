@@ -419,6 +419,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
         var device = runCatching { ArDevice.getInstance(current) }.getOrNull()
         Log.i("Floatdesk", "head source view=${viewpoint != null} device=${device != null}")
         val trackingGuard = TrackingGuard()
+        val trackingRecovery = TrackingRecovery()
         val handQuality=HandTrackingQuality()
         var lastHandRejection=emptySet<String>()
         var lastHandOverlap=false
@@ -521,6 +522,13 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             val head = candidateHead?.takeIf { reliable }
             if(head!=null) {
                 val reference=head.toWorkspacePose()
+                val recovery=trackingRecovery.update(handTracking.nowMs,true,reference.position,reference.rotation,unitsPerMeter)
+                if(recovery!=null && !restoreViewerPending && workspace.anchorUuid==null) {
+                    workspace=workspace.copy(viewerReference=Pose(recovery.first,recovery.second)).restoreViewer(reference)
+                    grabs.values.forEach { it.cancel() };pointerControl.clear()
+                    manipulating=false;suppressFist=true;followLock=null
+                    Log.w("Floatdesk","Recovered workspace after tracking discontinuity")
+                }
                 if(restoreViewerPending && !workspace.layouts[workspace.activeLayout].isNullOrEmpty()) {
                     workspace=workspace.restoreViewer(reference)
                     restoreViewerPending=false
@@ -528,6 +536,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 store.viewerReference=reference
             }
             if (!reliable) {
+                trackingRecovery.update(handTracking.nowMs,false,null,null,unitsPerMeter)
                 // Head quality controls follow, not availability of independently tracked hands.
                 followLock = null
             }
@@ -539,7 +548,11 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             val fingerTips = mutableMapOf<String, FloatArray>()
             val mouseSamples = mutableMapOf<String,FingerPinch>()
             grips.clear()
-            head?.let { grips["HEAD"] = it.translation.toArray() }
+            head?.let {
+                grips["HEAD"] = it.translation.toArray()
+                val q=it.rotation
+                grips["VIEW_DIRECTION"] = floatArrayOf(-2f*(q.x*q.z+q.w*q.y),2f*(q.w*q.x-q.y*q.z),-1f+2f*(q.x*q.x+q.y*q.y))
+            }
             // A sphere can be equidistant from one point: use the midpoint between the eyes.
             val rightEye = rightViewpoint?.state?.value?.pose
             val viewer = if (perceived != null && rightEye != null) {
@@ -701,6 +714,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 lastPointerMode = choice.mode
             }
             dimPointer = choice.mode == PointerMode.HAND
+            handTracking.aiming=choice.mode==PointerMode.HAND || choice.mode==PointerMode.PREVIEW
             val gestureBlocked=displayControlsOpen || choice.mode==PointerMode.PREVIEW || choice.mode==PointerMode.GRAB || palmPanel!=null
             for(frame in pinchFrames.drain(handTracking.nowMs)) {
                 val samples=frame.samples.filterKeys { it in mouseSamples }.mapValues { (side,sample) ->
@@ -729,6 +743,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                     connection.desktopPoint(it.target.monitor,it.target.u,it.target.v)?.let {(u,v)->connection.clickPointer(it.target.monitor,u,v,it.button)}
                 }
             }
+            handTracking.pointerHeld=mouseGestures.engaged
             for((index,placement) in workspace.layouts[workspace.activeLayout].orEmpty().withIndex()) {
                 val marks=mutableListOf<Float>()
                 connection.aimOverlay(index,dev.floatdesk.client.media.VideoAim(floatArrayOf(),marks.toFloatArray(),
@@ -930,7 +945,7 @@ private fun DeskContent(
                     // the user starts pinching can cancel its input acquisition.
                     connection.presentation().let {warp.presentation(it.rects,it.spacing)}
                     warp.update(current, root, handTracking.points["VIEWER"] ?: handTracking.points["HEAD"], screen, file.sphericalWarp,
-                        hands.busy || (file.sphericalWarp && handTracking.pinched.isNotEmpty()),forceUpdate=!hands.busy && (nativeGeometryPending || !warp.matchesSize(screen)))
+                        hands.busy || nativeMove || nativeResize || handTracking.aiming || handTracking.pointerHeld || (file.sphericalWarp && handTracking.pinched.isNotEmpty()),forceUpdate=!hands.busy && (nativeGeometryPending || !warp.matchesSize(screen)),viewDirection=handTracking.points["VIEW_DIRECTION"])
                     warp.syncCurvedInput(current)
                     // Collider creation suspends: a newer resize event may arrive while awaiting it.
                     // Clear the pending update only after matching the latest canonical size.
@@ -1425,6 +1440,8 @@ private fun openViewpoint(session: androidx.xr.runtime.Session): RenderViewpoint
 private class GrabTracking {
     val points = mutableMapOf<String, FloatArray>()
     val pinched = mutableSetOf<String>()
+    var pointerHeld=false
+    var aiming=false
     var unitsPerMeter = 1f
     var nowMs = 0L
 }

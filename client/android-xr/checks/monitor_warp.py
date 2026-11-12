@@ -12,7 +12,7 @@ warp = warp[warp.index('internal class MonitorWarp'):].replace('@SuppressLint("R
 stubs = '''
 internal class Texture { fun close() {}; companion object { suspend fun create(session: Session,path: java.nio.file.Path)=Texture() } }
 internal class Surface
-internal object SystemClock { fun uptimeMillis()=0L }
+internal object SystemClock { var now=0L;fun uptimeMillis()=now }
 internal enum class SpatialPointerIcon { DEFAULT,NONE }
 internal class SpatialPointerComponent {
     var spatialPointerIcon=SpatialPointerIcon.DEFAULT
@@ -124,6 +124,16 @@ suspend fun main() {
     check(input.mediaBlendingMode==SurfaceEntity.MediaBlendingMode.OPAQUE)
     check(input.enabled && input.getAlpha() == .8f)
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false)
+    val stableOutput=warp.outputSurface
+    SystemClock.now=1000L
+    warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false,viewDirection=floatArrayOf(.1f,0f,-1f))
+    check(warp.mesh!!.focus!=null && warp.outputSurface===stableOutput)
+    val projected=warp.mesh
+    SystemClock.now=1200L
+    warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,true,viewDirection=floatArrayOf(-.2f,0f,-1f))
+    check(warp.mesh===projected) // Interaction freezes geometry despite changing view direction.
+    warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,true,forceUpdate=true,viewDirection=floatArrayOf(-.2f,0f,-1f))
+    check(warp.mesh===projected) // Forced canonical synchronization must not move projection focus.
     val curvedVideo=session.scene.entities.last()
     check(curvedVideo !== input && input.shape is SurfaceEntity.Shape.Quad)
     check(curvedVideo.mediaBlendingMode==SurfaceEntity.MediaBlendingMode.OPAQUE)

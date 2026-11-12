@@ -107,18 +107,20 @@ fun main() {
     fun near(a:Float,b:Float)=check(kotlin.math.abs(a-b)<.00002f) { "$a != $b" }
     for((label,mesh) in listOf(
         "left-middle" to MonitorMesh(1.4094946f,.8809341f,floatArrayOf(-.3641987f,-.037884656f,1.4811001f)),
-        "bottom" to MonitorMesh(1.1701335f,.73133343f,floatArrayOf(.00200787f,-.6641777f,1.0608732f)))) {
+        "bottom" to MonitorMesh(1.1701335f,.73133343f,floatArrayOf(.00200787f,-.6641777f,1.0608732f)),
+        "dynamic" to MonitorMesh(1.4094946f,.8809341f,floatArrayOf(-.3641987f,-.037884656f,1.4811001f),focus=floatArrayOf(.35237365f,.17618682f)))) {
         val frame=curvedResizeFrame(mesh)
         val oldMin=(0 until mesh.positions.size/3).minOf { mesh.positions[it*3+2] }
         val minGap=(0 until mesh.positions.size/3).minOf { vertex ->
             dot(FloatArray(3){mesh.positions[vertex*3+it]-frame.center[it]},frame.normal)
         }
-        check(oldMin<-.01f && minGap>0f)
+        check(minGap>0f)
+        if(label!="dynamic") check(oldMin<-.01f)
         val sample=if(label=="left-middle") floatArrayOf(-mesh.width*.25f,0f,0f) else floatArrayOf(0f,-mesh.height*.25f,0f)
-        check(mesh.project(sample)[2]<0f)
+        if(label!="dynamic") check(mesh.project(sample)[2]<0f)
         for(x in listOf(-.5f,.5f)) for(y in listOf(-.5f,.5f)) {
             val corner=mesh.project(floatArrayOf(x*mesh.width,y*mesh.height,0f))
-            val frameCorner=FloatArray(3){frame.center[it]+x*frame.width*mesh.tangentX[it]+y*frame.height*mesh.tangentY[it]}
+            val frameCorner=FloatArray(3){frame.center[it]+x*frame.width*mesh.frameTangentX[it]+y*frame.height*mesh.frameTangentY[it]}
             val imageRay=unit(FloatArray(3){corner[it]-mesh.eye[it]})
             val handleRay=unit(FloatArray(3){frameCorner[it]-mesh.eye[it]})
             for(i in 0..2) near(imageRay[i],handleRay[i])

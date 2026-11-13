@@ -10,6 +10,9 @@ import android.os.Looper
 import android.view.Surface
 import androidx.compose.runtime.mutableStateOf
 import dev.floatdesk.client.ViewProjection
+import dev.floatdesk.client.FocusTarget
+import dev.floatdesk.client.FocusResult
+import dev.floatdesk.client.FocusRect
 import dev.floatdesk.client.media.MonitorDecoder
 import dev.floatdesk.client.media.VideoAim
 import dev.floatdesk.client.media.ScreenPresentation
@@ -31,6 +34,9 @@ internal class DeskConnection(
     val displayState=mutableStateOf(Packet.MonitorStatus(0,true,0,0,"Checking available displays…"))
     val displayBusy=mutableStateOf(false)
     val workspaceInfo=mutableStateOf<WorkspaceInfo?>(null)
+    val focusResult=mutableStateOf<FocusResult?>(null)
+    val focusBusy=mutableStateOf(false)
+    private val focusPending=AtomicInteger()
     private val screenPresentation=AtomicReference(ScreenPresentation())
     private var screenSpacing=0f
     val reloading=mutableStateOf(false)
@@ -117,7 +123,7 @@ internal class DeskConnection(
         decoders.clear()
         currentMonitors=emptyList()
         screenPresentation.set(ScreenPresentation())
-        monitorPending.set(0)
+        monitorPending.set(0);focusPending.set(0)
         videoPending.set(false);decoderGeneration.incrementAndGet()
         videos.forEach { runCatching { it.close() } }
         videos = emptyList()
@@ -133,7 +139,7 @@ internal class DeskConnection(
             monitors.value = emptyList()
             cursors.value = emptyMap()
             displayBusy.value = false
-            workspaceInfo.value=null
+            workspaceInfo.value=null;focusBusy.value=false;focusResult.value=null
             reloading.value=false
             status.value = "Disconnected"
         }
@@ -163,6 +169,20 @@ internal class DeskConnection(
             requestDisplays()
         } },25000)
 
+    }
+
+    fun requestFocus(target:FocusTarget):Boolean {
+        val handler=outgoing ?: return false
+        if(!focusPending.compareAndSet(0,-1))return false
+        val id=monitorSequence.incrementAndGet();focusPending.set(id);focusBusy.value=true
+        val json=org.json.JSONObject().put("type","focus").put("requestId",id)
+        if(target.windowId!=null)json.put("windowId",target.windowId) else json.put("screen",target.screen)
+        val packet=Protocol.workspace(json.toString())
+        for(delay in listOf(0L,300L,900L,1800L))handler.postDelayed({if(focusPending.get()==id)send(packet)},delay)
+        main.postDelayed({if(focusPending.compareAndSet(id,0)) {
+            focusBusy.value=false;focusResult.value=FocusResult(id,false,null,"Focus request timed out")
+        }},3500)
+        return true
     }
 
     private fun monitorCommand(id:Int,action:Int,index:Int,width:Int,height:Int):ByteArray {
@@ -245,6 +265,14 @@ internal class DeskConnection(
                     }
                     is Packet.Workspace -> {
                         if(incoming.address==pendingRemote?.address && incoming.port==pendingRemote?.port) {
+                            runCatching {org.json.JSONObject(decoded.json)}.getOrNull()?.takeIf{it.optString("type")=="focusResult"}?.let {reply->
+                                val id=reply.optInt("requestId")
+                                if(id>0 && focusPending.compareAndSet(id,0))main.post {
+                                    val a=reply.optJSONArray("rect")
+                                    val rect=if(a!=null && a.length()==4)FocusRect(a.getDouble(0).toFloat(),a.getDouble(1).toFloat(),a.getDouble(2).toFloat(),a.getDouble(3).toFloat()).takeIf{it.left>=0 && it.top>=0 && it.right<=1 && it.bottom<=1 && it.right>it.left && it.bottom>it.top} else null
+                                    focusBusy.value=false;focusResult.value=FocusResult(id,reply.optBoolean("ok") && rect!=null,rect,reply.optString("message"))
+                                }
+                            }
                             WorkspaceInfo.parse(decoded.json)?.let {info->main.post {workspaceInfo.value=info;configurePresentation(screenSpacing)}}
                         }
                     }

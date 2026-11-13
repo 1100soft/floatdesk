@@ -15,7 +15,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** Normalized top-left video coordinates. At most sixteen projected ray segments and two contacts. */
+/** Normalized top-left video coordinates. At most 256 colored border segments and two contacts. */
 internal data class VideoAim @JvmOverloads constructor(
     val segments: FloatArray = floatArrayOf(), val contacts: FloatArray = floatArrayOf(),
     val thickness: Float = 2f, val opacity: Float = .18f, val colors: FloatArray = floatArrayOf(),
@@ -215,7 +215,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             vertex(ax+ox,ay+oy,alpha,red,green,blue); vertex(ax-ox,ay-oy,alpha,red,green,blue); vertex(bx+ox,by+oy,alpha,red,green,blue)
             vertex(bx+ox,by+oy,alpha,red,green,blue); vertex(ax-ox,ay-oy,alpha,red,green,blue); vertex(bx-ox,by-oy,alpha,red,green,blue)
         }
-        for(i in 0 until minOf(16,overlay.segments.size/4)) {
+        for(i in 0 until minOf(256,overlay.segments.size/4)) {
             val n=i*4
             val red=if(overlay.colors.size>=i*3+3) overlay.colors[i*3] else .4236f
             val green=if(overlay.colors.size>=i*3+3) overlay.colors[i*3+1] else .9777f

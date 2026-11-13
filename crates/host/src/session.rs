@@ -364,6 +364,55 @@ fn update_streams(
     Ok(())
 }
 
+fn focus_desktop_target(
+    value: &serde_json::Value,
+    sources: &[(String, MonitorRect)],
+    pointer: &mut InputDevices,
+) -> Result<[f32; 4]> {
+    let bounds = desktop_rect(sources)?;
+    let (x, y, width, height) = if let Some(id) = value["windowId"]
+        .as_u64()
+        .and_then(|v| u32::try_from(v).ok())
+    {
+        let (_, windows) = crate::platform::x11::windows::catalogue()?;
+        let window = windows
+            .iter()
+            .find(|w| w.id == id)
+            .ok_or_else(|| Error::Msg("Selected window is no longer visible".into()))?;
+        crate::platform::x11::windows::activate(id)?;
+        (window.x, window.y, window.width, window.height)
+    } else {
+        let name = value["screen"]
+            .as_str()
+            .ok_or_else(|| Error::Msg("No screen selected".into()))?;
+        let rect = sources
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, r)| r)
+            .ok_or_else(|| Error::Msg("Selected screen is no longer available".into()))?;
+        (rect.x, rect.y, rect.width, rect.height)
+    };
+    let left = x.max(bounds.x);
+    let top = y.max(bounds.y);
+    let right =
+        (i64::from(x) + i64::from(width)).min(i64::from(bounds.x) + i64::from(bounds.width)) as i32;
+    let bottom = (i64::from(y) + i64::from(height))
+        .min(i64::from(bounds.y) + i64::from(bounds.height)) as i32;
+    if right <= left || bottom <= top {
+        return Err(Error::Msg(
+            "Selected target is outside the captured desktop".into(),
+        ));
+    }
+    pointer.release();
+    pointer.move_pointer(left + (right - left) / 2, top + (bottom - top) / 2, false)?;
+    Ok([
+        (left - bounds.x) as f32 / bounds.width as f32,
+        (top - bounds.y) as f32 / bounds.height as f32,
+        (right - bounds.x) as f32 / bounds.width as f32,
+        (bottom - bounds.y) as f32 / bounds.height as f32,
+    ])
+}
+
 type DisplayWorker = (
     SocketAddr,
     u32,
@@ -485,6 +534,52 @@ fn run(
             match socket.recv_from(&mut scratch) {
                 Ok((size, from)) => {
                     let packet = floatdesk_protocol::decode_packet(&scratch[..size]);
+                    if let Ok(ControlPacket::Workspace { json }) = &packet {
+                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(json) {
+                            if value["type"] == "focus" {
+                                let allowed = shared
+                                    .client
+                                    .read()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .as_ref()
+                                    .is_some_and(|c| c.control == from);
+                                let id = value["requestId"]
+                                    .as_u64()
+                                    .and_then(|v| u32::try_from(v).ok())
+                                    .filter(|v| *v > 0);
+                                if !allowed || id.is_none() {
+                                    continue;
+                                }
+                                let id = id.unwrap();
+                                if let Some((_, _, reply)) = replies
+                                    .iter()
+                                    .find(|(peer, key, _)| *peer == from && *key == id)
+                                {
+                                    let _ = socket.send_to(reply, from);
+                                    continue;
+                                }
+                                let result = focus_desktop_target(&value, &sources, &mut pointer);
+                                let reply = match result {
+                                    Ok(rect) => {
+                                        serde_json::json!({"type":"focusResult","requestId":id,"ok":true,"rect":rect})
+                                    }
+                                    Err(error) => {
+                                        serde_json::json!({"type":"focusResult","requestId":id,"ok":false,"message":error.to_string()})
+                                    }
+                                };
+                                let reply = ControlPacket::Workspace {
+                                    json: reply.to_string(),
+                                }
+                                .encode();
+                                let _ = socket.send_to(&reply, from);
+                                replies.push_back((from, id, reply));
+                                if replies.len() > 32 {
+                                    replies.pop_front();
+                                }
+                                continue;
+                            }
+                        }
+                    }
                     let command = match &packet {
                         Ok(ControlPacket::MonitorCommand {
                             request_id,

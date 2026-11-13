@@ -54,3 +54,18 @@ internal fun fitDesktopInView(screens:List<MonitorPlacement>,viewer:Pose,horizon
             physicalWidthM=screen.physicalWidthM*scale,physicalHeightM=screen.physicalHeightM*scale)
     }.toMutableList()
 }
+
+/** Reframe a displayed source region using Reset's fit policy, preserving the whole desktop. */
+internal fun focusDesktopRegion(screen:MonitorPlacement,rect:FloatArray,viewer:Pose,horizontal:Float,vertical:Float,units:Float,spherical:Boolean):MonitorPlacement {
+    require(rect.size==4 && rect.all{it.isFinite()} && rect[2]>rect[0] && rect[3]>rect[1])
+    val u=(rect[0]+rect[2])*.5f;val v=(rect[1]+rect[3])*.5f
+    val region=screen.copy(pose=Pose(),physicalWidthM=screen.physicalWidthM*(rect[2]-rect[0]),physicalHeightM=screen.physicalHeightM*(rect[3]-rect[1]))
+    val fitted=fitDesktopInView(listOf(region),viewer,horizontal,vertical,units,spherical).single()
+    val width=fitted.physicalWidthM/(rect[2]-rect[0]);val height=fitted.physicalHeightM/(rect[3]-rect[1])
+    val x=(u-.5f)*width;val y=(.5f-v)*height
+    val q=viewer.rotation
+    val tx=-2f*q[2]*y;val ty=2f*q[2]*x;val tz=2f*(q[0]*y-q[1]*x)
+    val offset=floatArrayOf(x+q[3]*tx+q[1]*tz-q[2]*ty,y+q[3]*ty+q[2]*tx-q[0]*tz,q[3]*tz+q[0]*ty-q[1]*tx)
+    return screen.copy(pose=Pose(FloatArray(3){fitted.pose.position[it]-offset[it]},q.copyOf()),
+        physicalWidthM=width,physicalHeightM=height,viewCenterU=u,viewCenterV=v)
+}

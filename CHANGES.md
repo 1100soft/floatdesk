@@ -1,5 +1,7 @@
 # Changes since the LAN proof of concept
 
+- Add a palm-toggle screen/window focus mode, live colored highlights, shared pinch thresholds, acknowledged EWMH activation/cursor centering, selected-region view fitting in both projection modes, and a temporary one-second Follow lease. Revert the subsequent size-threshold beam overlay experiment while retaining tested per-segment highlight colors.
+
 - Reset now centers the active desktop in the current view and fits its size to the binocular field of view, preserving aspect ratio and accounting for spherical corners.
 
 - Show the dynamically projected spherical result during grabs with a reusable textured native grid and projected contact markers. Explicitly apply scene depth testing and use opaque beam texels with entity-level dimming for live-video overlap.
@@ -166,4 +168,4 @@ Substantial pose changes after a sustained tracking gap restore unanchored layou
 
 A Wi-Fi beacon followed by Ethernet control replies could leave the client on Updating screens indefinitely, with no decoder started. Discovery now retries other fresh addresses advertised under the selected host name while retaining strict reply-endpoint matching. Healthy connections stay pinned. Beacon polling no longer adds a 200 ms wait per control packet. A real UDP regression reproduces asymmetric reply routing, and live selection of the reply interface restored video reception and resolved the pending screen query.
 
-Aiming and grab-preview beams that a large live video layer would cover are drawn into that video. The native beams are unchanged below a 1.5-metre rendered canvas, and active-grab snapshot tethers stay on their existing path.
+Known checkpoint limitation: aiming and grab-preview beams can remain invisible over large live desktops despite valid hover contacts. Active-grab snapshot tethers remain visible; the last depth-path changes did not resolve this device regression.

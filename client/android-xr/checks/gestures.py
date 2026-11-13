@@ -418,7 +418,7 @@ fun main() {
     val scaledPanel=panel.copy(unitsPerMeter=5f)
     check(poke.update(scaledPanel,floatArrayOf(-.3f,.3f,.2f)) == null)
     check(poke.update(scaledPanel,floatArrayOf(-.3f,.3f,-.1f)) == PalmAction.FOLLOW)
-    for((x,y,expected) in listOf(Triple(-.06f,-.04f,PalmAction.WARP),Triple(.06f,-.04f,PalmAction.EYES),Triple(0f,-.09f,PalmAction.GESTURES))) {
+    for((x,y,expected) in listOf(Triple(-.06f,-.04f,PalmAction.WARP),Triple(.06f,-.04f,PalmAction.EYES),Triple(-.06f,-.09f,PalmAction.GESTURES),Triple(.06f,-.09f,PalmAction.MODE))) {
         poke.clear()
         check(poke.update(panel,floatArrayOf(x,y,.04f)) == null)
         check(poke.update(panel,floatArrayOf(x,y,-.02f)) == expected)

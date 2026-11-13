@@ -40,6 +40,14 @@ public final class VideoCompositorSmoke {
             WorkspaceStore reloaded=new WorkspaceStore(workspaceFile);
             require(reloaded.load().getViewerReference()!=null && reloaded.load().getViewerReference().getPosition()[2]==3f,"Viewer reference lost on disk reload");
             require(!new java.io.File(workspaceFile+".tmp").exists(),"Workspace save did not atomically replace file");
+            org.json.JSONObject saved=new org.json.JSONObject(new String(java.nio.file.Files.readAllBytes(workspaceFile.toPath()),java.nio.charset.StandardCharsets.UTF_8));
+            org.json.JSONObject monitor=new org.json.JSONObject().put("logical_monitor_uuid","focus-test").put("host_source_id","desktop").put("pixel_width",3840).put("pixel_height",2160).put("view_center_u",.8).put("view_center_v",.25);
+            saved.put("focus_mode",true).put("layouts",new org.json.JSONObject().put("Desk",new org.json.JSONArray().put(monitor)));
+            java.nio.file.Files.write(workspaceFile.toPath(),saved.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            require(reloaded.load().getFocusMode(),"Focus mode not restored");
+            require(Math.abs(reloaded.load().getLayouts().get("Desk").get(0).getViewCenterU()-.8f)<.00001f,"Selected spherical source center not restored");
+            reloaded.save(reloaded.load());
+            require(Math.abs(reloaded.load().getLayouts().get("Desk").get(0).getViewCenterV()-.25f)<.00001f,"Selected source center not saved");
         } finally {workspaceFile.delete();}
         StringBuilder json=new StringBuilder("{\"type\":\"status\",\"available\":12,\"modes\":[[3840,2160]],\"availableMemoryBytes\":8000000000,\"cpuThreads\":8,\"recommendedPixels\":8000000,\"targetFps\":60,\"estimate\":\"advisory\",\"setupRequired\":false,\"screens\":[");
         for(int i=0;i<9;i++) {if(i>0)json.append(',');json.append("{\"name\":\"Virtual-").append(i).append("\",\"width\":3840,\"height\":2160,\"x\":").append(i*3840).append(",\"y\":0,\"managed\":true,\"primary\":false,\"role\":1,\"refreshHz\":0.1,\"modes\":[[3840,2160]]}");}
@@ -77,6 +85,10 @@ public final class VideoCompositorSmoke {
             }
             compositor.projection(null);
             try(Image image=frame(first)){require(pixel(image,32,23)[0]>220,"Disabling projection did not restore retained image");}
+            compositor.overlay(new VideoAim(new float[]{.1f,.25f,.9f,.25f},new float[]{},3f,1f,new float[]{.757f,.502f,1f}));
+            try(Image image=frame(first)){int[] color=pixel(image,32,12);require(color[0]>170 && color[0]<215 && color[1]>110 && color[1]<150 && color[2]>230,"Focus window highlight color corrupt");}
+            compositor.overlay(new VideoAim(new float[]{.1f,.25f,.9f,.25f},new float[]{},3f,1f,new float[]{.4236f,.9777f,1f}));
+            try(Image image=frame(first)){int[] color=pixel(image,32,12);require(color[0]<130 && color[1]>225 && color[2]>230,"Color-only highlight change did not redraw");}
             compositor.overlay(new VideoAim(new float[]{.1f,.25f,.9f,.25f},new float[]{.5f,.5f},2f,.18f));
             SystemClock.sleep(40);
             try(Image image=frame(first)) {

@@ -106,8 +106,8 @@ internal class GrabGuideRenderer private constructor(
             val surface=SurfaceEntity.create(session,shape=decorationShape(1f,1f),
                 parent=null,superSampling=SurfaceEntity.SuperSampling.NONE)
             surface.setSurfacePixelDimensions(IntSize2d(128,4))
-            // Every beam texel is opaque; dimming belongs to entity alpha.
-            // Large live desktops still cover this surface, so that stretch is also drawn into the video.
+            // Every beam texel is opaque; dimming belongs to entity alpha. This matches
+            // the video media path, but large-live-desktop visibility remains unresolved.
             surface.mediaBlendingMode=SurfaceEntity.MediaBlendingMode.OPAQUE
             // A plain native surface has no Compose input policy or InteractableComponent.
             // The entire beam shares one compositor layer, including where it overlaps video.

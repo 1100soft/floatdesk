@@ -70,7 +70,9 @@ fun main() {
    val f=m.focus!!
    val x=(m.texCoords[i/3*2]-.5f)*m.width-f[0]
    val y=(.5f-m.texCoords[i/3*2+1])*m.height-f[1]
-   check(kotlin.math.sqrt(x*x+y*y)*m.radiansPerMeter<Math.PI.toFloat()) // No vertex crosses the antipodal fold.
+   check(length(ray).isFinite() && kotlin.math.abs(length(ray)-m.radius)<.0001f)
+   check(-dot(ray,m.frameNormal)/m.radius > kotlin.math.cos(Math.PI-.009).toFloat()) // Before the antipodal overlap.
+   check(m.focus!!.contentEquals(floatArrayOf(sx*w*.5f,sy*w*.625f*.5f)))
   }
  }
  val formerlyLimited=MonitorMesh(3.8809047f,2.4255652f,floatArrayOf(0f,0f,1.9066529f),focus=floatArrayOf(0f,0f))
@@ -78,7 +80,7 @@ fun main() {
  val nearWrap=MonitorMesh(5f,3.125f,floatArrayOf(0f,0f,1f),focus=floatArrayOf(0f,0f))
  check(kotlin.math.abs(nearWrap.radiansPerMeter-1f)<.00001f) // Beyond the old hemisphere cap, still before overlap.
  val atLimit=MonitorMesh(50f,31.25f,floatArrayOf(0f,0f,1f),focus=floatArrayOf(25f,15.625f))
- check(kotlin.math.abs(atLimit.radiansPerMeter*kotlin.math.sqrt(50f*50f+31.25f*31.25f)*.5f-(Math.PI.toFloat()-.01f))<.0001f)
+ check(atLimit.radiansPerMeter==1f && atLimit.focus!!.contentEquals(floatArrayOf(25f,15.625f))) // No gaze clamp or global scale collapse.
  val recovery=TrackingRecovery();val p=floatArrayOf(0f,0f,0f);val q=floatArrayOf(0f,0f,0f,1f)
  check(recovery.update(0,true,p,q,1f)==null)
  check(recovery.update(20,false,null,null,1f)==null)

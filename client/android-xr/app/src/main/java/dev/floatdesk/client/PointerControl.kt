@@ -84,5 +84,5 @@ internal class PointerControl {
 internal fun pointerSurfacePoint(target:PointerTarget,width:Float,height:Float,mesh:MonitorMesh?):FloatArray {
     val w=mesh?.width ?: width;val h=mesh?.height ?: height
     val flat=floatArrayOf((target.u-.5f)*w,(.5f-target.v)*h,0f)
-    return mesh?.project(flat) ?: flat
+    return mesh?.project(flat,onTriangles=true) ?: flat
 }

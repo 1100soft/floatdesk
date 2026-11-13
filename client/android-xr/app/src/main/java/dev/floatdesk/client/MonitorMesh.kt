@@ -27,21 +27,13 @@ internal class MonitorMesh(
     var frameNormal=normal;private set
     var frameTangentX=tangentX;private set
     var frameTangentY=tangentY;private set
-    // The exponential map first overlaps at the antipode, not at a hemisphere.
-    // Keep the scale independent of gaze; restrict focus near the limit instead of shrinking the image.
-    val radiansPerMeter = minOf(1f/radius, (if(focus==null) 2.2f else 2f*(Math.PI.toFloat()-.01f))/sqrt(width*width+height*height))
-    val focus:FloatArray?=focus?.let { requested ->
-        require(requested.size==2 && requested.all { it.isFinite() })
-        fun fits(t:Float):Boolean {
-            val x=width*.5f+kotlin.math.abs(requested[0])*t
-            val y=height*.5f+kotlin.math.abs(requested[1])*t
-            return sqrt(x*x+y*y)*radiansPerMeter <= Math.PI.toFloat()-.009f
-        }
-        var low=0f;var high=1f
-        if(fits(1f)) requested.copyOf() else {
-            repeat(24) {val mid=(low+high)*.5f;if(fits(mid)) low=mid else high=mid}
-            FloatArray(2){requested[it]*low}
-        }
+    // Preserve the local angular scale; compress only the far periphery before the antipode.
+    val radiansPerMeter = if(focus==null) minOf(1f/radius,2.2f/sqrt(width*width+height*height)) else 1f/radius
+    val focus=focus?.copyOf()
+    private fun angularDistance(a:Float):Float {
+        val start=1.5f
+        val span=Math.PI.toFloat()-.01f-start
+        return if(a<=start) a else start+span*(1f-kotlin.math.exp(-(a-start)/span))
     }
     val positions = FloatArray((columns + 1) * (rows + 1) * 3)
     val texCoords = FloatArray((columns + 1) * (rows + 1) * 2)
@@ -103,24 +95,31 @@ internal class MonitorMesh(
         this.focus?.let { centre ->
             require(centre.size==2 && centre.all { it.isFinite() })
             val referenceX=centre[0]*radiansPerMeter;val referenceY=centre[1]*radiansPerMeter
-            val referenceAngle=sqrt(referenceX*referenceX+referenceY*referenceY)
-            val referenceSinc=if(referenceAngle<.00001f) 1f else kotlin.math.sin(referenceAngle)/referenceAngle
+            val referenceLength=sqrt(referenceX*referenceX+referenceY*referenceY)
+            val referenceAngle=angularDistance(referenceLength)
+            val referenceSinc=if(referenceAngle<.00001f) 1f else kotlin.math.sin(referenceAngle)/referenceLength
             val anchor=FloatArray(3){eye[it]+radius*(-kotlin.math.cos(referenceAngle)*normal[it]+referenceSinc*(referenceX*tangentX[it]+referenceY*tangentY[it]))}
             val n=FloatArray(3) { (eye[it]-anchor[it])/radius }
             fun cross(a:FloatArray,b:FloatArray)=floatArrayOf(a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0])
             val turn=cross(normal,n)
-            val cosine=(0..2).sumOf { (normal[it]*n[it]).toDouble() }.toFloat()
+            val turnLength=sqrt(turn.sumOf{(it*it).toDouble()}).toFloat()
+            val cosine=kotlin.math.cos(referenceAngle)
+            val sine=kotlin.math.sin(referenceAngle)
             fun transport(t:FloatArray):FloatArray {
-                val first=cross(turn,t);val second=cross(turn,first)
-                return FloatArray(3) { t[it]+first[it]+second[it]/(1f+cosine).coerceAtLeast(.001f) }
+                if(turnLength<.000001f)return t.copyOf()
+                val axis=FloatArray(3){turn[it]/turnLength}
+                val perpendicular=cross(axis,t)
+                val parallel=(0..2).sumOf{(axis[it]*t[it]).toDouble()}.toFloat()
+                return FloatArray(3){t[it]*cosine+perpendicular[it]*sine+axis[it]*parallel*(1f-cosine)}
             }
             val tx=transport(tangentX);val ty=transport(tangentY)
             frameNormal=n;frameTangentX=tx;frameTangentY=ty
             for(row in 0..rows) for(col in 0..columns) {
                 val x=((col.toFloat()/columns-.5f)*width-centre[0])*radiansPerMeter
                 val y=((.5f-row.toFloat()/rows)*height-centre[1])*radiansPerMeter
-                val angle=sqrt(x*x+y*y)
-                val sinc=if(angle<.00001f) 1f else kotlin.math.sin(angle)/angle
+                val sourceLength=sqrt(x*x+y*y)
+                val angle=angularDistance(sourceLength)
+                val sinc=if(sourceLength<.00001f) 1f else kotlin.math.sin(angle)/sourceLength
                 val cosine=kotlin.math.cos(angle)
                 val vertex=row*(columns+1)+col
                 for(axis in 0..2) positions[vertex*3+axis]=eye[axis]+radius*(-cosine*n[axis]+sinc*(x*tx[axis]+y*ty[axis]))
@@ -141,10 +140,10 @@ internal class MonitorMesh(
     }
 
     /** Interpolate texture pixels on the same triangles used by video, then normalize to the sphere. */
-    fun project(flat: FloatArray, applyProjection:Boolean=true): FloatArray {
+    fun project(flat: FloatArray, applyProjection:Boolean=true, onTriangles:Boolean=false): FloatArray {
         if(applyProjection && projection!=null) {
             val uv=projection!!.inverse(flat[0]/width+.5f,.5f-flat[1]/height)
-            return project(floatArrayOf((uv[0]-.5f)*width,(.5f-uv[1])*height,0f),false)
+            return project(floatArrayOf((uv[0]-.5f)*width,(.5f-uv[1])*height,0f),false,onTriangles)
         }
         val u=(flat[0]/width+.5f)*columns; val v=(.5f-flat[1]/height)*rows
         val col=kotlin.math.floor(u).toInt().coerceIn(0,columns-1)
@@ -153,6 +152,7 @@ internal class MonitorMesh(
         val verts=if(x+y<=1f) intArrayOf(a,a+columns+1,a+1) else intArrayOf(a+1,a+columns+1,a+columns+2)
         val weights=if(x+y<=1f) floatArrayOf(1f-x-y,y,x) else floatArrayOf(1f-y,1f-x,x+y-1f)
         val direction=FloatArray(3) { axis -> (0..2).sumOf { (positions[verts[it]*3+axis]*weights[it]).toDouble() }.toFloat()-eye[axis] }
+        if(onTriangles) return FloatArray(3){eye[it]+direction[it]}
         val length=sqrt(direction.sumOf { (it*it).toDouble() }).toFloat()
         return FloatArray(3) { eye[it]+direction[it]*radius/length }
     }
@@ -373,9 +373,12 @@ internal fun sphericalViewFocus(mesh:MonitorMesh,direction:FloatArray):FloatArra
     if(length<.00001f)return null
     fun dot(axis:FloatArray)=(0..2).sumOf {(direction[it]*axis[it]/length).toDouble()}.toFloat()
     val forward=-dot(mesh.normal)
-    if(forward<.025f)return null
+    if(forward < -.9999f)return null
     val x=dot(mesh.tangentX);val y=dot(mesh.tangentY)
     val sine=sqrt(x*x+y*y)
-    val scale=(if(sine<.00001f) 1f else kotlin.math.atan2(sine,forward)/sine)/mesh.radiansPerMeter
+    val angle=kotlin.math.atan2(sine,forward)
+    val span=Math.PI.toFloat()-.01f-1.5f
+    val sourceAngle=if(angle<=1.5f) angle else 1.5f-span*kotlin.math.ln((1f-(angle-1.5f)/span).coerceAtLeast(.000001f))
+    val scale=(if(sine<.00001f) 1f else sourceAngle/sine)/mesh.radiansPerMeter
     return floatArrayOf((x*scale).coerceIn(-mesh.width*.5f,mesh.width*.5f),(y*scale).coerceIn(-mesh.height*.5f,mesh.height*.5f))
 }

@@ -32,3 +32,11 @@ internal fun flatResizeFrame(width: Float,height: Float,eye: FloatArray?): Resiz
     val center=floatArrayOf((eye?.get(0) ?: 0f)*(1f-factor),(eye?.get(1) ?: 0f)*(1f-factor),-offset)
     return ResizeFrameGeometry(center,floatArrayOf(0f,0f,1f),floatArrayOf(0f,1f,0f),width*factor,height*factor)
 }
+
+/** One aspect-preserving size for preview and release; no fixed workspace-size ceiling. */
+internal fun resizeDimensions(width:Float,height:Float,factor:Float):Pair<Float,Float>? {
+    if(!width.isFinite() || !height.isFinite() || !factor.isFinite() || width<=0f || height<=0f || factor<=0f)return null
+    val scale=maxOf(factor,.28f/width,.16f/height)
+    val w=width*scale;val h=height*scale
+    return if(w.isFinite() && h.isFinite()) w to h else null
+}

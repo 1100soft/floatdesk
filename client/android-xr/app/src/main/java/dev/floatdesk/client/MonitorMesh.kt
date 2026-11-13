@@ -28,7 +28,7 @@ internal class MonitorMesh(
     var frameTangentX=tangentX;private set
     var frameTangentY=tangentY;private set
     // Keep one angular pixel scale in both axes; limit extreme fields uniformly to avoid folds.
-    val radiansPerMeter = minOf(1f/radius, 2.2f/sqrt(width*width+height*height))
+    val radiansPerMeter = minOf(1f/radius, (if(focus==null) 2.2f else Math.PI.toFloat()-.1f)/sqrt(width*width+height*height))
     val positions = FloatArray((columns + 1) * (rows + 1) * 3)
     val texCoords = FloatArray((columns + 1) * (rows + 1) * 2)
     val videoTexCoords: FloatArray
@@ -40,6 +40,7 @@ internal class MonitorMesh(
         require(width > 0f && height > 0f && width.isFinite() && height.isFinite() &&
             radius > 0f && radius.isFinite() && eye.size == 3 && eye.all { it.isFinite() } && eye[2] > 0f &&
             columns > 0 && rows > 0 && columns % 2 == 0 && rows % 2 == 0)
+        if(focus==null) {
         val halfX = columns/2; val halfY = rows/2
         val dx = (width*radiansPerMeter/columns).toDouble()
         val dy = (height*radiansPerMeter/rows).toDouble()
@@ -73,6 +74,14 @@ internal class MonitorMesh(
             for (axis in 0..2) positions[vertex*3+axis]=eye[axis]+radius*(vx*tangentX[axis]+vy*tangentY[axis]+vz*normal[axis])
             texCoords[vertex*2]=col.toFloat()/columns
             texCoords[vertex*2+1]=row.toFloat()/rows
+        }
+        } else {
+            // The old equal-edge recurrence folds at wider fields. The geodesic map
+            // is valid up to its antipodal cut and needs only the unchanged source UVs.
+            for(row in 0..rows) for(col in 0..columns) {
+                val vertex=row*(columns+1)+col
+                texCoords[vertex*2]=col.toFloat()/columns;texCoords[vertex*2+1]=row.toFloat()/rows
+            }
         }
         // Spherical exponential map: angular distance from focus is preserved.
         // Only the axes through the viewed point are great circles; peripheral curvature remains.
@@ -350,7 +359,7 @@ internal fun sphericalViewFocus(mesh:MonitorMesh,direction:FloatArray):FloatArra
     if(length<.00001f)return null
     fun dot(axis:FloatArray)=(0..2).sumOf {(direction[it]*axis[it]/length).toDouble()}.toFloat()
     val forward=-dot(mesh.normal)
-    if(forward<.1f)return null
+    if(forward<.025f)return null
     val x=dot(mesh.tangentX);val y=dot(mesh.tangentY)
     val sine=sqrt(x*x+y*y)
     val scale=(if(sine<.00001f) 1f else kotlin.math.atan2(sine,forward)/sine)/mesh.radiansPerMeter

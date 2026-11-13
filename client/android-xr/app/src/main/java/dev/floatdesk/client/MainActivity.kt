@@ -764,7 +764,11 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                         val show=contactsNow.size==1 && palmPanel==null && !monitorGrab && !nativeManipulation
                         val rays=(if(show) contactsNow else emptyMap()).mapNotNull { (side,hit) ->
                             val origin=grips[side]; val placement=workspace.monitorAt(hit.monitor)
-                            if(origin==null || placement==null) null else side to (origin to transformPoint(placement.pose,hit.local))
+                            if(origin==null || placement==null) null else {
+                                val local=pointerSurfacePoint(hit,placement.physicalWidthM,placement.physicalHeightM,pointerControl.meshes[hit.monitor])
+                                val contact=transformPoint(placement.pose,local)
+                                side to (origin to visibleGrabContact(contact,handTracking.points["VIEWER"] ?: handTracking.points["HEAD"],handTracking.unitsPerMeter))
+                            }
                         }.toMap()
                         renderer.updateRays(root,rays,handTracking.points["VIEWER"] ?: handTracking.points["HEAD"],handTracking.unitsPerMeter,true)
                     }
@@ -922,6 +926,7 @@ private fun DeskContent(
         var moveBefore by remember(index) { mutableStateOf<Pose?>(null) }
         var nativeGeometryPending by remember(index) { mutableStateOf(false) }
         var nativeResizeStartWidth by remember(index) { mutableStateOf(1f) }
+        var nativeResizeStartHeight by remember(index) { mutableStateOf(1f) }
         val videoSurface = remember(index) { AtomicReference<Surface?>(null) }
         val warp = remember(index, session) { MonitorWarp() }
         val systemControls=remember(index,session) { MonitorSystemControls() }
@@ -957,15 +962,19 @@ private fun DeskContent(
                         if(event.resizeState==androidx.xr.scenecore.ResizeEvent.ResizeState.START) {
                             if(hands.busy) hands.cancel()
                             nativeResizeStartWidth=existing.physicalWidthM
+                            nativeResizeStartHeight=existing.physicalHeightM
                             nativeResize=true; onManipulate(true)
                         }
-                        if(!nativeResize || !factor.isFinite() || factor<=0f) return@update
+                        if(!nativeResize) return@update
                         nativeGeometryPending=true
-                        val ratio=existing.physicalHeightM/existing.physicalWidthM
-                        val width=(nativeResizeStartWidth*factor).coerceIn(maxOf(.28f,.16f/ratio),minOf(2.4f,1.5f/ratio))
                         val end=event.resizeState==androidx.xr.scenecore.ResizeEvent.ResizeState.END
-                        onWorkspace(latest.value.monitorPlaced(index,existing.copy(physicalWidthM=width,physicalHeightM=width*ratio),store,end))
-                        if(end) { nativeResize=false; onManipulate(false) }
+                        val size=resizeDimensions(nativeResizeStartWidth,nativeResizeStartHeight,factor)
+                        // END must always release ownership, even if the SDK's final size is invalid.
+                        if(end) {nativeResize=false;onManipulate(false)}
+                        if(size!=null || end) {
+                            val next=size?.let {existing.copy(physicalWidthM=it.first,physicalHeightM=it.second)} ?: existing
+                            onWorkspace(latest.value.monitorPlaced(index,next,store,end))
+                        }
                     },onMove={ phase,pose ->
                         if(!handInputNow.value || hands.engaged) { nativeMove=false; return@update }
                         val sample=pose.toWorkspacePose()
@@ -1279,10 +1288,11 @@ private class PinchMemory {
             Log.w("Floatdesk","native move discontinuity ignored")
             return placement
         }
+        val size=resizeDimensions(placement.physicalWidthM,placement.physicalHeightM,factor) ?: return placement
         return placement.copy(
             pose = nativeRelativePose(before,sample,placement.pose),
-            physicalWidthM = (placement.physicalWidthM*factor).coerceIn(.28f,2.4f),
-            physicalHeightM = (placement.physicalHeightM*factor).coerceIn(.16f,1.5f),
+            physicalWidthM = size.first,
+            physicalHeightM = size.second,
         )
     }
 }

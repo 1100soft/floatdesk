@@ -190,6 +190,33 @@ fun main() {
     update(enabled=false)
     check(active.parent==null && active.move==null && active.resize==null)
     handles.close()
+    val bigSession=Session();val bigHandles=MonitorSystemControls()
+    val initialWidth=3.328259f;val initialHeight=2.0801616f
+    val initialBig=MonitorMesh(initialWidth,initialHeight,floatArrayOf(0f,0f,1.887f),focus=floatArrayOf(0f,0f))
+    val initialBigFrame=curvedResizeFrame(initialBig)
+    var committed=initialWidth to initialHeight;var resizing=false
+    fun updateBig(m:MonitorMesh) = bigHandles.update(bigSession,video,m,m.width,m.height,m.eye,1f,true,onResize={e,f->
+        if(e.resizeState==ResizeEvent.ResizeState.START)resizing=true
+        resizeDimensions(initialWidth,initialHeight,f)?.let {committed=it}
+        if(e.resizeState==ResizeEvent.ResizeState.END)resizing=false
+    },onMove={_,_->})
+    updateBig(initialBig)
+    val bigRoot=bigSession.entities.single() as SurfaceEntity;val bigResize=bigRoot.resize!!
+    check(bigResize.maximumEntitySize.width>bigResize.affordanceSize.width)
+    check(bigResize.maximumEntitySize.height>bigResize.affordanceSize.height)
+    fun bigEvent(state:ResizeEvent.ResizeState,width:Float)=ResizeEvent(state,FloatSize3d(width,initialBigFrame.height,.001f))
+    bigResize.listener.accept(bigEvent(ResizeEvent.ResizeState.START,initialBigFrame.width))
+    bigResize.listener.accept(bigEvent(ResizeEvent.ResizeState.ONGOING,initialBigFrame.width*2))
+    bigResize.listener.accept(bigEvent(ResizeEvent.ResizeState.END,0f)) // A missing final proposal must retain the last valid size and release.
+    check(!resizing);near(committed.first,initialWidth*2);near(committed.second,initialHeight*2)
+    val finalBig=MonitorMesh(committed.first,committed.second,initialBig.eye,focus=floatArrayOf(0f,0f))
+    updateBig(finalBig)
+    check(bigResize.maximumEntitySize.width>bigResize.affordanceSize.width)
+    check(bigResize.maximumEntitySize.height>bigResize.affordanceSize.height)
+    check(resizeDimensions(8f,5f,2f)==(16f to 10f))
+    check(resizeDimensions(1f,1f,Float.NaN)==null)
+    bigHandles.close()
+    println("Passed: oversized desktop range, uncapped aspect-preserving final size and invalid END recovery")
     println("Passed: native backing rectangle in both modes, no app pose/size writes during active resize/move, projected flat corners and stale callback rejection")
     println("Passed: behind-image tangent frame, projected corner alignment, independent resize ownership, source scale factors, transform synchronization and stale callback rejection")
 }

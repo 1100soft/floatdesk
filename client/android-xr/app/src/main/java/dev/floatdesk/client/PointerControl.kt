@@ -79,3 +79,10 @@ internal class PointerControl {
         }
     }
 }
+
+/** Retained hover UVs belong to the image; its old 3D point can be behind a resized surface. */
+internal fun pointerSurfacePoint(target:PointerTarget,width:Float,height:Float,mesh:MonitorMesh?):FloatArray {
+    val w=mesh?.width ?: width;val h=mesh?.height ?: height
+    val flat=floatArrayOf((target.u-.5f)*w,(.5f-target.v)*h,0f)
+    return mesh?.project(flat) ?: flat
+}

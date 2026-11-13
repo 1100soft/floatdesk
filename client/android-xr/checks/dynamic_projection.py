@@ -70,6 +70,8 @@ fun main() {
    check(dot(ray,m.normal)<0f) // The backing plane remains behind the complete wide desktop.
   }
  }
+ val formerlyLimited=MonitorMesh(3.8809047f,2.4255652f,floatArrayOf(0f,0f,1.9066529f),focus=floatArrayOf(0f,0f))
+ check(kotlin.math.abs(formerlyLimited.radiansPerMeter*formerlyLimited.radius-1f)<.00001f) // Recorded release crossed the obsolete 2.2-radian bound.
  val recovery=TrackingRecovery();val p=floatArrayOf(0f,0f,0f);val q=floatArrayOf(0f,0f,0f,1f)
  check(recovery.update(0,true,p,q,1f)==null)
  check(recovery.update(20,false,null,null,1f)==null)

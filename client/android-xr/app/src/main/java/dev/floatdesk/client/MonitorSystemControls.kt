@@ -34,6 +34,7 @@ internal class MonitorSystemControls : AutoCloseable {
     private var canonicalWidth=Float.NaN
     private var canonicalHeight=Float.NaN
     private var resizeStartWidth: Float?=null
+    private var lastResizeFactor=1f
     private var moving=false
     private var listener: ((ResizeEvent,Float)->Unit)?=null
     private var moveListener: ((SystemMovePhase,Pose)->Unit)?=null
@@ -68,10 +69,20 @@ internal class MonitorSystemControls : AutoCloseable {
             root.getSurface().unlockCanvasAndPost(canvas)
             val resize=ResizableComponent.create(session,resizeEventListener=java.util.function.Consumer { event ->
                 if(token==generation && !moving) {
-                    if(event.resizeState==ResizeEvent.ResizeState.START) resizeStartWidth=event.newSize.width.takeIf { it.isFinite() && it>0f } ?: frameWidth
+                    val startEvent=event.resizeState==ResizeEvent.ResizeState.START
+                    val end=event.resizeState==ResizeEvent.ResizeState.END
+                    if(startEvent) {resizeStartWidth=event.newSize.width.takeIf {it.isFinite() && it>0f} ?: frameWidth;lastResizeFactor=1f}
                     val start=resizeStartWidth
-                    if(start!=null && start>0f) listener?.invoke(event,event.newSize.width/start)
-                    if(event.resizeState==ResizeEvent.ResizeState.END) {resizeStartWidth=null;shapeWidth=Float.NaN}
+                    if(start!=null && start>0f) {
+                        val proposed=event.newSize.width/start
+                        val valid=proposed.isFinite() && proposed>0f
+                        if(valid)lastResizeFactor=proposed
+                        try {
+                            if(valid || startEvent || end) listener?.invoke(event,lastResizeFactor)
+                        } finally {
+                            if(end) {resizeStartWidth=null;shapeWidth=Float.NaN}
+                        }
+                    }
                 }
             })
             resize.affordanceSize=FloatSize3d(frame.width,frame.height,.001f)
@@ -104,7 +115,9 @@ internal class MonitorSystemControls : AutoCloseable {
         if(boundsChanged) component?.let {
             val x=frame.width/width;val y=frame.height/height
             it.minimumEntitySize=FloatSize3d(.28f*x,.16f*y,.001f)
-            it.maximumEntitySize=FloatSize3d(2.4f*x,1.5f*y,.001f)
+            // A two-hand grab can exceed the old 2.4 x 1.5 bounds. Never set a
+            // native maximum below the current frame; grow the next gesture's range.
+            it.maximumEntitySize=FloatSize3d(maxOf(10f*unitsPerMeter,frame.width*16f),maxOf(10f*unitsPerMeter,frame.height*16f),.001f)
             it.affordanceSize=FloatSize3d(frame.width,frame.height,.001f)
         }
         if(geometryChanged) movable?.size=FloatSize3d(nextWidth,nextHeight,.001f)

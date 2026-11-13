@@ -1,5 +1,7 @@
 # Changes since the LAN proof of concept
 
+- Fixed oversized desktop resize/release consistency: native resize bounds grow with the desktop, final invalid SDK proposals retain the last valid size, and aiming beams resolve their endpoint against current rendered geometry. Dynamic spherical geometry no longer uses the obsolete 2.2-radian envelope.
+
 This covers the work after `b8eba1a` ("Show the laptop screen on the headset without a typed address"). The headset still finds the computer by itself, and `--existing` still streams the physical panel.
 
 These notes describe the code. The JVM checks do not prove headset placement, joint accuracy, or picture stability. Those still have to be confirmed on the device.

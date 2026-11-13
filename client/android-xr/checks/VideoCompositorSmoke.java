@@ -5,9 +5,13 @@ import android.media.Image;
 import android.media.ImageReader;
 import android.os.SystemClock;
 import dev.floatdesk.client.media.VideoAim;
+import dev.floatdesk.client.net.WorkspaceInfo;
 import dev.floatdesk.client.media.ScreenPresentation;
 import dev.floatdesk.client.media.VideoCompositor;
+import dev.floatdesk.client.ViewProjection;
 import java.nio.ByteBuffer;
+import dev.floatdesk.client.workspace.WorkspaceStore;
+import dev.floatdesk.client.workspace.Pose;
 
 /** Offscreen device check: never opens an Activity or touches the user's desktop. */
 public final class VideoCompositorSmoke {
@@ -27,6 +31,22 @@ public final class VideoCompositorSmoke {
     }
     static void require(boolean value,String message) { if(!value) throw new AssertionError(message); }
     public static void main(String[] args) throws Exception {
+        java.io.File workspaceFile=new java.io.File("/data/local/tmp/floatdesk-workspace-smoke.json");
+        workspaceFile.delete();
+        try {
+            WorkspaceStore store=new WorkspaceStore(workspaceFile);
+            store.setViewerReference(new Pose(new float[]{1f,2f,3f},new float[]{0f,0f,0f,1f}));
+            store.save(store.load());
+            WorkspaceStore reloaded=new WorkspaceStore(workspaceFile);
+            require(reloaded.load().getViewerReference()!=null && reloaded.load().getViewerReference().getPosition()[2]==3f,"Viewer reference lost on disk reload");
+            require(!new java.io.File(workspaceFile+".tmp").exists(),"Workspace save did not atomically replace file");
+        } finally {workspaceFile.delete();}
+        StringBuilder json=new StringBuilder("{\"type\":\"status\",\"available\":12,\"modes\":[[3840,2160]],\"availableMemoryBytes\":8000000000,\"cpuThreads\":8,\"recommendedPixels\":8000000,\"targetFps\":60,\"estimate\":\"advisory\",\"setupRequired\":false,\"screens\":[");
+        for(int i=0;i<9;i++) {if(i>0)json.append(',');json.append("{\"name\":\"Virtual-").append(i).append("\",\"width\":3840,\"height\":2160,\"x\":").append(i*3840).append(",\"y\":0,\"managed\":true,\"primary\":false,\"role\":1,\"refreshHz\":0.1,\"modes\":[[3840,2160]]}");}
+        json.append("]}");
+        WorkspaceInfo info=WorkspaceInfo.Companion.parse(json.toString());
+        require(info!=null && info.getScreens().size()==9 && info.getAvailable()==12,"Workspace catalogue retained a fixed screen limit");
+        require(info.getScreens().get(8).getRefreshHz()==.1,"Low refresh metadata lost precision");
         ImageReader first=ImageReader.newInstance(64,48,PixelFormat.RGBA_8888,4);
         ImageReader second=ImageReader.newInstance(64,48,PixelFormat.RGBA_8888,4);
         VideoCompositor compositor=new VideoCompositor(64,48);
@@ -42,6 +62,21 @@ public final class VideoCompositorSmoke {
                 require(top[0]>220 && top[2]<20,"Video top is flipped or corrupt");
                 require(bottom[2]>220 && bottom[0]<20,"Video bottom is flipped or corrupt");
             }
+            float[] lookup=new float[18];
+            for(int i=0;i<9;i++){lookup[i*2]=(i%3)/2f;lookup[i*2+1]=.75f;}
+            java.lang.reflect.Field lookupId=VideoCompositor.class.getDeclaredField("lookupTexture");lookupId.setAccessible(true);
+            int firstLookup=0;
+            for(int iteration=0;iteration<20;iteration++) {
+                compositor.projection(new ViewProjection(2,2,lookup.clone(),new float[]{0f,0f,1f,1f}));
+                try(Image image=frame(first)) {
+                    require(pixel(image,32,23)[2]>200,"GPU projection lookup did not move source pixels");
+                    require(pixel(image,1,8)[0]>220,"Projection moved a fixed screen boundary");
+                }
+                int id=lookupId.getInt(compositor);
+                if(iteration==0)firstLookup=id;else require(id==firstLookup,"Projection allocated another GPU lookup texture");
+            }
+            compositor.projection(null);
+            try(Image image=frame(first)){require(pixel(image,32,23)[0]>220,"Disabling projection did not restore retained image");}
             compositor.overlay(new VideoAim(new float[]{.1f,.25f,.9f,.25f},new float[]{.5f,.5f},2f,.18f));
             SystemClock.sleep(40);
             try(Image image=frame(first)) {
@@ -76,6 +111,10 @@ public final class VideoCompositorSmoke {
             try(Image image=frame(first)) {require(pixel(image,32,24)[3]>250,"Actual black desktop was made transparent");}
             compositor.presentation(new ScreenPresentation(new float[]{0f,0f,1f,1f},0f));
             try(Image image=frame(first)) {require(pixel(image,1,24)[3]>250,"Presentation change did not redraw retained frame");}
+            float[] many=new float[9*4];
+            for(int i=0;i<9;i++){many[i*4]=i/9f;many[i*4+1]=0;many[i*4+2]=(i+1)/9f;many[i*4+3]=1;}
+            compositor.presentation(new ScreenPresentation(many,0f));
+            try(Image image=frame(first)) {require(pixel(image,62,24)[3]>250,"Uniform batching dropped screen nine");require(pixel(image,1,24)[3]>250,"Later batches erased earlier screens");}
             compositor.output(second.getSurface());
             try(Image image=frame(second)) {
                 require(pixel(image,16,8)[3]>250,"Surface handoff lost the retained video frame");

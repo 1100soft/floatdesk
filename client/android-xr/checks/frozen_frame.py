@@ -20,10 +20,10 @@ png = b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',2,2,8,6,0,0,0))
 png += chunk(b'IDAT',zlib.compress(b'\0\xff\0\0\xff\0\xff\0\xff\0\0\0\xff\xff\xff\xff\0\xff'))+chunk(b'IEND',b'')
 with tempfile.TemporaryDirectory(prefix='floatdesk-snapshot-') as directory:
     folder = Path(directory); (folder/'frame.png').write_bytes(png)
-    harness = 'import java.nio.ByteBuffer\nimport java.nio.ByteOrder\n'+mesh_source+'\n'+writer+'\nfun main(args: Array<String>) { val png = java.io.File(args[0]).readBytes(); java.io.File(args[1]).writeBytes(frozenFrameGlb(png)); java.io.File(args[2]).writeBytes(frozenFrameGlb(png, MonitorMesh(1.8f,1.1f,floatArrayOf(.3f,-.2f,1.2f)))); java.io.File(args[4]).writeBytes(frozenFrameGlb(png,transparent=true)); java.io.File(args[3]).writeBytes(frozenFrameGlb(png, MonitorMesh(1.8f,1.1f,floatArrayOf(.3f,-.2f,1.2f)),true)) }\n'
+    harness = 'import java.nio.ByteBuffer\nimport java.nio.ByteOrder\n'+mesh_source+'\n'+writer+'\nfun main(args: Array<String>) { val png = java.io.File(args[0]).readBytes(); java.io.File(args[1]).writeBytes(frozenFrameGlb(png)); java.io.File(args[2]).writeBytes(frozenFrameGlb(png, MonitorMesh(1.8f,1.1f,floatArrayOf(.3f,-.2f,1.2f),focus=floatArrayOf(.8f,.2f)))); java.io.File(args[4]).writeBytes(frozenFrameGlb(png,transparent=true)); java.io.File(args[3]).writeBytes(frozenFrameGlb(png, MonitorMesh(1.8f,1.1f,floatArrayOf(.3f,-.2f,1.2f),focus=floatArrayOf(.8f,.2f)),true)); java.io.File(args[5]).writeBytes(interactionGridGlb(png)); java.io.File(args[6]).writeBytes(snapshotGridGlb(png)) }\n'
     test = folder/'FrozenFrameCheck.kt'; test.write_text(harness)
     subprocess.run(['java','-cp',str(lib/'*'),'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler','-no-stdlib','-no-reflect','-classpath',str(stdlib),'-d',directory,str(test)],check=True)
-    subprocess.run(['java','-cp',directory+':'+str(stdlib),'FrozenFrameCheckKt',str(folder/'frame.png'),str(folder/'frame.glb'),str(folder/'curved.glb'),str(folder/'input.glb'),str(folder/'transparent.glb')],check=True)
+    subprocess.run(['java','-cp',directory+':'+str(stdlib),'FrozenFrameCheckKt',str(folder/'frame.png'),str(folder/'frame.glb'),str(folder/'curved.glb'),str(folder/'input.glb'),str(folder/'transparent.glb'),str(folder/'grid.glb'),str(folder/'snapshot-grid.glb')],check=True)
     data = (folder/'frame.glb').read_bytes()
     assert struct.unpack_from('<III',data)==(0x46546c67,2,len(data))
     json_size,kind = struct.unpack_from('<II',data,12); assert kind==0x4e4f534a and json_size%4==0
@@ -75,3 +75,33 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-snapshot-') as directory:
     size=struct.unpack_from('<I',transparent,12)[0]
     assert json.loads(transparent[20:20+size])['materials'][0]['alphaMode']=='MASK'
     print('Passed: frozen presentation preserves transparent layout holes')
+
+    grid=(folder/'grid.glb').read_bytes()
+    size=struct.unpack_from('<I',grid,12)[0];doc=json.loads(grid[20:20+size])
+    assert len(doc['nodes'])==384 and len(doc['meshes'])==1 and len(doc['materials'])==1
+    assert doc['scenes'][0]['nodes']==list(range(0,384,2))
+    assert all(doc['nodes'][i]['children']==[i+1] and doc['nodes'][i+1]['mesh']==0 for i in range(0,384,2))
+    assert struct.unpack_from('<I',grid,8)[0]==len(grid)
+    assert len(grid)<150000
+    print('Passed: reusable 192-triangle collider grid shares one triangle mesh/material and bounded asset memory')
+
+    grid=(folder/'snapshot-grid.glb').read_bytes()
+    length=struct.unpack_from('<I',grid,12)[0];doc=json.loads(grid[20:20+length]);raw=grid[28+length:]
+    assert len(doc['nodes'])==640 and len(doc['meshes'])==320 and len(doc['materials'])==1
+    assert doc['buffers'][0]['byteLength']==len(raw)
+    assert doc['materials'][0]['alphaMode']=='MASK'
+    for view in doc['bufferViews']:assert view['byteOffset']+view['byteLength']<=len(raw)
+    image=doc['bufferViews'][4];assert raw[image['byteOffset']:image['byteOffset']+image['byteLength']]==png
+    for row in range(10):
+        for col in range(16):
+            for part in range(2):
+                n=(row*16+col)*2+part
+                primitive=doc['meshes'][n]['primitives'][0]
+                accessor=doc['accessors'][primitive['attributes']['TEXCOORD_0']]
+                view=doc['bufferViews'][accessor['bufferView']]
+                uv=struct.unpack_from('<6f',raw,view['byteOffset']+accessor['byteOffset'])
+                corners=[(col,row),(col,row+1),(col+1,row)] if part==0 else [(col+1,row),(col,row+1),(col+1,row+1)]
+                expected=tuple(v for x,y in corners for v in (x/16,y/10))
+                assert max(abs(a-b) for a,b in zip(uv,expected))<1e-6
+    assert len(grid)<200000 # Bounded asset, one embedded snapshot and shared material.
+    print('Passed: deformable snapshot grid, full upright source UV coverage, one texture/material, 640 stable nodes and bounded asset size')

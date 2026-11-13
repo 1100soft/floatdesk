@@ -106,6 +106,8 @@ import dev.floatdesk.client.workspace.PanelPlacement
 import dev.floatdesk.client.workspace.Pose
 import dev.floatdesk.client.workspace.WorkspaceFile
 import dev.floatdesk.client.workspace.WorkspaceStore
+import dev.floatdesk.client.workspace.fitDesktopInView
+import dev.floatdesk.client.workspace.restoreViewer
 import dev.floatdesk.client.workspace.reconcileMonitors
 import dev.floatdesk.client.workspace.deskLayout
 import dev.floatdesk.client.workspace.monitorPlaced
@@ -174,10 +176,14 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     LaunchedEffect(connection) { connection.start(context) }
     DisposableEffect(connection) { onDispose { connection.disconnect() } }
     val session = LocalSession.current
+    var workspace by remember { mutableStateOf(store.load()) }
+    val workspaceAtLifecycle=rememberUpdatedState(workspace)
+    var restoreViewerPending by remember {mutableStateOf(true)}
     SessionHolder.session = session
     DisposableEffect(session,connection) {
         val current = session
         val observer = LifecycleEventObserver { _, event ->
+            if(event==Lifecycle.Event.ON_PAUSE || event==Lifecycle.Event.ON_STOP) store.save(workspaceAtLifecycle.value)
             connection.setRenderingActive(current?.lifecycleOwner?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.STARTED)==true)
             if (current != null && event == Lifecycle.Event.ON_RESUME) {
                 runCatching { current.configure(Config.Builder(current.config).setHandTracking(HandTrackingMode.BOTH).build()) }
@@ -189,7 +195,6 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             current?.lifecycleOwner?.lifecycle?.removeObserver(observer)
         }
     }
-    var workspace by remember { mutableStateOf(store.load()) }
     LaunchedEffect(workspace.screenSpacing) {connection.configurePresentation(workspace.screenSpacing)}
     val pointerControl = remember { PointerControl() }
     val gazeStabilizer = remember { GazeStabilizer() }
@@ -220,9 +225,12 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     val following = latchedFollow || (holdingFist && !suppressFist)
     val grabs = remember { mutableMapOf<Int, TwoHandState>() }
     DisposableEffect(session) {
+        session?.scene?.panelClippingConfig=androidx.xr.scenecore.PanelClippingConfig(isDepthTestEnabled=true)
         val current = session
         val listener = Runnable {
             Log.w("Floatdesk","XR activity origin changed; cancelling gestures")
+            workspace=workspace.copy(viewerReference=store.viewerReference ?: workspace.viewerReference)
+            restoreViewerPending=true
             grabs.values.forEach { it.cancel() }
             manipulating = false
             suppressFist = true
@@ -235,6 +243,17 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     val grips = handTracking.points
     val deskSpace = remember { AtomicReference<Entity?>(null) }
     val displayHead=remember { AtomicReference<Pose?>(null) }
+    val viewHalfAngles=remember {AtomicReference(floatArrayOf(Math.toRadians(35.0).toFloat(),Math.toRadians(30.0).toFloat()))}
+    fun resetDesk() {
+        grabs.values.forEach {it.cancel()};pointerControl.clear()
+        manipulating=false;holdingFist=false;suppressFist=true
+        val head=store.viewerReference ?: displayHead.get() ?: Pose()
+        val viewer=Pose(handTracking.points["VIEWER"]?.copyOf() ?: head.position.copyOf(),head.rotation.copyOf())
+        val angles=viewHalfAngles.get()
+        workspace=workspace.reset(monitors,store,viewer,angles,handTracking.unitsPerMeter)
+        restoreViewerPending=false
+        followGeneration+=1
+    }
     var displayControlsOpen by remember { mutableStateOf(false) }
     var displayControlsPose by remember { mutableStateOf(workspace.control.pose) }
     fun toggleDisplays() {
@@ -290,7 +309,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             clickView.playSoundEffect(android.view.SoundEffectConstants.CLICK)
             when (action) {
                 PalmAction.FOLLOW -> { latchedFollow = !latchedFollow; suppressFist = true; followGeneration += 1 }
-                PalmAction.RESET -> { workspace = workspace.reset(monitors, store); followGeneration += 1 }
+                PalmAction.RESET -> resetDesk()
                 PalmAction.SEARCH -> { connection.disconnect(); connection.start(context) }
                 PalmAction.SPACE -> { session?.scene?.requestFullSpace();toggleDisplays() }
                 PalmAction.GESTURES -> {
@@ -413,6 +432,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
         var device = runCatching { ArDevice.getInstance(current) }.getOrNull()
         Log.i("Floatdesk", "head source view=${viewpoint != null} device=${device != null}")
         val trackingGuard = TrackingGuard()
+        val trackingRecovery = TrackingRecovery()
         val handQuality=HandTrackingQuality()
         var lastHandRejection=emptySet<String>()
         var lastHandOverlap=false
@@ -494,6 +514,11 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             val trackingAvailable = current.lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
                 (deviceState == null || deviceState.trackingState == TrackingState.TRACKING)
             val perceived = viewpoint?.state?.value?.pose ?: deviceState?.devicePose?.takeIf { trackingAvailable }
+            val fovs=listOfNotNull(viewpoint?.state?.value?.fieldOfView,rightViewpoint?.state?.value?.fieldOfView)
+            val horizontal=fovs.flatMap {listOf(kotlin.math.abs(it.angleLeft),kotlin.math.abs(it.angleRight))}.filter {it.isFinite() && it>.05f}.minOrNull()
+            val vertical=fovs.flatMap {listOf(kotlin.math.abs(it.angleUp),kotlin.math.abs(it.angleDown))}.filter {it.isFinite() && it>.05f}.minOrNull()
+            if(horizontal!=null && vertical!=null)viewHalfAngles.set(floatArrayOf(horizontal,vertical))
+
             // SpatialExternalSurface is under Compose's recommended root, whose scale/pose
             // are independent of ActivitySpace. Always target the actual surface parent.
             val root = findDeskSpace(current) ?: deskSpace.get()
@@ -513,7 +538,23 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             val reliable = trackingGuard.update(handTracking.nowMs, candidateHead?.takeIf { trackingAvailable }?.translation?.toArray(),
                 candidateHead?.let { floatArrayOf(it.rotation.x,it.rotation.y,it.rotation.z,it.rotation.w) },unitsPerMeter)
             val head = candidateHead?.takeIf { reliable }
+            if(head!=null) {
+                val reference=head.toWorkspacePose()
+                val recovery=trackingRecovery.update(handTracking.nowMs,true,reference.position,reference.rotation,unitsPerMeter)
+                if(recovery!=null && !restoreViewerPending && workspace.anchorUuid==null) {
+                    workspace=workspace.copy(viewerReference=Pose(recovery.first,recovery.second)).restoreViewer(reference)
+                    grabs.values.forEach { it.cancel() };pointerControl.clear()
+                    manipulating=false;suppressFist=true;followLock=null
+                    Log.w("Floatdesk","Recovered workspace after tracking discontinuity")
+                }
+                if(restoreViewerPending && !workspace.layouts[workspace.activeLayout].isNullOrEmpty()) {
+                    workspace=workspace.restoreViewer(reference)
+                    restoreViewerPending=false
+                }
+                store.viewerReference=reference
+            }
             if (!reliable) {
+                trackingRecovery.update(handTracking.nowMs,false,null,null,unitsPerMeter)
                 // Head quality controls follow, not availability of independently tracked hands.
                 followLock = null
             }
@@ -525,7 +566,11 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             val fingerTips = mutableMapOf<String, FloatArray>()
             val mouseSamples = mutableMapOf<String,FingerPinch>()
             grips.clear()
-            head?.let { grips["HEAD"] = it.translation.toArray() }
+            head?.let {
+                grips["HEAD"] = it.translation.toArray()
+                val q=it.rotation
+                grips["VIEW_DIRECTION"] = floatArrayOf(-2f*(q.x*q.z+q.w*q.y),2f*(q.w*q.x-q.y*q.z),-1f+2f*(q.x*q.x+q.y*q.y))
+            }
             // A sphere can be equidistant from one point: use the midpoint between the eyes.
             val rightEye = rightViewpoint?.state?.value?.pose
             val viewer = if (perceived != null && rightEye != null) {
@@ -574,7 +619,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                             (joints[HandJointType.PALM]?.translation ?: joints[HandJointType.WRIST]?.translation)?.toArray(),rotateVector(quaternion,1f,0f,0f),rotateVector(quaternion,0f,1f,0f))
                     }
                     if (thumb != null && index != null) {
-                        if (distance(thumb, index) < 0.04f) handTracking.pinched.add(side)
+                        if (indexPinchClosed(side,distance(thumb,index))) handTracking.pinched.add(side)
                         grips[side] = deskPose(current, root, androidx.xr.runtime.math.Pose((thumb + index) * 0.5f)).translation.toArray()
                         fingerTips[side] = deskPose(current, root, androidx.xr.runtime.math.Pose(index)).translation.toArray()
                     }
@@ -657,6 +702,21 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 }
             }
             val hoverHands = pointerControl.hands(grips.keys,handTracking.nowMs,aimPoses).filterValues {connection.desktopPoint(it.monitor,it.u,it.v)!=null}
+            // Preview and acquisition share current validated surface UVs. Do not
+            // require a second native DOWN after both physical pinches are already down.
+            if(listOf("LEFT","RIGHT").all {it in handTracking.pinched} && palmPanel==null) {
+                val left=hoverHands["LEFT"];val right=hoverHands["RIGHT"]
+                if(left!=null && right!=null && left.monitor==right.monitor) {
+                    val placement=workspace.monitorAt(left.monitor)
+                    val grab=grabs[left.monitor]
+                    if(placement!=null && grab!=null && !grab.engaged) {
+                        val wasBusy=grab.busy;val mesh=pointerControl.meshes[left.monitor]
+                        for((side,hit) in listOf("LEFT" to left,"RIGHT" to right))
+                            grab.acquire(side,pointerSurfacePoint(hit,placement.physicalWidthM,placement.physicalHeightM,mesh),placement,handTracking,mesh)
+                        if(wasBusy!=grab.busy) updateManipulation(grab.busy)
+                    }
+                }
+            }
             val eyeRays = if (trackingAvailable && deviceState != null) gazeEyes.mapNotNull { eye ->
                 val state=eye.state.value
                 if(!state.isOpen || state.trackingState!=TrackingState.TRACKING) null else {
@@ -680,10 +740,10 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             }
             val gazeTarget=if(hoverHands.isEmpty()) gazeStabilizer.update(rawGazeTarget?.takeIf {connection.desktopPoint(it.monitor,it.u,it.v)!=null},handTracking.nowMs) else { gazeStabilizer.reset(); null }
             val monitorGrab=grabs.values.any { it.engaged }
-            val nativeManipulation=manipulating && grabs.values.none { it.busy }
+            val nativeManipulation=pointerControl.nativeManipulating
             val choice = pointerControl.choose(workspace.eyeAiming,gazeTarget,hoverHands,monitorGrab || nativeManipulation,handTracking.nowMs)
             if (choice.mode != lastPointerMode) {
-                Log.i("Floatdesk","mouse source=${choice.mode} hands=${hoverHands.size} eyes=${gazeTargets.size}")
+                Log.i("Floatdesk","mouse source=${choice.mode} hands=${hoverHands.mapValues {it.value.monitor}} eyes=${gazeTargets.size} native=$nativeManipulation palm=${palmPanel!=null}")
                 lastPointerMode = choice.mode
             }
             dimPointer = choice.mode == PointerMode.HAND
@@ -715,6 +775,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                     connection.desktopPoint(it.target.monitor,it.target.u,it.target.v)?.let {(u,v)->connection.clickPointer(it.target.monitor,u,v,it.button)}
                 }
             }
+            handTracking.pointerHeld=mouseGestures.engaged
             for((index,placement) in workspace.layouts[workspace.activeLayout].orEmpty().withIndex()) {
                 val marks=mutableListOf<Float>()
                 connection.aimOverlay(index,dev.floatdesk.client.media.VideoAim(floatArrayOf(),marks.toFloatArray(),
@@ -725,18 +786,25 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 val right=hoverHands["RIGHT"]?.takeIf { it.monitor == index }
                 val placement=workspace.monitorAt(index)
                 if(points.size != 2 || left == null || right == null || placement == null) null else
-                    previewGrabGuide(placement,left.local,right.local,handTracking,pointerControl.meshes[index])?.let { index to it }
+                    previewGrabGuide(placement,
+                        pointerSurfacePoint(left,placement.physicalWidthM,placement.physicalHeightM,pointerControl.meshes[index]),
+                        pointerSurfacePoint(right,placement.physicalWidthM,placement.physicalHeightM,pointerControl.meshes[index]),
+                        handTracking,pointerControl.meshes[index])?.let { index to it }
             }.toMap() else emptyMap()
             guideRenderer?.let { renderer ->
-                runCatching { renderer.update(root, grabs.mapNotNull { (index,grab) -> grab.guide ?: previews[index] })
+                runCatching { renderer.update(root, grabs.mapNotNull { (index,grab) -> workspace.monitorAt(index)?.let {grab.displayGuide(it,pointerControl.meshes[index])} ?: previews[index] })
                     // The desktop cursor is the target marker; avoid a second dot over it.
                     renderer.updatePointer(root,null,handTracking.points["HEAD"],handTracking.unitsPerMeter)
                     val draw: ()->Unit = {
                         val contactsNow=pointerControl.hands(grips.keys,SystemClock.uptimeMillis(),aimPoses).filterValues {connection.desktopPoint(it.monitor,it.u,it.v)!=null}
-                        val show=contactsNow.size==1 && palmPanel==null && !monitorGrab && !nativeManipulation
+                        val show=contactsNow.isNotEmpty() && handPreviewMonitor(contactsNow)==null && palmPanel==null && !monitorGrab && !nativeManipulation
                         val rays=(if(show) contactsNow else emptyMap()).mapNotNull { (side,hit) ->
                             val origin=grips[side]; val placement=workspace.monitorAt(hit.monitor)
-                            if(origin==null || placement==null) null else side to (origin to transformPoint(placement.pose,hit.local))
+                            if(origin==null || placement==null) null else {
+                                val local=pointerSurfacePoint(hit,placement.physicalWidthM,placement.physicalHeightM,pointerControl.meshes[hit.monitor])
+                                val contact=transformPoint(placement.pose,local)
+                                side to (origin to visibleGrabContact(contact,handTracking.points["VIEWER"] ?: handTracking.points["HEAD"],handTracking.unitsPerMeter))
+                            }
                         }.toMap()
                         renderer.updateRays(root,rays,handTracking.points["VIEWER"] ?: handTracking.points["HEAD"],handTracking.unitsPerMeter,true)
                     }
@@ -788,10 +856,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 note = "Room anchor is not available on this headset yet. The monitors still connect without it."
             },
             onOpenWorkspace = { session?.scene?.requestFullSpace();toggleDisplays() },
-            onReset = {
-                workspace = workspace.reset(monitors, store)
-                followGeneration += 1
-            },
+            onReset = { resetDesk() },
             headLocked = following,
             latchedFollow = latchedFollow,
             gestureNote = gestureNote,
@@ -894,12 +959,15 @@ private fun DeskContent(
         var moveBefore by remember(index) { mutableStateOf<Pose?>(null) }
         var nativeGeometryPending by remember(index) { mutableStateOf(false) }
         var nativeResizeStartWidth by remember(index) { mutableStateOf(1f) }
+        var nativeResizeStartHeight by remember(index) { mutableStateOf(1f) }
         val videoSurface = remember(index) { AtomicReference<Surface?>(null) }
         val warp = remember(index, session) { MonitorWarp() }
         val systemControls=remember(index,session) { MonitorSystemControls() }
-        DisposableEffect(systemControls) { onDispose { systemControls.close() } }
+        DisposableEffect(systemControls) { onDispose { systemControls.close();pointerControl.nativeManipulation(index,false) } }
+        var frozenMonitor by remember(index) { mutableStateOf<FrozenMonitor?>(null) }
         LaunchedEffect(index, session) {
             val current = session ?: return@LaunchedEffect
+            var grabProjectionAt=0L
             while (isActive) {
                 delay(20)
                 if(!current.lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) { delay(100);continue }
@@ -914,8 +982,17 @@ private fun DeskContent(
                     }
                     // Freeze before the platform DOWN arrives: replacing a native canvas while
                     // the user starts pinching can cancel its input acquisition.
-                    warp.update(current, root, handTracking.points["VIEWER"] ?: handTracking.points["HEAD"], screen, file.sphericalWarp,
-                        hands.busy || (file.sphericalWarp && handTracking.pinched.isNotEmpty()),forceUpdate=!hands.busy && (nativeGeometryPending || !warp.matchesSize(screen)))
+                    connection.presentation().let {warp.presentation(it.rects,it.spacing)}
+                    val projectionNow=SystemClock.uptimeMillis()
+                    if(!hands.engaged || projectionNow-grabProjectionAt>=100) {
+                        warp.update(current, root, handTracking.points["VIEWER"] ?: handTracking.points["HEAD"], screen, file.sphericalWarp,
+                            (hands.busy && !hands.engaged) || nativeMove || nativeResize || handTracking.pointerHeld,
+                            forceUpdate=(hands.engaged || !hands.busy) && (nativeGeometryPending || !warp.matchesSize(screen)),
+                            viewDirection=handTracking.points["VIEW_DIRECTION"],
+                            freezeProjection=(hands.busy && !hands.engaged) || nativeMove || nativeResize || handTracking.pointerHeld)
+                        grabProjectionAt=projectionNow
+                    }
+                    frozenMonitor?.update(screen,warp.mesh)
                     warp.syncCurvedInput(current)
                     // Collider creation suspends: a newer resize event may arrive while awaiting it.
                     // Clear the pending update only after matching the latest canonical size.
@@ -928,15 +1005,19 @@ private fun DeskContent(
                         if(event.resizeState==androidx.xr.scenecore.ResizeEvent.ResizeState.START) {
                             if(hands.busy) hands.cancel()
                             nativeResizeStartWidth=existing.physicalWidthM
+                            nativeResizeStartHeight=existing.physicalHeightM
                             nativeResize=true; onManipulate(true)
                         }
-                        if(!nativeResize || !factor.isFinite() || factor<=0f) return@update
+                        if(!nativeResize) return@update
                         nativeGeometryPending=true
-                        val ratio=existing.physicalHeightM/existing.physicalWidthM
-                        val width=(nativeResizeStartWidth*factor).coerceIn(maxOf(.28f,.16f/ratio),minOf(2.4f,1.5f/ratio))
                         val end=event.resizeState==androidx.xr.scenecore.ResizeEvent.ResizeState.END
-                        onWorkspace(latest.value.monitorPlaced(index,existing.copy(physicalWidthM=width,physicalHeightM=width*ratio),store,end))
-                        if(end) { nativeResize=false; onManipulate(false) }
+                        val size=resizeDimensions(nativeResizeStartWidth,nativeResizeStartHeight,factor)
+                        // END must always release ownership, even if the SDK's final size is invalid.
+                        if(end) {nativeResize=false;onManipulate(false)}
+                        if(size!=null || end) {
+                            val next=size?.let {existing.copy(physicalWidthM=it.first,physicalHeightM=it.second)} ?: existing
+                            onWorkspace(latest.value.monitorPlaced(index,next,store,end))
+                        }
                     },onMove={ phase,pose ->
                         if(!handInputNow.value || hands.engaged) { nativeMove=false; return@update }
                         val sample=pose.toWorkspacePose()
@@ -951,7 +1032,9 @@ private fun DeskContent(
                         onWorkspace(latest.value.monitorPlaced(index,next,store,end))
                         if(end) { nativeMove=false;moveBefore=null;nativeGeometryPending=true;onManipulate(false) }
                     })
+                    pointerControl.nativeManipulation(index,systemControls.isManipulating)
                     pointerControl.meshes[index] = warp.mesh
+                    connection.projection(index,null) // Geometry projection uses the original streamed pixels.
                     warp.outputSurface?.let { display ->
                         if (videoSurface.get() !== display) {
                             videoSurface.set(display)
@@ -964,16 +1047,15 @@ private fun DeskContent(
                 }
             }
         }
-        var frozenMonitor by remember(index) { mutableStateOf<FrozenMonitor?>(null) }
         LaunchedEffect(hands.engaged, session) {
             val current = session ?: return@LaunchedEffect
             if (!hands.engaged) return@LaunchedEffect
             val surface = videoSurface.get() ?: return@LaunchedEffect
             var frozen: FrozenMonitor? = null
             try {
-                frozen = FrozenMonitor.create(current, surface, placement.pixelWidth, placement.pixelHeight, hands.frozenMesh)
+                frozen = FrozenMonitor.create(current, surface, placement.pixelWidth, placement.pixelHeight, hands.frozenMesh,dynamic=latest.value.sphericalWarp)
                 val latestPlacement = latest.value.monitorAt(index) ?: return@LaunchedEffect
-                frozen.update(latestPlacement)
+                frozen.update(latestPlacement,warp.mesh)
                 frozenMonitor = frozen
                 Log.i("Floatdesk", "frozen native monitor active index=$index")
                 awaitCancellation()
@@ -985,7 +1067,7 @@ private fun DeskContent(
                 frozen?.close()
             }
         }
-        frozenMonitor?.let { frozen -> SideEffect { frozen.update(placement) } }
+        frozenMonitor?.let { frozen -> SideEffect { frozen.update(placement,warp.mesh) } }
 
         val inputPolicy = remember(index) {
                 object : InteractionPolicy {
@@ -1196,11 +1278,11 @@ private fun WorkspaceFile.monitorAt(index: Int): MonitorPlacement? {
     return layouts[activeLayout]?.getOrNull(index)
 }
 
-private fun WorkspaceFile.reset(monitors: List<MonitorHello>, store: WorkspaceStore): WorkspaceFile {
+private fun WorkspaceFile.reset(monitors: List<MonitorHello>, store: WorkspaceStore,viewer:Pose,angles:FloatArray,units:Float): WorkspaceFile {
     if (monitors.isEmpty()) return this
     val nextLayouts = layouts.toMutableMap()
-    nextLayouts[activeLayout] = deskLayout(monitors.map { Triple(it.name, it.width, it.height) })
-    val next = copy(layouts = nextLayouts, control = PanelPlacement())
+    nextLayouts[activeLayout] = fitDesktopInView(deskLayout(monitors.map { Triple(it.name, it.width, it.height) }),viewer,angles[0],angles[1],units,sphericalWarp)
+    val next = copy(layouts = nextLayouts, control = PanelPlacement(pose=Pose(transformPoint(viewer,floatArrayOf(0f,-.55f*units,-1f*units)),viewer.rotation.copyOf())),viewerReference=viewer)
     store.save(next)
     return next
 }
@@ -1249,10 +1331,11 @@ private class PinchMemory {
             Log.w("Floatdesk","native move discontinuity ignored")
             return placement
         }
+        val size=resizeDimensions(placement.physicalWidthM,placement.physicalHeightM,factor) ?: return placement
         return placement.copy(
             pose = nativeRelativePose(before,sample,placement.pose),
-            physicalWidthM = (placement.physicalWidthM*factor).coerceIn(.28f,2.4f),
-            physicalHeightM = (placement.physicalHeightM*factor).coerceIn(.16f,1.5f),
+            physicalWidthM = size.first,
+            physicalHeightM = size.second,
         )
     }
 }
@@ -1407,210 +1490,6 @@ private fun openViewpoint(session: androidx.xr.runtime.Session): RenderViewpoint
 }
 
 /** One coherent joint sample, expressed in the actual Compose root. */
-private class GrabTracking {
-    val points = mutableMapOf<String, FloatArray>()
-    val pinched = mutableSetOf<String>()
-    var unitsPerMeter = 1f
-    var nowMs = 0L
-}
-
-/** A virtual monitor held between the hands, with a fixed similarity mapping to the real one. */
-private class TwoHandState {
-    var engaged by mutableStateOf(false)
-        private set
-    var guide: GrabGuide? = null
-        private set
-    var frozenMesh: MonitorMesh? = null
-        private set
-    val bothDown get() = hands.size == 2
-    val busy get() = hands.isNotEmpty() || engaged
-    val blocksNative get() = busy // Rearming the two-point gesture must not disable the handles.
-    private data class Grip(val local: FloatArray)
-    private val hands = mutableMapOf<String, Grip>()
-    private val released = mutableSetOf<String>()
-    private var needsRelease = false
-    private var base: MonitorPlacement? = null
-    private var last: MonitorPlacement? = null
-    private var startLeft = floatArrayOf(0f, 0f, 0f)
-    private var startRight = floatArrayOf(0f, 0f, 0f)
-    private var worldLeft = floatArrayOf(0f, 0f, 0f)
-    private var worldRight = floatArrayOf(0f, 0f, 0f)
-    private var alignment = floatArrayOf(0f, 0f, 0f, 1f)
-    private var gain = 1f
-    private var lastSeen = 0L
-    private var began = 0L
-    private var openSince: Long? = null
-    private var previousLeft: FloatArray? = null
-    private var previousRight: FloatArray? = null
-
-    fun cancel() {
-        hands.clear(); engaged = false; base = null; guide = null; frozenMesh = null
-        needsRelease = true; released.clear(); openSince = null
-    }
-
-    private fun rearm(tracking: GrabTracking) {
-        if (listOf("LEFT", "RIGHT").all { tracking.points[it] != null && it !in tracking.pinched }) {
-            needsRelease = false; released.clear()
-        }
-    }
-
-    fun onEvent(event: SpatialInputEvent, current: MonitorPlacement, density: PixelDensity,
-                tracking: GrabTracking, mesh: MonitorMesh? = null, planarInput: Boolean = false, selectedHit: FloatArray? = null): MonitorPlacement? {
-        val side = event.pointerType.toString()
-        // Some runtimes end a two-hand sequence with DEFAULT, not LEFT/RIGHT.
-        if (event.action == InputEvent.Action.UP || event.action == InputEvent.Action.CANCEL) {
-            val result = if (engaged) last else null
-            if (!needsRelease) cancel()
-            else { hands.clear(); engaged = false; base = null; guide = null; frozenMesh = null }
-            if (side == "LEFT" || side == "RIGHT") released.add(side)
-            else released.addAll(listOf("LEFT", "RIGHT"))
-            if (released.size == 2) needsRelease = false
-            return result
-        }
-        if (event.action != InputEvent.Action.DOWN || side !in listOf("LEFT", "RIGHT")) return null
-        rearm(tracking)
-        if (needsRelease || engaged || tracking.points[side] == null) return null
-        // Only fresh DOWN hits select pixels. MOVE can never turn a rejected/pending pair into a grab.
-        val hit = selectedHit ?: event.hitPosition?.let { eventMeters(it, density) } ?: return null
-        val flat = if (mesh != null && !planarInput) mesh.unproject(hit) ?: return null else hit
-        val local = if (mesh != null && planarInput) mesh.project(flat) else hit
-        if (kotlin.math.abs(flat[0]) > current.physicalWidthM * 0.5f + 0.001f ||
-            kotlin.math.abs(flat[1]) > current.physicalHeightM * 0.5f + 0.001f) return null
-        if (mesh == null) local[2] = 0f
-        if (hands.isEmpty()) { began = tracking.nowMs; lastSeen = tracking.nowMs; frozenMesh = mesh }
-        hands[side] = Grip(local)
-        if (hands.size != 2) return null
-        val left = tracking.points["LEFT"]
-        val right = tracking.points["RIGHT"]
-        if (left == null || right == null) { cancel(); return null }
-        val leftLocal = hands.getValue("LEFT").local
-        val rightLocal = hands.getValue("RIGHT").local
-        val contactSpan = distance(leftLocal, rightLocal)
-        val handSpan = distance(left, right)
-        val minContact = maxOf(0.12f * tracking.unitsPerMeter, current.physicalWidthM * 0.18f)
-        if (contactSpan < minContact || handSpan < 0.09f * tracking.unitsPerMeter) {
-            Log.i("Floatdesk", "grab rejected: contactSpan=$contactSpan minimum=$minContact handSpan=$handSpan")
-            cancel(); return null
-        }
-        startLeft = left.copyOf(); startRight = right.copyOf()
-        worldLeft = transformPoint(current.pose, leftLocal)
-        worldRight = transformPoint(current.pose, rightLocal)
-        // This is exactly the scale/orientation that puts the same two pixels in the hands
-        // on a miniature copy. Freeze it for the gesture; do not continually change sensitivity.
-        gain = contactSpan / handSpan
-        alignment = quaternionBetween(subtract(right, left), subtract(worldRight, worldLeft))
-        previousLeft = left.copyOf(); previousRight = right.copyOf()
-        base = current; last = current; engaged = true
-        began = tracking.nowMs; lastSeen = tracking.nowMs; openSince = null
-        publishGuide(current, tracking)
-        Log.i("Floatdesk", "virtual monitor locked gain=$gain contactSpan=$contactSpan handSpan=$handSpan")
-        return null
-    }
-
-    fun advance(tracking: GrabTracking, current: MonitorPlacement): MonitorPlacement? {
-        rearm(tracking)
-        if (!busy) return null
-        if (tracking.nowMs - lastSeen >= 120) { cancel(); return null }
-        val left = tracking.points["LEFT"]
-        val right = tracking.points["RIGHT"]
-        val required = if (engaged) listOf("LEFT", "RIGHT") else hands.keys.toList()
-        if (required.any { tracking.points[it] == null }) {
-            if (tracking.nowMs - lastSeen >= 120) cancel()
-            return null // Never move using a mixture of fresh and stale hands.
-        }
-        lastSeen = tracking.nowMs
-        if (tracking.nowMs - began >= 100 && required.any { it !in tracking.pinched }) {
-            val opened = openSince
-            if (opened == null) openSince = tracking.nowMs
-            else if (tracking.nowMs - opened >= 40) cancel()
-            return null
-        }
-        openSince = null
-        if (!engaged || left == null || right == null) return null
-        if (distance(left, right) < 0.06f * tracking.unitsPerMeter ||
-            previousLeft?.let { distance(it, left) > 0.25f * tracking.unitsPerMeter } == true ||
-            previousRight?.let { distance(it, right) > 0.25f * tracking.unitsPerMeter } == true) {
-            cancel(); return null
-        }
-        previousLeft = left.copyOf(); previousRight = right.copyOf()
-        fun target(start: FloatArray, now: FloatArray, world: FloatArray): FloatArray {
-            val delta = subtract(now, start)
-            val mapped = rotateVector(alignment, delta[0] * gain, delta[1] * gain, delta[2] * gain)
-            return add(world, mapped)
-        }
-        val original = base ?: return null
-        val result = placeGrabbed(hands.getValue("LEFT").local, hands.getValue("RIGHT").local,
-            target(startLeft, left, worldLeft), target(startRight, right, worldRight),
-            current.pose.rotation, original.physicalWidthM, original.physicalHeightM, current)
-        if (result != null) {
-            last = result
-            publishGuide(result, tracking)
-        }
-        return result
-    }
-
-    private fun publishGuide(current: MonitorPlacement, tracking: GrabTracking) {
-        val original = base ?: return
-        val scale = current.physicalWidthM / original.physicalWidthM
-        val contacts = listOf("LEFT", "RIGHT").map { side ->
-            transformPoint(current.pose, hands.getValue(side).local, scale)
-        }
-        val inverse = floatArrayOf(-alignment[0], -alignment[1], -alignment[2], alignment[3])
-        fun miniature(world: FloatArray): FloatArray {
-            val delta = subtract(world, worldLeft)
-            val local = rotateVector(inverse, delta[0] / gain, delta[1] / gain, delta[2] / gain)
-            return add(startLeft, local)
-        }
-        val halfW = current.physicalWidthM / 2f
-        val halfH = current.physicalHeightM / 2f
-        val outline = frozenMesh?.outline?.map { miniature(transformPoint(current.pose, it, scale)) }
-        val corners = listOf(
-            floatArrayOf(-halfW, halfH, 0f), floatArrayOf(halfW, halfH, 0f),
-            floatArrayOf(halfW, -halfH, 0f), floatArrayOf(-halfW, -halfH, 0f),
-        ).map { miniature(transformPoint(current.pose, it)) }
-        guide = GrabGuide(corners, contacts, contacts.map { miniature(it) }, tracking.unitsPerMeter, tracking.points["HEAD"]?.copyOf(), outline ?: corners)
-    }
-}
-
-/**
- * One rigid transform of the screen. The two grabbed pixels are [localLeft]
- * and [localRight]. [targetLeft] and [targetRight] are where those pixels
- * have to be. Scale is the ratio of the two spans, rotation is the smallest
- * turn that maps one span onto the other, and the center is whatever puts
- * the first pixel on its target.
- */
-private fun placeGrabbed(
-    localLeft: FloatArray,
-    localRight: FloatArray,
-    targetLeft: FloatArray,
-    targetRight: FloatArray,
-    referenceRotation: FloatArray,
-    baseWidth: Float,
-    baseHeight: Float,
-    current: MonitorPlacement,
-): MonitorPlacement? {
-    val localSpan = subtract(localRight, localLeft)
-    val targetSpan = subtract(targetRight, targetLeft)
-    val localLength = distance(localLeft, localRight)
-    val targetLength = distance(targetLeft, targetRight)
-    if (localLength < 0.02f || targetLength < 0.02f) return null
-    // A similarity transform must preserve both endpoints. Size clamps here make them slide.
-    val scale = targetLength / localLength
-    val initialSpan = rotateVector(referenceRotation, localSpan[0], localSpan[1], localSpan[2])
-    // Transport the previous orientation, avoiding a roll flip when the span passes 180 degrees.
-    // Two endpoints do not constrain twist about their connecting line.
-    val turn = quaternionBetween(initialSpan, targetSpan)
-    val rotation = multiplyQuaternion(turn, referenceRotation)
-    val localMid = midpoint(localLeft, localRight)
-    val rotatedMid = rotateVector(rotation, localMid[0] * scale, localMid[1] * scale, localMid[2] * scale)
-    val center = subtract(midpoint(targetLeft, targetRight), rotatedMid)
-    return current.copy(
-        pose = Pose(center, rotation),
-        physicalWidthM = baseWidth * scale,
-        physicalHeightM = baseHeight * scale,
-    )
-}
-
 private fun gazePointerTarget(origin: FloatArray, direction: FloatArray, workspace: WorkspaceFile,
                               meshes: Map<Int, MonitorMesh?>): PointerTarget? {
     var best: PointerTarget? = null
@@ -1630,26 +1509,6 @@ private fun gazePointerTarget(origin: FloatArray, direction: FloatArray, workspa
     return best
 }
 
-private fun previewGrabGuide(placement: MonitorPlacement, left: FloatArray, right: FloatArray,
-                             tracking: GrabTracking, mesh: MonitorMesh?): GrabGuide? {
-    val handLeft=tracking.points["LEFT"] ?: return null
-    val handRight=tracking.points["RIGHT"] ?: return null
-    val contactSpan=distance(left,right); val handSpan=distance(handLeft,handRight)
-    if(contactSpan<maxOf(.12f*tracking.unitsPerMeter,placement.physicalWidthM*.18f) || handSpan<.09f*tracking.unitsPerMeter) return null
-    val worldLeft=transformPoint(placement.pose,left); val worldRight=transformPoint(placement.pose,right)
-    val gain=contactSpan/handSpan
-    val alignment=quaternionBetween(subtract(handRight,handLeft),subtract(worldRight,worldLeft))
-    val inverse=floatArrayOf(-alignment[0],-alignment[1],-alignment[2],alignment[3])
-    fun miniature(local: FloatArray): FloatArray {
-        val d=subtract(transformPoint(placement.pose,local),worldLeft)
-        return add(handLeft,rotateVector(inverse,d[0]/gain,d[1]/gain,d[2]/gain))
-    }
-    val w=placement.physicalWidthM/2f; val h=placement.physicalHeightM/2f
-    val corners=listOf(floatArrayOf(-w,h,0f),floatArrayOf(w,h,0f),floatArrayOf(w,-h,0f),floatArrayOf(-w,-h,0f)).map(::miniature)
-    return GrabGuide(corners,listOf(worldLeft,worldRight),listOf(handLeft,handRight),tracking.unitsPerMeter,
-        tracking.points["HEAD"],mesh?.outline?.map(::miniature) ?: corners)
-}
-
 /** Apply only the native gesture delta; native Start must not replace a saved monitor pose. */
 private fun nativeRelativePose(before: Pose, after: Pose, held: Pose): Pose {
     val inverse = floatArrayOf(-before.rotation[0],-before.rotation[1],-before.rotation[2],before.rotation[3])
@@ -1659,7 +1518,7 @@ private fun nativeRelativePose(before: Pose, after: Pose, held: Pose): Pose {
 }
 private fun dot4(a: FloatArray,b: FloatArray): Float = (0..3).sumOf { (a[it]*b[it]).toDouble() }.toFloat()
 
-private fun eventMeters(point: Vector3, pixelDensity: PixelDensity): FloatArray {
+internal fun eventMeters(point: Vector3, pixelDensity: PixelDensity): FloatArray {
     return floatArrayOf(
         pixelDensity.convertPixelsToMeters(point.x),
         pixelDensity.convertPixelsToMeters(point.y),
@@ -1678,7 +1537,7 @@ private fun screenLocal(pose: Pose, world: FloatArray): FloatArray {
     return rotateVector(inverse, delta[0], delta[1], delta[2])
 }
 
-private fun transformPoint(pose: Pose, local: FloatArray, scale: Float = 1f): FloatArray {
+internal fun transformPoint(pose: Pose, local: FloatArray, scale: Float = 1f): FloatArray {
     val rotated = rotateVector(pose.rotation, local[0] * scale, local[1] * scale, local[2] * scale)
     return floatArrayOf(
         pose.position.getOrElse(0) { 0f } + rotated[0],
@@ -1747,9 +1606,9 @@ private fun readHand(state: Hand.State,joints: Map<HandJointType,androidx.xr.run
     return HandRead(fist, open)
 }
 
-private fun dot(a: Vector3, b: Vector3): Float = a.x * b.x + a.y * b.y + a.z * b.z
+internal fun dot(a: Vector3, b: Vector3): Float = a.x * b.x + a.y * b.y + a.z * b.z
 
-private fun dot(a: FloatArray, b: FloatArray): Float = a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+internal fun dot(a: FloatArray, b: FloatArray): Float = a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 
 private fun Pose.toRuntimePose(): androidx.xr.runtime.math.Pose {
     return androidx.xr.runtime.math.Pose(
@@ -1770,7 +1629,7 @@ private fun androidx.xr.runtime.math.Pose.toWorkspacePose(): Pose {
     )
 }
 
-private fun distance(a: Vector3, b: Vector3): Float {
+internal fun distance(a: Vector3, b: Vector3): Float {
     val dx = a.x - b.x
     val dy = a.y - b.y
     val dz = a.z - b.z
@@ -1788,7 +1647,7 @@ private fun cursorBitmap(cursor: CursorView): Bitmap? {
 }
 
 /** Rotate a workspace-local offset by a quaternion stored as x, y, z, w. */
-private fun rotateVector(quaternion: FloatArray, x: Float, y: Float, z: Float): FloatArray {
+internal fun rotateVector(quaternion: FloatArray, x: Float, y: Float, z: Float): FloatArray {
     val qx = quaternion.getOrElse(0) { 0f }
     val qy = quaternion.getOrElse(1) { 0f }
     val qz = quaternion.getOrElse(2) { 0f }
@@ -1803,21 +1662,21 @@ private fun rotateVector(quaternion: FloatArray, x: Float, y: Float, z: Float): 
     )
 }
 
-private fun subtract(a: FloatArray, b: FloatArray): FloatArray =
+internal fun subtract(a: FloatArray, b: FloatArray): FloatArray =
     floatArrayOf(a[0] - b[0], a[1] - b[1], a[2] - b[2])
 
-private fun add(a: FloatArray, b: FloatArray): FloatArray =
+internal fun add(a: FloatArray, b: FloatArray): FloatArray =
     floatArrayOf(a[0] + b[0], a[1] + b[1], a[2] + b[2])
 
-private fun midpoint(a: FloatArray, b: FloatArray): FloatArray =
+internal fun midpoint(a: FloatArray, b: FloatArray): FloatArray =
     floatArrayOf((a[0] + b[0]) / 2f, (a[1] + b[1]) / 2f, (a[2] + b[2]) / 2f)
 
-private fun distance(a: FloatArray, b: FloatArray): Float {
+internal fun distance(a: FloatArray, b: FloatArray): Float {
     val d = subtract(a, b)
     return kotlin.math.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2])
 }
 
-private fun quaternionBetween(from: FloatArray, to: FloatArray): FloatArray {
+internal fun quaternionBetween(from: FloatArray, to: FloatArray): FloatArray {
     val f = normalize3(from)
     val t = normalize3(to)
     val cosine = dot(f, t).coerceIn(-1f, 1f)
@@ -1840,7 +1699,7 @@ private fun quaternionBetween(from: FloatArray, to: FloatArray): FloatArray {
     return floatArrayOf(cross[0] * factor, cross[1] * factor, cross[2] * factor, kotlin.math.cos(halfAngle))
 }
 
-private fun multiplyQuaternion(a: FloatArray, b: FloatArray): FloatArray {
+internal fun multiplyQuaternion(a: FloatArray, b: FloatArray): FloatArray {
     return floatArrayOf(
         a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
         a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
@@ -1849,13 +1708,13 @@ private fun multiplyQuaternion(a: FloatArray, b: FloatArray): FloatArray {
     )
 }
 
-private fun normalize3(value: FloatArray): FloatArray {
+internal fun normalize3(value: FloatArray): FloatArray {
     val length = kotlin.math.sqrt(value[0] * value[0] + value[1] * value[1] + value[2] * value[2])
     if (length < 1e-6f) return floatArrayOf(0f, 0f, 1f)
     return floatArrayOf(value[0] / length, value[1] / length, value[2] / length)
 }
 
-private fun normalize4(value: FloatArray): FloatArray {
+internal fun normalize4(value: FloatArray): FloatArray {
     val length = kotlin.math.sqrt(value[0] * value[0] + value[1] * value[1] + value[2] * value[2] + value[3] * value[3])
     if (length < 1e-6f) return floatArrayOf(0f, 0f, 0f, 1f)
     return floatArrayOf(value[0] / length, value[1] / length, value[2] / length, value[3] / length)

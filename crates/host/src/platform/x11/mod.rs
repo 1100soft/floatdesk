@@ -1,6 +1,7 @@
 //! X11/XCB host path: RandR 1.5 logical monitors, MIT-SHM capture, XDamage,
 //! and an XFixes cursor that is never burned into the video.
 
+mod arrange;
 mod capture;
 mod cursor;
 mod display;

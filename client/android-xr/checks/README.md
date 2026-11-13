@@ -130,3 +130,25 @@ Two Rust capture checks require explicit selection: `benchmark_full_vs_scaled_re
 ### Connected layouts and transparent presentation
 
 `screen_arrangement.py` also checks primary-rooted edge connectivity, bridge/corner rejection and inverse pointer mapping through visual screen insets. Rust monitor-pool tests validate move/resize/removal safeguards and repairs of externally disconnected configurations. `frozen_frame.py` verifies alpha-masked snapshots. `video_compositor_device.py` exercises actual EGL alpha output for holes, opaque black desktop pixels, spacing and redraws without a new decoded frame, plus existing orientation/overlay/decoder-idle checks. It does not open an Activity.
+
+Arrangement checks also cover overlap rejection, half-screen offset snaps, centered viewport transforms and room beyond the top/left edges. Host tests cover normalized top/left moves and desktop bounds.
+
+### Host capabilities and lowest-rate configuration
+
+`python3 scripts/check-display-worker.py` from the repository root uses private Xvfb and synthetic XRandR/KScreen commands. A deliberately slow, sub-Hz named-output operation must keep control heartbeats available, tolerate a same-ID retry, and report its actual low rate. The native compositor check also parses nine outputs and verifies that mask batches preserve both early and late screens. Setup bundle generation with nine outputs and shell/Python syntax checks do not execute privileged installers.
+
+`workspace_regressions.py` validates exact flat/curved mesh coverage holes, the full-coverage geometry fast path and viewer-relative restart translation/rotation with retained screen dimensions. `monitor_warp.py` explicitly requires opaque live video in both modes to catch the transparency-path beam regression. `video_compositor_device.py` also performs a real atomic save/reload of the viewer reference in an isolated temporary file. None of these checks launch an Activity or overwrite the user's workspace.
+
+Arrangement checks also verify the bounded 100 ms release history: live drag preview, release-jitter rejection, a held destination, and clearing between drags.
+
+`python3 checks/dynamic_projection.py /path/to/gradle/lib` checks actual vertex changes, constant sphere radius, straight viewed axes AND curved peripheral edges while facing left/right ends, a fixed center and non-rigid deformation, collider-triangle transform reconstruction, exact native-ray resolution and tracking recovery. `monitor_warp.py` checks decoder continuity, reused collider identity, disable/reparent/re-enable behavior and freeze/resume. `curved_resize.py` covers the dynamic behind-image frame and complete curved-perimeter containment. `frozen_frame.py` verifies dynamic snapshot geometry and the reusable shared-material triangle-grid asset. The offscreen device compositor/decoder checks do not validate native SceneCore node hit testing or prolonged app stability.
+
+`python3 checks/host_discovery.py /path/to/gradle/lib` reproduces asymmetric UDP reply routing with two loopback addresses and checks advertised-interface fallback, healthy-peer stability, expiry, unrelated-host isolation and disconnect reset. No real desktop layout is changed.
+
+`python3 checks/resize_beam.py /path/to/gradle/lib` checks retained UV contact reconstruction against current rendered dimensions across oversized curved/flat desktops, source-coordinate preservation and foreground ray depth. `curved_resize.py` additionally checks growing native bounds, uncapped aspect-preserving sizing and invalid final native proposals releasing resize ownership. `dynamic_projection.py` checks the recorded enlargement no longer crosses the obsolete 2.2-radian envelope prematurely.
+
+`surface_input.py` reproduces coarse native collider contacts inside the ideal sphere on large desktops and resolves them against actual video triangles using the event origin/direction. It explicitly counts cases rejected by the old 2% sphere tolerance. Gesture checks compile the extracted production grab module and shared binary pinch function; they cover large desktops, missed second native DOWN, delayed fresh input ticks, physical rearming and independent contacts on different monitors. `monitor_warp.py` covers transformed native input and source-mode ownership. Native hit delivery and visual compositor ordering still require headset validation.
+
+Frozen-frame checks also validate the deformable snapshot asset's 320 independently textured triangles, complete upright UV coverage, one embedded image/material, buffer bounds and bounded asset size. Gesture checks verify projected grab-marker positions without changing the rigid hand transform. Live and frozen projections use the same mesh, with the snapshot grid intentionally coarser to bound native-node updates.
+
+Workspace regressions also exercise viewer-centered reset fitting for portrait, normal and ultrawide desktops, flat/spherical modes, rotated/translating viewers, scaled scene units, empty layouts and unavailable FOV. They verify corner containment with the margin and unchanged pixel dimensions/aspect ratio.

@@ -9,6 +9,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.Surface
 import androidx.compose.runtime.mutableStateOf
+import dev.floatdesk.client.ViewProjection
 import dev.floatdesk.client.media.MonitorDecoder
 import dev.floatdesk.client.media.VideoAim
 import dev.floatdesk.client.media.ScreenPresentation
@@ -29,6 +30,7 @@ internal class DeskConnection(
 
     val displayState=mutableStateOf(Packet.MonitorStatus(0,true,0,0,"Checking available displays…"))
     val displayBusy=mutableStateOf(false)
+    val workspaceInfo=mutableStateOf<WorkspaceInfo?>(null)
     private val screenPresentation=AtomicReference(ScreenPresentation())
     private var screenSpacing=0f
     val reloading=mutableStateOf(false)
@@ -37,11 +39,14 @@ internal class DeskConnection(
     private val monitorSequence=AtomicInteger()
     private val monitorPending=AtomicInteger()
     private var currentMonitors=emptyList<MonitorHello>()
+    private val hostDiscovery=HostDiscovery()
+    private var lastAcceptedHello=0L
     private val activeSurfaces=ConcurrentHashMap<Int,Surface>()
     private val main = Handler(Looper.getMainLooper())
     private val assembler = CursorAssembler()
     @Volatile private var renderingActive=true
     private val decoders = HashMap<Int, MonitorDecoder>()
+    private val viewProjections=HashMap<Int,ViewProjection?>()
     private val pendingCursors = ConcurrentHashMap<Int, CursorView>()
     private val cursorSeq = AtomicInteger()
     private val pointerSeq = AtomicInteger()
@@ -75,7 +80,7 @@ internal class DeskConnection(
             control = DatagramSocket().apply { broadcast = true }
             beacon = DatagramSocket(47001).apply {
                 broadcast = true
-                soTimeout = 200
+                soTimeout = 1 // Beacon polling must not stall each control packet for 200 ms.
             }
         } catch (err: Exception) {
             opened.forEach { it.close() }
@@ -111,6 +116,7 @@ internal class DeskConnection(
         decoders.values.forEach { it.stop() }
         decoders.clear()
         currentMonitors=emptyList()
+        screenPresentation.set(ScreenPresentation())
         monitorPending.set(0)
         videoPending.set(false);decoderGeneration.incrementAndGet()
         videos.forEach { runCatching { it.close() } }
@@ -120,12 +126,14 @@ internal class DeskConnection(
         control = null
         beacon = null
         pendingRemote = null
+        hostDiscovery.clear();lastAcceptedHello=0L
         multicastLock?.let { if (it.isHeld) it.release() }
         multicastLock = null
         main.post {
             monitors.value = emptyList()
             cursors.value = emptyMap()
             displayBusy.value = false
+            workspaceInfo.value=null
             reloading.value=false
             status.value = "Disconnected"
         }
@@ -142,7 +150,7 @@ internal class DeskConnection(
         if(!monitorPending.compareAndSet(0,-1)) return
         val id=monitorSequence.incrementAndGet()
         monitorPending.set(id);displayBusy.value=true
-        val packet=Protocol.monitorCommand(id,action,index,width,height)
+        val packet=monitorCommand(id,action,index,width,height)
         handler.post { send(packet) }
         for(delay in listOf(300L,900L,1800L,3000L,5000L,8000L,12000L,18000L)) handler.postDelayed({ if(monitorPending.get()==id) send(packet) },delay)
         main.postDelayed({ if(monitorPending.get()==id) {
@@ -157,6 +165,12 @@ internal class DeskConnection(
 
     }
 
+    private fun monitorCommand(id:Int,action:Int,index:Int,width:Int,height:Int):ByteArray {
+        val info=workspaceInfo.value ?: return Protocol.monitorCommand(id,action,index,width,height)
+        val name=info.screens.getOrNull(index)?.name ?: ""
+        return Protocol.workspace(org.json.JSONObject().put("type","command").put("requestId",id).put("action",action).put("name",name).put("width",width).put("height",height).toString())
+    }
+
     @Synchronized
     fun attachSurface(index: Int, surface: Surface) {
         activeSurfaces[index]=surface
@@ -168,12 +182,15 @@ internal class DeskConnection(
     fun configurePresentation(spacing:Float) {
         screenSpacing=spacing
         val state=displayState.value
-        val value=if(currentMonitors.size>1) ScreenPresentation() else ScreenPresentation.from(state.screens,state.positions,spacing)
+        val value=if(currentMonitors.size>1) ScreenPresentation() else workspaceInfo.value?.let {info->ScreenPresentation.from(info.screens.map {it.width to it.height},info.screens.map {it.x to it.y},spacing)} ?: ScreenPresentation.from(state.screens,state.positions,spacing)
         screenPresentation.set(value);decoders.values.forEach {it.presentation(value)}
     }
+    fun presentation():ScreenPresentation=screenPresentation.get()
     fun desktopPoint(monitor:Int,u:Float,v:Float):Pair<Float,Float>? =
         if(monitors.value.size==1 && monitor==0) screenPresentation.get().desktopPoint(u,v) else u to v
 
+    @Synchronized
+    fun projection(index:Int,value:ViewProjection?) {viewProjections[index]=value;decoders[index]?.projection(value)}
     fun aimOverlay(index: Int,value: VideoAim) { decoders[index]?.overlay(value) }
 
     @Synchronized
@@ -191,6 +208,13 @@ internal class DeskConnection(
         var lastHello = 0L
         while (running) {
             pollBeacon()
+            val discoveryNow=android.os.SystemClock.elapsedRealtime()
+            val selected=hostDiscovery.select(pendingRemote,currentMonitors.isNotEmpty() && discoveryNow-lastAcceptedHello<5000,discoveryNow)
+            if(selected!=null && selected!=pendingRemote) {
+                Log.i("Floatdesk","Retrying host interface $pendingRemote -> $selected")
+                pendingRemote=selected
+                lastHello=0L
+            }
             val now = System.currentTimeMillis()
             if (pendingRemote == null && now - lastHello > 1000) {
                 val hello = Protocol.clientHello("floatdesk", 48000)
@@ -206,16 +230,22 @@ internal class DeskConnection(
                 val decoded = Protocol.decode(buffer.copyOf(incoming.length)) ?: continue
                 when (decoded) {
                     is Packet.HostHello -> {
-                        if(pendingRemote!=null && incoming.address!=pendingRemote?.address) continue
+                        if(pendingRemote!=null && (incoming.address!=pendingRemote?.address || incoming.port!=pendingRemote?.port)) continue
                         if (pendingRemote == null) {
-                            pendingRemote = InetSocketAddress(incoming.address, 47000)
+                            pendingRemote = InetSocketAddress(incoming.address, incoming.port)
                         }
+                        lastAcceptedHello=android.os.SystemClock.elapsedRealtime()
                         onHello(decoded, pendingRemote ?: InetSocketAddress(incoming.address, 47000))
                     }
                     is Packet.StreamState -> {if(incoming.address==pendingRemote?.address && incoming.port==pendingRemote?.port) main.post {reloading.value=decoded.reloading || videoPending.get()}}
                     is Packet.MonitorStatus -> {
                         if(incoming.address==pendingRemote?.address && incoming.port==pendingRemote?.port) main.post {
                             if((decoded.requestId==0 && monitorPending.get()==0) || (decoded.requestId!=0 && monitorPending.compareAndSet(decoded.requestId,0))) {displayBusy.value=false;displayState.value=decoded;configurePresentation(screenSpacing)}
+                        }
+                    }
+                    is Packet.Workspace -> {
+                        if(incoming.address==pendingRemote?.address && incoming.port==pendingRemote?.port) {
+                            WorkspaceInfo.parse(decoded.json)?.let {info->main.post {workspaceInfo.value=info;configurePresentation(screenSpacing)}}
                         }
                     }
                     is Packet.Cursor -> onCursor(decoded.fragment)
@@ -241,8 +271,10 @@ internal class DeskConnection(
             return
         }
         val decoded = Protocol.decode(buffer.copyOf(packet.length)) ?: return
-        if (decoded is Packet.Beacon && pendingRemote == null) {
+        if (decoded is Packet.Beacon) {
             val remote = InetSocketAddress(packet.address, decoded.listenPort)
+            hostDiscovery.observe(remote,decoded.name,android.os.SystemClock.elapsedRealtime())
+            if(pendingRemote!=null)return
             pendingRemote = remote
             val label = decoded.name.ifEmpty { packet.address.hostAddress ?: "computer" }
             main.post { status.value = "Found $label" }
@@ -257,6 +289,7 @@ internal class DeskConnection(
             if(!videoPending.get() && monitorPending.get()==0) main.post {reloading.value=false}
             return
         }
+        Log.i("Floatdesk","Host handshake from $remote: ${hello.monitors.size} video stream(s)")
         main.post {reloading.value=true}
         val sameFormat=hello.monitors.map {it.copy(ssrc=0)}==currentMonitors.map {it.copy(ssrc=0)} && decoders.isNotEmpty()
         if(sameFormat) {
@@ -276,6 +309,7 @@ internal class DeskConnection(
                 if(decoderGeneration.get()==generation && videoPending.compareAndSet(true,false)) main.post {reloading.value=false}
             },onNack={source,sequence->send(Protocol.videoNack(monitor.index,source,sequence))})
             decoder.presentation(if(hello.monitors.size>1) ScreenPresentation() else screenPresentation.get())
+            decoder.projection(viewProjections[monitor.index])
             activeSurfaces[monitor.index]?.let { decoder.attach(it) }
             decoder.punch(remote.address)
             decoder.setRenderingActive(renderingActive)

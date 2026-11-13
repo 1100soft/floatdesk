@@ -27,8 +27,16 @@ internal class MonitorSystemControls : AutoCloseable {
     private var movable: MovableComponent?=null
     private var generation=0L
     private var frameWidth=1f
+    private var frameMesh:MonitorMesh?=null
+    private var curvedFrame:ResizeFrameGeometry?=null
+    private var shapeWidth=Float.NaN
+    private var shapeHeight=Float.NaN
+    private var canonicalWidth=Float.NaN
+    private var canonicalHeight=Float.NaN
     private var resizeStartWidth: Float?=null
+    private var lastResizeFactor=1f
     private var moving=false
+    val isManipulating:Boolean get()=resizeStartWidth!=null || moving
     private var listener: ((ResizeEvent,Float)->Unit)?=null
     private var moveListener: ((SystemMovePhase,Pose)->Unit)?=null
 
@@ -40,9 +48,17 @@ internal class MonitorSystemControls : AutoCloseable {
         if(video==null || (!enabled && (resizeStartWidth!=null || moving))) { close();return }
         // Do not feed the app's changing geometry back into an active native controller.
         if(resizeStartWidth!=null || moving) return
-        val frame=mesh?.let(::curvedResizeFrame) ?: flatResizeFrame(width,height,viewer)
+        val frame=if(mesh!=null) {
+            if(frameMesh!==mesh || curvedFrame==null) {curvedFrame=curvedResizeFrame(mesh);frameMesh=mesh}
+            curvedFrame!!
+        } else flatResizeFrame(width,height,viewer)
         frameWidth=frame.width
         val padding=.02f*unitsPerMeter
+        val nextWidth=frame.width+2f*padding;val nextHeight=frame.height+2f*padding
+        val geometryChanged=!shapeWidth.isFinite() || !shapeHeight.isFinite() ||
+            kotlin.math.abs(shapeWidth-nextWidth)>maxOf(.00001f,kotlin.math.abs(nextWidth)*.0001f) ||
+            kotlin.math.abs(shapeHeight-nextHeight)>maxOf(.00001f,kotlin.math.abs(nextHeight)*.0001f)
+        val boundsChanged=geometryChanged || canonicalWidth!=width || canonicalHeight!=height
         if(entity==null) {
             val token=++generation
             val root=SurfaceEntity.create(session,shape=SurfaceEntity.Shape.Quad(FloatSize2d(frame.width+2f*padding,frame.height+2f*padding)),
@@ -54,10 +70,20 @@ internal class MonitorSystemControls : AutoCloseable {
             root.getSurface().unlockCanvasAndPost(canvas)
             val resize=ResizableComponent.create(session,resizeEventListener=java.util.function.Consumer { event ->
                 if(token==generation && !moving) {
-                    if(event.resizeState==ResizeEvent.ResizeState.START) resizeStartWidth=event.newSize.width.takeIf { it.isFinite() && it>0f } ?: frameWidth
+                    val startEvent=event.resizeState==ResizeEvent.ResizeState.START
+                    val end=event.resizeState==ResizeEvent.ResizeState.END
+                    if(startEvent) {resizeStartWidth=event.newSize.width.takeIf {it.isFinite() && it>0f} ?: frameWidth;lastResizeFactor=1f}
                     val start=resizeStartWidth
-                    if(start!=null && start>0f) listener?.invoke(event,event.newSize.width/start)
-                    if(event.resizeState==ResizeEvent.ResizeState.END) resizeStartWidth=null
+                    if(start!=null && start>0f) {
+                        val proposed=event.newSize.width/start
+                        val valid=proposed.isFinite() && proposed>0f
+                        if(valid)lastResizeFactor=proposed
+                        try {
+                            if(valid || startEvent || end) listener?.invoke(event,lastResizeFactor)
+                        } finally {
+                            if(end) {resizeStartWidth=null;shapeWidth=Float.NaN}
+                        }
+                    }
                 }
             })
             resize.affordanceSize=FloatSize3d(frame.width,frame.height,.001f)
@@ -85,21 +111,26 @@ internal class MonitorSystemControls : AutoCloseable {
         entity?.let {
             it.parent=video.parent;it.setPose(video.getPose().compose(Pose(offset,Quaternion.fromLookTowards(normal,up))))
             it.setScale(scale);it.setEnabled(enabled)
-            it.shape=SurfaceEntity.Shape.Quad(FloatSize2d(frame.width+2f*padding,frame.height+2f*padding))
+            if(geometryChanged) it.shape=SurfaceEntity.Shape.Quad(FloatSize2d(nextWidth,nextHeight))
         }
-        component?.let {
+        if(boundsChanged) component?.let {
             val x=frame.width/width;val y=frame.height/height
             it.minimumEntitySize=FloatSize3d(.28f*x,.16f*y,.001f)
-            it.maximumEntitySize=FloatSize3d(2.4f*x,1.5f*y,.001f)
+            // A two-hand grab can exceed the old 2.4 x 1.5 bounds. Never set a
+            // native maximum below the current frame; grow the next gesture's range.
+            it.maximumEntitySize=FloatSize3d(maxOf(10f*unitsPerMeter,frame.width*16f),maxOf(10f*unitsPerMeter,frame.height*16f),.001f)
             it.affordanceSize=FloatSize3d(frame.width,frame.height,.001f)
         }
-        movable?.size=FloatSize3d(frame.width+2f*padding,frame.height+2f*padding,.001f)
+        if(geometryChanged) movable?.size=FloatSize3d(nextWidth,nextHeight,.001f)
+        if(geometryChanged) {shapeWidth=nextWidth;shapeHeight=nextHeight};canonicalWidth=width;canonicalHeight=height
     }
 
     override fun close() {
         generation++;moving=false
+        frameMesh=null;curvedFrame=null
         component?.let { entity?.removeComponent(it) };movable?.let { entity?.removeComponent(it) }
         entity?.parent=null
         entity=null;component=null;movable=null;listener=null;moveListener=null;resizeStartWidth=null
+        shapeWidth=Float.NaN;shapeHeight=Float.NaN;canonicalWidth=Float.NaN;canonicalHeight=Float.NaN
     }
 }

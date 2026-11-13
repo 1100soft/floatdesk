@@ -6,8 +6,8 @@ import sys
 
 root = Path('/sys/kernel/config/vkms')
 count = int(sys.argv[1])
-if not 1 <= count <= 5:
-    raise SystemExit('Choose 1–5 virtual outputs')
+if count<1:
+    raise SystemExit('Choose a positive output count')
 if not root.is_dir():
     raise SystemExit('VKMS configfs unavailable; a compatible kernel and create_default_dev=0 are required')
 base = root / 'floatdesk'

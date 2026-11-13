@@ -19,44 +19,48 @@ import androidx.compose.ui.zIndex
 import kotlin.math.roundToInt
 
 @Composable
-internal fun ScreenArrangementEditor(sizes:List<Pair<Int,Int>>,positions:List<Pair<Int,Int>>,busy:Boolean,primary:Int=0,onMove:(Int,Int,Int)->Unit) {
+internal fun ScreenArrangementEditor(sizes:List<Pair<Int,Int>>,positions:List<Pair<Int,Int>>,busy:Boolean,primary:Int=0,limits:Pair<Int,Int> = 32767 to 32767,onMove:(Int,Int,Int)->Unit) {
     if(sizes.isEmpty() || sizes.size!=positions.size) return
     val screens=remember(sizes,positions) {sizes.mapIndexed {i,(w,h)->DesktopScreen(positions[i].first,positions[i].second,w,h)}}
+    val dropHistory=remember(screens) {ArrangementDropHistory()}
     var dragging by remember(screens) {mutableIntStateOf(-1)}
     var raw by remember(screens) {mutableStateOf(0f to 0f)}
     var preview by remember(screens) {mutableStateOf<DesktopScreen?>(null)}
     var waitingForApply by remember(screens) {mutableStateOf(false)}
     LaunchedEffect(busy,screens) {if(!busy && waitingForApply) {dragging=-1;preview=null;waitingForApply=false}}
     val connected=connectedScreens(screens,primary)
-    val validPreview=preview?.let {dragging in screens.indices && canMoveScreen(screens,dragging,it,primary)} ?: true
+    val overlaps=overlappingScreens(screens)
+    val validPreview=preview?.let {dragging in screens.indices && canMoveScreen(screens,dragging,it,primary,limits)} ?: true
     val density=LocalDensity.current.density
-    Text("Drag screens; release to apply. Edges and centres snap into alignment.",color=Color.White,fontSize=13.sp)
+    if(overlaps.any {it}) Text("Overlapping screens: move them apart.",color=Color(0xFFFFB4AB),fontSize=13.sp)
     if(connected.any {!it}) Text("Disconnected screens: reconnect them to the main group.",color=Color(0xFFFFB4AB),fontSize=13.sp)
     BoxWithConstraints(Modifier.fillMaxWidth().height(220.dp).clipToBounds().background(Color(0xFF101720))) {
-        val extentW=(screens.maxOf {it.x+it.width}*1.2f).coerceAtLeast(1f)
-        val extentH=(screens.maxOf {it.y+it.height}*1.2f).coerceAtLeast(1f)
-        val scale=minOf((maxWidth.value-24)/extentW,196f/extentH).coerceAtLeast(.001f)
+        val viewport=arrangementViewport(screens,maxWidth.value,220f)
+        val scale=viewport.scale
         screens.forEachIndexed {index,screen ->
             val shown=if(dragging==index) preview ?: screen else screen
-            Box(Modifier.offset {IntOffset(((12+shown.x*scale)*density).roundToInt(),((12+shown.y*scale)*density).roundToInt())}
+            Box(Modifier.offset {IntOffset(((viewport.offsetX+shown.x*scale)*density).roundToInt(),((viewport.offsetY+shown.y*scale)*density).roundToInt())}
                 .size((shown.width*scale).dp,(shown.height*scale).dp)
                 .zIndex(if(dragging==index) 1f else 0f)
                 .background(if(dragging==index) Color(0xFF205976) else Color(0xFF293A50))
-                .border(2.dp,if(dragging==index && !validPreview || dragging!=index && !connected[index]) Color(0xFFFF6B6B) else if(dragging==index) Color.Cyan else Color(0xFF8DAAC6))
+                .border(2.dp,if(dragging==index && !validPreview || dragging!=index && (!connected[index] || overlaps[index])) Color(0xFFFF6B6B) else if(dragging==index) Color.Cyan else Color(0xFF8DAAC6))
                 .pointerInput(screens,busy,scale) {
                     if(!busy) detectDragGestures(
-                        onDragStart={dragging=index;raw=screen.x.toFloat() to screen.y.toFloat();preview=screen},
-                        onDragCancel={dragging=-1;preview=null},
-                        onDragEnd={
-                            val moved=preview
-                            if(moved!=null && canMoveScreen(screens,index,moved,primary) && (moved.x!=screen.x || moved.y!=screen.y)) {
-                                waitingForApply=true;onMove(index,moved.x,moved.y)
+                        orientationLock=null,
+                        onDragStart={_,start,_->dragging=index;raw=screen.x.toFloat() to screen.y.toFloat();preview=screen;dropHistory.begin(screen,start.uptimeMillis)},
+                        onDragCancel={dragging=-1;preview=null;dropHistory.clear()},
+                        onDragEnd={release->
+                            val moved=dropHistory.finish(release.uptimeMillis)
+                            dropHistory.clear()
+                            if(moved!=null && canMoveScreen(screens,index,moved,primary,limits) && (moved.x!=screen.x || moved.y!=screen.y)) {
+                                preview=moved;waitingForApply=true;onMove(index,moved.x,moved.y)
                             } else {dragging=-1;preview=null}
                         },
                         onDrag={change,delta->
                             change.consume()
                             raw=(raw.first+delta.x/density/scale) to (raw.second+delta.y/density/scale)
                             preview=snapScreen(screen.copy(x=raw.first.roundToInt(),y=raw.second.roundToInt()),screens.filterIndexed {i,_->i!=index},(14f/scale).roundToInt().coerceIn(24,160))
+                            preview?.let {dropHistory.record(it,change.uptimeMillis)}
                         },
                     )
                 },contentAlignment=Alignment.Center) {
@@ -64,5 +68,5 @@ internal fun ScreenArrangementEditor(sizes:List<Pair<Int,Int>>,positions:List<Pa
             }
         }
     }
-    preview?.let {Text(if(validPreview) "Screen ${dragging+1}: ${it.x}, ${it.y}" else "Keep screens connected through a shared edge.",color=if(validPreview) Color.Cyan else Color(0xFFFF6B6B),fontSize=12.sp)}
+    preview?.let {Text(if(validPreview) "Screen ${dragging+1}: ${it.x}, ${it.y}" else "Screens must share an edge without overlapping.",color=if(validPreview) Color.Cyan else Color(0xFFFF6B6B),fontSize=12.sp)}
 }

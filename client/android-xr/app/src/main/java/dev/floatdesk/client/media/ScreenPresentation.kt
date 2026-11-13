@@ -19,7 +19,7 @@ internal data class ScreenPresentation(val rects:FloatArray=floatArrayOf(0f,0f,1
             val width=sizes.indices.maxOf {positions[it].first+sizes[it].first}-left
             val height=sizes.indices.maxOf {positions[it].second+sizes[it].second}-top
             if(width<=0 || height<=0) return ScreenPresentation(spacing=spacing)
-            val rects=sizes.indices.take(6).flatMap {i->
+            val rects=sizes.indices.flatMap {i->
                 val (x,y)=positions[i];val (w,h)=sizes[i]
                 listOf((x-left).toFloat()/width,(y-top).toFloat()/height,(x+w-left).toFloat()/width,(y+h-top).toFloat()/height)
             }.toFloatArray()

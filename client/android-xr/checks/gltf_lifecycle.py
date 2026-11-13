@@ -12,6 +12,11 @@ stubs='''
 internal class Session
 internal class MonitorMesh(val width:Float=1f,val height:Float=1f)
 internal class Vector3(val x:Float,val y:Float,val z:Float)
+internal class Quaternion(val x:Float,val y:Float,val z:Float,val w:Float)
+internal class Pose(val position:Vector3,val rotation:Quaternion)
+internal data class InteractionPatch(val center:FloatArray=floatArrayOf(0f,0f,0f),val rotation:FloatArray=floatArrayOf(0f,0f,0f,1f),val scale:FloatArray=floatArrayOf(1f,1f),val childRotation:FloatArray=floatArrayOf(0f,0f,0f,1f))
+internal fun interactionPatches(mesh:MonitorMesh,columns:Int=12,rows:Int=8)=List(columns*rows*2){InteractionPatch()}
+internal fun interactionGridGlb(pixel:ByteArray)=pixel
 internal class InputEvent
 internal class InteractableComponent
 internal enum class SpatialPointerIcon { NONE }
@@ -35,8 +40,8 @@ internal class GltfModel {
  }
 }
 internal class GltfModelEntity(val model:GltfModel):Entity() {
- class Node {var localScale=Vector3(1f,1f,1f)}
- val nodes=listOf(Node())
+ class Node {var localScale=Vector3(1f,1f,1f);var localPose=Pose(Vector3(0f,0f,0f),Quaternion(0f,0f,0f,1f))}
+ val nodes=List(384){Node()}
  init {model.instances++}
  override fun dispose(){super.dispose();model.instances--}
  fun removeComponent(c:Any){}

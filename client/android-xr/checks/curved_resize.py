@@ -107,23 +107,35 @@ fun main() {
     fun near(a:Float,b:Float)=check(kotlin.math.abs(a-b)<.00002f) { "$a != $b" }
     for((label,mesh) in listOf(
         "left-middle" to MonitorMesh(1.4094946f,.8809341f,floatArrayOf(-.3641987f,-.037884656f,1.4811001f)),
-        "bottom" to MonitorMesh(1.1701335f,.73133343f,floatArrayOf(.00200787f,-.6641777f,1.0608732f)))) {
+        "bottom" to MonitorMesh(1.1701335f,.73133343f,floatArrayOf(.00200787f,-.6641777f,1.0608732f)),
+        "dynamic" to MonitorMesh(1.4f,.88f,floatArrayOf(-.36f,-.04f,1.48f),focus=floatArrayOf(.7f,0f)))) {
         val frame=curvedResizeFrame(mesh)
         val oldMin=(0 until mesh.positions.size/3).minOf { mesh.positions[it*3+2] }
         val minGap=(0 until mesh.positions.size/3).minOf { vertex ->
             dot(FloatArray(3){mesh.positions[vertex*3+it]-frame.center[it]},frame.normal)
         }
-        check(oldMin<-.01f && minGap>0f)
+        check(minGap>0f)
+        if(label!="dynamic") check(oldMin<-.01f)
         val sample=if(label=="left-middle") floatArrayOf(-mesh.width*.25f,0f,0f) else floatArrayOf(0f,-mesh.height*.25f,0f)
-        check(mesh.project(sample)[2]<0f)
+        if(label!="dynamic") check(mesh.project(sample)[2]<0f)
         for(x in listOf(-.5f,.5f)) for(y in listOf(-.5f,.5f)) {
             val corner=mesh.project(floatArrayOf(x*mesh.width,y*mesh.height,0f))
-            val frameCorner=FloatArray(3){frame.center[it]+x*frame.width*mesh.tangentX[it]+y*frame.height*mesh.tangentY[it]}
+            val frameCorner=FloatArray(3){frame.center[it]+x*frame.width*mesh.frameTangentX[it]+y*frame.height*mesh.frameTangentY[it]}
             val imageRay=unit(FloatArray(3){corner[it]-mesh.eye[it]})
             val handleRay=unit(FloatArray(3){frameCorner[it]-mesh.eye[it]})
-            for(i in 0..2) near(imageRay[i],handleRay[i])
+            if(label!="dynamic") for(i in 0..2) near(imageRay[i],handleRay[i])
         }
-        println("$label: old plane min z=$oldMin; aligned frame minimum clearance=$minGap; all four corner rays match")
+        if(label=="dynamic") {
+            for(i in mesh.positions.indices step 3) {
+                val ray=FloatArray(3){mesh.positions[i+it]-mesh.eye[it]}
+                val t=dot(FloatArray(3){frame.center[it]-mesh.eye[it]},frame.normal)/dot(ray,frame.normal)
+                check(t>0f)
+                val onPlane=FloatArray(3){mesh.eye[it]+ray[it]*t-frame.center[it]}
+                check(kotlin.math.abs(dot(onPlane,mesh.tangentX))<=frame.width*.5f+.00001f)
+                check(kotlin.math.abs(dot(onPlane,mesh.tangentY))<=frame.height*.5f+.00001f)
+            }
+        }
+        println("$label: aligned backing frame clearance=$minGap; full dynamic outline is contained")
     }
     val mesh=MonitorMesh(.8f,.5f,floatArrayOf(-.2f,-.3f,1.2f)); val frame=curvedResizeFrame(mesh)
     val session=Session();val parent=Entity();val video=Entity().also { it.parent=parent;it.pose=Pose(Vector3(.2f,0f,0f));it.scale=.8f }
@@ -178,6 +190,33 @@ fun main() {
     update(enabled=false)
     check(active.parent==null && active.move==null && active.resize==null)
     handles.close()
+    val bigSession=Session();val bigHandles=MonitorSystemControls()
+    val initialWidth=3.328259f;val initialHeight=2.0801616f
+    val initialBig=MonitorMesh(initialWidth,initialHeight,floatArrayOf(0f,0f,1.887f),focus=floatArrayOf(0f,0f))
+    val initialBigFrame=curvedResizeFrame(initialBig)
+    var committed=initialWidth to initialHeight;var resizing=false
+    fun updateBig(m:MonitorMesh) = bigHandles.update(bigSession,video,m,m.width,m.height,m.eye,1f,true,onResize={e,f->
+        if(e.resizeState==ResizeEvent.ResizeState.START)resizing=true
+        resizeDimensions(initialWidth,initialHeight,f)?.let {committed=it}
+        if(e.resizeState==ResizeEvent.ResizeState.END)resizing=false
+    },onMove={_,_->})
+    updateBig(initialBig)
+    val bigRoot=bigSession.entities.single() as SurfaceEntity;val bigResize=bigRoot.resize!!
+    check(bigResize.maximumEntitySize.width>bigResize.affordanceSize.width)
+    check(bigResize.maximumEntitySize.height>bigResize.affordanceSize.height)
+    fun bigEvent(state:ResizeEvent.ResizeState,width:Float)=ResizeEvent(state,FloatSize3d(width,initialBigFrame.height,.001f))
+    bigResize.listener.accept(bigEvent(ResizeEvent.ResizeState.START,initialBigFrame.width))
+    bigResize.listener.accept(bigEvent(ResizeEvent.ResizeState.ONGOING,initialBigFrame.width*2))
+    bigResize.listener.accept(bigEvent(ResizeEvent.ResizeState.END,0f)) // A missing final proposal must retain the last valid size and release.
+    check(!resizing);near(committed.first,initialWidth*2);near(committed.second,initialHeight*2)
+    val finalBig=MonitorMesh(committed.first,committed.second,initialBig.eye,focus=floatArrayOf(0f,0f))
+    updateBig(finalBig)
+    check(bigResize.maximumEntitySize.width>bigResize.affordanceSize.width)
+    check(bigResize.maximumEntitySize.height>bigResize.affordanceSize.height)
+    check(resizeDimensions(8f,5f,2f)==(16f to 10f))
+    check(resizeDimensions(1f,1f,Float.NaN)==null)
+    bigHandles.close()
+    println("Passed: oversized desktop range, uncapped aspect-preserving final size and invalid END recovery")
     println("Passed: native backing rectangle in both modes, no app pose/size writes during active resize/move, projected flat corners and stale callback rejection")
     println("Passed: behind-image tangent frame, projected corner alignment, independent resize ownership, source scale factors, transform synchronization and stale callback rejection")
 }

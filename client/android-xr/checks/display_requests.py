@@ -7,7 +7,7 @@ import tempfile
 root=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
 protocol=(root/'net/Protocol.kt').read_text().split('\n',1)[1]
 source=(root/'net/DeskConnection.kt').read_text()
-method=source[source.index('    fun requestDisplays('):source.index('    @Synchronized\n    fun attachSurface')]
+method=source[source.index('    fun requestDisplays('):source.index('    private fun monitorCommand')]
 code=protocol+'''
 class State<T>(var value:T)
 class Handler {
@@ -31,6 +31,7 @@ internal class Connection {
  val displayState=State(Packet.MonitorStatus(0,true,0,0,""))
  val sent=mutableListOf<ByteArray>()
  fun send(packet:ByteArray){sent.add(packet)}
+ fun monitorCommand(id:Int,action:Int,index:Int,width:Int,height:Int)=Protocol.monitorCommand(id,action,index,width,height)
 '''+method+'''
 }
 fun main() {

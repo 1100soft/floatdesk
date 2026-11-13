@@ -6,13 +6,13 @@ import sys
 import tempfile
 
 folder = Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client'
-mesh = (folder/'MonitorMesh.kt').read_text().split('\n', 1)[1]
+mesh = (folder/'MonitorMesh.kt').read_text().split('\n', 1)[1]+'\n'+(folder/'VideoGeometry.kt').read_text().split('\n',1)[1]
 warp = (folder/'MonitorWarp.kt').read_text()
 warp = warp[warp.index('internal class MonitorWarp'):].replace('@SuppressLint("RestrictedApi")', '').replace('androidx.xr.runtime.math.IntSize2d','IntSize2d').replace('android.os.SystemClock','SystemClock')
 stubs = '''
 internal class Texture { fun close() {}; companion object { suspend fun create(session: Session,path: java.nio.file.Path)=Texture() } }
 internal class Surface
-internal object SystemClock { fun uptimeMillis()=0L }
+internal object SystemClock { var now=0L;fun uptimeMillis()=now }
 internal enum class SpatialPointerIcon { DEFAULT,NONE }
 internal class SpatialPointerComponent {
     var spatialPointerIcon=SpatialPointerIcon.DEFAULT
@@ -99,7 +99,8 @@ internal class SurfaceEntity(var shape: Shape): Entity() {
 }
 '''
 stubs += """
-internal class CurvedMonitorInput(val mesh: MonitorMesh,val entity: Entity) {
+internal class CurvedMonitorInput(var mesh: MonitorMesh,val entity: Entity) {
+    fun update(next:MonitorMesh) {mesh=next}
     fun close() { entity.parent=null }
     companion object {
         var last: CurvedMonitorInput? = null
@@ -121,10 +122,26 @@ suspend fun main() {
     val output = warp.attach(session,input.getSurface(),screen)
     val video = session.scene.entities.single { it.getSurface() === output }
     check(video === input && output === input.getSurface())
+    check(input.mediaBlendingMode==SurfaceEntity.MediaBlendingMode.OPAQUE)
     check(input.enabled && input.getAlpha() == .8f)
+    warp.update(session,root,floatArrayOf(0f,0f,0f),screen,false,false)
+    val flatPose=input.getPose();val flatShape=input.shape
+    warp.update(session,root,floatArrayOf(0f,0f,0f),screen,false,false,viewDirection=floatArrayOf(.8f,0f,-1f))
+    check(warp.mesh==null && input.getPose()==flatPose && input.shape===flatShape)
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false)
+    val stableOutput=warp.outputSurface
+    SystemClock.now=1000L
+    warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false,viewDirection=floatArrayOf(.1f,0f,-1f))
+    check(warp.mesh!!.focus!=null && warp.outputSurface===stableOutput)
+    val projected=warp.mesh
+    SystemClock.now=1200L
+    warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,true,viewDirection=floatArrayOf(-.2f,0f,-1f))
+    check(warp.mesh===projected) // Interaction freezes geometry despite changing view direction.
+    warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,true,forceUpdate=true,viewDirection=floatArrayOf(-.2f,0f,-1f))
+    check(warp.mesh===projected) // Forced canonical synchronization must not move projection focus.
     val curvedVideo=session.scene.entities.last()
     check(curvedVideo !== input && input.shape is SurfaceEntity.Shape.Quad)
+    check(curvedVideo.mediaBlendingMode==SurfaceEntity.MediaBlendingMode.OPAQUE)
     check(warp.outputSurface === curvedVideo.getSurface())
     val resizedScreen=screen.copy(physicalWidthM=.96f,physicalHeightM=.54f)
     val heldShape=curvedVideo.shape
@@ -167,6 +184,17 @@ suspend fun main() {
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false)
     warp.syncCurvedInput(session)
     val patch=CurvedMonitorInput.last!!
+    val fixedMesh=warp.mesh;val fixedShape=warp.displayEntity!!.shape
+    SystemClock.now+=1000L
+    warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false,viewDirection=floatArrayOf(.2f,0f,-1f))
+    warp.syncCurvedInput(session)
+    check(warp.mesh!==fixedMesh && warp.displayEntity!!.shape!==fixedShape && CurvedMonitorInput.last===patch && patch.mesh===warp.mesh)
+    check(warp.mesh!!.focus!=null) // View correction uses GPU pixels, not native geometry/model churn.
+    val beforeCorrection=warp.mesh
+    SystemClock.now+=1000L
+    warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false,viewDirection=floatArrayOf(-.2f,0f,-1f),freezeProjection=false)
+    warp.syncCurvedInput(session)
+    check(warp.mesh!==beforeCorrection && CurvedMonitorInput.last===patch && patch.mesh===warp.mesh)
     check(patch.entity.parent === session.scene.entities.last())
     check(input.primaryAlphaMaskTexture != null && input.component == null && !input.enabled)
     check(session.scene.entities.last().enabled)
@@ -178,7 +206,13 @@ suspend fun main() {
     check(events.size == 5 && events.last().hitPosition != null)
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,false,false)
     warp.syncCurvedInput(session)
-    check(patch.entity.parent == null && input.primaryAlphaMaskTexture == null && input.component === component && input.enabled)
+    check(!patch.entity.enabled && input.primaryAlphaMaskTexture == null && input.component === component && input.enabled)
+    SystemClock.now+=1000L
+    warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false,viewDirection=floatArrayOf(.2f,0f,-1f))
+    warp.syncCurvedInput(session)
+    check(CurvedMonitorInput.last===patch && patch.entity.enabled && patch.entity.parent===warp.displayEntity)
+    warp.update(session,root,floatArrayOf(0f,0f,0f),screen,false,false)
+    warp.syncCurvedInput(session)
     warp.close(); check(input.component == null && input.parent === root && input.enabled)
     warp.attach(session,input.getSurface(),screen,PixelDensity(),onEvent={})
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false)

@@ -15,6 +15,17 @@ fun main() {
  check(frame(.05f,.05f)==null)
  check(frame(.01f,.05f)==null);check(frame(.01f,.05f)==null);check(frame(.05f,.05f)==window)
  check(frame(.05f,.01f)==null);check(frame(.05f,.05f)==screen)
+ // The shared aiming context reserves two rays for grabbing in either interaction mode.
+ val pointer=PointerControl();val hit=PointerTarget(0,.5f,.5f,floatArrayOf(0f,0f,0f))
+ val preview=pointer.choose(false,null,mapOf("LEFT" to hit,"RIGHT" to hit),false,0)
+ check(preview.mode.reservesDesktop)
+ check(frame(.01f,.05f,blocked=preview.mode.reservesDesktop)==null)
+ check(frame(.05f,.05f,blocked=preview.mode.reservesDesktop)==null)
+ val single=pointer.choose(false,null,mapOf("LEFT" to hit),false,1)
+ check(!single.mode.reservesDesktop)
+ check(frame(.01f,.05f,blocked=single.mode.reservesDesktop)==null)
+ check(frame(.05f,.05f,blocked=single.mode.reservesDesktop)==window)
+ check(pointer.choose(false,null,emptyMap(),true,2).mode.reservesDesktop)
  // A resting index contact does not veto a new middle pinch.
  check(frame(.01f,.05f,false)==null);check(frame(.01f,.01f)==null);check(frame(.01f,.05f)==screen)
  // Opens while blocked rearm normally; no extra wide opening after the block ends.

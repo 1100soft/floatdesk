@@ -738,7 +738,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             val hoverHands = pointerControl.hands(grips.keys,handTracking.nowMs,aimPoses).filterValues {connection.desktopPoint(it.monitor,it.u,it.v)!=null}
             // Preview and acquisition share current validated surface UVs. Do not
             // require a second native DOWN after both physical pinches are already down.
-            if(!workspace.focusMode && listOf("LEFT","RIGHT").all {it in handTracking.pinched} && palmPanel==null) {
+            if(listOf("LEFT","RIGHT").all {it in handTracking.pinched} && palmPanel==null) {
                 val left=hoverHands["LEFT"];val right=hoverHands["RIGHT"]
                 if(left!=null && right!=null && left.monitor==right.monitor) {
                     val placement=workspace.monitorAt(left.monitor)
@@ -787,7 +787,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 connection.desktopPoint(hit.monitor,hit.u,hit.v)?.let{(u,v)->focusInfo.hover(u,v)}?.let{side to it}
             }.toMap() else emptyMap()
             val focusGate=buildList {
-                if(!workspace.mouseGestures)add("gestures off")
+                if(choice.mode.reservesDesktop)add("two-hand manipulation")
                 if(mouseSamples.isEmpty())add("hands unavailable")
                 if(displayControlsOpen)add("workspace panel")
                 if(palmPanel!=null)add("palm panel")
@@ -800,7 +800,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 Log.i("Floatdesk","focus input gate=${focusGate.ifEmpty{"open"}} thresholds=${workspace.pinchThresholds}")
                 lastFocusGate=focusGateKey
             }
-            val gestureBlocked=displayControlsOpen || choice.mode==PointerMode.PREVIEW || choice.mode==PointerMode.GRAB || palmPanel!=null
+            val gestureBlocked=displayControlsOpen || choice.mode.reservesDesktop || palmPanel!=null
             for(frame in pinchFrames.drain(handTracking.nowMs)) {
                 val samples=frame.samples.filterKeys { it in mouseSamples }.mapValues { (side,sample) ->
                     val basis=mouseSamples.getValue(side)
@@ -812,7 +812,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                         "mouse contact side=$side fingers=$contact indexMm=${sample.indexMetres*1000} middleMm=${sample.middleMetres*1000} accepted=${side in samples} blocked=$gestureBlocked sampleAge=${handTracking.nowMs-frame.at}")
                 }
                 val uncertain=quality.overlapping && quality.continuousOwner==null
-                val selected=focusGestures.update(workspace.focusMode && workspace.mouseGestures,
+                val selected=focusGestures.update(workspace.focusMode,
                     focusGate.isNotEmpty(),samples,focusHover)
                 if(selected!=null && connection.requestFocus(selected))pendingFocusMonitor=0
                 val mouse=mouseGestures.update(frame.at,workspace.mouseGestures && !workspace.focusMode,
@@ -847,7 +847,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 }
                 connection.aimOverlay(index,dev.floatdesk.client.media.VideoAim(segments.toFloatArray(),floatArrayOf(),maxOf(2f,placement.pixelWidth*.001f),.85f,colors.toFloatArray()))
             }
-            val previews = if (!workspace.focusMode && choice.mode == PointerMode.PREVIEW) hoverHands.values.groupBy { it.monitor }.mapNotNull { (index,points) ->
+            val previews = if (choice.mode == PointerMode.PREVIEW) hoverHands.values.groupBy { it.monitor }.mapNotNull { (index,points) ->
                 val left=hoverHands["LEFT"]?.takeIf { it.monitor == index }
                 val right=hoverHands["RIGHT"]?.takeIf { it.monitor == index }
                 val placement=workspace.monitorAt(index)
@@ -863,7 +863,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                     renderer.updatePointer(root,null,handTracking.points["HEAD"],handTracking.unitsPerMeter)
                     val draw: ()->Unit = {
                         val contactsNow=pointerControl.hands(grips.keys,SystemClock.uptimeMillis(),aimPoses).filterValues {connection.desktopPoint(it.monitor,it.u,it.v)!=null}
-                        val show=contactsNow.isNotEmpty() && (workspace.focusMode || handPreviewMonitor(contactsNow)==null) && palmPanel==null && !monitorGrab && !nativeManipulation
+                        val show=contactsNow.isNotEmpty() && handPreviewMonitor(contactsNow)==null && palmPanel==null && !monitorGrab && !nativeManipulation
                         val rays=(if(show) contactsNow else emptyMap()).mapNotNull { (side,hit) ->
                             val origin=grips[side]; val placement=workspace.monitorAt(hit.monitor)
                             if(origin==null || placement==null) null else {
@@ -1144,7 +1144,7 @@ private fun DeskContent(
                 object : InteractionPolicy {
                     override val isEnabled: Boolean = true
                     override fun onInputEvent(event: SpatialInputEvent) {
-                        if(!handInputNow.value || nativeResize || nativeMove || latest.value.focusMode) return // The explicit handle owns this sequence.
+                        if(!handInputNow.value || nativeResize || nativeMove) return // The explicit handle owns this sequence.
                         if (event.action == InputEvent.Action.CANCEL && frozenMonitor != null && hands.engaged) return
                         val file = latest.value
                         val existing = file.monitorAt(index) ?: return
@@ -1446,7 +1446,7 @@ private fun PalmControls(latched: Boolean, warped: Boolean, eyes: Boolean, gestu
                     PalmAction.SPACE -> "Workspace"
                     PalmAction.WARP -> sphericalActionLabel(warped)
                     PalmAction.EYES -> if (eyes) "Disable eye mouse" else "Enable eye mouse"
-                    PalmAction.GESTURES -> if (gestures) "Disable gestures" else "Enable gestures"
+                    PalmAction.GESTURES -> if (gestures) "Mouse gestures on" else "Mouse gestures off"
                     PalmAction.MODE -> if(focusMode) "Mouse mode" else "Focus mode"
                 }, style = TextStyle(color = Color.White), maxLines = 1, softWrap = false,
                     autoSize = TextAutoSize.StepBased(minFontSize = 4.sp, maxFontSize = 14.sp, stepSize = 0.25.sp))

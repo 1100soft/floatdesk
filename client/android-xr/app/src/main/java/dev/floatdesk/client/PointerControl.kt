@@ -2,7 +2,9 @@ package dev.floatdesk.client
 
 internal data class PointerTarget(val monitor: Int, val u: Float, val v: Float, val local: FloatArray)
 internal data class HandAimPose(val position: FloatArray,val rotation: FloatArray)
-internal enum class PointerMode { OFF, GAZE, HAND, PREVIEW, GRAB }
+internal enum class PointerMode { OFF, GAZE, HAND, PREVIEW, GRAB;
+    val reservesDesktop get()=this==PREVIEW || this==GRAB
+}
 internal data class PointerChoice(val mode: PointerMode, val target: PointerTarget? = null)
 
 /** Hover is observational: it never arms a pinch or changes the monitor pose. */

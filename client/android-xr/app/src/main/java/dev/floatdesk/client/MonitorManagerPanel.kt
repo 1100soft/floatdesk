@@ -47,7 +47,7 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
         Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             Button(enabled=!busy && available>0,onClick={connection.requestDisplays(1)}) {Text("Add screen")}
             Button(enabled=!busy,onClick={connection.requestDisplays()}) {Text("Refresh")}
-            Button(onClick={setup=!setup}) {Text("Screen setup")}
+            Button(onClick={setup=!setup}) {Text("Settings")}
         }
         info?.let {host->
             val pixels=sizes.sumOf {it.first.toLong()*it.second}
@@ -63,6 +63,7 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
         if(!state.ok) Text(state.message,color=Color(0xFFFFB4AB),fontSize=13.sp)
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(8.dp)) {
         if(setup) {
+            PinchSettings(pinches,onPinches)
             Text("Virtual screen setup",color=Color.White,fontSize=18.sp)
             Text("On the computer, run: python3 scripts/virtual-display-setup.py --check\nIf no pool is available, use --write-bundle to prepare installation files. A compatible VKMS configfs kernel, administrator setup and a graphical-session restart are required. Existing pools are reused; Floatdesk never rebuilds kernel topology during use.",color=Color(0xFFB8D9EA),fontSize=13.sp)
         }
@@ -71,7 +72,6 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
             Text(String.format(Locale.ROOT,"Visual spacing: %.1f%%",spacing*100),color=Color.White)
             androidx.compose.material3.Slider(value=spacing,onValueChange={onSpacing((it*1000).roundToInt()/1000f)},onValueChangeFinished=onSpacingFinished,valueRange=0f..0.15f,steps=149,enabled=!busy)
         }
-        PinchSettings(pinches,onPinches)
         sizes.forEachIndexed { index,(width,height) ->
             val managed=screens?.getOrNull(index)?.managed ?: ((state.owned and (1 shl index))!=0)
             val role=when(screens?.getOrNull(index)?.role ?: state.roles.getOrNull(index)) {3->"Built-in display";2->"Physical display";1->"Virtual display";else->"Display"}
@@ -112,14 +112,12 @@ private fun ResolutionChoice(current:Pair<Int,Int>,modes:List<Pair<Int,Int>>,ena
 
 @Composable
 private fun PinchSettings(value:PinchThresholds,onApply:(PinchThresholds)->Unit) {
-    var open by remember {mutableStateOf(false)}
-    Button(onClick={open=!open}){Text("Pinch settings")}
-    if(!open)return
+    Text("Pinch thresholds",color=Color.White,fontSize=18.sp)
     var leftIndex by remember(value){mutableStateOf(value.leftIndexMm.toString())}
     var rightIndex by remember(value){mutableStateOf(value.rightIndexMm.toString())}
     var leftMiddle by remember(value){mutableStateOf(value.leftMiddleMm.toString())}
     var rightMiddle by remember(value){mutableStateOf(value.rightMiddleMm.toString())}
-    Text("Contact distance (mm) · smaller is firmer",color=Color.White,fontSize=13.sp)
+    Text("Contact distance (mm) · larger is easier, smaller is firmer",color=Color.White,fontSize=13.sp)
     Row(horizontalArrangement=Arrangement.spacedBy(6.dp)) {
         androidx.compose.material3.OutlinedTextField(leftIndex,{leftIndex=it},Modifier.weight(1f),label={Text("Left index")},singleLine=true)
         androidx.compose.material3.OutlinedTextField(rightIndex,{rightIndex=it},Modifier.weight(1f),label={Text("Right index")},singleLine=true)

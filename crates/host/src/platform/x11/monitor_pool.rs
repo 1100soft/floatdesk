@@ -637,14 +637,34 @@ fn plasma_transaction(
     }
     Ok(())
 }
+fn resume_outputs(names: &str, outputs: &[Output]) -> BTreeSet<String> {
+    names
+        .split(',')
+        .filter(|name| {
+            outputs
+                .iter()
+                .any(|o| o.name == *name && virtual_name(name) && o.geometry.is_some())
+        })
+        .map(str::to_owned)
+        .collect()
+}
 pub struct MonitorPool {
     owned: BTreeSet<String>,
 }
 impl MonitorPool {
     pub fn new() -> Self {
-        Self {
-            owned: BTreeSet::new(),
-        }
+        // One-time explicit ownership transfer for a host upgrade that retains scanout.
+        // Worker placeholders must never adopt the same outputs a second time.
+        static RESUMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let owned = if !RESUMED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            std::env::var("FLOATDESK_RESUME_OUTPUTS")
+                .ok()
+                .map(|names| resume_outputs(&names, &query().unwrap_or_default()))
+                .unwrap_or_default()
+        } else {
+            BTreeSet::new()
+        };
+        Self { owned }
     }
     pub fn observer() -> Self {
         Self {
@@ -710,7 +730,8 @@ impl MonitorPool {
             .filter(|o| virtual_name(&o.name))
             .flat_map(|o| o.modes.iter().filter(|m| m.3 > 0.0).map(|m| (m.1, m.2)))
             .collect();
-        serde_json::json!({"type":"status","requestId":request_id,"busy":busy,"screens":screens,"available":available,"modes":modes,"availableMemoryBytes":mem,"cpuThreads":cpus,"recommendedPixels":estimated,"targetFps":fps,"estimate":"Rough planning estimate: available memory / 128 bytes per desktop pixel and 1 megapixel per CPU thread at 60 FPS. Advisory only; GPU, content and network can dominate.","desktopLimits":desktop_limits(),"setupRequired":!outputs.iter().any(|o|virtual_name(&o.name))})
+        let (window_focus, windows) = super::windows::observed_catalogue();
+        serde_json::json!({"type":"status","requestId":request_id,"busy":busy,"screens":screens,"windows":windows,"windowFocus":window_focus,"available":available,"modes":modes,"availableMemoryBytes":mem,"cpuThreads":cpus,"recommendedPixels":estimated,"targetFps":fps,"estimate":"Rough planning estimate: available memory / 128 bytes per desktop pixel and 1 megapixel per CPU thread at 60 FPS. Advisory only; GPU, content and network can dominate.","desktopLimits":desktop_limits(),"setupRequired":!outputs.iter().any(|o|virtual_name(&o.name))})
     }
     pub fn owned_mask(&self, sources: &[(String, MonitorRect)]) -> u8 {
         sources.iter().take(6).fold(0, |mask, (name, r)| {
@@ -1052,6 +1073,14 @@ impl Drop for MonitorPool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn explicit_resume_only_adopts_active_virtual_outputs() {
+        let rows=parse_outputs("eDP-1 connected primary 100x100+0+0\nVirtual-1-1 connected 100x100+100+0\nVirtual-1-2 connected\n");
+        assert_eq!(
+            resume_outputs("eDP-1,Virtual-1-1,Virtual-1-2,unknown", &rows),
+            BTreeSet::from(["Virtual-1-1".into()])
+        );
+    }
     #[test]
     fn rejects_orphans_corner_contacts_and_bridge_removal() {
         let rows=parse_outputs("eDP-1 connected primary 100x100+0+0\nVirtual-1-1 connected 100x100+100+0\nVirtual-1-2 connected 100x100+200+0\n");

@@ -1,5 +1,6 @@
 package dev.floatdesk.client.workspace
 
+import dev.floatdesk.client.PinchThresholds
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -25,6 +26,8 @@ internal data class MonitorPlacement(
     val pixelWidth: Int,
     val pixelHeight: Int,
     val preferredRefreshHz: Int,
+    val viewCenterU:Float=.5f,
+    val viewCenterV:Float=.5f,
 )
 
 internal data class PanelPlacement(
@@ -44,6 +47,8 @@ internal data class WorkspaceFile(
     val mouseGestures: Boolean = false,
     val screenSpacing:Float=0f,
     val viewerReference:Pose?=null,
+    val focusMode:Boolean=false,
+    val pinchThresholds:PinchThresholds=PinchThresholds.Default,
 )
 
 internal class WorkspaceStore(private val file: File) {
@@ -131,6 +136,8 @@ private fun encode(workspace: WorkspaceFile): JSONObject {
         .put("control", encodePanel(workspace.control))
         .put("spherical_warp", workspace.sphericalWarp)
         .put("eye_aiming", workspace.eyeAiming)
+        .put("focus_mode",workspace.focusMode)
+        .put("pinch_thresholds_mm",JSONArray(listOf(workspace.pinchThresholds.leftIndexMm,workspace.pinchThresholds.rightIndexMm,workspace.pinchThresholds.leftMiddleMm,workspace.pinchThresholds.rightMiddleMm)))
         .put("mouse_gestures", workspace.mouseGestures)
         .put("screen_spacing",workspace.screenSpacing.toDouble())
         .put("viewer_reference",workspace.viewerReference?.let {JSONObject().put("position",JSONArray(it.position.toList())).put("rotation",JSONArray(it.rotation.toList()))})
@@ -152,6 +159,7 @@ private fun encodeMonitor(monitor: MonitorPlacement): JSONObject {
         .put("pixel_width", monitor.pixelWidth)
         .put("pixel_height", monitor.pixelHeight)
         .put("preferred_refresh_hz", monitor.preferredRefreshHz)
+        .put("view_center_u",monitor.viewCenterU.toDouble()).put("view_center_v",monitor.viewCenterV.toDouble())
 }
 
 private fun decode(json: JSONObject): WorkspaceFile {
@@ -172,6 +180,10 @@ private fun decode(json: JSONObject): WorkspaceFile {
         layouts = layouts,
         control = json.optJSONObject("control")?.let { decodePanel(it) } ?: PanelPlacement(),
         sphericalWarp = json.optBoolean("spherical_warp", false),
+        focusMode=json.optBoolean("focus_mode",false),
+        pinchThresholds=json.optJSONArray("pinch_thresholds_mm")?.takeIf{it.length()==4}?.let {a->
+            PinchThresholds(a.optDouble(0,Double.NaN).toFloat(),a.optDouble(1,Double.NaN).toFloat(),a.optDouble(2,Double.NaN).toFloat(),a.optDouble(3,Double.NaN).toFloat()).takeIf{it.valid()}
+        } ?: PinchThresholds.Default,
         eyeAiming = json.optBoolean("eye_aiming", json.optBoolean("mouse_control", false)),
         mouseGestures = json.optBoolean("mouse_gestures", false),
         viewerReference=json.optJSONObject("viewer_reference")?.let {Pose(floatArray(it,"position",3),floatArray(it,"rotation",4))},
@@ -212,6 +224,8 @@ private fun decodeMonitor(json: JSONObject): MonitorPlacement {
         pixelWidth = json.optInt("pixel_width"),
         pixelHeight = json.optInt("pixel_height"),
         preferredRefreshHz = json.optInt("preferred_refresh_hz", 60),
+        viewCenterU=json.optDouble("view_center_u",.5).toFloat().takeIf{it.isFinite()}?.coerceIn(0f,1f) ?: .5f,
+        viewCenterV=json.optDouble("view_center_v",.5).toFloat().takeIf{it.isFinite()}?.coerceIn(0f,1f) ?: .5f,
     )
 }
 

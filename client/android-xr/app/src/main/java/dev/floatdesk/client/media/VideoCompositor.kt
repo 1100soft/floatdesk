@@ -15,9 +15,11 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** Normalized top-left video coordinates. At most sixteen projected ray segments and two contacts. */
-internal data class VideoAim(val segments: FloatArray = floatArrayOf(), val contacts: FloatArray = floatArrayOf(),
-                             val thickness: Float = 2f, val opacity: Float = .18f)
+/** Normalized top-left video coordinates. At most 256 colored border segments and two contacts. */
+internal data class VideoAim @JvmOverloads constructor(
+    val segments: FloatArray = floatArrayOf(), val contacts: FloatArray = floatArrayOf(),
+    val thickness: Float = 2f, val opacity: Float = .18f, val colors: FloatArray = floatArrayOf(),
+)
 
 /** One GPU pass keeps aiming decorations and live video in the same compositor layer. */
 internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
@@ -111,7 +113,8 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     fun overlay(value: VideoAim) {
         val before=aim
         if(before.thickness==value.thickness && before.opacity==value.opacity &&
-            before.segments.contentEquals(value.segments) && before.contacts.contentEquals(value.contacts)) return
+            before.segments.contentEquals(value.segments) && before.contacts.contentEquals(value.contacts) &&
+            before.colors.contentEquals(value.colors)) return
         aim=value
         if(!closed && redrawPosted.compareAndSet(false,true)) handler.post {
             redrawPosted.set(false)
@@ -201,37 +204,47 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         val overlay=aim
         if(overlay.segments.isEmpty() && overlay.contacts.isEmpty()) return
         val values=ArrayList<Float>()
-        fun vertex(x: Float,y: Float,alpha: Float) { values.add(x/width*2f-1f); values.add(1f-y/height*2f); values.add(alpha) }
-        fun line(ax: Float,ay: Float,bx: Float,by: Float,thickness: Float,alpha: Float) {
+        fun vertex(x: Float,y: Float,alpha: Float,red: Float,green: Float,blue: Float) {
+            values.add(x/width*2f-1f); values.add(1f-y/height*2f); values.add(alpha)
+            values.add(red); values.add(green); values.add(blue)
+        }
+        fun line(ax: Float,ay: Float,bx: Float,by: Float,thickness: Float,alpha: Float,red: Float,green: Float,blue: Float) {
             val dx=bx-ax; val dy=by-ay; val length=kotlin.math.hypot(dx,dy)
             if(length<.001f) return
             val ox=-dy/length*thickness*.5f; val oy=dx/length*thickness*.5f
-            vertex(ax+ox,ay+oy,alpha); vertex(ax-ox,ay-oy,alpha); vertex(bx+ox,by+oy,alpha)
-            vertex(bx+ox,by+oy,alpha); vertex(ax-ox,ay-oy,alpha); vertex(bx-ox,by-oy,alpha)
+            vertex(ax+ox,ay+oy,alpha,red,green,blue); vertex(ax-ox,ay-oy,alpha,red,green,blue); vertex(bx+ox,by+oy,alpha,red,green,blue)
+            vertex(bx+ox,by+oy,alpha,red,green,blue); vertex(ax-ox,ay-oy,alpha,red,green,blue); vertex(bx-ox,by-oy,alpha,red,green,blue)
         }
-        for(i in 0 until minOf(16,overlay.segments.size/4)) {
-            val n=i*4; line(overlay.segments[n]*width,overlay.segments[n+1]*height,
-                overlay.segments[n+2]*width,overlay.segments[n+3]*height,overlay.thickness,overlay.opacity)
+        for(i in 0 until minOf(256,overlay.segments.size/4)) {
+            val n=i*4
+            val red=if(overlay.colors.size>=i*3+3) overlay.colors[i*3] else .4236f
+            val green=if(overlay.colors.size>=i*3+3) overlay.colors[i*3+1] else .9777f
+            val blue=if(overlay.colors.size>=i*3+3) overlay.colors[i*3+2] else 1f
+            line(overlay.segments[n]*width,overlay.segments[n+1]*height,
+                overlay.segments[n+2]*width,overlay.segments[n+3]*height,overlay.thickness,overlay.opacity,red,green,blue)
         }
         for(i in 0 until minOf(2,overlay.contacts.size/2)) {
             val x=overlay.contacts[i*2]*width; val y=overlay.contacts[i*2+1]*height
             for(j in 0 until 24) {
                 val a=j*2.0*Math.PI/24; val b=(j+1)*2.0*Math.PI/24
                 line(x+kotlin.math.cos(a).toFloat()*5f,y+kotlin.math.sin(a).toFloat()*5f,
-                    x+kotlin.math.cos(b).toFloat()*5f,y+kotlin.math.sin(b).toFloat()*5f,2f,.4f)
+                    x+kotlin.math.cos(b).toFloat()*5f,y+kotlin.math.sin(b).toFloat()*5f,2f,.4f,.4236f,.9777f,1f)
             }
         }
+        if(values.isEmpty()) return
         val buffer=ByteBuffer.allocateDirect(values.size*4).order(ByteOrder.nativeOrder()).asFloatBuffer()
             .put(values.toFloatArray()).also { it.position(0) }
         GLES20.glUseProgram(inkProgram)
         GLES20.glEnable(GLES20.GL_BLEND); GLES20.glBlendFuncSeparate(GLES20.GL_SRC_ALPHA,GLES20.GL_ONE_MINUS_SRC_ALPHA,GLES20.GL_ONE,GLES20.GL_ONE_MINUS_SRC_ALPHA)
         val p=GLES20.glGetAttribLocation(inkProgram,"position")
         val a=GLES20.glGetAttribLocation(inkProgram,"alpha")
-        GLES20.glEnableVertexAttribArray(p); GLES20.glEnableVertexAttribArray(a)
-        buffer.position(0); GLES20.glVertexAttribPointer(p,2,GLES20.GL_FLOAT,false,12,buffer)
-        buffer.position(2); GLES20.glVertexAttribPointer(a,1,GLES20.GL_FLOAT,false,12,buffer)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES,0,values.size/3)
-        GLES20.glDisableVertexAttribArray(p); GLES20.glDisableVertexAttribArray(a); GLES20.glDisable(GLES20.GL_BLEND)
+        val c=GLES20.glGetAttribLocation(inkProgram,"color")
+        GLES20.glEnableVertexAttribArray(p); GLES20.glEnableVertexAttribArray(a); GLES20.glEnableVertexAttribArray(c)
+        buffer.position(0); GLES20.glVertexAttribPointer(p,2,GLES20.GL_FLOAT,false,24,buffer)
+        buffer.position(2); GLES20.glVertexAttribPointer(a,1,GLES20.GL_FLOAT,false,24,buffer)
+        buffer.position(3); GLES20.glVertexAttribPointer(c,3,GLES20.GL_FLOAT,false,24,buffer)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES,0,values.size/6)
+        GLES20.glDisableVertexAttribArray(p); GLES20.glDisableVertexAttribArray(a); GLES20.glDisableVertexAttribArray(c); GLES20.glDisable(GLES20.GL_BLEND)
     }
 
     private fun link(vertex: String,fragment: String): Int {
@@ -321,13 +334,16 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         private const val INK_VERTEX="""
             attribute vec2 position;
             attribute float alpha;
+            attribute vec3 color;
             varying float opacity;
-            void main() { gl_Position=vec4(position,0.0,1.0); opacity=alpha; }
+            varying vec3 ink;
+            void main() { gl_Position=vec4(position,0.0,1.0); opacity=alpha; ink=color; }
         """
         private const val INK_FRAGMENT="""
             precision mediump float;
             varying float opacity;
-            void main() { gl_FragColor=vec4(0.4236,0.9777,1.0,opacity); }
+            varying vec3 ink;
+            void main() { gl_FragColor=vec4(ink,opacity); }
         """
     }
 }

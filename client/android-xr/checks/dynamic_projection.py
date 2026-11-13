@@ -81,6 +81,11 @@ fun main() {
  check(kotlin.math.abs(nearWrap.radiansPerMeter-1f)<.00001f) // Beyond the old hemisphere cap, still before overlap.
  val atLimit=MonitorMesh(50f,31.25f,floatArrayOf(0f,0f,1f),focus=floatArrayOf(25f,15.625f))
  check(atLimit.radiansPerMeter==1f && atLimit.focus!!.contentEquals(floatArrayOf(25f,15.625f))) // No gaze clamp or global scale collapse.
+ val verticalRecovery=TrackingRecovery()
+ val origin=floatArrayOf(0f,0f,0f);val orientation=floatArrayOf(0f,0f,0f,1f)
+ verticalRecovery.update(0,true,origin,orientation,1f)
+ verticalRecovery.update(10,false,null,null,1f)
+ check(verticalRecovery.update(400,true,floatArrayOf(0f,-12f,0f),orientation,1f)!=null) // Restore app content after a floor-origin jump.
  val recovery=TrackingRecovery();val p=floatArrayOf(0f,0f,0f);val q=floatArrayOf(0f,0f,0f,1f)
  check(recovery.update(0,true,p,q,1f)==null)
  check(recovery.update(20,false,null,null,1f)==null)

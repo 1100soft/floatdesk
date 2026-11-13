@@ -18,9 +18,10 @@ internal class MonitorMesh(
     val columns: Int = 64,
     val rows: Int = 40,
     focus:FloatArray?=null,
+    val center:FloatArray=floatArrayOf(0f,0f,0f),
 ) {
-    val radius = sqrt(eye.sumOf { (it * it).toDouble() }).toFloat()
-    val normal = FloatArray(3) { eye[it] / radius }
+    val radius = sqrt((0..2).sumOf { val d=eye[it]-center[it];(d*d).toDouble() }).toFloat()
+    val normal = FloatArray(3) { (eye[it]-center[it]) / radius }
     val tangentX = floatArrayOf(1f-normal[0]*normal[0]/(1f+normal[2]), -normal[0]*normal[1]/(1f+normal[2]), -normal[0])
     val tangentY = floatArrayOf(-normal[0]*normal[1]/(1f+normal[2]), 1f-normal[1]*normal[1]/(1f+normal[2]), -normal[1])
     var projection:ViewProjection?=null
@@ -94,7 +95,7 @@ internal class MonitorMesh(
         // Keep that point on the reference sphere so changing focus does not chase itself.
         this.focus?.let { centre ->
             require(centre.size==2 && centre.all { it.isFinite() })
-            val referenceX=centre[0]*radiansPerMeter;val referenceY=centre[1]*radiansPerMeter
+            val referenceX=(centre[0]-center[0])*radiansPerMeter;val referenceY=(centre[1]-center[1])*radiansPerMeter
             val referenceLength=sqrt(referenceX*referenceX+referenceY*referenceY)
             val referenceAngle=angularDistance(referenceLength)
             val referenceSinc=if(referenceAngle<.00001f) 1f else kotlin.math.sin(referenceAngle)/referenceLength
@@ -397,5 +398,5 @@ internal fun sphericalViewFocus(mesh:MonitorMesh,direction:FloatArray):FloatArra
     val span=Math.PI.toFloat()-.01f-1.5f
     val sourceAngle=if(angle<=1.5f) angle else 1.5f-span*kotlin.math.ln((1f-(angle-1.5f)/span).coerceAtLeast(.000001f))
     val scale=(if(sine<.00001f) 1f else sourceAngle/sine)/mesh.radiansPerMeter
-    return floatArrayOf((x*scale).coerceIn(-mesh.width*.5f,mesh.width*.5f),(y*scale).coerceIn(-mesh.height*.5f,mesh.height*.5f))
+    return floatArrayOf((mesh.center[0]+x*scale).coerceIn(-mesh.width*.5f,mesh.width*.5f),(mesh.center[1]+y*scale).coerceIn(-mesh.height*.5f,mesh.height*.5f))
 }

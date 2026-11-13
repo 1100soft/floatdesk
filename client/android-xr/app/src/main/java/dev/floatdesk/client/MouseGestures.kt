@@ -10,12 +10,12 @@ internal data class MouseGestureOutput(val target: PointerTarget?, val dragging:
                                       val click: MouseClick? = null, val scroll: TouchpadFrame? = null)
 
 // Thresholds describe tracked joint separation, not a physical skin gap.
-internal fun mouseIndexContactMetres(side: String)=if(side=="LEFT") .0155f else .0125f
-internal fun indexPinchClosed(side:String,separationMetres:Float)=separationMetres.isFinite() && separationMetres<=mouseIndexContactMetres(side)
-internal fun mouseMiddleContactMetres(side: String)=if(side=="RIGHT") .014f else .015f
+internal fun mouseIndexContactMetres(side:String)=PinchThresholds.Default.indexMetres(side)
+internal fun indexPinchClosed(side:String,separationMetres:Float)=PinchThresholds.Default.indexClosed(side,separationMetres)
+internal fun mouseMiddleContactMetres(side:String)=PinchThresholds.Default.middleMetres(side)
 
 /** Raw finger gestures are independent of which hand supplies the aiming ray. */
-internal class MouseGestures(private val diagnostic: (String)->Unit = {}) {
+internal class MouseGestures(private val thresholds:()->PinchThresholds={PinchThresholds.Default},private val diagnostic: (String)->Unit = {}) {
     private data class Hold(val side: String, val button: Int, val began: Long, val target: PointerTarget)
     private val indexClosed=mutableSetOf<String>()
     private val middleClosed=mutableSetOf<String>()
@@ -41,30 +41,33 @@ internal class MouseGestures(private val diagnostic: (String)->Unit = {}) {
         return end
     }
 
+    private fun armOpenContacts(sides:Set<String>) {
+        for(side in sides) {
+            val ready=armed.getOrPut(side){mutableSetOf()}
+            if(side !in indexClosed)ready.add(1)
+            if(side !in middleClosed)ready.add(3)
+            if(side !in chordClosed)ready.add(2)
+        }
+    }
+
     fun update(nowMs: Long, enabled: Boolean, blocked: Boolean, samples: Map<String,FingerPinch>,
                target: PointerTarget?): MouseGestureOutput {
         indexClosed.retainAll(samples.keys); middleClosed.retainAll(samples.keys); chordClosed.retainAll(samples.keys); armed.keys.retainAll(samples.keys)
+        val policy=thresholds()
         for((side,sample) in samples) {
-            fun contact(set: MutableSet<String>,distance: Float,threshold: Float) {
-                if(distance.isFinite() && distance<=threshold) set.add(side) else set.remove(side)
-            }
-            if(indexPinchClosed(side,sample.indexMetres)) indexClosed.add(side) else indexClosed.remove(side)
-            contact(middleClosed,sample.middleMetres,mouseMiddleContactMetres(side))
+            if(policy.indexClosed(side,sample.indexMetres)) indexClosed.add(side) else indexClosed.remove(side)
+            if(policy.middleClosed(side,sample.middleMetres)) middleClosed.add(side) else middleClosed.remove(side)
             if(side in indexClosed && side in middleClosed) chordClosed.add(side) else chordClosed.remove(side)
         }
         if(!enabled || blocked) {
             val release=if(dragging) dragTarget else target
             hold?.let { diagnostic("mouse gesture cancelled side=${it.side} reason=disabled-or-blocked") }
             hold=null; dragging=false; armed.clear(); lastClick=null
+            if(enabled)armOpenContacts(samples.keys)
             return MouseGestureOutput(release,scroll=endScroll())
         }
         if(target != null) { lastTarget=target; lastTargetAt=nowMs }
-        for(side in samples.keys) {
-            val ready=armed.getOrPut(side) { mutableSetOf() }
-            if(side !in indexClosed) ready.add(1)
-            if(side !in middleClosed) ready.add(3)
-            if(side !in chordClosed) ready.add(2)
-        }
+        armOpenContacts(samples.keys)
         var current=hold
         if(current != null) {
             for(side in samples.keys) if(side != current.side && (side in indexClosed || side in middleClosed)) armed.remove(side)
@@ -169,7 +172,9 @@ internal class PinchFrameBuffer {
     }
     @Synchronized fun drain(now: Long): List<Frame> {
         val result=frames.toList();frames.clear()
-        // Never replay stale clicks after a stall; an empty sample releases active input.
-        return if(result.firstOrNull()?.let { now-it.at>120 }==true) listOf(Frame(now,emptyMap())) else result
+        // Cancel stale input, but retain fresh edges captured during the same UI stall.
+        // Previously one old frame discarded the entire batch, including recent quick taps.
+        val fresh=result.dropWhile{now-it.at>120}
+        return if(fresh.size!=result.size)listOf(Frame(fresh.firstOrNull()?.at ?: now,emptyMap()))+fresh else result
     }
 }

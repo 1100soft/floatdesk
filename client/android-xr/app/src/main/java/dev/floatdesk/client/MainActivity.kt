@@ -106,6 +106,7 @@ import dev.floatdesk.client.workspace.PanelPlacement
 import dev.floatdesk.client.workspace.Pose
 import dev.floatdesk.client.workspace.WorkspaceFile
 import dev.floatdesk.client.workspace.WorkspaceStore
+import dev.floatdesk.client.workspace.focusDesktopRegion
 import dev.floatdesk.client.workspace.fitDesktopInView
 import dev.floatdesk.client.workspace.restoreViewer
 import dev.floatdesk.client.workspace.reconcileMonitors
@@ -198,7 +199,8 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     LaunchedEffect(workspace.screenSpacing) {connection.configurePresentation(workspace.screenSpacing)}
     val pointerControl = remember { PointerControl() }
     val gazeStabilizer = remember { GazeStabilizer() }
-    val mouseGestures = remember { MouseGestures { Log.i("Floatdesk",it) } }
+    val pinchSettings=rememberUpdatedState(workspace.pinchThresholds)
+    val mouseGestures = remember { MouseGestures(thresholds={pinchSettings.value}) { Log.i("Floatdesk",it) } }
     val panelInput = remember { PanelGazeInput(palmButtons.map { PanelButtonArea(it.action.ordinal,it.x,it.y,it.w,it.h) }) }
     var panelFocused by remember { mutableStateOf<PalmAction?>(null) }
     var panelPressed by remember { mutableStateOf<PalmAction?>(null) }
@@ -222,7 +224,13 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     var manipulating by remember { mutableStateOf(false) }
     var followGeneration by remember { mutableIntStateOf(0) }
     var gestureNote by remember { mutableStateOf("Waiting for hand tracking…") }
-    val following = latchedFollow || (holdingFist && !suppressFist)
+    var focusFollowUntil by remember {mutableStateOf(0L)}
+    var pendingFocusMonitor by remember {mutableStateOf<Int?>(null)}
+    val focusGestures=remember {FocusGestures {pinchSettings.value}}
+    val following = latchedFollow || focusFollowUntil>SystemClock.uptimeMillis() || (holdingFist && !suppressFist)
+    LaunchedEffect(focusFollowUntil) {
+        if(focusFollowUntil>0) {delay((focusFollowUntil-SystemClock.uptimeMillis()).coerceAtLeast(0));focusFollowUntil=0;followGeneration+=1}
+    }
     val grabs = remember { mutableMapOf<Int, TwoHandState>() }
     DisposableEffect(session) {
         session?.scene?.panelClippingConfig=androidx.xr.scenecore.PanelClippingConfig(isDepthTestEnabled=true)
@@ -245,6 +253,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     val displayHead=remember { AtomicReference<Pose?>(null) }
     val viewHalfAngles=remember {AtomicReference(floatArrayOf(Math.toRadians(35.0).toFloat(),Math.toRadians(30.0).toFloat()))}
     fun resetDesk() {
+        pendingFocusMonitor=null;focusFollowUntil=0
         grabs.values.forEach {it.cancel()};pointerControl.clear()
         manipulating=false;holdingFist=false;suppressFist=true
         val head=store.viewerReference ?: displayHead.get() ?: Pose()
@@ -253,6 +262,27 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
         workspace=workspace.reset(monitors,store,viewer,angles,handTracking.unitsPerMeter)
         restoreViewerPending=false
         followGeneration+=1
+    }
+    val focusReply by connection.focusResult
+    LaunchedEffect(focusReply) {
+        val reply=focusReply ?: return@LaunchedEffect
+        val index=pendingFocusMonitor ?: return@LaunchedEffect
+        pendingFocusMonitor=null
+        if(!workspace.focusMode)return@LaunchedEffect
+        val rect=reply.rect
+        if(!reply.ok || rect==null) {gestureNote=reply.message.ifEmpty{"Could not focus target"};return@LaunchedEffect}
+        val pieces=connection.workspaceInfo.value?.visibleRects(rect,workspace.screenSpacing).orEmpty()
+        if(pieces.isEmpty())return@LaunchedEffect
+        val screen=workspace.monitorAt(index) ?: return@LaunchedEffect
+        val head=store.viewerReference ?: displayHead.get() ?: return@LaunchedEffect
+        val viewer=Pose(handTracking.points["VIEWER"]?.copyOf() ?: head.position.copyOf(),head.rotation.copyOf())
+        val angles=viewHalfAngles.get()
+        val bounds=floatArrayOf(pieces.minOf{it.left},pieces.minOf{it.top},pieces.maxOf{it.right},pieces.maxOf{it.bottom})
+        grabs.values.forEach{it.cancel()};pointerControl.clear();manipulating=false
+        val fitted=focusDesktopRegion(screen,bounds,viewer,angles[0],angles[1],handTracking.unitsPerMeter,workspace.sphericalWarp)
+        workspace=workspace.monitorPlaced(index,fitted,store,true)
+        gestureNote="";restoreViewerPending=false;suppressFist=true;focusFollowUntil=SystemClock.uptimeMillis()+3000;followGeneration+=1
+        clickView.playSoundEffect(android.view.SoundEffectConstants.CLICK)
     }
     var displayControlsOpen by remember { mutableStateOf(false) }
     var displayControlsPose by remember { mutableStateOf(workspace.control.pose) }
@@ -308,8 +338,12 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             panelPressed=action; feedbackAt=now
             clickView.playSoundEffect(android.view.SoundEffectConstants.CLICK)
             when (action) {
-                PalmAction.FOLLOW -> { latchedFollow = !latchedFollow; suppressFist = true; followGeneration += 1 }
+                PalmAction.FOLLOW -> { focusFollowUntil=0;latchedFollow = !latchedFollow; suppressFist = true; followGeneration += 1 }
                 PalmAction.RESET -> resetDesk()
+                PalmAction.MODE -> {
+                    pendingFocusMonitor=null;grabs.values.forEach{it.cancel()};pointerControl.clear();manipulating=false
+                    workspace=workspace.copy(focusMode=!workspace.focusMode);store.save(workspace)
+                }
                 PalmAction.SEARCH -> { connection.disconnect(); connection.start(context) }
                 PalmAction.SPACE -> { session?.scene?.requestFullSpace();toggleDisplays() }
                 PalmAction.GESTURES -> {
@@ -443,6 +477,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
         var lastPointerMode: PointerMode? = null
         var lastMouseDragging = false
         val lastMouseContact=mutableMapOf<String,Int>()
+        var lastFocusGate="<initial>"
         var inputWasResumed=true
         var fistHeld = 0
         var panelHand: String? = null
@@ -534,7 +569,6 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             handTracking.pinched.clear()
             val candidateHead = perceived?.let { deskPose(current, root, it) }
             displayHead.set(candidateHead?.toWorkspacePose())
-            if (!trackingAvailable) pointerControl.clear()
             val reliable = trackingGuard.update(handTracking.nowMs, candidateHead?.takeIf { trackingAvailable }?.translation?.toArray(),
                 candidateHead?.let { floatArrayOf(it.rotation.x,it.rotation.y,it.rotation.z,it.rotation.w) },unitsPerMeter)
             val head = candidateHead?.takeIf { reliable }
@@ -619,15 +653,14 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                             (joints[HandJointType.PALM]?.translation ?: joints[HandJointType.WRIST]?.translation)?.toArray(),rotateVector(quaternion,1f,0f,0f),rotateVector(quaternion,0f,1f,0f))
                     }
                     if (thumb != null && index != null) {
-                        if (indexPinchClosed(side,distance(thumb,index))) handTracking.pinched.add(side)
+                        if (workspace.pinchThresholds.indexClosed(side,distance(thumb,index))) handTracking.pinched.add(side)
                         grips[side] = deskPose(current, root, androidx.xr.runtime.math.Pose((thumb + index) * 0.5f)).translation.toArray()
                         fingerTips[side] = deskPose(current, root, androidx.xr.runtime.math.Pose(index)).translation.toArray()
                     }
                     palmControls(state, perceived, side, tick % 100 == 0, panelHand==side,joints)?.let { palmCandidates[side] = it.copy(pose = deskPose(current, root, it.pose.toRuntimePose()).toWorkspacePose(), unitsPerMeter = unitsPerMeter) }
                 }
                 val read = readHand(state,joints)
-                if(read == null) { mouseSamples.remove(side); continue }
-                if(read.fist) mouseSamples.remove(side)
+                if(read == null) continue
                 tracking += 1
                 if (read.fist) anyFist = true
                 if (read.open) anyOpen = true
@@ -656,7 +689,8 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 )
             }
             if (anyOpen && !anyFist) suppressFist = false
-            if (anyFist && !suppressFist) {
+            val fingerContact=mouseSamples.any{(side,sample)->workspace.pinchThresholds.indexClosed(side,sample.indexMetres) || workspace.pinchThresholds.middleClosed(side,sample.middleMetres)}
+            if (anyFist && !suppressFist && !fingerContact) {
                 fistHeld += 1
                 holdingFist = fistHeld >= 16
             } else {
@@ -747,19 +781,42 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 lastPointerMode = choice.mode
             }
             dimPointer = choice.mode == PointerMode.HAND
-            val gestureBlocked=displayControlsOpen || choice.mode==PointerMode.PREVIEW || choice.mode==PointerMode.GRAB || palmPanel!=null
+            val focusInfo=connection.workspaceInfo.value
+            val focusHover=if(workspace.focusMode && focusInfo!=null)hoverHands.mapNotNull {(side,hit)->
+                if(hit.monitor!=0)return@mapNotNull null
+                connection.desktopPoint(hit.monitor,hit.u,hit.v)?.let{(u,v)->focusInfo.hover(u,v)}?.let{side to it}
+            }.toMap() else emptyMap()
+            val focusGate=buildList {
+                if(choice.mode.reservesDesktop)add("two-hand manipulation")
+                if(mouseSamples.isEmpty())add("hands unavailable")
+                if(displayControlsOpen)add("workspace panel")
+                if(palmPanel!=null)add("palm panel")
+                if(nativeManipulation)add("native handle")
+                if(connection.focusBusy.value)add("host request pending")
+                if(quality.overlapping && quality.continuousOwner==null)add("ambiguous hand identities")
+            }.joinToString(",")
+            val focusGateKey="$focusGate|${workspace.pinchThresholds}"
+            if(workspace.focusMode && focusGateKey!=lastFocusGate) {
+                Log.i("Floatdesk","focus input gate=${focusGate.ifEmpty{"open"}} thresholds=${workspace.pinchThresholds}")
+                lastFocusGate=focusGateKey
+            }
+            val gestureBlocked=displayControlsOpen || choice.mode.reservesDesktop || palmPanel!=null
             for(frame in pinchFrames.drain(handTracking.nowMs)) {
                 val samples=frame.samples.filterKeys { it in mouseSamples }.mapValues { (side,sample) ->
                     val basis=mouseSamples.getValue(side)
                     sample.copy(right=basis.right,up=basis.up)
                 }
                 if(workspace.mouseGestures) for((side,sample) in frame.samples) {
-                    val contact=(if(sample.indexMetres<=mouseIndexContactMetres(side)) 1 else 0) or (if(sample.middleMetres<=mouseMiddleContactMetres(side)) 2 else 0)
+                    val contact=(if(workspace.pinchThresholds.indexClosed(side,sample.indexMetres)) 1 else 0) or (if(workspace.pinchThresholds.middleClosed(side,sample.middleMetres)) 2 else 0)
                     if(lastMouseContact.put(side,contact)!=contact) Log.i("Floatdesk",
                         "mouse contact side=$side fingers=$contact indexMm=${sample.indexMetres*1000} middleMm=${sample.middleMetres*1000} accepted=${side in samples} blocked=$gestureBlocked sampleAge=${handTracking.nowMs-frame.at}")
                 }
-                val mouse=mouseGestures.update(frame.at,workspace.mouseGestures && trackingAvailable,
-                    gestureBlocked || (quality.overlapping && quality.continuousOwner==null),samples,choice.target)
+                val uncertain=quality.overlapping && quality.continuousOwner==null
+                val selected=focusGestures.update(workspace.focusMode,
+                    focusGate.isNotEmpty(),samples,focusHover)
+                if(selected!=null && connection.requestFocus(selected))pendingFocusMonitor=0
+                val mouse=mouseGestures.update(frame.at,workspace.mouseGestures && !workspace.focusMode,
+                    gestureBlocked || uncertain || workspace.focusMode,samples,if(workspace.focusMode)null else choice.target)
                 mouse.scroll?.let {
                     if(it.fingers==0) Log.i("Floatdesk","mouse scroll released at=${frame.at}")
                     connection.touchpad(it.fingers,it.x,it.y)
@@ -777,9 +834,18 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             }
             handTracking.pointerHeld=mouseGestures.engaged
             for((index,placement) in workspace.layouts[workspace.activeLayout].orEmpty().withIndex()) {
-                val marks=mutableListOf<Float>()
-                connection.aimOverlay(index,dev.floatdesk.client.media.VideoAim(floatArrayOf(),marks.toFloatArray(),
-                    .0009f*handTracking.unitsPerMeter/placement.physicalWidthM*placement.pixelWidth,if(dimPointer) .18f else .4f))
+                val segments=ArrayList<Float>();val colors=ArrayList<Float>()
+                if(index==0 && workspace.focusMode && palmPanel==null && !displayControlsOpen && focusInfo!=null) {
+                    val targets=focusHover.values.flatMap{listOfNotNull(it.screen,it.window)}.distinct()
+                    for(target in targets)for(rect in focusInfo.visibleRects(target.rect,workspace.screenSpacing)) {
+                        val rgb=if(target.windowId==null)floatArrayOf(.4236f,.9777f,1f) else floatArrayOf(.757f,.502f,1f)
+                        for(edge in listOf(floatArrayOf(rect.left,rect.top,rect.right,rect.top),floatArrayOf(rect.right,rect.top,rect.right,rect.bottom),
+                            floatArrayOf(rect.right,rect.bottom,rect.left,rect.bottom),floatArrayOf(rect.left,rect.bottom,rect.left,rect.top))) {
+                            segments.addAll(edge.toList());colors.addAll(rgb.toList())
+                        }
+                    }
+                }
+                connection.aimOverlay(index,dev.floatdesk.client.media.VideoAim(segments.toFloatArray(),floatArrayOf(),maxOf(2f,placement.pixelWidth*.001f),.85f,colors.toFloatArray()))
             }
             val previews = if (choice.mode == PointerMode.PREVIEW) hoverHands.values.groupBy { it.monitor }.mapNotNull { (index,points) ->
                 val left=hoverHands["LEFT"]?.takeIf { it.monitor == index }
@@ -815,7 +881,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                     renderer.close()
                 }
             }
-            val wantFollow = !manipulating && head != null && (latchedFollow || (holdingFist && !suppressFist))
+            val wantFollow = !manipulating && head != null && (latchedFollow || focusFollowUntil>SystemClock.uptimeMillis() || (holdingFist && !suppressFist))
             if (!wantFollow) {
                 if (followLock != null) {
                     store.save(workspace)
@@ -934,7 +1000,9 @@ private fun DeskContent(
     val reloading by connection.reloading
     val layout = workspace.reconcileMonitors(monitors.map { Triple(it.name,it.width,it.height) }).layouts[workspace.activeLayout].orEmpty()
     if(displayControlsOpen) SpatialPanel(modifier=placedPanel(displayControlsPose,.95f,.70f,density,pixelDensity)) {
-        MonitorManagerPanel(connection,workspace.screenSpacing,{onWorkspace(workspace.copy(screenSpacing=it))},{store.save(latest.value)},onCloseDisplays)
+        MonitorManagerPanel(connection,workspace.screenSpacing,{onWorkspace(workspace.copy(screenSpacing=it))},{store.save(latest.value)},onCloseDisplays,workspace.pinchThresholds) {profile->
+            val next=latest.value.copy(pinchThresholds=profile);onWorkspace(next);store.save(next)
+        }
     }
     if(reloading && layout.isNotEmpty()) {
         val screen=layout.first()
@@ -948,14 +1016,16 @@ private fun DeskContent(
     }
     palmPanel?.takeIf { handInputAllowed }?.let { panel ->
         SpatialPanel(modifier = placedPanel(panel.pose, PALM_WIDTH * panel.unitsPerMeter, PALM_HEIGHT * panel.unitsPerMeter, density, pixelDensity)) {
-            PalmControls(latchedFollow, workspace.sphericalWarp, workspace.eyeAiming, workspace.mouseGestures, panelFocused, panelPressed, onPalmAction)
+            PalmControls(latchedFollow, workspace.sphericalWarp, workspace.eyeAiming, workspace.mouseGestures, panelFocused, panelPressed, workspace.focusMode, onPalmAction)
         }
     }
-    layout.forEachIndexed { index, placement ->
+    // Remove desktop render/input surfaces while Workspace is open so no surface can occlude it.
+    if(!displayControlsOpen) layout.forEachIndexed { index, placement ->
         androidx.compose.runtime.key(placement.hostSourceId,placement.pixelWidth,placement.pixelHeight) {
         val hands = remember(index) { grabs.getOrPut(index) { TwoHandState() } }
         var nativeResize by remember(index) { mutableStateOf(false) }
         var nativeMove by remember(index) { mutableStateOf(false) }
+        var nativeGestureAt by remember(index) {mutableStateOf(0L)}
         var moveBefore by remember(index) { mutableStateOf<Pose?>(null) }
         var nativeGeometryPending by remember(index) { mutableStateOf(false) }
         var nativeResizeStartWidth by remember(index) { mutableStateOf(1f) }
@@ -976,7 +1046,7 @@ private fun DeskContent(
                 val file = latest.value
                 val screen = file.monitorAt(index) ?: continue
                 try {
-                    if(!handInputNow.value && (nativeMove || nativeResize)) {
+                    if((!handInputNow.value || handTracking.pinched.isEmpty() && SystemClock.uptimeMillis()-nativeGestureAt>=120) && (nativeMove || nativeResize)) {
                         systemControls.close();nativeMove=false;nativeResize=false;moveBefore=null
                         nativeGeometryPending=true;onManipulate(false)
                     }
@@ -1006,7 +1076,7 @@ private fun DeskContent(
                             if(hands.busy) hands.cancel()
                             nativeResizeStartWidth=existing.physicalWidthM
                             nativeResizeStartHeight=existing.physicalHeightM
-                            nativeResize=true; onManipulate(true)
+                            nativeGestureAt=SystemClock.uptimeMillis();nativeResize=true; onManipulate(true)
                         }
                         if(!nativeResize) return@update
                         nativeGeometryPending=true
@@ -1023,7 +1093,7 @@ private fun DeskContent(
                         val sample=pose.toWorkspacePose()
                         val before=moveBefore
                         moveBefore=sample
-                        if(phase==SystemMovePhase.START) { if(hands.busy) hands.cancel();nativeMove=true;onManipulate(true);return@update }
+                        if(phase==SystemMovePhase.START) { if(hands.busy) hands.cancel();nativeGestureAt=SystemClock.uptimeMillis();nativeMove=true;onManipulate(true);return@update }
                         if(!nativeMove) return@update
                         val existing=latest.value.monitorAt(index) ?: return@update
                         val safe=before!=null && distance(before.position,sample.position)<=.25f && kotlin.math.abs(dot4(before.rotation,sample.rotation))>=.9f
@@ -1043,7 +1113,9 @@ private fun DeskContent(
                     }
                 } catch (failure: Exception) {
                     Log.e("Floatdesk", "Could not update spherical monitor", failure)
-                    return@LaunchedEffect
+                    nativeMove=false;nativeResize=false;systemControls.close()
+                    pointerControl.nativeManipulation(index,false);onManipulate(false)
+                    delay(1000)
                 }
             }
         }
@@ -1342,7 +1414,7 @@ private class PinchMemory {
 
 private const val PALM_WIDTH = 0.24f
 private const val PALM_HEIGHT = 0.24f
-private enum class PalmAction { FOLLOW, RESET, SEARCH, SPACE, WARP, EYES, GESTURES }
+private enum class PalmAction { FOLLOW, RESET, SEARCH, SPACE, WARP, EYES, GESTURES, MODE }
 private data class PalmPanelState(val side: String, val pose: Pose, val unitsPerMeter: Float = 1f)
 private data class PalmButton(val action: PalmAction, val x: Float, val y: Float, val w: Float = 0.44f, val h: Float = 0.17f)
 private val palmButtons = listOf(
@@ -1350,13 +1422,13 @@ private val palmButtons = listOf(
     PalmButton(PalmAction.SEARCH, 0.04f, 0.37f), PalmButton(PalmAction.SPACE, 0.52f, 0.37f),
     PalmButton(PalmAction.WARP, 0.04f, 0.58f),
     PalmButton(PalmAction.EYES, 0.52f, 0.58f),
-    PalmButton(PalmAction.GESTURES, 0.04f, 0.79f, w = 0.92f),
+    PalmButton(PalmAction.GESTURES, 0.04f, 0.79f), PalmButton(PalmAction.MODE,0.52f,0.79f),
 )
 
 private fun sphericalActionLabel(enabled: Boolean): String = if (enabled) "Disable spherical" else "Enable spherical"
 
 @Composable
-private fun PalmControls(latched: Boolean, warped: Boolean, eyes: Boolean, gestures: Boolean, focused: PalmAction?, pressed: PalmAction?, onAction: (PalmAction) -> Unit) {
+private fun PalmControls(latched: Boolean, warped: Boolean, eyes: Boolean, gestures: Boolean, focused: PalmAction?, pressed: PalmAction?, focusMode:Boolean, onAction: (PalmAction) -> Unit) {
     BoxWithConstraints(Modifier.fillMaxSize().background(Color(0xF01C2430))) {
         Text("Floatdesk", color = Color.White, fontSize = 14.sp,
             modifier = Modifier.offset(maxWidth * 0.06f, maxHeight * 0.04f))
@@ -1375,7 +1447,8 @@ private fun PalmControls(latched: Boolean, warped: Boolean, eyes: Boolean, gestu
                     PalmAction.SPACE -> "Workspace"
                     PalmAction.WARP -> sphericalActionLabel(warped)
                     PalmAction.EYES -> if (eyes) "Disable eye mouse" else "Enable eye mouse"
-                    PalmAction.GESTURES -> if (gestures) "Disable gestures" else "Enable gestures"
+                    PalmAction.GESTURES -> if (gestures) "Mouse gestures on" else "Mouse gestures off"
+                    PalmAction.MODE -> if(focusMode) "Mouse mode" else "Focus mode"
                 }, style = TextStyle(color = Color.White), maxLines = 1, softWrap = false,
                     autoSize = TextAutoSize.StepBased(minFontSize = 4.sp, maxFontSize = 14.sp, stepSize = 0.25.sp))
             }

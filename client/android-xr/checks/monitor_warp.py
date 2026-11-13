@@ -31,7 +31,7 @@ internal object Log { fun i(tag: String,message: String) {} }
 internal data class IntSize2d(val width: Int,val height: Int)
 internal data class FloatSize2d(val width: Float, val height: Float)
 internal data class WorkspacePose(val position: FloatArray=floatArrayOf(.1f,0f,-1f),val rotation: FloatArray=floatArrayOf(0f,0f,0f,1f))
-internal data class MonitorPlacement(val physicalWidthM: Float, val physicalHeightM: Float,val pose: WorkspacePose=WorkspacePose(),val pixelWidth: Int=2560,val pixelHeight: Int=1600)
+internal data class MonitorPlacement(val physicalWidthM: Float, val physicalHeightM: Float,val pose: WorkspacePose=WorkspacePose(),val pixelWidth: Int=2560,val pixelHeight: Int=1600,val viewCenterU:Float=.5f,val viewCenterV:Float=.5f)
 internal class NativeHit(val hitPosition: Vector3,val distance: Float)
 internal open class Entity {
     suspend fun hitTest(origin: Vector3,direction: Vector3): NativeHit? = null

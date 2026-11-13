@@ -35,7 +35,7 @@ guard_source = (Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/cli
 pointer_source = (Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client/PointerControl.kt').read_text().split('\n',1)[1]
 pinch_source=(Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client/MouseGestures.kt').read_text()
 stub=stub.replace("private ","internal ")
-code = mesh_source + guard_source + pinch_source[pinch_source.index('internal fun mouseIndexContactMetres'):pinch_source.index('internal fun mouseMiddleContactMetres')] + stub + pointer_source + section('private const val PALM_WIDTH', '@Composable\nprivate fun PalmControls')
+code = mesh_source + guard_source + (Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client/PinchPolicy.kt').read_text().split('\n',1)[1] + pinch_source[pinch_source.index('internal fun mouseIndexContactMetres'):pinch_source.index('internal fun mouseMiddleContactMetres')] + stub + pointer_source + section('private const val PALM_WIDTH', '@Composable\nprivate fun PalmControls')
 code += section('private fun palmRayPoint(', '/** Direct fingertip contact')
 code += section('private class PalmPoke', '/** Find the parent')
 code += '\n'.join(line for line in (Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client/GrabInteraction.kt').read_text().splitlines() if not line.startswith(('package ', 'import ')))
@@ -418,7 +418,7 @@ fun main() {
     val scaledPanel=panel.copy(unitsPerMeter=5f)
     check(poke.update(scaledPanel,floatArrayOf(-.3f,.3f,.2f)) == null)
     check(poke.update(scaledPanel,floatArrayOf(-.3f,.3f,-.1f)) == PalmAction.FOLLOW)
-    for((x,y,expected) in listOf(Triple(-.06f,-.04f,PalmAction.WARP),Triple(.06f,-.04f,PalmAction.EYES),Triple(0f,-.09f,PalmAction.GESTURES))) {
+    for((x,y,expected) in listOf(Triple(-.06f,-.04f,PalmAction.WARP),Triple(.06f,-.04f,PalmAction.EYES),Triple(-.06f,-.09f,PalmAction.GESTURES),Triple(.06f,-.09f,PalmAction.MODE))) {
         poke.clear()
         check(poke.update(panel,floatArrayOf(x,y,.04f)) == null)
         check(poke.update(panel,floatArrayOf(x,y,-.02f)) == expected)

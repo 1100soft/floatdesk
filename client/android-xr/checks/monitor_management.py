@@ -12,7 +12,7 @@ workspace = (root / 'workspace/Workspace.kt').read_text()
 data = workspace[workspace.index('internal data class Pose'):workspace.index('internal class WorkspaceStore')]
 layout = workspace[workspace.index('internal fun deskLayout'):workspace.index('internal fun WorkspaceFile.monitorPlaced')]
 reconcile = workspace[workspace.index('/** Reconcile stable source'):]
-code = protocol + '\n' + data + layout.replace('max(', 'kotlin.math.max(') + reconcile + '''
+code = protocol + '\n' + (root/'PinchPolicy.kt').read_text().split('\n',1)[1] + '\n' + data + layout.replace('max(', 'kotlin.math.max(') + reconcile + '''
 fun main(args:Array<String>) {
     java.io.File(args[0]).writeBytes(Protocol.monitorCommand(-1,1,0,1920,1080))
     val status=java.io.File(args[1]).readBytes()

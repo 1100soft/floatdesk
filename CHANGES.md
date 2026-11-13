@@ -1,5 +1,15 @@
 # Changes since the LAN proof of concept
 
+- Focus selection places the cursor at the captured pinch/ray contact rather than the target center.
+
+- Hide desktop render/input surfaces while Workspace is open, and request numeric keyboards for resolution and pinch-threshold fields.
+
+- Focus pinches no longer require experimental mouse gestures; both modes reserve two-ray aiming for preview/grabbing. Shared per-hand pinch thresholds are available from Workspace’s fixed Settings button.
+
+- Share saved pinch settings across mouse, focus and grab. Select focus targets on release without chord vetoes, retain fresh input after stale batches, decouple hand actions from head tracking, and release stuck native handle ownership. Fit selected regions to a central 36°×24° view and extend temporary Follow to three seconds.
+
+- Add a palm-toggle screen/window focus mode, live colored highlights, shared pinch thresholds, acknowledged EWMH activation/cursor placement, selected-region view fitting in both projection modes, and a temporary three-second Follow lease. Revert the subsequent size-threshold beam overlay experiment while retaining tested per-segment highlight colors.
+
 - Reset now centers the active desktop in the current view and fits its size to the binocular field of view, preserving aspect ratio and accounting for spherical corners.
 
 - Show the dynamically projected spherical result during grabs with a reusable textured native grid and projected contact markers. Explicitly apply scene depth testing and use opaque beam texels with entity-level dimming for live-video overlap.

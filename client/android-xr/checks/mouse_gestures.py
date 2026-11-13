@@ -8,7 +8,7 @@ import tempfile
 folder=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
 sources=[]
 imports=[]
-for name in ['MonitorMesh.kt','PointerControl.kt','GazeStabilizer.kt','MouseGestures.kt']:
+for name in ['MonitorMesh.kt','PointerControl.kt','GazeStabilizer.kt','PinchPolicy.kt','MouseGestures.kt']:
     lines=(folder/name).read_text().splitlines()[1:]
     imports.extend(line for line in lines if line.startswith('import '))
     sources.append('\n'.join(line for line in lines if not line.startswith('import ')))
@@ -66,6 +66,15 @@ fun main() {
     check(buffered.drain(16).isEmpty())
     buffered.push(20,mapOf("RIGHT" to index))
     check(buffered.drain(200).single().samples.isEmpty())
+    val stalled=PinchFrameBuffer()
+    stalled.push(0,mapOf("RIGHT" to index)) // Stale prefix must cancel, not poison the fresh suffix.
+    stalled.push(180,mapOf("RIGHT" to open));stalled.push(185,mapOf("RIGHT" to index));stalled.push(190,mapOf("RIGHT" to open))
+    val resumed=MouseGestures()
+    check(stalled.drain(200).map{resumed.update(it.at,true,false,it.samples,target)}.count{it.click!=null}==1)
+    val gated=MouseGestures()
+    gated.update(0,true,true,mapOf("RIGHT" to open),target)
+    gated.update(1,true,false,mapOf("RIGHT" to index),target)
+    check(gated.update(2,true,false,mapOf("RIGHT" to open),target).click?.button==1)
     // Losing the other hand must not reset an active clicking hand.
     val isolated=MouseGestures()
     isolated.update(0,true,false,mapOf("LEFT" to open,"RIGHT" to open),target)

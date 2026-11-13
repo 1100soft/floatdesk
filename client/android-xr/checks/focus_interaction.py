@@ -6,23 +6,42 @@ root=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
 def body(path):return '\n'.join(l for l in (root/path).read_text().splitlines() if not l.startswith(('import ','package ')))
 workspace=body('workspace/Workspace.kt');workspace=workspace[workspace.index('internal data class Pose'):workspace.index('internal class WorkspaceStore')]
 metadata=body('net/WorkspaceInfo.kt');metadata=metadata[:metadata.index('    companion object')]+'}\n'
-code='import kotlin.math.*\n'+body('MonitorMesh.kt')+body('PointerControl.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+body('workspace/WorkspacePlacement.kt')+metadata+r'''
+code='import kotlin.math.*\n'+body('MonitorMesh.kt')+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+body('workspace/WorkspacePlacement.kt')+metadata+r'''
 fun main() {
  val screen=FocusTarget(FocusRect(0f,0f,.5f,1f),"screen")
  val window=FocusTarget(FocusRect(.1f,.2f,.3f,.5f),"screen",42)
  val hover=mapOf("LEFT" to FocusHover(screen,window));val input=FocusGestures()
  fun frame(index:Float,middle:Float,enabled:Boolean=true,blocked:Boolean=false)=input.update(enabled,blocked,mapOf("LEFT" to FingerPinch(index,middle)),hover)
  check(frame(.05f,.05f)==null)
- check(frame(.01f,.05f)==window);check(frame(.01f,.05f)==null)
- frame(.05f,.05f);check(frame(.05f,.01f)==screen)
- frame(.05f,.05f);check(frame(.01f,.01f)==null)
- check(frame(.01f,.05f,false)==null);check(frame(.01f,.05f)==null)
- frame(.05f,.05f);check(frame(.01f,.05f,blocked=true)==null);check(frame(.01f,.05f)==null)
+ check(frame(.01f,.05f)==null);check(frame(.01f,.05f)==null);check(frame(.05f,.05f)==window)
+ check(frame(.05f,.01f)==null);check(frame(.05f,.05f)==screen)
+ // A resting index contact does not veto a new middle pinch.
+ check(frame(.01f,.05f,false)==null);check(frame(.01f,.01f)==null);check(frame(.01f,.05f)==screen)
+ // Opens while blocked rearm normally; no extra wide opening after the block ends.
+ check(frame(.05f,.05f,blocked=true)==null);check(frame(.01f,.05f)==null);check(frame(.05f,.05f)==window)
+ // Contact capture survives an incidental chord and does not become a middle action.
+ check(frame(.01f,.05f)==null);check(frame(.01f,.01f)==null);check(frame(.05f,.01f)==window)
  frame(.05f,.05f)
  val fallback=FocusGestures();fallback.update(true,false,mapOf("RIGHT" to FingerPinch(.05f,.05f)),mapOf("RIGHT" to FocusHover(screen)))
- check(fallback.update(true,false,mapOf("RIGHT" to FingerPinch(.01f,.05f)),mapOf("RIGHT" to FocusHover(screen)))==screen)
+ check(fallback.update(true,false,mapOf("RIGHT" to FingerPinch(.01f,.05f)),mapOf("RIGHT" to FocusHover(screen)))==null)
+ check(fallback.update(true,false,mapOf("RIGHT" to FingerPinch(.05f,.05f)),emptyMap())==screen)
  val cross=FocusGestures();cross.update(true,false,mapOf("RIGHT" to FingerPinch(.05f,.05f)),hover)
- check(cross.update(true,false,mapOf("RIGHT" to FingerPinch(.01f,.05f)),hover)==window)
+ check(cross.update(true,false,mapOf("RIGHT" to FingerPinch(.01f,.05f)),hover)==null)
+ check(cross.update(true,false,mapOf("RIGHT" to FingerPinch(.05f,.05f)),hover)==window)
+ val profile=PinchThresholds(4f,5f,6f,7f)
+ check(profile.valid() && !profile.copy(leftIndexMm=Float.NaN).valid())
+ val configured=FocusGestures {profile}
+ configured.update(true,false,mapOf("LEFT" to FingerPinch(.05f,.05f)),hover)
+ check(configured.update(true,false,mapOf("LEFT" to FingerPinch(.009f,.05f)),hover)==null)
+ check(configured.update(true,false,mapOf("LEFT" to FingerPinch(.05f,.05f)),hover)==null) // Default-only contact must not select.
+ configured.update(true,false,mapOf("LEFT" to FingerPinch(.003f,.05f)),hover)
+ check(configured.update(true,false,mapOf("LEFT" to FingerPinch(.005f,.05f)),hover)==window)
+ val mouse=MouseGestures(thresholds={profile});val target=PointerTarget(0,.5f,.5f,floatArrayOf(0f,0f,0f))
+ mouse.update(0,true,false,mapOf("LEFT" to FingerPinch(.05f,.05f)),target)
+ check(mouse.update(1,true,false,mapOf("LEFT" to FingerPinch(.009f,.05f)),target).click==null)
+ check(mouse.update(2,true,false,mapOf("LEFT" to FingerPinch(.05f,.05f)),target).click==null)
+ mouse.update(3,true,false,mapOf("LEFT" to FingerPinch(.003f,.05f)),target)
+ check(mouse.update(4,true,false,mapOf("LEFT" to FingerPinch(.005f,.05f)),target).click?.button==1)
  val info=WorkspaceInfo(listOf(DesktopOutput("screen",1920,1080,0,0,false,true,3,emptyList()),DesktopOutput("virtual",1920,1080,1920,0,true,false,1,emptyList())),0,emptyList(),0,8,8000000,60,"",false,windowFocus=true,
   windows=listOf(DesktopWindow(42,100,100,400,400),DesktopWindow(43,0,0,1000,1000)))
  check(info.hover(.05f,.2f)!!.window!!.windowId==42L) // Topmost window wins.
@@ -47,7 +66,7 @@ fun main() {
   for(u in listOf(rect[0],rect[2]))for(v in listOf(rect[1],rect[3])) {
    val flat=floatArrayOf((u-.5f)*fitted.physicalWidthM,(.5f-v)*fitted.physicalHeightM,0f)
    val p=mesh?.project(flat) ?: flat;val depth=eye[2]-p[2]
-   check(depth>0 && abs(atan2(p[0]-eye[0],depth))<=.65f*.85f+.003f && abs(atan2(p[1]-eye[1],depth))<=.5f*.85f+.003f)
+   check(depth>0 && abs(atan2(p[0]-eye[0],depth))<=Math.toRadians(18.0).toFloat()+.003f && abs(atan2(p[1]-eye[1],depth))<=Math.toRadians(12.0).toFloat()+.003f)
   }
   check(fitted.pixelWidth==original.pixelWidth && fitted.pixelHeight==original.pixelHeight)
  }

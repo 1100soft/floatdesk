@@ -5,6 +5,7 @@ import subprocess,sys,tempfile
 root=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
 source=(root/'MonitorMesh.kt').read_text().split('\n',1)[1]+'\n'+(root/'VideoGeometry.kt').read_text().split('\n',1)[1]
 w=(root/'workspace/Workspace.kt').read_text()
+source+='\n'+(root/'PinchPolicy.kt').read_text().split('\n',1)[1]
 source+='\n'+w[w.index('internal data class Pose'):w.index('internal class WorkspaceStore')]
 source+='\n'+(root/'workspace/WorkspacePlacement.kt').read_text().split('\n',1)[1]
 code=source+'''

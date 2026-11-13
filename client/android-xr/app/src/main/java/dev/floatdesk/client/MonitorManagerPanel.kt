@@ -27,7 +27,7 @@ import androidx.compose.ui.unit.sp
 import dev.floatdesk.client.net.DeskConnection
 
 @Composable
-internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpacing:(Float)->Unit,onSpacingFinished:()->Unit,onClose:()->Unit) {
+internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpacing:(Float)->Unit,onSpacingFinished:()->Unit,onClose:()->Unit,pinches:PinchThresholds,onPinches:(PinchThresholds)->Unit) {
     val monitors by connection.monitors
     val state by connection.displayState
     val busy by connection.displayBusy
@@ -71,6 +71,7 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
             Text(String.format(Locale.ROOT,"Visual spacing: %.1f%%",spacing*100),color=Color.White)
             androidx.compose.material3.Slider(value=spacing,onValueChange={onSpacing((it*1000).roundToInt()/1000f)},onValueChangeFinished=onSpacingFinished,valueRange=0f..0.15f,steps=149,enabled=!busy)
         }
+        PinchSettings(pinches,onPinches)
         sizes.forEachIndexed { index,(width,height) ->
             val managed=screens?.getOrNull(index)?.managed ?: ((state.owned and (1 shl index))!=0)
             val role=when(screens?.getOrNull(index)?.role ?: state.roles.getOrNull(index)) {3->"Built-in display";2->"Physical display";1->"Virtual display";else->"Display"}
@@ -107,4 +108,27 @@ private fun ResolutionChoice(current:Pair<Int,Int>,modes:List<Pair<Int,Int>>,ena
         val w=width.toIntOrNull();val h=height.toIntOrNull()
         Button(enabled=enabled && w!=null && h!=null && w in 1..65535 && h in 1..65535,onClick={onChoose(w!! to h!!)}) {Text("Set")}
     }
+}
+
+@Composable
+private fun PinchSettings(value:PinchThresholds,onApply:(PinchThresholds)->Unit) {
+    var open by remember {mutableStateOf(false)}
+    Button(onClick={open=!open}){Text("Pinch settings")}
+    if(!open)return
+    var leftIndex by remember(value){mutableStateOf(value.leftIndexMm.toString())}
+    var rightIndex by remember(value){mutableStateOf(value.rightIndexMm.toString())}
+    var leftMiddle by remember(value){mutableStateOf(value.leftMiddleMm.toString())}
+    var rightMiddle by remember(value){mutableStateOf(value.rightMiddleMm.toString())}
+    Text("Contact distance (mm) · smaller is firmer",color=Color.White,fontSize=13.sp)
+    Row(horizontalArrangement=Arrangement.spacedBy(6.dp)) {
+        androidx.compose.material3.OutlinedTextField(leftIndex,{leftIndex=it},Modifier.weight(1f),label={Text("Left index")},singleLine=true)
+        androidx.compose.material3.OutlinedTextField(rightIndex,{rightIndex=it},Modifier.weight(1f),label={Text("Right index")},singleLine=true)
+    }
+    Row(horizontalArrangement=Arrangement.spacedBy(6.dp)) {
+        androidx.compose.material3.OutlinedTextField(leftMiddle,{leftMiddle=it},Modifier.weight(1f),label={Text("Left middle")},singleLine=true)
+        androidx.compose.material3.OutlinedTextField(rightMiddle,{rightMiddle=it},Modifier.weight(1f),label={Text("Right middle")},singleLine=true)
+    }
+    val parsed=listOf(leftIndex,rightIndex,leftMiddle,rightMiddle).map{it.toFloatOrNull()}
+    val next=if(parsed.all{it!=null})PinchThresholds(parsed[0]!!,parsed[1]!!,parsed[2]!!,parsed[3]!!).takeIf{it.valid()} else null
+    Button(enabled=next!=null,onClick={next?.let(onApply)}){Text("Apply to mouse, focus and grab")}
 }

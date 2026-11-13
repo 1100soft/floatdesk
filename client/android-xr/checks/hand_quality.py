@@ -6,7 +6,7 @@ import sys
 import tempfile
 folder=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
 imports=[];sources=[]
-for name in ['HandTrackingQuality.kt','MonitorMesh.kt','PointerControl.kt','MouseGestures.kt']:
+for name in ['HandTrackingQuality.kt','MonitorMesh.kt','PointerControl.kt','PinchPolicy.kt','MouseGestures.kt']:
     lines=(folder/name).read_text().splitlines()
     imports += [line for line in lines if line.startswith('import ')]
     sources.append('\n'.join(line for line in lines if not line.startswith(('package ','import '))))

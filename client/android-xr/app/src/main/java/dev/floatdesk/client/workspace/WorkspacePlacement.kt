@@ -17,13 +17,13 @@ internal fun WorkspaceFile.restoreViewer(viewer:Pose):WorkspaceFile {
 
 /** Fit the complete desktop into a symmetric, inset portion of the current camera view. */
 internal fun fitDesktopInView(screens:List<MonitorPlacement>,viewer:Pose,horizontalHalfAngle:Float,
-                             verticalHalfAngle:Float,unitsPerMeter:Float,spherical:Boolean):MutableList<MonitorPlacement> {
+                             verticalHalfAngle:Float,unitsPerMeter:Float,spherical:Boolean,centralView:Boolean=false):MutableList<MonitorPlacement> {
     if(screens.isEmpty())return mutableListOf()
     val units=unitsPerMeter.takeIf{it.isFinite() && it>0f} ?: 1f
     val distance=1.2f*units
     fun angle(value:Float,fallback:Float)=((value.takeIf{it.isFinite() && it>.05f} ?: fallback)*.85f).coerceAtMost(1.2f)
-    val horizontal=angle(horizontalHalfAngle,Math.toRadians(35.0).toFloat())
-    val vertical=angle(verticalHalfAngle,Math.toRadians(30.0).toFloat())
+    val horizontal=minOf(angle(horizontalHalfAngle,Math.toRadians(35.0).toFloat()),if(centralView)Math.toRadians(18.0).toFloat() else Float.POSITIVE_INFINITY)
+    val vertical=minOf(angle(verticalHalfAngle,Math.toRadians(30.0).toFloat()),if(centralView)Math.toRadians(12.0).toFloat() else Float.POSITIVE_INFINITY)
     val left=screens.minOf{it.pose.position[0]-it.physicalWidthM*.5f}
     val right=screens.maxOf{it.pose.position[0]+it.physicalWidthM*.5f}
     val bottom=screens.minOf{it.pose.position[1]-it.physicalHeightM*.5f}
@@ -60,7 +60,7 @@ internal fun focusDesktopRegion(screen:MonitorPlacement,rect:FloatArray,viewer:P
     require(rect.size==4 && rect.all{it.isFinite()} && rect[2]>rect[0] && rect[3]>rect[1])
     val u=(rect[0]+rect[2])*.5f;val v=(rect[1]+rect[3])*.5f
     val region=screen.copy(pose=Pose(),physicalWidthM=screen.physicalWidthM*(rect[2]-rect[0]),physicalHeightM=screen.physicalHeightM*(rect[3]-rect[1]))
-    val fitted=fitDesktopInView(listOf(region),viewer,horizontal,vertical,units,spherical).single()
+    val fitted=fitDesktopInView(listOf(region),viewer,horizontal,vertical,units,spherical,centralView=true).single()
     val width=fitted.physicalWidthM/(rect[2]-rect[0]);val height=fitted.physicalHeightM/(rect[3]-rect[1])
     val x=(u-.5f)*width;val y=(.5f-v)*height
     val q=viewer.rotation

@@ -123,9 +123,19 @@ fun main() {
             val frameCorner=FloatArray(3){frame.center[it]+x*frame.width*mesh.frameTangentX[it]+y*frame.height*mesh.frameTangentY[it]}
             val imageRay=unit(FloatArray(3){corner[it]-mesh.eye[it]})
             val handleRay=unit(FloatArray(3){frameCorner[it]-mesh.eye[it]})
-            for(i in 0..2) near(imageRay[i],handleRay[i])
+            if(label!="dynamic") for(i in 0..2) near(imageRay[i],handleRay[i])
         }
-        println("$label: old plane min z=$oldMin; aligned frame minimum clearance=$minGap; all four corner rays match")
+        if(label=="dynamic") {
+            for(i in mesh.positions.indices step 3) {
+                val ray=FloatArray(3){mesh.positions[i+it]-mesh.eye[it]}
+                val t=dot(FloatArray(3){frame.center[it]-mesh.eye[it]},frame.normal)/dot(ray,frame.normal)
+                check(t>0f)
+                val onPlane=FloatArray(3){mesh.eye[it]+ray[it]*t-frame.center[it]}
+                check(kotlin.math.abs(dot(onPlane,mesh.tangentX))<=frame.width*.5f+.00001f)
+                check(kotlin.math.abs(dot(onPlane,mesh.tangentY))<=frame.height*.5f+.00001f)
+            }
+        }
+        println("$label: aligned backing frame clearance=$minGap; full dynamic outline is contained")
     }
     val mesh=MonitorMesh(.8f,.5f,floatArrayOf(-.2f,-.3f,1.2f)); val frame=curvedResizeFrame(mesh)
     val session=Session();val parent=Entity();val video=Entity().also { it.parent=parent;it.pose=Pose(Vector3(.2f,0f,0f));it.scale=.8f }

@@ -231,13 +231,12 @@ internal class MonitorWarp : AutoCloseable {
         var reference=referenceMesh
         if(reference==null || reference.width!=placement.physicalWidthM || reference.height!=placement.physicalHeightM ||
             viewer.indices.any {kotlin.math.abs(viewer[it]-reference!!.eye[it])>.01f}) {
-            reference=MonitorMesh(placement.physicalWidthM,placement.physicalHeightM,viewer)
+            reference=MonitorMesh(placement.physicalWidthM,placement.physicalHeightM,viewer,focus=floatArrayOf(0f,0f))
             referenceMesh=reference
         }
         if(!freezeProjection && eye!=null && viewDirection!=null && (previous==null || now-projectionUpdatedAt>=100)) {
             val endpoint=viewerInMonitor(FloatArray(3){eye[it]+viewDirection[it]},placement.pose.position,placement.pose.rotation)
-            val hit=monitorRayHit(viewer,FloatArray(3){endpoint[it]-viewer[it]},reference!!.width,reference.height,reference)
-            hit?.let {reference.unproject(it,false)}?.let {desired->
+            sphericalViewFocus(reference!!,FloatArray(3){endpoint[it]-viewer[it]})?.let {desired->
                 val next=floatArrayOf(desired[0].coerceIn(-reference.width*.5f,reference.width*.5f),desired[1].coerceIn(-reference.height*.5f,reference.height*.5f))
                 val old=focus?.let {floatArrayOf(it[0].coerceIn(-reference.width*.5f,reference.width*.5f),it[1].coerceIn(-reference.height*.5f,reference.height*.5f))}
                 focus=if(old==null) next else FloatArray(2){old[it]+.35f*(next[it]-old[it])}
@@ -255,7 +254,7 @@ internal class MonitorWarp : AutoCloseable {
                 val h=next.project(floatArrayOf(next.width*.5f,0f,0f))
                 val v=next.project(floatArrayOf(0f,next.height*.5f,0f))
                 fun sag(point: FloatArray) = (0..2).sumOf { (point[it]*viewer[it]/next.radius).toDouble() }.toFloat()
-                Log.i("Floatdesk","warp geometry viewer=${viewer.contentToString()} sdkViewer=$sdkEye radius=${next.radius} image=${placement.pixelWidth}x${placement.pixelHeight} extent=${next.width}x${next.height} horizontalSag=${sag(h)} verticalSag=${sag(v)}")
+                Log.i("Floatdesk","warp geometry map=geodesic viewer=${viewer.contentToString()} sdkViewer=$sdkEye radius=${next.radius} image=${placement.pixelWidth}x${placement.pixelHeight} extent=${next.width}x${next.height} horizontalSag=${sag(h)} verticalSag=${sag(v)}")
             }
             val shape = videoShape(next.width,next.height,next)
             val target = if (live === original) SurfaceEntity.create(session,

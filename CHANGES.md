@@ -145,7 +145,7 @@ Arrangement drops discard the final 100 ms of pinch-opening aim movement using i
 
 ### Dynamic spherical geometry and lost-tracking recovery
 
-Spherical mode now reshapes surface vertices using a head-centered tangent-plane projection onto the viewer-centered sphere. Camera-space checks establish straight edges when either end is viewed, while every vertex retains eye-center distance. Texture-only correction is disabled. Video, snapshots, exact hand-ray resolution and backing controls share the geometry.
+Spherical mode now reshapes surface vertices with a view-centered spherical exponential map. The full gnomonic map was removed because it made the entire desktop read as planar. Checks require a straight viewed axis, curved peripheral edges, constant vertex radius, an anchored desktop center and non-rigid deformation. Flat mode remains unchanged under head turns. Texture-only correction is disabled. Video, snapshots, exact hand-ray resolution and backing controls share the geometry; the backing frame contains the complete curved outline.
 
 Native input uses one reusable shared-material triangle grid, transformed to follow the current surface without loading/destroying GLTF models on head turns. Transform reconstruction and resource-identity checks cover the grid. Geometry freezes during actual interaction and resumes on release; tiny backing-frame size changes from float roundoff do not replace its material. Native hit behavior and long-running stability still need headset confirmation.
 

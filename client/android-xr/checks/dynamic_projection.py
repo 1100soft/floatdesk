@@ -11,16 +11,21 @@ fun main() {
  fun dot(a:FloatArray,b:FloatArray)=(0..2).sumOf {(a[it]*b[it]).toDouble()}.toFloat()
  for(eye in listOf(floatArrayOf(0f,0f,1.2f),floatArrayOf(.4f,-.3f,.8f))) {
   var previous:FloatArray?=null
-  for(focus in listOf(floatArrayOf(-.9f,0f),floatArrayOf(0f,0f),floatArrayOf(.9f,0f),floatArrayOf(.6f,.4f))) {
+  for(focus in listOf(floatArrayOf(-.9f,0f),floatArrayOf(0f,0f),floatArrayOf(.9f,0f),floatArrayOf(.6f,.4f),floatArrayOf(0f,.55f),floatArrayOf(0f,-.55f))) {
    val mesh=MonitorMesh(1.8f,1.1f,eye,focus=focus)
    check(previous==null || !previous.contentEquals(mesh.positions));previous=mesh.positions.copyOf()
+   near(mesh.project(floatArrayOf(0f,0f,0f)),floatArrayOf(0f,0f,0f)) // The desktop center does not drift while looking around.
    for(i in mesh.positions.indices step 3) check(kotlin.math.abs(length(minus(mesh.positions.copyOfRange(i,i+3),eye))-mesh.radius)<.00001f)
-   // Camera-space perspective: each edge must be a straight line, including at either viewed end.
+   // The viewed axes become straight great circles, while peripheral edges retain curvature.
    fun camera(p:FloatArray):FloatArray {val ray=minus(p,eye);val z=-dot(ray,mesh.frameNormal);return floatArrayOf(dot(ray,mesh.frameTangentX)/z,dot(ray,mesh.frameTangentY)/z)}
-   for(edge in 0..3) {
-    val points=(0..20).map {i->val t=i/20f;val x=when(edge){0->-.9f;1->.9f;else->-.9f+1.8f*t};val y=when(edge){2->-.55f;3->.55f;else->-.55f+1.1f*t};camera(mesh.project(floatArrayOf(x,y,0f)))}
-    val first=points.first();val last=points.last()
-    for(p in points) check(kotlin.math.abs((p[0]-first[0])*(last[1]-first[1])-(p[1]-first[1])*(last[0]-first[0]))<.0001f)
+   for(axis in 0..1) {
+    val points=(0..20).map {i->val t=i/20f;val x=if(axis==0) focus[0] else -.9f+1.8f*t;val y=if(axis==1) focus[1] else -.55f+1.1f*t;camera(mesh.project(floatArrayOf(x,y,0f)))}
+    for(p in points) check(kotlin.math.abs(p[axis])<.002f) // All visible points lie on the focused axis.
+   }
+   if(focus[0]==0f && focus[1]==0f) {
+    val top=camera(mesh.project(floatArrayOf(.9f,.5f,0f)))
+    val mid=camera(mesh.project(floatArrayOf(.9f,0f,0f)))
+    check(kotlin.math.abs(top[0]-mid[0])>.01f) // A full planar-looking gnomonic map must fail this test.
    }
    val patches=interactionPatches(mesh);check(patches.size==192)
    fun rotate(v:FloatArray,q:FloatArray):FloatArray {
@@ -46,6 +51,25 @@ fun main() {
    }
   }
  }
+ val focusReference=MonitorMesh(1.8f,1.1f,floatArrayOf(0f,0f,1.2f),focus=floatArrayOf(0f,0f))
+ for(x in listOf(-.9f,0f,.9f)) {
+  val direction=minus(focusReference.project(floatArrayOf(x,0f,0f)),focusReference.eye)
+  val selected=sphericalViewFocus(focusReference,direction)!!
+  check(kotlin.math.abs(selected[0]-x)<.00002f && kotlin.math.abs(selected[1])<.00002f)
+ }
+ val outward=sphericalViewFocus(focusReference,floatArrayOf(1f,0f,-.5f))!!
+ check(outward[0]==.9f) // Looking past the old boundary still focuses the visible edge.
+ val centerMesh=MonitorMesh(1.8f,1.1f,floatArrayOf(0f,0f,1.2f),focus=floatArrayOf(0f,0f))
+ val edgeMesh=MonitorMesh(1.8f,1.1f,floatArrayOf(0f,0f,1.2f),focus=floatArrayOf(.9f,0f))
+ fun topChord(m:MonitorMesh)=length(minus(m.project(floatArrayOf(-.9f,.55f,0f)),m.project(floatArrayOf(.9f,.55f,0f))))
+ check(kotlin.math.abs(topChord(centerMesh)-topChord(edgeMesh))>.0005f) // Real deformation, not a rigid panel rotation.
+ for(w in listOf(20f,60f)) for(sx in listOf(-1f,1f)) for(sy in listOf(-1f,1f)) {
+  val m=MonitorMesh(w,w*.625f,floatArrayOf(0f,0f,.2f),focus=floatArrayOf(sx*w*.5f,sy*w*.625f*.5f))
+  for(i in m.positions.indices step 3) {
+   val ray=FloatArray(3){m.positions[i+it]-m.eye[it]}
+   check(dot(ray,m.normal)<0f) // The backing plane remains behind the complete wide desktop.
+  }
+ }
  val recovery=TrackingRecovery();val p=floatArrayOf(0f,0f,0f);val q=floatArrayOf(0f,0f,0f,1f)
  check(recovery.update(0,true,p,q,1f)==null)
  check(recovery.update(20,false,null,null,1f)==null)
@@ -58,7 +82,7 @@ fun main() {
  check(recovery.update(920,true,floatArrayOf(2f,0f,0f),q,1f)==null)
  recovery.update(940,false,null,null,1f)
  check(recovery.update(1300,true,floatArrayOf(2f,0f,0f),floatArrayOf(0f,.70710677f,0f,.70710677f),1f)!=null)
- println("PASS changing sphere vertices, perspective-straight left/right/top/bottom edges, constant eye radius, reusable interaction patches and exact hand-ray resolution, tracking gap/jump recovery")
+ println("PASS changing sphere vertices, straight viewed axes with curved peripheral edges, constant eye radius, reusable interaction patches and exact hand-ray resolution, tracking gap/jump recovery")
 }
 '''
 lib=Path(sys.argv[1]);stdlib=next(lib.glob('kotlin-stdlib-*.jar'))

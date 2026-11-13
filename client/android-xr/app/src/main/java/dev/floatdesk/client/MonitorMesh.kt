@@ -74,11 +74,15 @@ internal class MonitorMesh(
             texCoords[vertex*2]=col.toFloat()/columns
             texCoords[vertex*2+1]=row.toFloat()/rows
         }
-        // Gnomonic (tangent-plane) projection: locally undistorted at the viewed point.
+        // Spherical exponential map: angular distance from focus is preserved.
+        // Only the axes through the viewed point are great circles; peripheral curvature remains.
         // Keep that point on the reference sphere so changing focus does not chase itself.
         focus?.let { centre ->
             require(centre.size==2 && centre.all { it.isFinite() })
-            val anchor=project(floatArrayOf(centre[0],centre[1],0f))
+            val referenceX=centre[0]*radiansPerMeter;val referenceY=centre[1]*radiansPerMeter
+            val referenceAngle=sqrt(referenceX*referenceX+referenceY*referenceY)
+            val referenceSinc=if(referenceAngle<.00001f) 1f else kotlin.math.sin(referenceAngle)/referenceAngle
+            val anchor=FloatArray(3){eye[it]+radius*(-kotlin.math.cos(referenceAngle)*normal[it]+referenceSinc*(referenceX*tangentX[it]+referenceY*tangentY[it]))}
             val n=FloatArray(3) { (eye[it]-anchor[it])/radius }
             fun cross(a:FloatArray,b:FloatArray)=floatArrayOf(a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0])
             val turn=cross(normal,n)
@@ -92,9 +96,11 @@ internal class MonitorMesh(
             for(row in 0..rows) for(col in 0..columns) {
                 val x=((col.toFloat()/columns-.5f)*width-centre[0])*radiansPerMeter
                 val y=((.5f-row.toFloat()/rows)*height-centre[1])*radiansPerMeter
-                val length=sqrt(1f+x*x+y*y)
+                val angle=sqrt(x*x+y*y)
+                val sinc=if(angle<.00001f) 1f else kotlin.math.sin(angle)/angle
+                val cosine=kotlin.math.cos(angle)
                 val vertex=row*(columns+1)+col
-                for(axis in 0..2) positions[vertex*3+axis]=eye[axis]+radius*(-n[axis]+x*tx[axis]+y*ty[axis])/length
+                for(axis in 0..2) positions[vertex*3+axis]=eye[axis]+radius*(-cosine*n[axis]+sinc*(x*tx[axis]+y*ty[axis]))
             }
         }
         var offset=0
@@ -335,4 +341,18 @@ internal fun interactionPatches(mesh:MonitorMesh,columns:Int=12,rows:Int=8):List
             add(triangle(a,c,b));add(triangle(b,c,d))
         }
     }
+}
+
+/** Analytic log map of head direction, so a curved edge outside the reference rectangle can still focus. */
+internal fun sphericalViewFocus(mesh:MonitorMesh,direction:FloatArray):FloatArray? {
+    if(direction.size!=3 || !direction.all {it.isFinite()})return null
+    val length=sqrt(direction.sumOf {(it*it).toDouble()}).toFloat()
+    if(length<.00001f)return null
+    fun dot(axis:FloatArray)=(0..2).sumOf {(direction[it]*axis[it]/length).toDouble()}.toFloat()
+    val forward=-dot(mesh.normal)
+    if(forward<.1f)return null
+    val x=dot(mesh.tangentX);val y=dot(mesh.tangentY)
+    val sine=sqrt(x*x+y*y)
+    val scale=(if(sine<.00001f) 1f else kotlin.math.atan2(sine,forward)/sine)/mesh.radiansPerMeter
+    return floatArrayOf((x*scale).coerceIn(-mesh.width*.5f,mesh.width*.5f),(y*scale).coerceIn(-mesh.height*.5f,mesh.height*.5f))
 }

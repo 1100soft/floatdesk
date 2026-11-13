@@ -27,6 +27,8 @@ internal class MonitorSystemControls : AutoCloseable {
     private var movable: MovableComponent?=null
     private var generation=0L
     private var frameWidth=1f
+    private var frameMesh:MonitorMesh?=null
+    private var curvedFrame:ResizeFrameGeometry?=null
     private var shapeWidth=Float.NaN
     private var shapeHeight=Float.NaN
     private var canonicalWidth=Float.NaN
@@ -44,7 +46,10 @@ internal class MonitorSystemControls : AutoCloseable {
         if(video==null || (!enabled && (resizeStartWidth!=null || moving))) { close();return }
         // Do not feed the app's changing geometry back into an active native controller.
         if(resizeStartWidth!=null || moving) return
-        val frame=mesh?.let(::curvedResizeFrame) ?: flatResizeFrame(width,height,viewer)
+        val frame=if(mesh!=null) {
+            if(frameMesh!==mesh || curvedFrame==null) {curvedFrame=curvedResizeFrame(mesh);frameMesh=mesh}
+            curvedFrame!!
+        } else flatResizeFrame(width,height,viewer)
         frameWidth=frame.width
         val padding=.02f*unitsPerMeter
         val nextWidth=frame.width+2f*padding;val nextHeight=frame.height+2f*padding
@@ -108,6 +113,7 @@ internal class MonitorSystemControls : AutoCloseable {
 
     override fun close() {
         generation++;moving=false
+        frameMesh=null;curvedFrame=null
         component?.let { entity?.removeComponent(it) };movable?.let { entity?.removeComponent(it) }
         entity?.parent=null
         entity=null;component=null;movable=null;listener=null;moveListener=null;resizeStartWidth=null

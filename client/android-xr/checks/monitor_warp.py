@@ -124,6 +124,10 @@ suspend fun main() {
     check(video === input && output === input.getSurface())
     check(input.mediaBlendingMode==SurfaceEntity.MediaBlendingMode.OPAQUE)
     check(input.enabled && input.getAlpha() == .8f)
+    warp.update(session,root,floatArrayOf(0f,0f,0f),screen,false,false)
+    val flatPose=input.getPose();val flatShape=input.shape
+    warp.update(session,root,floatArrayOf(0f,0f,0f),screen,false,false,viewDirection=floatArrayOf(.8f,0f,-1f))
+    check(warp.mesh==null && input.getPose()==flatPose && input.shape===flatShape)
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false)
     val stableOutput=warp.outputSurface
     SystemClock.now=1000L

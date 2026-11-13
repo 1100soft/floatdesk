@@ -6,14 +6,18 @@ internal data class ResizeFrameGeometry(val center: FloatArray,val normal: Float
 /** Put the frame behind the sphere's tangent plane, with corners on the image's viewing rays. */
 internal fun curvedResizeFrame(mesh: MonitorMesh): ResizeFrameGeometry {
     val offset=mesh.radius*.003f
-    val n=mesh.frameNormal;val xAxis=mesh.frameTangentX;val yAxis=mesh.frameTangentY
+    val n=mesh.normal;val xAxis=mesh.tangentX;val yAxis=mesh.tangentY
     val base=FloatArray(3){mesh.eye[it]-n[it]*(mesh.radius+offset)}
     fun dot(a:FloatArray,b:FloatArray)=(0..2).sumOf {(a[it]*b[it]).toDouble()}.toFloat()
     var minX=Float.POSITIVE_INFINITY;var maxX=Float.NEGATIVE_INFINITY
     var minY=Float.POSITIVE_INFINITY;var maxY=Float.NEGATIVE_INFINITY
-    for(x in listOf(-.5f,.5f)) for(y in listOf(-.5f,.5f)) {
-        val corner=mesh.project(floatArrayOf(x*mesh.width,y*mesh.height,0f))
-        val ray=FloatArray(3){corner[it]-mesh.eye[it]};val t=-(mesh.radius+offset)/dot(ray,n)
+    // A curved outline can extend beyond its four corners. Include its complete perimeter.
+    for(row in 0..mesh.rows) for(col in 0..mesh.columns) {
+        if(row!=0 && row!=mesh.rows && col!=0 && col!=mesh.columns)continue
+        if(mesh.focus==null && ((row!=0 && row!=mesh.rows) || (col!=0 && col!=mesh.columns)))continue
+        val i=(row*(mesh.columns+1)+col)*3
+        val ray=FloatArray(3){mesh.positions[i+it]-mesh.eye[it]}
+        val t=-(mesh.radius+offset)/dot(ray,n)
         val p=FloatArray(3){mesh.eye[it]+ray[it]*t-base[it]}
         val px=dot(p,xAxis);val py=dot(p,yAxis)
         minX=minOf(minX,px);maxX=maxOf(maxX,px);minY=minOf(minY,py);maxY=maxOf(maxY,py)

@@ -177,6 +177,7 @@ internal class DeskConnection(
         val id=monitorSequence.incrementAndGet();focusPending.set(id);focusBusy.value=true
         val json=org.json.JSONObject().put("type","focus").put("requestId",id)
         if(target.windowId!=null)json.put("windowId",target.windowId) else json.put("screen",target.screen)
+        json.put("contactU",target.contactU).put("contactV",target.contactV)
         val packet=Protocol.workspace(json.toString())
         for(delay in listOf(0L,300L,900L,1800L))handler.postDelayed({if(focusPending.get()==id)send(packet)},delay)
         main.postDelayed({if(focusPending.compareAndSet(id,0)) {

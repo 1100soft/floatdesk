@@ -9,6 +9,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
@@ -103,8 +105,8 @@ private fun ResolutionChoice(current:Pair<Int,Int>,modes:List<Pair<Int,Int>>,ena
     }
     Text(String.format(Locale.ROOT,"%,d pixels",(width.toIntOrNull()?.toLong() ?: 0)*(height.toIntOrNull()?.toLong() ?: 0)),color=MaterialTheme.colorScheme.onSurface,fontSize=12.sp)
     Row(horizontalArrangement=Arrangement.spacedBy(6.dp)) {
-        androidx.compose.material3.OutlinedTextField(width,{width=it.filter(Char::isDigit)},Modifier.weight(1f),label={Text("Width")},singleLine=true,enabled=enabled)
-        androidx.compose.material3.OutlinedTextField(height,{height=it.filter(Char::isDigit)},Modifier.weight(1f),label={Text("Height")},singleLine=true,enabled=enabled)
+        androidx.compose.material3.OutlinedTextField(width,{width=it.filter(Char::isDigit)},Modifier.weight(1f),label={Text("Width")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number),enabled=enabled)
+        androidx.compose.material3.OutlinedTextField(height,{height=it.filter(Char::isDigit)},Modifier.weight(1f),label={Text("Height")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number),enabled=enabled)
         val w=width.toIntOrNull();val h=height.toIntOrNull()
         Button(enabled=enabled && w!=null && h!=null && w in 1..65535 && h in 1..65535,onClick={onChoose(w!! to h!!)}) {Text("Set")}
     }
@@ -119,12 +121,12 @@ private fun PinchSettings(value:PinchThresholds,onApply:(PinchThresholds)->Unit)
     var rightMiddle by remember(value){mutableStateOf(value.rightMiddleMm.toString())}
     Text("Contact distance (mm) · larger is easier, smaller is firmer",color=Color.White,fontSize=13.sp)
     Row(horizontalArrangement=Arrangement.spacedBy(6.dp)) {
-        androidx.compose.material3.OutlinedTextField(leftIndex,{leftIndex=it},Modifier.weight(1f),label={Text("Left index")},singleLine=true)
-        androidx.compose.material3.OutlinedTextField(rightIndex,{rightIndex=it},Modifier.weight(1f),label={Text("Right index")},singleLine=true)
+        androidx.compose.material3.OutlinedTextField(leftIndex,{leftIndex=it},Modifier.weight(1f),label={Text("Left index")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Decimal))
+        androidx.compose.material3.OutlinedTextField(rightIndex,{rightIndex=it},Modifier.weight(1f),label={Text("Right index")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Decimal))
     }
     Row(horizontalArrangement=Arrangement.spacedBy(6.dp)) {
-        androidx.compose.material3.OutlinedTextField(leftMiddle,{leftMiddle=it},Modifier.weight(1f),label={Text("Left middle")},singleLine=true)
-        androidx.compose.material3.OutlinedTextField(rightMiddle,{rightMiddle=it},Modifier.weight(1f),label={Text("Right middle")},singleLine=true)
+        androidx.compose.material3.OutlinedTextField(leftMiddle,{leftMiddle=it},Modifier.weight(1f),label={Text("Left middle")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Decimal))
+        androidx.compose.material3.OutlinedTextField(rightMiddle,{rightMiddle=it},Modifier.weight(1f),label={Text("Right middle")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Decimal))
     }
     val parsed=listOf(leftIndex,rightIndex,leftMiddle,rightMiddle).map{it.toFloatOrNull()}
     val next=if(parsed.all{it!=null})PinchThresholds(parsed[0]!!,parsed[1]!!,parsed[2]!!,parsed[3]!!).takeIf{it.valid()} else null

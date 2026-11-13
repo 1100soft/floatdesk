@@ -1019,7 +1019,8 @@ private fun DeskContent(
             PalmControls(latchedFollow, workspace.sphericalWarp, workspace.eyeAiming, workspace.mouseGestures, panelFocused, panelPressed, workspace.focusMode, onPalmAction)
         }
     }
-    layout.forEachIndexed { index, placement ->
+    // Remove desktop render/input surfaces while Workspace is open so no surface can occlude it.
+    if(!displayControlsOpen) layout.forEachIndexed { index, placement ->
         androidx.compose.runtime.key(placement.hostSourceId,placement.pixelWidth,placement.pixelHeight) {
         val hands = remember(index) { grabs.getOrPut(index) { TwoHandState() } }
         var nativeResize by remember(index) { mutableStateOf(false) }

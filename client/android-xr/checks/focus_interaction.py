@@ -39,6 +39,11 @@ fun main() {
  val cross=FocusGestures();cross.update(true,false,mapOf("RIGHT" to FingerPinch(.05f,.05f)),hover)
  check(cross.update(true,false,mapOf("RIGHT" to FingerPinch(.01f,.05f)),hover)==null)
  check(cross.update(true,false,mapOf("RIGHT" to FingerPinch(.05f,.05f)),hover)==window)
+ val contactWindow=window.copy(contactU=.17f,contactV=.29f)
+ val contact=FocusGestures()
+ contact.update(true,false,mapOf("LEFT" to FingerPinch(.05f,.05f)),mapOf("LEFT" to FocusHover(screen,contactWindow)))
+ contact.update(true,false,mapOf("LEFT" to FingerPinch(.01f,.05f)),mapOf("LEFT" to FocusHover(screen,contactWindow)))
+ check(contact.update(true,false,mapOf("LEFT" to FingerPinch(.05f,.05f)),hover)==contactWindow)
  val profile=PinchThresholds(4f,5f,6f,7f)
  check(profile.valid() && !profile.copy(leftIndexMm=Float.NaN).valid())
  val configured=FocusGestures {profile}

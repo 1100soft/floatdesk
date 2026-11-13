@@ -404,7 +404,26 @@ fn focus_desktop_target(
         ));
     }
     pointer.release();
-    pointer.move_pointer(left + (right - left) / 2, top + (bottom - top) / 2, false)?;
+    // Preserve the contact captured at pinch-down; framing still uses the full target.
+    let contact = value["contactU"]
+        .as_f64()
+        .zip(value["contactV"].as_f64())
+        .filter(|(u, v)| {
+            u.is_finite() && v.is_finite() && (0.0..=1.0).contains(u) && (0.0..=1.0).contains(v)
+        });
+    let (cursor_x, cursor_y) = contact
+        .map(|(u, v)| {
+            (
+                (bounds.x as f64 + u * bounds.width as f64).round() as i32,
+                (bounds.y as f64 + v * bounds.height as f64).round() as i32,
+            )
+        })
+        .unwrap_or((left + (right - left) / 2, top + (bottom - top) / 2));
+    pointer.move_pointer(
+        cursor_x.clamp(left, right - 1),
+        cursor_y.clamp(top, bottom - 1),
+        false,
+    )?;
     Ok([
         (left - bounds.x) as f32 / bounds.width as f32,
         (top - bounds.y) as f32 / bounds.height as f32,

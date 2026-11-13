@@ -19,9 +19,9 @@ internal data class WorkspaceInfo(val screens:List<DesktopOutput>,val available:
         val x=b[0]+u*b[2];val y=b[1]+v*b[3]
         val screen=screens.firstOrNull{x>=it.x && x<=it.x+it.width && y>=it.y && y<=it.y+it.height} ?: return null
         fun rect(x:Int,y:Int,w:Int,h:Int)=FocusRect((x-b[0]).toFloat()/b[2],(y-b[1]).toFloat()/b[3],(x+w-b[0]).toFloat()/b[2],(y+h-b[1]).toFloat()/b[3])
-        val display=FocusTarget(rect(screen.x,screen.y,screen.width,screen.height),screen.name)
+        val display=FocusTarget(rect(screen.x,screen.y,screen.width,screen.height),screen.name,contactU=u,contactV=v)
         val window=if(windowFocus)windows.firstOrNull{x>=it.x && x<=it.x+it.width && y>=it.y && y<=it.y+it.height} else null
-        return FocusHover(display,window?.let{FocusTarget(rect(it.x,it.y,it.width,it.height),screen.name,it.id)})
+        return FocusHover(display,window?.let{FocusTarget(rect(it.x,it.y,it.width,it.height),screen.name,it.id,u,v)})
     }
     /** Source rectangles may cross screens; map each visible piece through its visual inset. */
     fun visibleRects(rect:FocusRect,spacing:Float):List<FocusRect> {

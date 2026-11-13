@@ -1,5 +1,9 @@
 # Changes since the LAN proof of concept
 
+- Focus selection places the cursor at the captured pinch/ray contact rather than the target center.
+
+- Hide desktop render/input surfaces while Workspace is open, and request numeric keyboards for resolution and pinch-threshold fields.
+
 - Focus pinches no longer require experimental mouse gestures; both modes reserve two-ray aiming for preview/grabbing. Shared per-hand pinch thresholds are available from Workspace’s fixed Settings button.
 
 - Share saved pinch settings across mouse, focus and grab. Select focus targets on release without chord vetoes, retain fresh input after stale batches, decouple hand actions from head tracking, and release stuck native handle ownership. Fit selected regions to a central 36°×24° view and extend temporary Follow to three seconds.

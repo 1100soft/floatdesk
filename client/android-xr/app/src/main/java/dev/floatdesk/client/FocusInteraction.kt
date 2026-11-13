@@ -10,7 +10,7 @@ internal data class FocusRect(val left:Float,val top:Float,val right:Float,val b
         return r.takeIf{it.right>it.left && it.bottom>it.top}
     }
 }
-internal data class FocusTarget(val rect:FocusRect,val screen:String,val windowId:Long?=null)
+internal data class FocusTarget(val rect:FocusRect,val screen:String,val windowId:Long?=null,val contactU:Float=rect.centerU,val contactV:Float=rect.centerV)
 internal data class FocusHover(val screen:FocusTarget,val window:FocusTarget?=null)
 internal data class FocusResult(val requestId:Int,val ok:Boolean,val rect:FocusRect?,val message:String="")
 

@@ -1,12 +1,14 @@
 # Changes since the LAN proof of concept
 
+- Reset now centers the active desktop in the current view and fits its size to the binocular field of view, preserving aspect ratio and accounting for spherical corners.
+
 - Show the dynamically projected spherical result during grabs with a reusable textured native grid and projected contact markers. Explicitly apply scene depth testing and use opaque beam texels with entity-level dimming for live-video overlap.
 
 - Consolidate grab state/preview geometry, share binary index contact with mouse control, and resolve native/gaze input against rendered triangles. Fix false large-screen collider rejection, cancellation on fresh delayed samples, and aiming suppression across different monitors or stale generic manipulation state.
 
 - Use five-degree contact separation for two-hand grabs regardless of desktop size; allow validated joint-pinched preview contacts to complete acquisition after a missed native DOWN.
 
-- Expanded spherical coverage to just before antipodal overlap, with bounded focus movement instead of gaze-dependent shrinking and finite wraparound resize bounds.
+- Expanded spherical coverage toward the antipodal overlap boundary. Very wide fields compress far peripheral angular spacing while preserving local view-centric curvature; wraparound resize bounds remain finite.
 - Fixed oversized desktop resize/release consistency: native resize bounds grow with the desktop, final invalid SDK proposals retain the last valid size, and aiming beams resolve their endpoint against current rendered geometry. Dynamic spherical geometry no longer uses the obsolete 2.2-radian envelope.
 
 This covers the work after `b8eba1a` ("Show the laptop screen on the headset without a typed address"). The headset still finds the computer by itself, and `--existing` still streams the physical panel.
@@ -140,7 +142,7 @@ Screen edits now reject overlapping output rectangles as well as orphan screens.
 
 ### Host capabilities and tray
 
-The host now selects the lowest positive advertised virtual refresh, including sub-Hz modes. Slow display changes execute in a worker instead of blocking control/repair/heartbeat processing. Workspace receives a named output catalogue with actual modes and refresh, supports custom mode provisioning, and shows an advisory memory/CPU pixel estimate. The fixed client count/resolution choices and six-rectangle mask restriction are removed. A Python/PySide6 tray provides service controls, logs, output status and authorized first-time setup; server startup also attempts unprivileged backend preparation. Real kernel, X11, decoder and transport limits remain.
+The host now selects the lowest positive advertised virtual refresh, including sub-Hz modes. Slow display changes execute in a worker instead of blocking control/repair/heartbeat processing. Workspace receives a named output catalogue with actual modes and refresh, supports custom mode provisioning, and carries an advisory memory/CPU pixel estimate in host metadata. The fixed client count/resolution choices and six-rectangle mask restriction are removed. A Python/PySide6 tray provides service controls, logs, output status and authorized first-time setup; server startup also attempts unprivileged backend preparation. Real kernel, X11, decoder and transport limits remain.
 
 Workspace now has a pinned × close control, concise pixel totals and high-contrast resolution inputs. Resolution changes reflow connected output positions as needed and verify the resulting dimensions. Live video returns to opaque composition with exact geometric holes for transparent gaps, preserving the continuous native-ray path. Unanchored layouts persist a viewer reference, restore relative to the new XR session, and save atomically on pause/stop. Regression checks cover these geometry, blending and persistence contracts.
 
@@ -156,10 +158,12 @@ Arrangement drops discard the final 100 ms of pinch-opening aim movement using i
 
 Spherical mode now reshapes surface vertices with a view-centered spherical exponential map. The full gnomonic map was removed because it made the entire desktop read as planar. Checks require a straight viewed axis, curved peripheral edges, constant vertex radius, an anchored desktop center and non-rigid deformation. Flat mode remains unchanged under head turns. Texture-only correction is disabled. Video, snapshots, exact hand-ray resolution and backing controls share the geometry; the backing frame contains the complete curved outline.
 
-Native input uses one reusable shared-material triangle grid, transformed to follow the current surface without loading/destroying GLTF models on head turns. Transform reconstruction and resource-identity checks cover the grid. Geometry freezes during actual interaction and resumes on release; tiny backing-frame size changes from float roundoff do not replace its material. Native hit behavior and long-running stability still need headset confirmation.
+Native input uses one reusable shared-material triangle grid, transformed to follow the current surface without loading/destroying GLTF models on head turns. Transform reconstruction and resource-identity checks cover the grid. Geometry freezes during mouse pinches and native handle interaction; custom spherical grabs show the projected result through a reusable native snapshot grid. Tiny backing-frame size changes from float roundoff do not replace its material. Native hit behavior and long-running stability still need headset confirmation.
 
 Substantial pose changes after a sustained tracking gap restore unanchored layouts relative to the last trusted viewer. The system warning remains under Android XR control. Adaptive/cropped streaming remains unimplemented.
 
 ### Recover discovery across network interfaces
 
 A Wi-Fi beacon followed by Ethernet control replies could leave the client on Updating screens indefinitely, with no decoder started. Discovery now retries other fresh addresses advertised under the selected host name while retaining strict reply-endpoint matching. Healthy connections stay pinned. Beacon polling no longer adds a 200 ms wait per control packet. A real UDP regression reproduces asymmetric reply routing, and live selection of the reply interface restored video reception and resolved the pending screen query.
+
+Aiming and grab-preview beams that a large live video layer would cover are drawn into that video. The native beams are unchanged below a 1.5-metre rendered canvas, and active-grab snapshot tethers stay on their existing path.

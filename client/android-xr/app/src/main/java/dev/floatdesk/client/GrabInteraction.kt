@@ -277,4 +277,3 @@ internal fun previewGrabGuide(placement: MonitorPlacement, left: FloatArray, rig
     return GrabGuide(corners,listOf(worldLeft,worldRight),listOf(handLeft,handRight),tracking.unitsPerMeter,
         tracking.points["HEAD"],mesh?.outline?.map(::miniature) ?: corners)
 }
-

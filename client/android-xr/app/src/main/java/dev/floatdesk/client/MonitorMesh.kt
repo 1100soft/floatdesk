@@ -220,6 +220,68 @@ internal fun meshRayHit(mesh:MonitorMesh,origin:FloatArray,direction:FloatArray)
     return if(nearest.isFinite()) FloatArray(3){origin[it]+direction[it]*nearest} else null
 }
 
+/** Live SurfaceEntity canvases larger than this cover foreground beams. Smaller desktops keep the native ray. */
+internal const val liveBeamOverlayExtent = 1.5f
+
+internal fun renderedSurfaceExtent(width: Float, height: Float, mesh: MonitorMesh?): Float {
+    if (mesh == null) return maxOf(width, height)
+    var minX = Float.POSITIVE_INFINITY; var minY = minX; var minZ = minX
+    var maxX = Float.NEGATIVE_INFINITY; var maxY = maxX; var maxZ = maxX
+    val p = mesh.positions
+    var i = 0
+    while (i + 2 < p.size) {
+        minX = minOf(minX, p[i]); maxX = maxOf(maxX, p[i])
+        minY = minOf(minY, p[i + 1]); maxY = maxOf(maxY, p[i + 1])
+        minZ = minOf(minZ, p[i + 2]); maxZ = maxOf(maxZ, p[i + 2])
+        i += 3
+    }
+    return if (maxX.isFinite()) maxOf(maxX - minX, maxY - minY, maxZ - minZ) else maxOf(width, height)
+}
+
+/**
+ * Top-left video segments for the part of a beam that lies on a large live surface.
+ * Empty below [liveBeamOverlayExtent], so desktops that already show native beams are unchanged.
+ */
+internal fun liveVideoBeamSegments(eye: FloatArray, from: FloatArray, to: FloatArray,
+                                   position: FloatArray, rotation: FloatArray,
+                                   width: Float, height: Float, mesh: MonitorMesh?): FloatArray {
+    if (eye.size < 3 || from.size < 3 || to.size < 3 || width <= 0f || height <= 0f) return floatArrayOf()
+    if (renderedSurfaceExtent(width, height, mesh) <= liveBeamOverlayExtent) return floatArrayOf()
+    fun local(world: FloatArray) = viewerInMonitor(world, position, rotation)
+    val eyeLocal = local(eye)
+    fun hit(world: FloatArray): FloatArray? {
+        val point = local(world)
+        val direction = FloatArray(3) { point[it] - eyeLocal[it] }
+        val length = kotlin.math.sqrt(direction.sumOf { (it * it).toDouble() }).toFloat()
+        if (length < 1e-5f) return null
+        val surface = monitorRayHit(eyeLocal, direction, width, height, mesh) ?: return null
+        val flat = if (mesh != null) mesh.unproject(surface) ?: return null else surface
+        val u = flat[0] / width + .5f
+        val v = .5f - flat[1] / height
+        return if (u in 0f..1f && v in 0f..1f) floatArrayOf(u, v) else null
+    }
+    val samples = 8
+    val uv = ArrayList<Float>(samples * 2)
+    for (step in 0..samples) {
+        val t = step.toFloat() / samples
+        val world = FloatArray(3) { from[it] + (to[it] - from[it]) * t }
+        val point = hit(world) ?: continue
+        if (uv.size >= 2) {
+            val du = point[0] - uv[uv.size - 2]; val dv = point[1] - uv[uv.size - 1]
+            if (du * du + dv * dv < 1e-8f) continue
+        }
+        uv.add(point[0]); uv.add(point[1])
+    }
+    if (uv.size < 4) return floatArrayOf()
+    val out = FloatArray((uv.size / 2 - 1) * 4)
+    var write = 0
+    for (i in 0 until uv.size / 2 - 1) {
+        out[write++] = uv[i * 2]; out[write++] = uv[i * 2 + 1]
+        out[write++] = uv[i * 2 + 2]; out[write++] = uv[i * 2 + 3]
+    }
+    return out
+}
+
 /** Select the visible image using a ray in monitor-local coordinates, never SDK-localized hits. */
 internal fun monitorRayHit(origin: FloatArray, direction: FloatArray, width: Float, height: Float, mesh: MonitorMesh?): FloatArray? {
     fun inside(hit: FloatArray): Boolean {

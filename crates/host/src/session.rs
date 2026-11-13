@@ -364,6 +364,12 @@ fn update_streams(
     Ok(())
 }
 
+type DisplayWorker = (
+    SocketAddr,
+    u32,
+    thread::JoinHandle<(MonitorPool, Result<()>)>,
+);
+
 fn run(
     initial: &[MonitorRect],
     opts: &ServeOpts,
@@ -466,11 +472,7 @@ fn run(
     let mut last_stats = Instant::now();
     let mut last_progress = [0u64; 6];
     let started = Instant::now();
-    let mut pending_display: Option<(
-        SocketAddr,
-        u32,
-        thread::JoinHandle<(MonitorPool, Result<()>)>,
-    )> = None;
+    let mut pending_display: Option<DisplayWorker> = None;
     let mut scratch = [0u8; 2048];
     while !shared.stop.load(Ordering::Relaxed) {
         if opts
@@ -765,7 +767,7 @@ fn run(
     }
     if let Some((_, _, worker)) = pending_display.take() {
         if let Ok((finished, _)) = worker.join() {
-            if let Some(owner) = pool.as_deref_mut() {
+            if let Some(owner) = pool {
                 *owner = finished;
             }
         }

@@ -1122,7 +1122,7 @@ mod tests {
                 target_geometry(&planned, "Virtual-1-1")
             )
             .is_ok());
-            assert_eq!(planned[0].primary, true);
+            assert!(planned[0].primary);
         }
     }
     #[test]

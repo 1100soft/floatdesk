@@ -41,7 +41,7 @@ else:
                 assert time.monotonic()<ready,'Host did not start'
                 continue
             if hello[5]==2:break
-            assert time.monotonic()<ready,'Host did not send hello' 
+            assert time.monotonic()<ready,'Host did not send hello'
         while True:
             try:s.recvfrom(65535)
             except socket.timeout:break

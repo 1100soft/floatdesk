@@ -28,11 +28,22 @@ fun main() {
    check(stale.local.contentEquals(floatArrayOf(5f,3f,-4f))) // Visual correction never rewrites the logical target.
   }
  }
+ val pose=floatArrayOf(0f,0f,-1.2f); val rotation=floatArrayOf(0f,0f,0f,1f)
+ val viewer=floatArrayOf(0f,0f,0f); val hand=floatArrayOf(.12f,-.08f,-.55f); val contact=floatArrayOf(0f,0f,-1.2f)
+ check(liveVideoBeamSegments(viewer,hand,contact,pose,rotation,.8f,.5f,null).isEmpty())
+ val covered=liveVideoBeamSegments(viewer,hand,contact,pose,rotation,4f,2.5f,null)
+ check(covered.size>=4 && covered.all {it in 0f..1f})
+ check(kotlin.math.abs(covered[covered.size-2]-.5f)<.02f && kotlin.math.abs(covered[covered.size-1]-.5f)<.02f)
+ val curved=MonitorMesh(6f,3.6f,floatArrayOf(0f,0f,1.4f),focus=floatArrayOf(0f,0f))
+ check(renderedSurfaceExtent(6f,3.6f,curved)>liveBeamOverlayExtent)
+ val curvedSegments=liveVideoBeamSegments(floatArrayOf(0f,0f,1.4f),floatArrayOf(.2f,-.1f,.7f),floatArrayOf(0f,0f,0f),floatArrayOf(0f,0f,0f),rotation,6f,3.6f,curved)
+ check(curvedSegments.isNotEmpty() && curvedSegments.all {it in 0f..1f})
+ check(liveVideoBeamSegments(floatArrayOf(0f,0f,1.4f),floatArrayOf(.2f,-.1f,.7f),floatArrayOf(0f,0f,0f),floatArrayOf(0f,0f,0f),rotation,.8f,.5f,MonitorMesh(.8f,.5f,floatArrayOf(0f,0f,1.4f),focus=floatArrayOf(0f,0f))).isEmpty())
  val flat=PointerTarget(0,.75f,.25f,floatArrayOf(9f,9f,-5f))
  check(pointerSurfacePoint(flat,8f,5f,null).contentEquals(floatArrayOf(2f,1.25f,0f)))
  val lifted=visibleGrabContact(pointerSurfacePoint(flat,8f,5f,null),eye,1f)
  check(lifted[2]>0f)
- println("PASS stale-hit recovery across large resize/release, exact live UVs, full-ray foreground depth and unchanged logical targets in flat/geodesic modes")
+ println("PASS stale-hit recovery across large resize/release, exact live UVs, full-ray foreground depth, unchanged logical targets in flat/geodesic modes, and video-layer beams only past the large-canvas threshold")
 }
 '''
 lib=Path(sys.argv[1]);stdlib=next(lib.glob('kotlin-stdlib-*.jar'))

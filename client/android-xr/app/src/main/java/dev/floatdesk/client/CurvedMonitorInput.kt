@@ -37,7 +37,6 @@ internal class CurvedMonitorInput private constructor(
     }
 
     companion object {
-
         @android.annotation.SuppressLint("RestrictedApi")
         suspend fun create(session: Session, parent: Entity, mesh: MonitorMesh,
                            listener: (InputEvent) -> Unit): CurvedMonitorInput {
@@ -62,13 +61,13 @@ internal class CurvedMonitorInput private constructor(
     }
 }
 
-        internal fun updateMeshPatches(entity:GltfModelEntity,mesh:MonitorMesh,columns:Int=12,rows:Int=8) {
-            val patches=interactionPatches(mesh,columns,rows)
-            check(entity.nodes.size==patches.size*2)
-            patches.forEachIndexed {i,p->
-                val q=p.rotation;val child=p.childRotation
-                entity.nodes[i*2].localPose=Pose(Vector3(p.center[0],p.center[1],p.center[2]),Quaternion(q[0],q[1],q[2],q[3]))
-                entity.nodes[i*2].localScale=Vector3(p.scale[0],p.scale[1],1f)
-                entity.nodes[i*2+1].localPose=Pose(Vector3(0f,0f,0f),Quaternion(child[0],child[1],child[2],child[3]))
-            }
-        }
+internal fun updateMeshPatches(entity:GltfModelEntity,mesh:MonitorMesh,columns:Int=12,rows:Int=8) {
+    val patches=interactionPatches(mesh,columns,rows)
+    check(entity.nodes.size==patches.size*2)
+    patches.forEachIndexed {i,p->
+        val q=p.rotation;val child=p.childRotation
+        entity.nodes[i*2].localPose=Pose(Vector3(p.center[0],p.center[1],p.center[2]),Quaternion(q[0],q[1],q[2],q[3]))
+        entity.nodes[i*2].localScale=Vector3(p.scale[0],p.scale[1],1f)
+        entity.nodes[i*2+1].localPose=Pose(Vector3(0f,0f,0f),Quaternion(child[0],child[1],child[2],child[3]))
+    }
+}

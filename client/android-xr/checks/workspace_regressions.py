@@ -26,6 +26,28 @@ fun main() {
   check(kotlin.math.abs(area-.75f)<.0001f)
   if(sphere!=null) check(clippedVideoGeometry(2f,2f,sphere,full,0f).positions===sphere.positions)
  }
+ for(spherical in listOf(false,true)) for(aspect in listOf(.25f,1.6f,8f)) for(units in listOf(1f,1.785f)) {
+  val source=MonitorPlacement("fit","existing-0",Pose(floatArrayOf(5f,-3f,-9f)),20f,20f/aspect,0f,8000,(8000/aspect).toInt(),60)
+  val viewer=Pose(floatArrayOf(10f,2f,-4f),floatArrayOf(0f,.70710677f,0f,.70710677f))
+  val h=.65f;val v=.5f
+  val fitted=fitDesktopInView(listOf(source),viewer,h,v,units,spherical).single()
+  val center=viewerInMonitor(fitted.pose.position,viewer.position,viewer.rotation)
+  check(kotlin.math.abs(center[0])<.00001f && kotlin.math.abs(center[1])<.00001f && kotlin.math.abs(center[2]+1.2f*units)<.00001f)
+  check(kotlin.math.abs(fitted.physicalWidthM/fitted.physicalHeightM-aspect)<.00001f)
+  check(fitted.pixelWidth==source.pixelWidth && fitted.pixelHeight==source.pixelHeight)
+  val eye=viewerInMonitor(viewer.position,fitted.pose.position,fitted.pose.rotation)
+  val mesh=if(spherical)MonitorMesh(fitted.physicalWidthM,fitted.physicalHeightM,eye,focus=floatArrayOf(0f,0f)) else null
+  for(x in listOf(-.5f,0f,.5f))for(y in listOf(-.5f,0f,.5f)) {
+   val point=floatArrayOf(x*fitted.physicalWidthM,y*fitted.physicalHeightM,0f)
+   val p=mesh?.project(point) ?: point
+   val depth=eye[2]-p[2]
+   check(depth>0f && kotlin.math.abs(kotlin.math.atan2(p[0]-eye[0],depth))<=h*.85f+.0001f)
+   check(kotlin.math.abs(kotlin.math.atan2(p[1]-eye[1],depth))<=v*.85f+.0001f)
+  }
+ }
+ check(fitDesktopInView(emptyList(),Pose(),0f,0f,1f,false).isEmpty())
+ val fallback=MonitorPlacement("fallback","existing-0",Pose(),1f,1f,0f,1000,1000,60)
+ check(fitDesktopInView(listOf(fallback),Pose(),Float.NaN,0f,Float.NaN,true).single().physicalWidthM.isFinite())
  val original=MonitorPlacement("a","existing-0",Pose(floatArrayOf(1f,0f,-2f)),1.2f,.8f,0f,1920,1080,60)
  val old=WorkspaceFile(layouts=mutableMapOf("Desk" to mutableListOf(original)),viewerReference=Pose())
  val turned=Pose(floatArrayOf(10f,2f,5f),floatArrayOf(0f,.70710677f,0f,.70710677f))

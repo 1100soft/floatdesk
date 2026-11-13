@@ -37,14 +37,34 @@ internal class DeskConnection(
     val detailStatus=mutableStateOf("Experimental viewed detail off")
     private var detailWorker:ViewedDetail?=null
     @Volatile private var detailSession=0L
-    fun viewedDetail(rect:FocusRect?) {
+    private val detailDiagnostics=AtomicReference(DetailDiagnostics())
+    fun detailDebug(enabled:Boolean) {
+        if(detailDiagnostics.get().enabled==enabled)return
+        val state=detailDiagnostics.updateAndGet{it.copy(enabled=enabled)};decoders[0]?.detailDebug(state)
+    }
+    fun viewedDetail(rect:FocusRect?,blockedReason:String="No desktop in view") {
         val remote=pendingRemote
         val bounds=workspaceInfo.value?.bounds()?.toList()
         val format=currentMonitors.singleOrNull()
         val improves=rect!=null && format!=null && (rect.right-rect.left)*format.width<1536 && (rect.bottom-rect.top)*format.height<1024
         if(rect!=null && !improves && detailStatus.value!="Normal video already covers this view")main.post{detailStatus.value="Normal video already covers this view"}
         val request=if(improves && rect!=null && renderingActive && remote!=null && bounds!=null)DetailRequest(remote,detailSession,rect,bounds) else null
-        if(request!=null && detailWorker==null)detailWorker=ViewedDetail({patch->decoders[0]?.detail(patch) ?: patch?.bitmap?.recycle()},{message->main.post{detailStatus.value=message}})
+        val reason=when {
+            rect==null->blockedReason
+            format==null->"Waiting for one combined desktop stream"
+            !improves->"SKIPPED: baseline density already sufficient"
+            !renderingActive->"Paused: app hidden"
+            remote==null || bounds==null->"Waiting for host/layout"
+            else->"Requesting viewed detail"
+        }
+        val state=detailDiagnostics.updateAndGet{it.copy(candidate=rect,reason=reason,
+            gainX=if(rect!=null && format!=null)1536f/((rect.right-rect.left)*format.width) else 0f,
+            gainY=if(rect!=null && format!=null)1024f/((rect.bottom-rect.top)*format.height) else 0f)}
+        decoders[0]?.detailDebug(state)
+        if(request!=null && detailWorker==null)detailWorker=ViewedDetail({patch->decoders[0]?.detail(patch) ?: patch?.bitmap?.recycle()},{message->
+            val updated=detailDiagnostics.updateAndGet{it.copy(transport=message)};decoders[0]?.detailDebug(updated)
+            main.post{detailStatus.value=message}
+        })
         detailWorker?.update(request)
     }
     val focusResult=mutableStateOf<FocusResult?>(null)

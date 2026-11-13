@@ -593,8 +593,14 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 // Head quality controls follow, not availability of independently tracked hands.
                 followLock = null
             }
+            connection.detailDebug(workspace.experimentalViewedDetail)
             if(!workspace.experimentalViewedDetail || displayControlsOpen || head==null || manipulating) {
-                connection.viewedDetail(null)
+                connection.viewedDetail(null,when {
+                    !workspace.experimentalViewedDetail->"Experimental mode off"
+                    displayControlsOpen->"Paused: Workspace open"
+                    head==null->"Paused: head tracking unavailable"
+                    else->"Paused: desktop manipulation"
+                })
             } else if(handTracking.nowMs-lastDetailAt>=125){
                 lastDetailAt=handTracking.nowMs
                 val screen=workspace.monitorAt(0)

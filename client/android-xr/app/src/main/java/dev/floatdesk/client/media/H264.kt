@@ -257,6 +257,8 @@ internal class MonitorDecoder(
         if(active) recover("visible stream resumed") else awaitingKey.set(true)
     }
 
+    private val detailDiagnostics=AtomicReference(dev.floatdesk.client.net.DetailDiagnostics())
+    fun detailDebug(value:dev.floatdesk.client.net.DetailDiagnostics){detailDiagnostics.set(value);compositor?.detailDebug(value)}
     fun detail(patch:dev.floatdesk.client.net.DetailPatch?) {val renderer=compositor;if(renderer!=null)renderer.detail(patch) else patch?.bitmap?.recycle()}
     fun detailCursor(u:Float,v:Float){compositor?.detailCursor(u,v)}
 
@@ -354,6 +356,7 @@ internal class MonitorDecoder(
         val renderer=if(byteDump) null else runCatching { VideoCompositor(width,height) }
             .onFailure { Log.e(TAG,"Live video compositor unavailable; using direct decode",it) }.getOrNull()
         compositor=renderer
+        renderer?.detailDebug(detailDiagnostics.get())
         renderer?.overlay(aim.get())
         renderer?.presentation(presentation.get())
         renderer?.projection(projection.get())

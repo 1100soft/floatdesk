@@ -19,11 +19,17 @@ internal class ViewedDetail(private val publish:(DetailPatch?)->Unit,private val
     private val request=AtomicReference<DetailRequest?>(null)
     @Volatile private var running=true
     @Volatile private var socket:Socket?=null
+    private var attempts=0L
+    private var received=0L
+    private var late=0L
+    private var errors=0L
+    private fun report(message:String){status("TX $attempts / RX $received / late $late / errors $errors · $message")}
     private val worker=Thread({
         while(running) {
             val next=request.get()
             if(next==null){Thread.sleep(100);continue}
             val start=SystemClock.elapsedRealtime()
+            attempts++;report("request in flight")
             try {
                 val connection=Socket();socket=connection
                 connection.use {
@@ -43,10 +49,10 @@ internal class ViewedDetail(private val publish:(DetailPatch?)->Unit,private val
                     val bitmap=BitmapFactory.decodeByteArray(bytes,0,count) ?: error("Invalid detail image")
                     val current=request.get()
                     if(running && current!=null && current.host==next.host && current.sessionId==next.sessionId && current.desktop==next.desktop && SystemClock.elapsedRealtime()-start<250) {
-                        publish(DetailPatch(rect,bitmap,next.desktop[2],next.desktop[3],SystemClock.uptimeMillis()-(SystemClock.elapsedRealtime()-start)));status("Viewed detail · ${options.outWidth} × ${options.outHeight}")
-                    } else bitmap.recycle()
+                        received++;publish(DetailPatch(rect,bitmap,next.desktop[2],next.desktop[3],SystemClock.uptimeMillis()-(SystemClock.elapsedRealtime()-start)));report("${SystemClock.elapsedRealtime()-start} ms · ${count/1024} KiB")
+                    } else {late++;bitmap.recycle();report("discarded: stale or changed view/session (${SystemClock.elapsedRealtime()-start} ms)")}
                 }
-            } catch(_:Exception) {if(running && request.get()!=null){status("Viewed detail unavailable · normal video continues");Thread.sleep(750)}}
+            } catch(error:Exception) {if(running && request.get()!=null){errors++;report("${error.javaClass.simpleName}: ${error.message.orEmpty().take(55)}");Thread.sleep(750)}}
             finally {socket=null}
             if(running)Thread.sleep((125-(SystemClock.elapsedRealtime()-start)).coerceAtLeast(10))
         }

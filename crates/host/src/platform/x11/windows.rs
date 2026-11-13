@@ -298,8 +298,9 @@ mod tests {
                 "Private focus host did not start"
             );
         }
+        let geometry = link.conn.get_geometry(link.root).unwrap().reply().unwrap();
         let request = floatdesk_protocol::ControlPacket::Workspace {
-            json: serde_json::json!({"type":"focus","requestId":100,"windowId":ids[1]}).to_string(),
+            json: serde_json::json!({"type":"focus","requestId":100,"windowId":ids[1],"contactU":140.0/f64::from(geometry.width),"contactV":150.0/f64::from(geometry.height)}).to_string(),
         }
         .encode();
         socket.send_to(&request, &server).unwrap();
@@ -322,7 +323,7 @@ mod tests {
             );
         }
         let cursor = link.conn.query_pointer(link.root).unwrap().reply().unwrap();
-        assert_eq!((cursor.root_x, cursor.root_y), (250, 220));
+        assert_eq!((cursor.root_x, cursor.root_y), (140, 150));
         link.move_pointer(20, 30).unwrap();
         socket.send_to(&request, &server).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(100));

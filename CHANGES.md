@@ -8,7 +8,7 @@
 
 - Share saved pinch settings across mouse, focus and grab. Select focus targets on release without chord vetoes, retain fresh input after stale batches, decouple hand actions from head tracking, and release stuck native handle ownership. Fit selected regions to a central 36°×24° view and extend temporary Follow to three seconds.
 
-- Add a palm-toggle screen/window focus mode, live colored highlights, shared pinch thresholds, acknowledged EWMH activation/cursor centering, selected-region view fitting in both projection modes, and a temporary three-second Follow lease. Revert the subsequent size-threshold beam overlay experiment while retaining tested per-segment highlight colors.
+- Add a palm-toggle screen/window focus mode, live colored highlights, shared pinch thresholds, acknowledged EWMH activation/cursor placement, selected-region view fitting in both projection modes, and a temporary three-second Follow lease. Revert the subsequent size-threshold beam overlay experiment while retaining tested per-segment highlight colors.
 
 - Reset now centers the active desktop in the current view and fits its size to the binocular field of view, preserving aspect ratio and accounting for spherical corners.
 

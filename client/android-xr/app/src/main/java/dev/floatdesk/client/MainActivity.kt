@@ -684,6 +684,21 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 }
             }
             val hoverHands = pointerControl.hands(grips.keys,handTracking.nowMs,aimPoses).filterValues {connection.desktopPoint(it.monitor,it.u,it.v)!=null}
+            // Preview and acquisition share current validated surface UVs. Do not
+            // require a second native DOWN after both physical pinches are already down.
+            if(listOf("LEFT","RIGHT").all {it in handTracking.pinched} && palmPanel==null) {
+                val left=hoverHands["LEFT"];val right=hoverHands["RIGHT"]
+                if(left!=null && right!=null && left.monitor==right.monitor) {
+                    val placement=workspace.monitorAt(left.monitor)
+                    val grab=grabs[left.monitor]
+                    if(placement!=null && grab!=null && !grab.engaged) {
+                        val wasBusy=grab.busy;val mesh=pointerControl.meshes[left.monitor]
+                        for((side,hit) in listOf("LEFT" to left,"RIGHT" to right))
+                            grab.acquire(side,pointerSurfacePoint(hit,placement.physicalWidthM,placement.physicalHeightM,mesh),placement,handTracking,mesh)
+                        if(wasBusy!=grab.busy) updateManipulation(grab.busy)
+                    }
+                }
+            }
             val eyeRays = if (trackingAvailable && deviceState != null) gazeEyes.mapNotNull { eye ->
                 val state=eye.state.value
                 if(!state.isOpen || state.trackingState!=TrackingState.TRACKING) null else {
@@ -753,7 +768,10 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 val right=hoverHands["RIGHT"]?.takeIf { it.monitor == index }
                 val placement=workspace.monitorAt(index)
                 if(points.size != 2 || left == null || right == null || placement == null) null else
-                    previewGrabGuide(placement,left.local,right.local,handTracking,pointerControl.meshes[index])?.let { index to it }
+                    previewGrabGuide(placement,
+                        pointerSurfacePoint(left,placement.physicalWidthM,placement.physicalHeightM,pointerControl.meshes[index]),
+                        pointerSurfacePoint(right,placement.physicalWidthM,placement.physicalHeightM,pointerControl.meshes[index]),
+                        handTracking,pointerControl.meshes[index])?.let { index to it }
             }.toMap() else emptyMap()
             guideRenderer?.let { renderer ->
                 runCatching { renderer.update(root, grabs.mapNotNull { (index,grab) -> grab.guide ?: previews[index] })
@@ -1518,6 +1536,14 @@ private class TwoHandState {
         if (kotlin.math.abs(flat[0]) > current.physicalWidthM * 0.5f + 0.001f ||
             kotlin.math.abs(flat[1]) > current.physicalHeightM * 0.5f + 0.001f) return null
         if (mesh == null) local[2] = 0f
+        return acquire(side,local,current,tracking,mesh)
+    }
+
+    // Joint-confirmed pinches can acquire the already validated preview contacts even
+    // when the runtime misses a native DOWN for one hand.
+    fun acquire(side:String,local:FloatArray,current:MonitorPlacement,tracking:GrabTracking,mesh:MonitorMesh?):MonitorPlacement? {
+        rearm(tracking)
+        if(needsRelease || engaged || tracking.points[side]==null)return null
         if (hands.isEmpty()) { began = tracking.nowMs; lastSeen = tracking.nowMs; frozenMesh = mesh }
         hands[side] = Grip(local)
         if (hands.size != 2) return null
@@ -1528,9 +1554,8 @@ private class TwoHandState {
         val rightLocal = hands.getValue("RIGHT").local
         val contactSpan = distance(leftLocal, rightLocal)
         val handSpan = distance(left, right)
-        val minContact = maxOf(0.12f * tracking.unitsPerMeter, current.physicalWidthM * 0.18f)
-        if (contactSpan < minContact || handSpan < 0.09f * tracking.unitsPerMeter) {
-            Log.i("Floatdesk", "grab rejected: contactSpan=$contactSpan minimum=$minContact handSpan=$handSpan")
+        if (!grabContactsSeparated(current,leftLocal,rightLocal,tracking,mesh) || handSpan < 0.09f * tracking.unitsPerMeter) {
+            Log.i("Floatdesk", "grab rejected: angular separation or handSpan=$handSpan")
             cancel(); return null
         }
         startLeft = left.copyOf(); startRight = right.copyOf()
@@ -1671,12 +1696,21 @@ private fun gazePointerTarget(origin: FloatArray, direction: FloatArray, workspa
     return best
 }
 
+/** A fixed five-degree visual separation, independent of desktop dimensions. */
+private fun grabContactsSeparated(placement:MonitorPlacement,left:FloatArray,right:FloatArray,tracking:GrabTracking,mesh:MonitorMesh?):Boolean {
+    val eye=tracking.points["VIEWER"] ?: tracking.points["HEAD"] ?: mesh?.eye?.let {transformPoint(placement.pose,it)} ?: return false
+    val a=subtract(transformPoint(placement.pose,left),eye)
+    val b=subtract(transformPoint(placement.pose,right),eye)
+    val denominator=distance(a,floatArrayOf(0f,0f,0f))*distance(b,floatArrayOf(0f,0f,0f))
+    return denominator>1e-8f && dot(a,b)/denominator <= kotlin.math.cos(Math.toRadians(5.0)).toFloat()
+}
+
 private fun previewGrabGuide(placement: MonitorPlacement, left: FloatArray, right: FloatArray,
                              tracking: GrabTracking, mesh: MonitorMesh?): GrabGuide? {
     val handLeft=tracking.points["LEFT"] ?: return null
     val handRight=tracking.points["RIGHT"] ?: return null
     val contactSpan=distance(left,right); val handSpan=distance(handLeft,handRight)
-    if(contactSpan<maxOf(.12f*tracking.unitsPerMeter,placement.physicalWidthM*.18f) || handSpan<.09f*tracking.unitsPerMeter) return null
+    if(!grabContactsSeparated(placement,left,right,tracking,mesh) || handSpan<.09f*tracking.unitsPerMeter) return null
     val worldLeft=transformPoint(placement.pose,left); val worldRight=transformPoint(placement.pose,right)
     val gain=contactSpan/handSpan
     val alignment=quaternionBetween(subtract(handRight,handLeft),subtract(worldRight,worldLeft))

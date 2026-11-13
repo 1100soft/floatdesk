@@ -1,5 +1,7 @@
 # Changes since the LAN proof of concept
 
+- Use five-degree contact separation for two-hand grabs regardless of desktop size; allow validated joint-pinched preview contacts to complete acquisition after a missed native DOWN.
+
 - Expanded spherical coverage to just before antipodal overlap, with bounded focus movement instead of gaze-dependent shrinking and finite wraparound resize bounds.
 - Fixed oversized desktop resize/release consistency: native resize bounds grow with the desktop, final invalid SDK proposals retain the last valid size, and aiming beams resolve their endpoint against current rendered geometry. Dynamic spherical geometry no longer uses the obsolete 2.2-radian envelope.
 

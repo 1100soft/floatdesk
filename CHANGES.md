@@ -1,5 +1,7 @@
 # Changes since the LAN proof of concept
 
+- Consolidate grab state/preview geometry, share binary index contact with mouse control, and resolve native/gaze input against rendered triangles. Fix false large-screen collider rejection, cancellation on fresh delayed samples, and aiming suppression across different monitors or stale generic manipulation state.
+
 - Use five-degree contact separation for two-hand grabs regardless of desktop size; allow validated joint-pinched preview contacts to complete acquisition after a missed native DOWN.
 
 - Expanded spherical coverage to just before antipodal overlap, with bounded focus movement instead of gaze-dependent shrinking and finite wraparound resize bounds.

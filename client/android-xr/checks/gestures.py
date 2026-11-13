@@ -33,15 +33,18 @@ stub += guide_source[guide_source.index('internal data class GrabGuide'):guide_s
 mesh_source = (Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client/MonitorMesh.kt').read_text().split('\n', 1)[1]
 guard_source = (Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client/TrackingGuard.kt').read_text().split('\n',1)[1]
 pointer_source = (Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client/PointerControl.kt').read_text().split('\n',1)[1]
-code = mesh_source + guard_source + stub + pointer_source + section('private const val PALM_WIDTH', '@Composable\nprivate fun PalmControls')
+pinch_source=(Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client/MouseGestures.kt').read_text()
+stub=stub.replace("private ","internal ")
+code = mesh_source + guard_source + pinch_source[pinch_source.index('internal fun mouseIndexContactMetres'):pinch_source.index('internal fun mouseMiddleContactMetres')] + stub + pointer_source + section('private const val PALM_WIDTH', '@Composable\nprivate fun PalmControls')
 code += section('private fun palmRayPoint(', '/** Direct fingertip contact')
 code += section('private class PalmPoke', '/** Find the parent')
-code += section('private class GrabTracking', 'private class FollowLock(')
+code += '\n'.join(line for line in (Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client/GrabInteraction.kt').read_text().splitlines() if not line.startswith(('package ', 'import ')))
+code += section('private fun gazePointerTarget(', 'private class FollowLock(')
 code += section('private fun palmNormal(', 'private fun openViewpoint(')
 code += section('private fun openPalm(', 'private fun readHand(')
-code += section('private fun dot(a: FloatArray', 'private fun Pose.toRuntimePose(')
-code += section('private fun rotateVector(', 'private fun subtract(')
-code += source[source.index('private fun subtract('):]
+code += section('internal fun dot(a: FloatArray', 'private fun Pose.toRuntimePose(')
+code += section('internal fun rotateVector(', 'internal fun subtract(')
+code += source[source.index('internal fun subtract('):]
 code += '''
 private fun near(a: FloatArray, b: FloatArray) { check(distance(a,b) < 0.0001f) { "${a.contentToString()} != ${b.contentToString()}" } }
 private fun point(m: MonitorPlacement, local: FloatArray, scale: Float = 1f) = transformPoint(m.pose, local, scale)
@@ -74,6 +77,10 @@ fun main() {
         grab.onEvent(event("LEFT",InputEvent.Action.DOWN,localL),screen,PixelDensity(),tracking)
         grab.onEvent(event("RIGHT",InputEvent.Action.DOWN,localR),screen,PixelDensity(),tracking)
     }
+    val owners=PointerControl()
+    owners.nativeManipulation(0,true);owners.nativeManipulation(1,true)
+    owners.nativeManipulation(0,false);check(owners.nativeManipulating)
+    owners.clearMonitor(1);check(!owners.nativeManipulating)
     val control=PointerControl()
     val gaze=PointerTarget(0,.9f,.9f,floatArrayOf(.3f,-.1f,0f))
     check(control.choose(false,gaze,emptyMap(),false).mode == PointerMode.OFF)
@@ -84,6 +91,10 @@ fun main() {
     check(control.choose(false,gaze,one,false).mode == PointerMode.HAND)
     check(control.choose(true,gaze,one,false).target!!.u != gaze.u)
     control.hover(0,"RIGHT",r,r,.8f,.45f)
+    check(control.choose(true,gaze,mapOf("LEFT" to PointerTarget(0,.5f,.5f,l),"RIGHT" to PointerTarget(1,.5f,.5f,r)),false).mode==PointerMode.HAND)
+    check(handPreviewMonitor(mapOf("LEFT" to PointerTarget(0,.5f,.5f,l),"RIGHT" to PointerTarget(1,.5f,.5f,r)))==null)
+    check(!indexPinchClosed("LEFT",.04f) && !indexPinchClosed("RIGHT",.04f))
+    check(indexPinchClosed("LEFT",mouseIndexContactMetres("LEFT")) && indexPinchClosed("RIGHT",mouseIndexContactMetres("RIGHT")))
     val two=control.hands(setOf("LEFT","RIGHT"))
     check(control.choose(true,gaze,two,false) == PointerChoice(PointerMode.PREVIEW))
     check(control.choose(true,gaze,one,true) == PointerChoice(PointerMode.GRAB))
@@ -123,6 +134,12 @@ fun main() {
     val huge=initial.copy(physicalWidthM=20f,physicalHeightM=12.5f)
     check(grabContactsSeparated(huge,l,r,tracking,null))
     check(!grabContactsSeparated(huge,l,l,tracking,null))
+    val delayed=TwoHandState();lock(delayed)
+    tracking.nowMs=250
+    check(delayed.advance(tracking,initial)!=null && delayed.engaged) // A busy UI tick is not lost tracking.
+    tracking.nowMs=0
+    val unpinched=TwoHandState();tracking.pinched.clear();lock(unpinched);check(!unpinched.busy)
+    tracking.pinched.addAll(listOf("LEFT","RIGHT"))
     val recovered=TwoHandState()
     recovered.onEvent(event("LEFT",InputEvent.Action.DOWN,l),huge,PixelDensity(),tracking)
     check(!recovered.engaged)
@@ -157,19 +174,22 @@ fun main() {
     near(point(tilted,l,scale),add(point(initial,l),rotateVector(align,dl[0]*gain,dl[1]*gain,dl[2]*gain)))
     near(point(tilted,r,scale),add(point(initial,r),rotateVector(align,dr[0]*gain,dr[1]*gain,dr[2]*gain)))
     // DEFAULT UP must release too; MOVE while raised cannot resurrect a grab.
+    tracking.pinched.clear()
     grab.onEvent(event("DEFAULT",InputEvent.Action.UP),tilted,PixelDensity(),tracking)
     check(!grab.engaged); check(!grab.busy); check(grab.guide == null)
     grab.onEvent(event("LEFT",InputEvent.Action.MOVE,l),initial,PixelDensity(),tracking)
     check(!grab.engaged)
     tracking.points["LEFT"] = startL; tracking.points["RIGHT"] = startR
     tracking.nowMs = 0
+    tracking.pinched.addAll(listOf("LEFT","RIGHT"))
     lock(grab); check(grab.engaged)
     // Missing raw joints freezes immediately and permanently cancels after 120ms.
     tracking.points.remove("LEFT"); tracking.nowMs = 80
     check(grab.advance(tracking,initial) == null); check(grab.engaged)
-    tracking.nowMs = 121; tracking.points["LEFT"] = startL
+    tracking.nowMs = 121
     check(grab.advance(tracking,initial) == null); check(!grab.engaged); check(!grab.blocksNative); check(grab.guide == null)
     grab.onEvent(event("LEFT",InputEvent.Action.MOVE,l),initial,PixelDensity(),tracking); check(!grab.engaged)
+    tracking.points["LEFT"] = startL
     // Both hands must open, followed by a new pair of DOWNs, to rearm after lost tracking.
     tracking.pinched.clear(); grab.advance(tracking,initial); check(!grab.blocksNative)
     tracking.pinched.addAll(listOf("LEFT","RIGHT")); lock(grab); check(grab.engaged)
@@ -188,10 +208,13 @@ fun main() {
     // Do not accept a single stale held hand after a pair ends; both must release.
     tracking.points["RIGHT"] = startR
     val fresh = TwoHandState(); lock(fresh); check(fresh.engaged)
+    tracking.pinched.remove("LEFT")
     fresh.onEvent(event("LEFT",InputEvent.Action.UP),initial,PixelDensity(),tracking)
     fresh.onEvent(event("LEFT",InputEvent.Action.DOWN,l),initial,PixelDensity(),tracking)
     check(!fresh.engaged)
+    tracking.pinched.remove("RIGHT")
     fresh.onEvent(event("RIGHT",InputEvent.Action.UP),initial,PixelDensity(),tracking)
+    tracking.pinched.addAll(listOf("LEFT","RIGHT"))
     lock(fresh); check(fresh.engaged)
     // A large tracking discontinuity must cancel rather than fling the monitor.
     tracking.points["LEFT"] = add(startL,floatArrayOf(1f,0f,0f))
@@ -264,14 +287,18 @@ fun main() {
     val curvedL = curved.project(l); val curvedR = curved.project(r)
     fun curvedEvent(side: String, hit: FloatArray) = SpatialInputEvent(side, InputEvent.Action.DOWN,Vector3(hit[0]*1000,hit[1]*1000,hit[2]*1000))
     val planarGrab = TwoHandState()
+    tracking.pinched.addAll(listOf("LEFT","RIGHT"))
     planarGrab.onEvent(event("LEFT",InputEvent.Action.DOWN,l),initial,PixelDensity(),tracking,curved,planarInput=true)
     planarGrab.onEvent(event("RIGHT",InputEvent.Action.DOWN,r),initial,PixelDensity(),tracking,curved,planarInput=true)
     check(planarGrab.engaged)
     near(planarGrab.guide!!.contacts[0],point(initial,curvedL))
     near(planarGrab.guide!!.contacts[1],point(initial,curvedR))
+    tracking.pinched.remove("LEFT")
     planarGrab.onEvent(event("LEFT",InputEvent.Action.UP),initial,PixelDensity(),tracking,curved,planarInput=true)
     check(!planarGrab.engaged && planarGrab.guide == null)
+    tracking.pinched.remove("RIGHT")
     planarGrab.onEvent(event("RIGHT",InputEvent.Action.UP),initial,PixelDensity(),tracking,curved,planarInput=true)
+    tracking.pinched.addAll(listOf("LEFT","RIGHT"))
     planarGrab.onEvent(event("LEFT",InputEvent.Action.DOWN,l),initial,PixelDensity(),tracking,curved,planarInput=true)
     planarGrab.onEvent(event("RIGHT",InputEvent.Action.DOWN,r),initial,PixelDensity(),tracking,curved,planarInput=true)
     check(planarGrab.engaged)

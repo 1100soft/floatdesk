@@ -36,6 +36,7 @@ internal class MonitorSystemControls : AutoCloseable {
     private var resizeStartWidth: Float?=null
     private var lastResizeFactor=1f
     private var moving=false
+    val isManipulating:Boolean get()=resizeStartWidth!=null || moving
     private var listener: ((ResizeEvent,Float)->Unit)?=null
     private var moveListener: ((SystemMovePhase,Pose)->Unit)?=null
 

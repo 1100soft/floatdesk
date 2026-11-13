@@ -11,6 +11,7 @@ internal data class MouseGestureOutput(val target: PointerTarget?, val dragging:
 
 // Thresholds describe tracked joint separation, not a physical skin gap.
 internal fun mouseIndexContactMetres(side: String)=if(side=="LEFT") .0155f else .0125f
+internal fun indexPinchClosed(side:String,separationMetres:Float)=separationMetres.isFinite() && separationMetres<=mouseIndexContactMetres(side)
 internal fun mouseMiddleContactMetres(side: String)=if(side=="RIGHT") .014f else .015f
 
 /** Raw finger gestures are independent of which hand supplies the aiming ray. */
@@ -47,8 +48,7 @@ internal class MouseGestures(private val diagnostic: (String)->Unit = {}) {
             fun contact(set: MutableSet<String>,distance: Float,threshold: Float) {
                 if(distance.isFinite() && distance<=threshold) set.add(side) else set.remove(side)
             }
-            val indexContact=mouseIndexContactMetres(side)
-            contact(indexClosed,sample.indexMetres,indexContact)
+            if(indexPinchClosed(side,sample.indexMetres)) indexClosed.add(side) else indexClosed.remove(side)
             contact(middleClosed,sample.middleMetres,mouseMiddleContactMetres(side))
             if(side in indexClosed && side in middleClosed) chordClosed.add(side) else chordClosed.remove(side)
         }

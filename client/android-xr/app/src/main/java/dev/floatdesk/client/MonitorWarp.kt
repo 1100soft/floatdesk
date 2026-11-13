@@ -142,7 +142,11 @@ internal class MonitorWarp : AutoCloseable {
                         if (event.action == InputEvent.Action.HOVER_EXIT && info != null && info.inputEntity !== expected) return@listener
                         val hoverHit = info?.hitPosition
                         val point = if (event.action != InputEvent.Action.HOVER_EXIT && info?.inputEntity === expected && hoverHit != null)
-                            eventMatrixHit(floatArrayOf(hoverHit.x,hoverHit.y,hoverHit.z),info.transform.data,flatWidth,flatHeight,mesh,target.getScale(Space.ACTIVITY),rayDirection=if(mesh!=null) floatArrayOf(event.direction.x,event.direction.y,event.direction.z) else null) else null
+                            eventMatrixHit(floatArrayOf(hoverHit.x,hoverHit.y,hoverHit.z),info.transform.data,flatWidth,flatHeight,mesh,target.getScale(Space.ACTIVITY),rayDirection=if(mesh!=null) floatArrayOf(event.direction.x,event.direction.y,event.direction.z) else null,rayOrigin=floatArrayOf(event.origin.x,event.origin.y,event.origin.z)) else null
+                        if(event.action!=InputEvent.Action.HOVER_EXIT) {
+                            val result=if(point!=null) "RESOLVED" else if(info?.inputEntity===expected) "UNRESOLVED" else "OTHER_TARGET"
+                            hoverActions[result]=(hoverActions[result] ?: 0)+1
+                        }
                         val flat = point?.let { mesh?.unproject(it) ?: it }
                         onHover?.invoke(side,point,flat,flatWidth,flatHeight)
                     }
@@ -158,18 +162,10 @@ internal class MonitorWarp : AutoCloseable {
                 if (side !in sequences && (side != "DEFAULT" || sequences.isEmpty())) return@listener
                 val hit = info?.hitPosition
                 val inputScale = target.getScale(Space.ACTIVITY)
-                fun onSurface(p: FloatArray): Boolean {
-                    val flat = if (mesh == null) p else mesh?.unproject(p) ?: return false
-                    val depthError = if (mesh == null) kotlin.math.abs(p[2]) else {
-                        val sphere = mesh!!
-                        kotlin.math.abs(kotlin.math.sqrt((0..2).sumOf { val d=p[it]-sphere.eye[it]; (d*d).toDouble() }).toFloat()-sphere.radius)
-                    }
-                    return depthError < .015f && kotlin.math.abs(flat[0]) <= flatWidth*.5f+.001f && kotlin.math.abs(flat[1]) <= flatHeight*.5f+.001f
-                }
                 // Hit position includes the activity root's scale; HitInfo.transform does not.
                 val local = if (info != null && hit != null)
                     eventMatrixHit(floatArrayOf(hit.x,hit.y,hit.z),info.transform.data,
-                        flatWidth,flatHeight,mesh,inputScale,rayDirection=if(mesh!=null) floatArrayOf(event.direction.x,event.direction.y,event.direction.z) else null) else null
+                        flatWidth,flatHeight,mesh,inputScale,rayDirection=if(mesh!=null) floatArrayOf(event.direction.x,event.direction.y,event.direction.z) else null,rayOrigin=floatArrayOf(event.origin.x,event.origin.y,event.origin.z)) else null
                 if (event.action == InputEvent.Action.DOWN) {
                     Log.i("Floatdesk","native event contact=${local?.contentToString()} inputScale=$inputScale hit=$hit matrix=${info?.transform?.data?.contentToString()}")
                 }
@@ -177,11 +173,9 @@ internal class MonitorWarp : AutoCloseable {
                     val point=if(event.action==InputEvent.Action.CANCEL) null else local
                     onHover?.invoke(side,point,point?.let { mesh?.unproject(it) ?: it },flatWidth,flatHeight)
                 }
-                val legacy = if (local == null && hit != null) session.scene.activitySpace.transformPoseTo(Pose(hit),target).translation
-                    .takeIf { onSurface(floatArrayOf(it.x,it.y,it.z)) } else null
                 fun pixels(v: Vector3) = Vector3(density.convertMetersToPixels(v.x),density.convertMetersToPixels(v.y),density.convertMetersToPixels(v.z))
                 onEvent(SpatialInputEvent(source=event.source,pointerType=event.pointerType,action=event.action,timestamp=event.timestamp,
-                    hitPosition=local?.let { pixels(Vector3(it[0],it[1],it[2])) } ?: legacy?.let { pixels(it) },origin=pixels(event.origin),direction=pixels(event.direction)))
+                    hitPosition=local?.let { pixels(Vector3(it[0],it[1],it[2])) },origin=pixels(event.origin),direction=pixels(event.direction)))
                 if (event.action == InputEvent.Action.UP || event.action == InputEvent.Action.CANCEL) {
                     if (side == "DEFAULT") sequences.clear() else sequences.remove(side)
                 }

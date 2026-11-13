@@ -14,6 +14,9 @@ internal class PointerControl {
     private val hoverPoses=mutableMapOf<String,HandAimPose>()
     private var resumeAfterGrab = 0L
     val meshes = mutableMapOf<Int, MonitorMesh?>()
+    private val nativeOwners=mutableSetOf<Int>()
+    val nativeManipulating:Boolean get()=nativeOwners.isNotEmpty()
+    fun nativeManipulation(monitor:Int,active:Boolean) {if(active)nativeOwners.add(monitor) else nativeOwners.remove(monitor)}
 
     fun hover(monitor: Int, side: String, point: FloatArray?, flat: FloatArray?, width: Float, height: Float, nowMs: Long = 0) {
         if (side !in listOf("LEFT", "RIGHT")) return
@@ -41,6 +44,7 @@ internal class PointerControl {
     fun clearMonitor(monitor: Int) {
         hovering.entries.removeAll { it.value.monitor == monitor }
         meshes.remove(monitor)
+        nativeOwners.remove(monitor)
     }
 
     fun clear() { hovering.clear(); departedAt.clear(); lastHoverAt.clear(); handPoses.clear(); hoverPoses.clear() }
@@ -72,8 +76,8 @@ internal class PointerControl {
         // repopulate before allowing gaze to take over after releasing a monitor.
         return when {
             grabbing || nowMs < resumeAfterGrab -> PointerChoice(PointerMode.GRAB)
-            hands.size >= 2 -> PointerChoice(PointerMode.PREVIEW)
-            hands.size == 1 -> PointerChoice(PointerMode.HAND,hands.values.single())
+            handPreviewMonitor(hands)!=null -> PointerChoice(PointerMode.PREVIEW)
+            hands.isNotEmpty() -> PointerChoice(PointerMode.HAND,hands.maxBy {lastHoverAt[it.key] ?: 0L}.value)
             enabled -> PointerChoice(PointerMode.GAZE,gaze)
             else -> PointerChoice(PointerMode.OFF)
         }
@@ -85,4 +89,11 @@ internal fun pointerSurfacePoint(target:PointerTarget,width:Float,height:Float,m
     val w=mesh?.width ?: width;val h=mesh?.height ?: height
     val flat=floatArrayOf((target.u-.5f)*w,(.5f-target.v)*h,0f)
     return mesh?.project(flat,onTriangles=true) ?: flat
+}
+
+/** Two rays on different monitors are independent aiming contacts, not a grab pair. */
+internal fun handPreviewMonitor(hands:Map<String,PointerTarget>):Int? {
+    val left=hands["LEFT"] ?: return null
+    val right=hands["RIGHT"] ?: return null
+    return left.monitor.takeIf {it==right.monitor}
 }

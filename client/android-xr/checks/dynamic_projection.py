@@ -47,7 +47,7 @@ fun main() {
     // A coarse patch hit on the same hand ray must resolve the exact visible contact.
     val origin=floatArrayOf(.15f,-.1f,eye[2]-.1f);val direction=minus(hit,origin)
     val patchHit=FloatArray(3){hit[it]-.005f*direction[it]}
-    near(eventMatrixHit(patchHit,identity,mesh.width,mesh.height,mesh,rayDirection=direction)!!,hit)
+    near(eventMatrixHit(patchHit,identity,mesh.width,mesh.height,mesh,rayDirection=direction,rayOrigin=origin)!!,meshRayHit(mesh,origin,direction)!!)
    }
   }
  }

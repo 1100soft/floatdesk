@@ -195,6 +195,31 @@ internal class MonitorMesh(
     }
 }
 
+/** Ray/triangle selection shared by native hover, gaze and grab acquisition.
+ * Intersect the rendered triangles, not a sphere plus a fixed coarse-collider tolerance.
+ */
+internal fun meshRayHit(mesh:MonitorMesh,origin:FloatArray,direction:FloatArray):FloatArray? {
+    var nearest=Float.POSITIVE_INFINITY
+    val p=mesh.positions
+    for(i in mesh.indices.indices step 3) {
+        val a=mesh.indices[i]*3;val b=mesh.indices[i+1]*3;val c=mesh.indices[i+2]*3
+        val ex=p[b]-p[a];val ey=p[b+1]-p[a+1];val ez=p[b+2]-p[a+2]
+        val fx=p[c]-p[a];val fy=p[c+1]-p[a+1];val fz=p[c+2]-p[a+2]
+        val hx=direction[1]*fz-direction[2]*fy;val hy=direction[2]*fx-direction[0]*fz;val hz=direction[0]*fy-direction[1]*fx
+        val det=ex*hx+ey*hy+ez*hz
+        if(kotlin.math.abs(det)<1e-10f)continue
+        val tx=origin[0]-p[a];val ty=origin[1]-p[a+1];val tz=origin[2]-p[a+2]
+        val u=(tx*hx+ty*hy+tz*hz)/det
+        if(u<-.00001f || u>1.00001f)continue
+        val qx=ty*ez-tz*ey;val qy=tz*ex-tx*ez;val qz=tx*ey-ty*ex
+        val v=(direction[0]*qx+direction[1]*qy+direction[2]*qz)/det
+        if(v<-.00001f || u+v>1.00001f)continue
+        val t=(fx*qx+fy*qy+fz*qz)/det
+        if(t>0f && t<nearest)nearest=t
+    }
+    return if(nearest.isFinite()) FloatArray(3){origin[it]+direction[it]*nearest} else null
+}
+
 /** Select the visible image using a ray in monitor-local coordinates, never SDK-localized hits. */
 internal fun monitorRayHit(origin: FloatArray, direction: FloatArray, width: Float, height: Float, mesh: MonitorMesh?): FloatArray? {
     fun inside(hit: FloatArray): Boolean {
@@ -207,25 +232,12 @@ internal fun monitorRayHit(origin: FloatArray, direction: FloatArray, width: Flo
         if (t <= 0f) return null
         return FloatArray(3) { origin[it]+direction[it]*t }.takeIf { inside(it) }
     }
-    val delta = FloatArray(3) { origin[it]-mesh.eye[it] }
-    fun dot(a: FloatArray,b: FloatArray) = (0..2).sumOf { (a[it]*b[it]).toDouble() }.toFloat()
-    val a = dot(direction,direction)
-    if (a < 1e-10f) return null
-    val b = dot(delta,direction)
-    val c = dot(delta,delta)-mesh.radius*mesh.radius
-    val discriminant = b*b-a*c
-    if (discriminant < 0f) return null
-    for (t in listOf((-b-sqrt(discriminant))/a,(-b+sqrt(discriminant))/a)) {
-        if (t <= 0f) continue
-        val hit = FloatArray(3) { origin[it]+direction[it]*t }
-        if (inside(hit)) return hit
-    }
-    return null
+    return meshRayHit(mesh,origin,direction)?.takeIf {inside(it)}
 }
 
 /** Use the collision event's own transform, not a potentially different scene-reference pose. */
 internal fun eventMatrixHit(hit: FloatArray, matrix: FloatArray,
-                            width: Float, height: Float, mesh: MonitorMesh?, inputScale: Float = 1f, rayDirection:FloatArray?=null): FloatArray? {
+                            width: Float, height: Float, mesh: MonitorMesh?, inputScale: Float = 1f, rayDirection:FloatArray?=null,rayOrigin:FloatArray?=null): FloatArray? {
     if (!inputScale.isFinite() || inputScale <= 0f) return null
     val unscaled = FloatArray(3) { hit[it]/inputScale }
     fun transform(m: FloatArray): FloatArray {
@@ -236,15 +248,20 @@ internal fun eventMatrixHit(hit: FloatArray, matrix: FloatArray,
         kotlin.math.abs(kotlin.math.sqrt((0..2).sumOf { val d=p[it]-mesh.eye[it]; (d*d).toDouble() }).toFloat()-mesh.radius)
     var transformed=transform(matrix)
     if(rayDirection!=null && mesh!=null) {
-        val nativeDistance=sqrt((0..2).sumOf {val d=transformed[it]-mesh.eye[it];(d*d).toDouble()}).toFloat()
-        if(!nativeDistance.isFinite() || kotlin.math.abs(nativeDistance-mesh.radius)>maxOf(.02f,mesh.radius*.02f)) return null
         val ray=FloatArray(3){axis->matrix[axis]*rayDirection[0]+matrix[4+axis]*rayDirection[1]+matrix[8+axis]*rayDirection[2]}
         val length=sqrt(ray.sumOf {(it*it).toDouble()}).toFloat()
         if(!length.isFinite() || length<1e-8f)return null
         for(i in ray.indices)ray[i]/=length
-        val margin=maxOf(.03f,mesh.radius*.04f)
-        val start=FloatArray(3){transformed[it]-ray[it]*margin}
-        transformed=monitorRayHit(start,ray,width,height,mesh) ?: return null
+        val origin=rayOrigin?.let { source ->
+            val v=FloatArray(3){source[it]/inputScale}
+            val w=matrix[3]*v[0]+matrix[7]*v[1]+matrix[11]*v[2]+matrix[15]
+            FloatArray(3){(matrix[it]*v[0]+matrix[4+it]*v[1]+matrix[8+it]*v[2]+matrix[12+it])/w}
+        } ?: run {
+            // Compatibility for callers without a native origin: start before the whole sphere.
+            FloatArray(3){transformed[it]-ray[it]*(2f*mesh.radius+.03f)}
+        }
+        return monitorRayHit(origin,ray,width,height,mesh)
+
     }
     return transformed.takeIf { p ->
         if (!p.all { it.isFinite() } || error(p) > .015f) false else {

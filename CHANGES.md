@@ -1,5 +1,6 @@
 # Changes since the LAN proof of concept
 
+- Expanded spherical coverage to just before antipodal overlap, with bounded focus movement instead of gaze-dependent shrinking and finite wraparound resize bounds.
 - Fixed oversized desktop resize/release consistency: native resize bounds grow with the desktop, final invalid SDK proposals retain the last valid size, and aiming beams resolve their endpoint against current rendered geometry. Dynamic spherical geometry no longer uses the obsolete 2.2-radian envelope.
 
 This covers the work after `b8eba1a` ("Show the laptop screen on the headset without a typed address"). The headset still finds the computer by itself, and `--existing` still streams the physical panel.

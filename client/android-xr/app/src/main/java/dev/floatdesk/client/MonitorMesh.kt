@@ -17,7 +17,7 @@ internal class MonitorMesh(
     val eye: FloatArray,
     val columns: Int = 64,
     val rows: Int = 40,
-    val focus:FloatArray?=null,
+    focus:FloatArray?=null,
 ) {
     val radius = sqrt(eye.sumOf { (it * it).toDouble() }).toFloat()
     val normal = FloatArray(3) { eye[it] / radius }
@@ -27,8 +27,22 @@ internal class MonitorMesh(
     var frameNormal=normal;private set
     var frameTangentX=tangentX;private set
     var frameTangentY=tangentY;private set
-    // Keep one angular pixel scale in both axes; limit extreme fields uniformly to avoid folds.
-    val radiansPerMeter = minOf(1f/radius, (if(focus==null) 2.2f else Math.PI.toFloat()-.1f)/sqrt(width*width+height*height))
+    // The exponential map first overlaps at the antipode, not at a hemisphere.
+    // Keep the scale independent of gaze; restrict focus near the limit instead of shrinking the image.
+    val radiansPerMeter = minOf(1f/radius, (if(focus==null) 2.2f else 2f*(Math.PI.toFloat()-.01f))/sqrt(width*width+height*height))
+    val focus:FloatArray?=focus?.let { requested ->
+        require(requested.size==2 && requested.all { it.isFinite() })
+        fun fits(t:Float):Boolean {
+            val x=width*.5f+kotlin.math.abs(requested[0])*t
+            val y=height*.5f+kotlin.math.abs(requested[1])*t
+            return sqrt(x*x+y*y)*radiansPerMeter <= Math.PI.toFloat()-.009f
+        }
+        var low=0f;var high=1f
+        if(fits(1f)) requested.copyOf() else {
+            repeat(24) {val mid=(low+high)*.5f;if(fits(mid)) low=mid else high=mid}
+            FloatArray(2){requested[it]*low}
+        }
+    }
     val positions = FloatArray((columns + 1) * (rows + 1) * 3)
     val texCoords = FloatArray((columns + 1) * (rows + 1) * 2)
     val videoTexCoords: FloatArray
@@ -86,7 +100,7 @@ internal class MonitorMesh(
         // Spherical exponential map: angular distance from focus is preserved.
         // Only the axes through the viewed point are great circles; peripheral curvature remains.
         // Keep that point on the reference sphere so changing focus does not chase itself.
-        focus?.let { centre ->
+        this.focus?.let { centre ->
             require(centre.size==2 && centre.all { it.isFinite() })
             val referenceX=centre[0]*radiansPerMeter;val referenceY=centre[1]*radiansPerMeter
             val referenceAngle=sqrt(referenceX*referenceX+referenceY*referenceY)

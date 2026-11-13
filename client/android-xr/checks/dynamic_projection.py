@@ -67,11 +67,18 @@ fun main() {
   val m=MonitorMesh(w,w*.625f,floatArrayOf(0f,0f,.2f),focus=floatArrayOf(sx*w*.5f,sy*w*.625f*.5f))
   for(i in m.positions.indices step 3) {
    val ray=FloatArray(3){m.positions[i+it]-m.eye[it]}
-   check(dot(ray,m.normal)<0f) // The backing plane remains behind the complete wide desktop.
+   val f=m.focus!!
+   val x=(m.texCoords[i/3*2]-.5f)*m.width-f[0]
+   val y=(.5f-m.texCoords[i/3*2+1])*m.height-f[1]
+   check(kotlin.math.sqrt(x*x+y*y)*m.radiansPerMeter<Math.PI.toFloat()) // No vertex crosses the antipodal fold.
   }
  }
  val formerlyLimited=MonitorMesh(3.8809047f,2.4255652f,floatArrayOf(0f,0f,1.9066529f),focus=floatArrayOf(0f,0f))
  check(kotlin.math.abs(formerlyLimited.radiansPerMeter*formerlyLimited.radius-1f)<.00001f) // Recorded release crossed the obsolete 2.2-radian bound.
+ val nearWrap=MonitorMesh(5f,3.125f,floatArrayOf(0f,0f,1f),focus=floatArrayOf(0f,0f))
+ check(kotlin.math.abs(nearWrap.radiansPerMeter-1f)<.00001f) // Beyond the old hemisphere cap, still before overlap.
+ val atLimit=MonitorMesh(50f,31.25f,floatArrayOf(0f,0f,1f),focus=floatArrayOf(25f,15.625f))
+ check(kotlin.math.abs(atLimit.radiansPerMeter*kotlin.math.sqrt(50f*50f+31.25f*31.25f)*.5f-(Math.PI.toFloat()-.01f))<.0001f)
  val recovery=TrackingRecovery();val p=floatArrayOf(0f,0f,0f);val q=floatArrayOf(0f,0f,0f,1f)
  check(recovery.update(0,true,p,q,1f)==null)
  check(recovery.update(20,false,null,null,1f)==null)

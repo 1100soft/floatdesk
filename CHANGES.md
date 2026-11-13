@@ -1,5 +1,7 @@
 # Changes since the LAN proof of concept
 
+- Show the dynamically projected spherical result during grabs with a reusable textured native grid and projected contact markers. Explicitly apply scene depth testing and use opaque beam texels with entity-level dimming for live-video overlap.
+
 - Consolidate grab state/preview geometry, share binary index contact with mouse control, and resolve native/gaze input against rendered triangles. Fix false large-screen collider rejection, cancellation on fresh delayed samples, and aiming suppression across different monitors or stale generic manipulation state.
 
 - Use five-degree contact separation for two-hand grabs regardless of desktop size; allow validated joint-pinched preview contacts to complete acquisition after a missed native DOWN.

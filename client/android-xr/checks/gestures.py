@@ -154,6 +154,11 @@ fun main() {
     near(locked.pose.position,initial.pose.position)
     near(point(locked,l),point(initial,l)); near(point(locked,r),point(initial,r))
     guides(grab,locked)
+    val dynamicGrabMesh=MonitorMesh(locked.physicalWidthM,locked.physicalHeightM,floatArrayOf(.3f,.1f,1.2f),focus=floatArrayOf(.2f,.1f))
+    val projectedGuide=grab.displayGuide(locked,dynamicGrabMesh)!!
+    near(projectedGuide.contacts[0],transformPoint(locked.pose,dynamicGrabMesh.project(l,onTriangles=true)))
+    near(projectedGuide.contacts[1],transformPoint(locked.pose,dynamicGrabMesh.project(r,onTriangles=true)))
+    near(grab.guide!!.contacts[0],point(locked,l)) // Predicted display does not alter the rigid control state.
     val gain = distance(l,r) / distance(startL,startR)
     val align = quaternionBetween(subtract(startR,startL),subtract(point(initial,r),point(initial,l)))
     val delta = floatArrayOf(0.05f,-0.04f,-0.08f)

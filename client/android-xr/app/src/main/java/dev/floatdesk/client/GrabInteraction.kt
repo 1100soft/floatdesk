@@ -156,6 +156,26 @@ internal class TwoHandState {
         return result
     }
 
+    /** Display the projected result without changing the rigid hand-to-monitor control transform. */
+    fun displayGuide(current:MonitorPlacement,mesh:MonitorMesh?):GrabGuide? {
+        val original=base ?: return guide
+        val existing=guide ?: return null
+        if(!engaged || mesh==null)return existing
+        val contacts=listOf("LEFT","RIGHT").map {side ->
+            val local=hands.getValue(side).local
+            val flat=frozenMesh?.unproject(local) ?: local
+            val projected=mesh.project(floatArrayOf(flat[0]/original.physicalWidthM*mesh.width,
+                flat[1]/original.physicalHeightM*mesh.height,0f),onTriangles=true)
+            transformPoint(current.pose,projected)
+        }
+        val inverse=floatArrayOf(-alignment[0],-alignment[1],-alignment[2],alignment[3])
+        val outline=mesh.outline.map {p ->
+            val d=subtract(transformPoint(current.pose,p),worldLeft)
+            add(startLeft,rotateVector(inverse,d[0]/gain,d[1]/gain,d[2]/gain))
+        }
+        return existing.copy(contacts=contacts,outline=outline)
+    }
+
     private fun publishGuide(current: MonitorPlacement, tracking: GrabTracking) {
         val original = base ?: return
         val scale = current.physicalWidthM / original.physicalWidthM

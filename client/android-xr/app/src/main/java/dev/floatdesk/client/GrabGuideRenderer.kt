@@ -106,7 +106,9 @@ internal class GrabGuideRenderer private constructor(
             val surface=SurfaceEntity.create(session,shape=decorationShape(1f,1f),
                 parent=null,superSampling=SurfaceEntity.SuperSampling.NONE)
             surface.setSurfacePixelDimensions(IntSize2d(128,4))
-            surface.mediaBlendingMode=SurfaceEntity.MediaBlendingMode.TRANSPARENT
+            // Every beam texel is opaque; dimming belongs to entity alpha. Keeping
+            // the beam on the same pixel-depth path as video avoids transparent-media sorting.
+            surface.mediaBlendingMode=SurfaceEntity.MediaBlendingMode.OPAQUE
             // A plain native surface has no Compose input policy or InteractableComponent.
             // The entire beam shares one compositor layer, including where it overlaps video.
             val canvas=surface.getSurface().lockCanvas(null)

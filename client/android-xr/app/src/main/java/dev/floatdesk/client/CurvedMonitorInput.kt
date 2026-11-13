@@ -24,7 +24,7 @@ internal class CurvedMonitorInput private constructor(
 
     fun update(next:MonitorMesh) {
         if(closed || mesh===next)return
-        applyPatches(entity,next)
+        updateMeshPatches(entity,next)
         mesh=next
     }
 
@@ -37,16 +37,6 @@ internal class CurvedMonitorInput private constructor(
     }
 
     companion object {
-        private fun applyPatches(entity:GltfModelEntity,mesh:MonitorMesh) {
-            val patches=interactionPatches(mesh)
-            check(entity.nodes.size==patches.size*2)
-            patches.forEachIndexed {i,p->
-                val q=p.rotation;val child=p.childRotation
-                entity.nodes[i*2].localPose=Pose(Vector3(p.center[0],p.center[1],p.center[2]),Quaternion(q[0],q[1],q[2],q[3]))
-                entity.nodes[i*2].localScale=Vector3(p.scale[0],p.scale[1],1f)
-                entity.nodes[i*2+1].localPose=Pose(Vector3(0f,0f,0f),Quaternion(child[0],child[1],child[2],child[3]))
-            }
-        }
 
         @android.annotation.SuppressLint("RestrictedApi")
         suspend fun create(session: Session, parent: Entity, mesh: MonitorMesh,
@@ -57,7 +47,7 @@ internal class CurvedMonitorInput private constructor(
             try {
                 val created = GltfModelEntity.create(session, model, parent = parent)
                 entity = created
-                applyPatches(created,mesh)
+                updateMeshPatches(created,mesh)
                 val component = NativeMonitorInput.create(session, listener)
                 check(created.addComponent(component)) { "Could not attach curved monitor interaction" }
                 val pointer=SpatialPointerComponent.create(session)
@@ -71,3 +61,14 @@ internal class CurvedMonitorInput private constructor(
         }
     }
 }
+
+        internal fun updateMeshPatches(entity:GltfModelEntity,mesh:MonitorMesh,columns:Int=12,rows:Int=8) {
+            val patches=interactionPatches(mesh,columns,rows)
+            check(entity.nodes.size==patches.size*2)
+            patches.forEachIndexed {i,p->
+                val q=p.rotation;val child=p.childRotation
+                entity.nodes[i*2].localPose=Pose(Vector3(p.center[0],p.center[1],p.center[2]),Quaternion(q[0],q[1],q[2],q[3]))
+                entity.nodes[i*2].localScale=Vector3(p.scale[0],p.scale[1],1f)
+                entity.nodes[i*2+1].localPose=Pose(Vector3(0f,0f,0f),Quaternion(child[0],child[1],child[2],child[3]))
+            }
+        }

@@ -224,6 +224,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     val following = latchedFollow || (holdingFist && !suppressFist)
     val grabs = remember { mutableMapOf<Int, TwoHandState>() }
     DisposableEffect(session) {
+        session?.scene?.panelClippingConfig=androidx.xr.scenecore.PanelClippingConfig(isDepthTestEnabled=true)
         val current = session
         val listener = Runnable {
             Log.w("Floatdesk","XR activity origin changed; cancelling gestures")
@@ -774,7 +775,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                         handTracking,pointerControl.meshes[index])?.let { index to it }
             }.toMap() else emptyMap()
             guideRenderer?.let { renderer ->
-                runCatching { renderer.update(root, grabs.mapNotNull { (index,grab) -> grab.guide ?: previews[index] })
+                runCatching { renderer.update(root, grabs.mapNotNull { (index,grab) -> workspace.monitorAt(index)?.let {grab.displayGuide(it,pointerControl.meshes[index])} ?: previews[index] })
                     // The desktop cursor is the target marker; avoid a second dot over it.
                     renderer.updatePointer(root,null,handTracking.points["HEAD"],handTracking.unitsPerMeter)
                     val draw: ()->Unit = {
@@ -949,8 +950,10 @@ private fun DeskContent(
         val warp = remember(index, session) { MonitorWarp() }
         val systemControls=remember(index,session) { MonitorSystemControls() }
         DisposableEffect(systemControls) { onDispose { systemControls.close();pointerControl.nativeManipulation(index,false) } }
+        var frozenMonitor by remember(index) { mutableStateOf<FrozenMonitor?>(null) }
         LaunchedEffect(index, session) {
             val current = session ?: return@LaunchedEffect
+            var grabProjectionAt=0L
             while (isActive) {
                 delay(20)
                 if(!current.lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) { delay(100);continue }
@@ -966,8 +969,16 @@ private fun DeskContent(
                     // Freeze before the platform DOWN arrives: replacing a native canvas while
                     // the user starts pinching can cancel its input acquisition.
                     connection.presentation().let {warp.presentation(it.rects,it.spacing)}
+                    val projectionNow=SystemClock.uptimeMillis()
+                    if(!hands.engaged || projectionNow-grabProjectionAt>=100) {
                     warp.update(current, root, handTracking.points["VIEWER"] ?: handTracking.points["HEAD"], screen, file.sphericalWarp,
-                        hands.busy || nativeMove || nativeResize || handTracking.pointerHeld,forceUpdate=!hands.busy && (nativeGeometryPending || !warp.matchesSize(screen)),viewDirection=handTracking.points["VIEW_DIRECTION"],freezeProjection=hands.busy || nativeMove || nativeResize || handTracking.pointerHeld)
+                        (hands.busy && !hands.engaged) || nativeMove || nativeResize || handTracking.pointerHeld,
+                        forceUpdate=(hands.engaged || !hands.busy) && (nativeGeometryPending || !warp.matchesSize(screen)),
+                        viewDirection=handTracking.points["VIEW_DIRECTION"],
+                        freezeProjection=(hands.busy && !hands.engaged) || nativeMove || nativeResize || handTracking.pointerHeld)
+                    grabProjectionAt=projectionNow
+                    }
+                    frozenMonitor?.update(screen,warp.mesh)
                     warp.syncCurvedInput(current)
                     // Collider creation suspends: a newer resize event may arrive while awaiting it.
                     // Clear the pending update only after matching the latest canonical size.
@@ -1022,16 +1033,15 @@ private fun DeskContent(
                 }
             }
         }
-        var frozenMonitor by remember(index) { mutableStateOf<FrozenMonitor?>(null) }
         LaunchedEffect(hands.engaged, session) {
             val current = session ?: return@LaunchedEffect
             if (!hands.engaged) return@LaunchedEffect
             val surface = videoSurface.get() ?: return@LaunchedEffect
             var frozen: FrozenMonitor? = null
             try {
-                frozen = FrozenMonitor.create(current, surface, placement.pixelWidth, placement.pixelHeight, hands.frozenMesh)
+                frozen = FrozenMonitor.create(current, surface, placement.pixelWidth, placement.pixelHeight, hands.frozenMesh,dynamic=latest.value.sphericalWarp)
                 val latestPlacement = latest.value.monitorAt(index) ?: return@LaunchedEffect
-                frozen.update(latestPlacement)
+                frozen.update(latestPlacement,warp.mesh)
                 frozenMonitor = frozen
                 Log.i("Floatdesk", "frozen native monitor active index=$index")
                 awaitCancellation()
@@ -1043,7 +1053,7 @@ private fun DeskContent(
                 frozen?.close()
             }
         }
-        frozenMonitor?.let { frozen -> SideEffect { frozen.update(placement) } }
+        frozenMonitor?.let { frozen -> SideEffect { frozen.update(placement,warp.mesh) } }
 
         val inputPolicy = remember(index) {
                 object : InteractionPolicy {

@@ -29,18 +29,23 @@ internal class FrozenMonitor private constructor(
     private val live: SurfaceEntity,
     private val model: GltfModel,
     private val entity: GltfModelEntity,
+    private val dynamic:Boolean=false,
 ) : AutoCloseable {
     private val originallyEnabled = live.isEnabled(false)
     private var hidden = false
     private var closed = false
 
-    fun update(placement: MonitorPlacement) {
+    private var displayedMesh:MonitorMesh?=null
+    fun update(placement: MonitorPlacement,mesh:MonitorMesh?=null) {
         if (closed) return
         val p = placement.pose.position
         val q = placement.pose.rotation
         entity.parent = live.parent
         entity.setPose(Pose(Vector3(p[0], p[1], p[2]), Quaternion(q[0], q[1], q[2], q[3])))
-        entity.nodes.first().localScale = Vector3(placement.physicalWidthM, placement.physicalHeightM, placement.physicalWidthM)
+        if(dynamic && mesh!=null) {
+            entity.setScale(1f)
+            if(displayedMesh!==mesh) {updateMeshPatches(entity,mesh,16,10);displayedMesh=mesh}
+        } else if(!dynamic) entity.nodes.first().localScale = Vector3(placement.physicalWidthM, placement.physicalHeightM, placement.physicalWidthM)
         // Keep submitting decoded frames to this hidden surface so release reveals current video.
         // Only this compositor layer hides; the frozen native mesh remains visible.
         if (!hidden) { live.setEnabled(false); hidden = true }
@@ -58,7 +63,7 @@ internal class FrozenMonitor private constructor(
 
     companion object {
         @SuppressLint("RestrictedApi") // Byte-array loading exists in the pinned SceneCore 1.0 SDK.
-        suspend fun create(session: Session, surface: Surface, width: Int, height: Int, mesh: MonitorMesh? = null): FrozenMonitor {
+        suspend fun create(session: Session, surface: Surface, width: Int, height: Int, mesh: MonitorMesh? = null,dynamic:Boolean=false): FrozenMonitor {
             val live = session.scene.getEntitiesOfType(SurfaceEntity::class.java)
                 .firstOrNull { it.getSurface() === surface }
                 ?: error("Could not find the monitor's video entity")
@@ -69,13 +74,13 @@ internal class FrozenMonitor private constructor(
                         check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it))
                         it.toByteArray()
                     }
-                    frozenFrameGlb(png, mesh,transparent=true)
+                    if(dynamic && mesh!=null) snapshotGridGlb(png) else frozenFrameGlb(png, mesh,transparent=true)
                 }
             } finally { bitmap.recycle() }
             val model = GltfModel.create(session, bytes, "floatdesk-frozen-${System.nanoTime()}")
             try {
                 val entity = GltfModelEntity.create(session, model)
-                return FrozenMonitor(live, model, entity)
+                return FrozenMonitor(live, model, entity,dynamic && mesh!=null)
             } catch (failure: Throwable) {
                 model.close()
                 throw failure
@@ -162,5 +167,35 @@ internal fun interactionGridGlb(png:ByteArray,columns:Int=12,rows:Int=8):ByteArr
     return ByteBuffer.allocate(20+length+binary.size).order(ByteOrder.LITTLE_ENDIAN).apply {
         putInt(0x46546c67);putInt(2);putInt(capacity());putInt(length);putInt(0x4e4f534a);put(json)
         repeat(length-json.size){put(32.toByte())};put(binary)
+    }.array()
+}
+
+/** One snapshot texture/material, with independently deformable textured triangles. */
+internal fun snapshotGridGlb(png:ByteArray,columns:Int=16,rows:Int=10):ByteArray {
+    val original=frozenFrameGlb(png,interactionTriangle=true,transparent=true)
+    val oldLength=ByteBuffer.wrap(original).order(ByteOrder.LITTLE_ENDIAN).getInt(12)
+    var json=String(original,20,oldLength,Charsets.UTF_8).replace(Regex("\\s+"),"")
+    val originalBinary=original.copyOfRange(28+oldLength,original.size)
+    val count=columns*rows*2
+    val binary=ByteBuffer.allocate(originalBinary.size+count*24).order(ByteOrder.LITTLE_ENDIAN)
+    binary.put(originalBinary)
+    for(row in 0 until rows)for(col in 0 until columns)for(part in 0..1) {
+        val corners=if(part==0) listOf(col to row,col to row+1,col+1 to row) else listOf(col+1 to row,col to row+1,col+1 to row+1)
+        for((x,y) in corners){binary.putFloat(x.toFloat()/columns);binary.putFloat(y.toFloat()/rows)}
+    }
+    json=json.replace("\"nodes\":[0]","\"nodes\":["+(0 until count).joinToString(","){(it*2).toString()}+"]")
+        .replace("\"nodes\":[{\"mesh\":0}]","\"nodes\":["+(0 until count).joinToString(","){"{\"children\":[${it*2+1}]},{\"mesh\":$it}"}+"]")
+    val start=json.indexOf("\"meshes\":")
+    val end=json.indexOf(",\"materials\":",start)
+    val meshes=(0 until count).joinToString(","){"{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":1,\"TEXCOORD_0\":${4+it}},\"indices\":3,\"material\":0}]}"}
+    json=json.substring(0,start)+"\"meshes\":["+meshes+"]"+json.substring(end)
+    json=json.replace(Regex("\"buffers\":\\[\\{\"byteLength\":\\d+}]"),"\"buffers\":[{\"byteLength\":${binary.capacity()}}]")
+    json=json.replace("],\"accessors\":[",",{\"buffer\":0,\"byteOffset\":${originalBinary.size},\"byteLength\":${count*24},\"target\":34962}],\"accessors\":[")
+    val accessors=(0 until count).joinToString(","){"{\"bufferView\":5,\"byteOffset\":${it*24},\"componentType\":5126,\"count\":3,\"type\":\"VEC2\"}"}
+    json=json.dropLast(2)+","+accessors+"]}"
+    val bytes=json.toByteArray();val size=(bytes.size+3)/4*4
+    return ByteBuffer.allocate(28+size+binary.capacity()).order(ByteOrder.LITTLE_ENDIAN).apply {
+        putInt(0x46546c67);putInt(2);putInt(capacity());putInt(size);putInt(0x4e4f534a);put(bytes)
+        repeat(size-bytes.size){put(32.toByte())};putInt(binary.capacity());putInt(0x004e4942);put(binary.array())
     }.array()
 }

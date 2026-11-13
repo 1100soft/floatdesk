@@ -29,7 +29,7 @@ import androidx.compose.ui.unit.sp
 import dev.floatdesk.client.net.DeskConnection
 
 @Composable
-internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpacing:(Float)->Unit,onSpacingFinished:()->Unit,onClose:()->Unit,pinches:PinchThresholds,onPinches:(PinchThresholds)->Unit) {
+internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpacing:(Float)->Unit,onSpacingFinished:()->Unit,onClose:()->Unit,pinches:PinchThresholds,onPinches:(PinchThresholds)->Unit,viewedDetail:Boolean,onViewedDetail:(Boolean)->Unit) {
     val monitors by connection.monitors
     val state by connection.displayState
     val busy by connection.displayBusy
@@ -65,6 +65,11 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
         if(!state.ok) Text(state.message,color=Color(0xFFFFB4AB),fontSize=13.sp)
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(8.dp)) {
         if(setup) {
+            Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                androidx.compose.material3.Switch(checked=viewedDetail,onCheckedChange=onViewedDetail)
+                Text("Experimental viewed-area quality",color=Color.White)
+            }
+            if(viewedDetail)Text(connection.detailStatus.value,color=Color(0xFFB8D9EA),fontSize=13.sp)
             PinchSettings(pinches,onPinches)
             Text("Virtual screen setup",color=Color.White,fontSize=18.sp)
             Text("On the computer, run: python3 scripts/virtual-display-setup.py --check\nIf no pool is available, use --write-bundle to prepare installation files. A compatible VKMS configfs kernel, administrator setup and a graphical-session restart are required. Existing pools are reused; Floatdesk never rebuilds kernel topology during use.",color=Color(0xFFB8D9EA),fontSize=13.sp)

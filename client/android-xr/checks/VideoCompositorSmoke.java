@@ -43,9 +43,11 @@ public final class VideoCompositorSmoke {
             org.json.JSONObject saved=new org.json.JSONObject(new String(java.nio.file.Files.readAllBytes(workspaceFile.toPath()),java.nio.charset.StandardCharsets.UTF_8));
             org.json.JSONObject monitor=new org.json.JSONObject().put("logical_monitor_uuid","focus-test").put("host_source_id","desktop").put("pixel_width",3840).put("pixel_height",2160).put("view_center_u",.8).put("view_center_v",.25);
             saved.put("pinch_thresholds_mm",new org.json.JSONArray().put(8.0).put(9.0).put(10.0).put(11.0));
+            saved.put("experimental_viewed_detail",true);
             saved.put("focus_mode",true).put("layouts",new org.json.JSONObject().put("Desk",new org.json.JSONArray().put(monitor)));
             java.nio.file.Files.write(workspaceFile.toPath(),saved.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
             require(reloaded.load().getFocusMode(),"Focus mode not restored");
+            require(reloaded.load().getExperimentalViewedDetail(),"Experimental viewed detail setting not restored");
             require(reloaded.load().getPinchThresholds().getRightIndexMm()==9f,"Shared pinch settings not restored");
             require(Math.abs(reloaded.load().getLayouts().get("Desk").get(0).getViewCenterU()-.8f)<.00001f,"Selected spherical source center not restored");
             reloaded.save(reloaded.load());
@@ -88,6 +90,20 @@ public final class VideoCompositorSmoke {
             }
             compositor.projection(null);
             try(Image image=frame(first)){require(pixel(image,32,23)[0]>220,"Disabling projection did not restore retained image");}
+            android.graphics.Bitmap detail=android.graphics.Bitmap.createBitmap(64,48,android.graphics.Bitmap.Config.ARGB_8888);
+            new Canvas(detail).drawColor(Color.GREEN);
+            compositor.detail(new dev.floatdesk.client.net.DetailPatch(new dev.floatdesk.client.FocusRect(.2f,.1f,.8f,.9f),detail,4096,2160));
+            try(Image image=frame(first)) {
+                require(pixel(image,32,16)[1]>220,"Viewed detail did not overlay source region");
+                require(pixel(image,2,8)[0]>220,"Viewed detail leaked outside source region");
+            }
+            compositor.detailCursor(.5f,.34f);
+            compositor.overlay(new VideoAim(new float[]{},new float[]{},2f,.2f));
+            try(Image image=frame(first)){require(pixel(image,32,16)[0]>200,"Detail covered the live mouse cursor region");}
+            compositor.detailCursor(-1f,-1f);
+            SystemClock.sleep(340);
+            try(Image image=frame(first)){require(pixel(image,32,16)[0]>220,"Expired detail did not restore baseline video");}
+            compositor.detail(null);
             compositor.overlay(new VideoAim(new float[]{.1f,.25f,.9f,.25f},new float[]{},3f,1f,new float[]{.757f,.502f,1f}));
             try(Image image=frame(first)){int[] color=pixel(image,32,12);require(color[0]>170 && color[0]<215 && color[1]>110 && color[1]<150 && color[2]>230,"Focus window highlight color corrupt");}
             compositor.overlay(new VideoAim(new float[]{.1f,.25f,.9f,.25f},new float[]{},3f,1f,new float[]{.4236f,.9777f,1f}));

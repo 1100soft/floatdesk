@@ -1,5 +1,7 @@
 # Changes since the LAN proof of concept
 
+- Add a default-off viewed-area quality experiment: bounded high-quality JPEG crops over normal live video, exact source-region mapping, stale-patch fallback and a separate Settings toggle. Baseline streaming and desktop geometry remain unchanged.
+
 - Focus selection places the cursor at the captured pinch/ray contact rather than the target center.
 
 - Hide desktop render/input surfaces while Workspace is open, and request numeric keyboards for resolution and pinch-threshold fields.

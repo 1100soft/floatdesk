@@ -34,6 +34,19 @@ internal class DeskConnection(
     val displayState=mutableStateOf(Packet.MonitorStatus(0,true,0,0,"Checking available displays…"))
     val displayBusy=mutableStateOf(false)
     val workspaceInfo=mutableStateOf<WorkspaceInfo?>(null)
+    val detailStatus=mutableStateOf("Experimental viewed detail off")
+    private var detailWorker:ViewedDetail?=null
+    @Volatile private var detailSession=0L
+    fun viewedDetail(rect:FocusRect?) {
+        val remote=pendingRemote
+        val bounds=workspaceInfo.value?.bounds()?.toList()
+        val format=currentMonitors.singleOrNull()
+        val improves=rect!=null && format!=null && (rect.right-rect.left)*format.width<1536 && (rect.bottom-rect.top)*format.height<1024
+        if(rect!=null && !improves && detailStatus.value!="Normal video already covers this view")main.post{detailStatus.value="Normal video already covers this view"}
+        val request=if(improves && rect!=null && renderingActive && remote!=null && bounds!=null)DetailRequest(remote,detailSession,rect,bounds) else null
+        if(request!=null && detailWorker==null)detailWorker=ViewedDetail({patch->decoders[0]?.detail(patch) ?: patch?.bitmap?.recycle()},{message->main.post{detailStatus.value=message}})
+        detailWorker?.update(request)
+    }
     val focusResult=mutableStateOf<FocusResult?>(null)
     val focusBusy=mutableStateOf(false)
     private val focusPending=AtomicInteger()
@@ -108,6 +121,7 @@ internal class DeskConnection(
     }
 
     fun disconnect() {
+        detailWorker?.close();detailWorker=null
         running = false
         control?.close()
         beacon?.close()
@@ -148,6 +162,7 @@ internal class DeskConnection(
     @Synchronized
     fun setRenderingActive(active: Boolean) {
         renderingActive=active
+        if(!active)viewedDetail(null)
         decoders.values.forEach { it.setRenderingActive(active) }
     }
 
@@ -312,6 +327,7 @@ internal class DeskConnection(
 
     @Synchronized
     private fun onHello(hello: Packet.HostHello, remote: InetSocketAddress) {
+        if(detailSession!=hello.sessionId){viewedDetail(null);detailSession=hello.sessionId}
         if (hello.monitors==currentMonitors && decoders.isNotEmpty()) {
             // A dropped one-shot progress notification must not leave an overlay
             // behind after the host has returned to its normal heartbeat.
@@ -354,6 +370,7 @@ internal class DeskConnection(
     }
 
     private fun onCursor(fragment: CursorFragment) {
+        decoders[fragment.monitor]?.detailCursor(fragment.normX,fragment.normY)
         val view = assembler.push(fragment)
         val previous = pendingCursors[fragment.monitor] ?: cursors.value[fragment.monitor]
         val merged = if (view.pixels == null && previous?.pixels != null) {

@@ -2,6 +2,8 @@
 //! stream. The cursor is polled independently and composited into captured frames.
 //! Nothing is encoded until a client hello arrives.
 
+mod detail;
+
 use crate::core::{
     epoch_ns, monotonic_ns, CaptureBackend, CursorBackend, DisplayBackend, EncodeBackend,
     MonitorRect,
@@ -481,6 +483,7 @@ fn run(
         stream_ssrc: std::array::from_fn(|_| AtomicU32::new(0)),
         stream_progress: std::array::from_fn(|_| AtomicU64::new(0)),
     });
+    let _detail_worker = detail::start(Arc::clone(&shared), opts.listen);
     let stop_flag = Arc::clone(&shared);
     let _ = ctrlc::set_handler(move || {
         stop_flag.stop.store(true, Ordering::Relaxed);

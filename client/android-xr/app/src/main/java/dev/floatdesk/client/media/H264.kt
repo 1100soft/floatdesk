@@ -257,6 +257,9 @@ internal class MonitorDecoder(
         if(active) recover("visible stream resumed") else awaitingKey.set(true)
     }
 
+    fun detail(patch:dev.floatdesk.client.net.DetailPatch?) {val renderer=compositor;if(renderer!=null)renderer.detail(patch) else patch?.bitmap?.recycle()}
+    fun detailCursor(u:Float,v:Float){compositor?.detailCursor(u,v)}
+
     fun projection(value:ViewProjection?) {projection.set(value);compositor?.projection(value)}
     fun presentation(value:ScreenPresentation) {presentation.set(value);compositor?.presentation(value)}
 

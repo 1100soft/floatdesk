@@ -478,6 +478,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
         var lastMouseDragging = false
         val lastMouseContact=mutableMapOf<String,Int>()
         var lastFocusGate="<initial>"
+        var lastDetailAt=0L
         var inputWasResumed=true
         var fistHeld = 0
         var panelHand: String? = null
@@ -591,6 +592,17 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 trackingRecovery.update(handTracking.nowMs,false,null,null,unitsPerMeter)
                 // Head quality controls follow, not availability of independently tracked hands.
                 followLock = null
+            }
+            if(!workspace.experimentalViewedDetail || displayControlsOpen || head==null || manipulating) {
+                connection.viewedDetail(null)
+            } else if(handTracking.nowMs-lastDetailAt>=125){
+                lastDetailAt=handTracking.nowMs
+                val screen=workspace.monitorAt(0)
+                val angles=viewHalfAngles.get()
+                val view=if(screen==null)null else viewedRegion(screen.physicalWidthM,screen.physicalHeightM,pointerControl.meshes[0],angles[0],angles[1]) {point->
+                    viewerInMonitor(transformPoint(screen.pose,point),head.translation.toArray(),floatArrayOf(head.rotation.x,head.rotation.y,head.rotation.z,head.rotation.w))
+                }
+                connection.viewedDetail(view?.let{connection.presentation().desktopBounds(it)})
             }
             var anyFist = false
             var anyOpen = false
@@ -1000,9 +1012,11 @@ private fun DeskContent(
     val reloading by connection.reloading
     val layout = workspace.reconcileMonitors(monitors.map { Triple(it.name,it.width,it.height) }).layouts[workspace.activeLayout].orEmpty()
     if(displayControlsOpen) SpatialPanel(modifier=placedPanel(displayControlsPose,.95f,.70f,density,pixelDensity)) {
-        MonitorManagerPanel(connection,workspace.screenSpacing,{onWorkspace(workspace.copy(screenSpacing=it))},{store.save(latest.value)},onCloseDisplays,workspace.pinchThresholds) {profile->
+        MonitorManagerPanel(connection,workspace.screenSpacing,{onWorkspace(workspace.copy(screenSpacing=it))},{store.save(latest.value)},onCloseDisplays,workspace.pinchThresholds,{profile->
             val next=latest.value.copy(pinchThresholds=profile);onWorkspace(next);store.save(next)
-        }
+        },workspace.experimentalViewedDetail,{enabled->
+            val next=latest.value.copy(experimentalViewedDetail=enabled);onWorkspace(next);store.save(next)
+        })
     }
     if(reloading && layout.isNotEmpty()) {
         val screen=layout.first()

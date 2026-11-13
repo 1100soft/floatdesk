@@ -134,11 +134,25 @@ impl X11Capture {
         Self::open_scaled(rect, rect.width as u16, rect.height as u16)
     }
     pub fn open_scaled(rect: MonitorRect, width: u16, height: u16) -> Result<Self> {
+        Self::open_scaled_policy(rect, width, height, true)
+    }
+    pub fn open_detail(rect: MonitorRect, width: u16, height: u16) -> Result<Self> {
+        Self::open_scaled_policy(rect, width, height, false)
+    }
+    fn open_scaled_policy(
+        rect: MonitorRect,
+        width: u16,
+        height: u16,
+        fallback: bool,
+    ) -> Result<Self> {
         let link = X11Link::open()?;
         let render = if u32::from(width) != rect.width || u32::from(height) != rect.height {
             match RenderTarget::create(&link, rect, width, height) {
                 Ok(target) => Some(target),
                 Err(error) => {
+                    if !fallback {
+                        return Err(error);
+                    }
                     tracing::warn!(%error,"Server scaling unavailable; using full desktop capture");
                     None
                 }
@@ -228,6 +242,20 @@ impl X11Capture {
             generation: 1,
             last: None,
         })
+    }
+
+    /// Reuse the bounded SHM/readback allocation when the viewed crop changes.
+    pub fn retarget(&mut self, rect: MonitorRect) -> Result<()> {
+        if self.rect == rect {
+            return Ok(());
+        }
+        let target = RenderTarget::create(&self.link, rect, self.width as u16, self.height as u16)?;
+        if let Some(previous) = self.render.replace(target) {
+            previous.free(&self.link)
+        }
+        self.rect = rect;
+        self.note_cursor();
+        Ok(())
     }
 
     fn grab(&self) -> Result<CapturedFrame> {

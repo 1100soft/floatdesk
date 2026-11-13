@@ -41,6 +41,14 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     private lateinit var texture: SurfaceTexture
     lateinit var input: Surface
         private set
+    private val detailPending=java.util.concurrent.atomic.AtomicReference<dev.floatdesk.client.net.DetailPatch?>(null)
+    private val detailPosted=AtomicBoolean(false)
+    private var detailTexture=0
+    private var detailRect:dev.floatdesk.client.FocusRect?=null
+    private var detailAt=0L
+    private var detailSourceWidth=4096
+    private var detailSourceHeight=2160
+    @Volatile private var detailCursor=floatArrayOf(-1f,-1f)
     private var textureId=0
     private var lookupTexture=0
     private var uploadedProjection:ViewProjection?=null
@@ -82,6 +90,12 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                         texture.updateTexImage(); texture.getTransformMatrix(transform); hasFrame=true; draw()
                     }
                 },handler)
+                val detailIds=IntArray(1);GLES20.glGenTextures(1,detailIds,0);detailTexture=detailIds[0]
+                GLES20.glActiveTexture(GLES20.GL_TEXTURE2);GLES20.glBindTexture(GLES20.GL_TEXTURE_2D,detailTexture)
+                GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D,0,GLES20.GL_RGBA,1,1,0,GLES20.GL_RGBA,GLES20.GL_UNSIGNED_BYTE,ByteBuffer.allocateDirect(4))
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_MIN_FILTER,GLES20.GL_LINEAR)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_MAG_FILTER,GLES20.GL_LINEAR)
+                GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
                 program=link(VERTEX,FRAGMENT)
                 inkProgram=link(INK_VERTEX,INK_FRAGMENT)
                 Log.i("Floatdesk","live video compositor ready ${width}x$height")
@@ -107,6 +121,36 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                     draw()
                 }
             }
+        }
+    }
+
+    fun detailCursor(u:Float,v:Float){detailCursor=floatArrayOf(u,v)}
+
+    fun detail(patch:dev.floatdesk.client.net.DetailPatch?) {
+        if(closed){patch?.bitmap?.recycle();return}
+        detailPending.getAndSet(patch)?.bitmap?.recycle()
+        if(!detailPosted.compareAndSet(false,true))return
+        handler.post {
+            val patch=detailPending.getAndSet(null)
+            detailPosted.set(false)
+            if(closed){patch?.bitmap?.recycle();return@post}
+            try {
+                if(patch==null || android.os.SystemClock.uptimeMillis()-patch.capturedAt>=300){detailRect=null;draw();return@post}
+                GLES20.glActiveTexture(GLES20.GL_TEXTURE2)
+                if(detailTexture==0){val ids=IntArray(1);GLES20.glGenTextures(1,ids,0);detailTexture=ids[0]}
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D,detailTexture)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_MIN_FILTER,GLES20.GL_LINEAR)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_MAG_FILTER,GLES20.GL_LINEAR)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_WRAP_S,GLES20.GL_CLAMP_TO_EDGE)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_WRAP_T,GLES20.GL_CLAMP_TO_EDGE)
+                android.opengl.GLUtils.texImage2D(GLES20.GL_TEXTURE_2D,0,patch.bitmap,0)
+                detailRect=patch.rect;detailAt=patch.capturedAt
+                detailSourceWidth=patch.sourceWidth;detailSourceHeight=patch.sourceHeight
+                draw()
+                val stamp=detailAt
+                handler.postDelayed({if(!closed && stamp==detailAt){detailRect=null;guard{draw()}}},(300-(android.os.SystemClock.uptimeMillis()-stamp)).coerceAtLeast(0))
+            } catch(error:Exception){detailRect=null;Log.w("Floatdesk","Viewed detail upload failed",error)}
+            finally {patch?.bitmap?.recycle();GLES20.glActiveTexture(GLES20.GL_TEXTURE0)}
         }
     }
 
@@ -158,6 +202,17 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_MIN_FILTER,GLES20.GL_LINEAR)
             GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_MAG_FILTER,GLES20.GL_LINEAR)
             GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D,0,GLES20.GL_RGBA,1,1,0,GLES20.GL_RGBA,GLES20.GL_UNSIGNED_BYTE,ByteBuffer.allocateDirect(4))
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        }
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"detailImage"),2)
+        val region=detailRect?.takeIf {android.os.SystemClock.uptimeMillis()-detailAt<300}
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"detailEnabled"),if(region!=null)1 else 0)
+        if(region!=null){
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE2);GLES20.glBindTexture(GLES20.GL_TEXTURE_2D,detailTexture)
+            GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"detailImage"),2)
+            GLES20.glUniform4f(GLES20.glGetUniformLocation(program,"detailRect"),region.left,region.top,region.right,region.bottom)
+            val cursor=detailCursor
+            GLES20.glUniform4f(GLES20.glGetUniformLocation(program,"detailCursor"),cursor[0],cursor[1],64f/detailSourceWidth,64f/detailSourceHeight)
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         }
         val projection=viewProjection
@@ -301,6 +356,10 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             uniform sampler2D projectionMap;
             uniform vec2 projectionGrid;
             uniform int projectionEnabled;
+            uniform sampler2D detailImage;
+            uniform vec4 detailRect;
+            uniform vec4 detailCursor;
+            uniform int detailEnabled;
             varying vec2 uv;
             void main() {
                 vec2 point=vec2(uv.x,1.0-uv.y);
@@ -323,6 +382,14 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                             }
                             vec2 sample=(textureMatrix*vec4(source.x,1.0-source.y,0.0,1.0)).xy;
                             gl_FragColor=vec4(texture2D(video,sample).rgb,1.0);
+                            if(detailEnabled==1 && source.x>detailRect.x && source.y>detailRect.y && source.x<detailRect.z && source.y<detailRect.w) {
+                                vec2 detailUV=(source-detailRect.xy)/(detailRect.zw-detailRect.xy);
+                                vec2 edge=min(detailUV,1.0-detailUV);
+                                float feather=smoothstep(0.0,0.035,min(edge.x,edge.y));
+                                vec2 cursorDistance=abs(source-detailCursor.xy)/detailCursor.zw;
+                                float cursorMask=smoothstep(0.8,1.2,max(cursorDistance.x,cursorDistance.y));
+                                gl_FragColor.rgb=mix(gl_FragColor.rgb,texture2D(detailImage,detailUV).rgb,feather*cursorMask);
+                            }
                             found=true;
                             break;
                         }

@@ -12,6 +12,18 @@ internal data class ScreenPresentation(val rects:FloatArray=floatArrayOf(0f,0f,1
         }
         return null
     }
+    /** Invert visible spacing for a region, clipping against actual screens (including holes). */
+    fun desktopBounds(view:dev.floatdesk.client.FocusRect):dev.floatdesk.client.FocusRect? {
+        val pieces=mutableListOf<dev.floatdesk.client.FocusRect>()
+        val scale=1f-spacing.coerceIn(0f,.15f)
+        for(i in 0 until rects.size/4){
+            val n=i*4;val cx=(rects[n]+rects[n+2])*.5f;val cy=(rects[n+1]+rects[n+3])*.5f
+            val displayed=dev.floatdesk.client.FocusRect(cx+(rects[n]-cx)*scale,cy+(rects[n+1]-cy)*scale,cx+(rects[n+2]-cx)*scale,cy+(rects[n+3]-cy)*scale)
+            val hit=displayed.intersect(view) ?: continue
+            pieces.add(dev.floatdesk.client.FocusRect(cx+(hit.left-cx)/scale,cy+(hit.top-cy)/scale,cx+(hit.right-cx)/scale,cy+(hit.bottom-cy)/scale))
+        }
+        return if(pieces.isEmpty())null else dev.floatdesk.client.FocusRect(pieces.minOf{it.left}.coerceIn(0f,1f),pieces.minOf{it.top}.coerceIn(0f,1f),pieces.maxOf{it.right}.coerceIn(0f,1f),pieces.maxOf{it.bottom}.coerceIn(0f,1f))
+    }
     companion object {
         fun from(sizes:List<Pair<Int,Int>>,positions:List<Pair<Int,Int>>,spacing:Float):ScreenPresentation {
             if(sizes.isEmpty() || sizes.size!=positions.size) return ScreenPresentation(spacing=spacing)

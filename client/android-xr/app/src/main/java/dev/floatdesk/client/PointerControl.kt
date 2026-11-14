@@ -16,6 +16,7 @@ internal class PointerControl {
     private val hoverPoses=mutableMapOf<String,HandAimPose>()
     private var resumeAfterGrab = 0L
     private var gazeHover:PointerTarget?=null
+    var systemGazeEnabled=false;private set
     private var hoverOrder=0L
     private var gazeOrder=0L
     private val handOrder=mutableMapOf<String,Long>()
@@ -29,6 +30,7 @@ internal class PointerControl {
 
     fun hover(monitor: Int, side: String, point: FloatArray?, flat: FloatArray?, width: Float, height: Float, nowMs: Long = 0) {
         if(side=="GAZE"){
+            systemGazeEnabled=true
             gazeOrder=++hoverOrder
             gazeHover=if(point!=null && flat!=null)PointerTarget(monitor,flat[0]/width+.5f,.5f-flat[1]/height,point.copyOf()).takeIf{it.u.isFinite() && it.v.isFinite() && it.u in 0f..1f && it.v in 0f..1f} else null
             return
@@ -63,7 +65,7 @@ internal class PointerControl {
         nativeOwners.remove(monitor)
     }
 
-    fun clear() { gazeHover=null;handOrder.clear();hovering.clear(); departedAt.clear(); lastHoverAt.clear(); handPoses.clear(); hoverPoses.clear() }
+    fun clear(resetAiming:Boolean=false) { if(resetAiming)systemGazeEnabled=false;nativeOwners.clear();resumeAfterGrab=0;gazeHover=null;handOrder.clear();hovering.clear(); departedAt.clear(); lastHoverAt.clear(); handPoses.clear(); hoverPoses.clear() }
 
     fun hands(tracked: Set<String>, nowMs: Long = 0, poses: Map<String,HandAimPose> = emptyMap()): Map<String, PointerTarget> {
         // The OS aim ray can remain valid through a brief missing joint sample. Fresh

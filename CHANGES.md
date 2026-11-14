@@ -1,4 +1,5 @@
 # Changes since the LAN proof of concept
+- Consolidate diagnostics into one transparent spherical HUD with larger text, shared pose and square unclipped text regions. Preserve observed mixed gaze availability through scene recovery so Focus can resume from fine-eye rays without another pinch.
 - Place HUD clusters immediately outside Focus’s shared target bounds. Replace the experimental fixed-budget dense tile with bounded native-density HEVC tiles and normal-density visible periphery; honor all coverage values through 100%. Reapply desktop-only gaze cursor suppression after native hover changes.
 
 - Add a larger four-cluster game-style peripheral HUD with an empty center. Make 100% quality cover the full visible view without gaze shifts or low-tile blending. Support mixed native gaze/hand targeting in Focus mode while preserving mouse routing, and hide native desktop target icons.

@@ -104,3 +104,20 @@ internal fun peripheralHudPanels(horizontal:Float,vertical:Float,distance:Float)
         HudPanelBox(width,height,x*(width*.5f+margin*.5f),y*(innerY+margin+height*.5f))
     }
 }
+
+/** Fixed layout of one HUD texture; source rectangles are reused by drawing and spherical mesh clipping. */
+internal data class HudSurfaceLayout(val width:Float,val height:Float,val pixelWidth:Int,val pixelHeight:Int,val regions:List<FocusRect>)
+internal fun hudSurfaceLayout(horizontal:Float,vertical:Float,distance:Float):HudSurfaceLayout {
+    // FOV noise cannot resize or re-anchor the canvas on every text refresh.
+    fun stable(angle:Float)=if(angle.isFinite())kotlin.math.round(angle*100f)/100f else angle
+    val boxes=peripheralHudPanels(stable(horizontal),stable(vertical),distance)
+    val width=boxes.maxOf{kotlin.math.abs(it.x)+it.width*.5f}*2f
+    val height=boxes.maxOf{kotlin.math.abs(it.y)+it.height*.5f}*2f
+    val scale=2048f/maxOf(width,height)
+    val pixelWidth=maxOf(2,(width*scale).toInt()/2*2)
+    val pixelHeight=maxOf(2,(height*scale).toInt()/2*2)
+    return HudSurfaceLayout(width,height,pixelWidth,pixelHeight,boxes.map{
+        FocusRect(.5f+(it.x-it.width*.5f)/width,.5f-(it.y+it.height*.5f)/height,
+                  .5f+(it.x+it.width*.5f)/width,.5f-(it.y-it.height*.5f)/height)
+    })
+}

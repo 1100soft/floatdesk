@@ -18,6 +18,25 @@ public final class SharpenSmoke {
   int lit=0;for(int y=0;y<480;y++)for(int x=0;x<1280;x++)if(Color.alpha(overlay.getPixel(x,y))>0)lit++;
   for(int y=120;y<360;y++)for(int x=384;x<896;x++)if(Color.alpha(overlay.getPixel(x,y))!=0)throw new AssertionError("HUD obstructed the central focus area");
   if(lit<100 || lit>1280*480/8)throw new AssertionError("Diagnostics are not isolated floating glyphs");overlay.recycle();
+  var hudLayout=dev.floatdesk.client.ViewedRegionKt.hudSurfaceLayout(.6f,.5f,.35f);
+  var hud=Bitmap.createBitmap(hudLayout.getPixelWidth(),hudLayout.getPixelHeight(),Bitmap.Config.ARGB_8888);
+  var hudState=new DetailDiagnostics(true,new FocusRect(.1f,.1f,.9f,.9f),"GAZE","REQ 100 / RX 99 / late 0 / errors 0 · 22ms · HEVC native tiles 1280x1024 · 20KiB",1f,1f,true,true,
+    "Host CPU(core) 123% RSS 200MiB free 12000MiB GPU(proc) 30%\nHost video 60.0fps 20.0Mbps · cap 2.0ms enc 3.0ms",
+    "XR CPU(core) 111% PSS 120MiB free 9000MiB gfx 20MiB GPU 25%");
+  dev.floatdesk.client.DiagnosticsCanvas.INSTANCE.drawSurface(new Canvas(hud),new dev.floatdesk.client.net.DiagnosticSnapshot(hudState,null,"Image 60.0fps redraw 60.0fps · GL submit 0.20ms","Output 5120x3200 · base 3456x2160 · effective X1.48 Y1.48"),new float[]{0,0,1,1},SystemClock.uptimeMillis(),hudLayout);
+  int hudLit=0;
+  for(int y=0;y<hud.getHeight();y++)for(int x=0;x<hud.getWidth();x++)if(Color.alpha(hud.getPixel(x,y))>0){
+    hudLit++;boolean inside=false;
+    for(var region:hudLayout.getRegions())if(region.contains((float)x/hud.getWidth(),(float)y/hud.getHeight()))inside=true;
+    if(!inside)throw new AssertionError("Single curved HUD draws outside its geometry");
+  }
+  if(hudLit<1000 || Color.alpha(hud.getPixel(hud.getWidth()/2,hud.getHeight()/2))!=0)throw new AssertionError("Single HUD is empty or obstructs the focus center");
+  for(var region:hudLayout.getRegions()){
+    int x0=(int)(region.getLeft()*hud.getWidth())+2,y0=(int)(region.getTop()*hud.getHeight())+2;
+    int x1=(int)(region.getRight()*hud.getWidth())-3,y1=(int)(region.getBottom()*hud.getHeight())-3;
+    if(Color.alpha(hud.getPixel(x0,y0))!=0 || Color.alpha(hud.getPixel(x1,y1))!=0)throw new AssertionError("HUD corners have a background");
+  }
+  hud.recycle();
   var reader=ImageReader.newInstance(64,48,PixelFormat.RGBA_8888,4);var video=new VideoCompositor(64,48);
   try{
    video.output(reader.getSurface());Canvas canvas=video.getInput().lockCanvas(null);canvas.drawColor(Color.BLACK);Paint p=new Paint();

@@ -10,6 +10,19 @@ code='import kotlin.math.*\n'+body('MonitorMesh.kt')+body('PointerControl.kt')+b
 fun main() {
  val routing=PointerControl();routing.hover(0,"GAZE",floatArrayOf(0f,0f,0f),floatArrayOf(0f,0f,0f),2f,2f,1)
  val eye=routing.systemGaze()!!
+ check(routing.systemGazeEnabled)
+ val recovery=PointerControl()
+ recovery.hover(0,"GAZE",floatArrayOf(0f,0f,0f),floatArrayOf(0f,0f,0f),2f,2f,1)
+ recovery.nativeManipulation(0,true)
+ recovery.choose(true,null,emptyMap(),true,100)
+ recovery.clear() // Scene recovery clears coordinates/gesture locks, not the observed OS aiming mode.
+ check(recovery.systemGaze()==null && recovery.systemGazeEnabled && !recovery.nativeManipulating)
+ val fine=PointerTarget(0,.3f,.4f,floatArrayOf())
+ check(recovery.choose(recovery.systemGazeEnabled,fine,emptyMap(),false,101).target===fine)
+ check(focusAimContacts(emptyMap(),if(recovery.systemGazeEnabled)fine else null)["GAZE"]===fine)
+ recovery.clear(resetAiming=true) // A real lifecycle pause can change the OS input configuration.
+ check(!recovery.systemGazeEnabled)
+
  check(routing.hands(emptySet(),2).isEmpty())
  check(routing.choose(false,eye,emptyMap(),false,2).mode==PointerMode.OFF) // System gaze cannot enable mouse mode.
  check(focusAimContacts(emptyMap(),eye).keys==setOf("GAZE"))

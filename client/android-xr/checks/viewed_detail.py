@@ -5,7 +5,7 @@ import subprocess,sys,tempfile
 root=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
 def body(name):return '\n'.join(l for l in (root/name).read_text().splitlines() if not l.startswith(('package ','import ')))
 focus=body('FocusInteraction.kt').split('internal class FocusGestures')[0]
-code='import kotlin.math.*\n'+body('MonitorMesh.kt')+focus+body('PointerControl.kt')+body('GazeStabilizer.kt')+body('ViewedRegion.kt')+body('media/ScreenPresentation.kt')+r'''
+code='import kotlin.math.*\n'+body('MonitorMesh.kt')+body('VideoGeometry.kt')+focus+body('PointerControl.kt')+body('GazeStabilizer.kt')+body('ViewedRegion.kt')+body('media/ScreenPresentation.kt')+r'''
 fun main(){
  for(h in listOf(.25f,.4f,.7f))for(v in listOf(.2f,.4f,.6f))for(d in listOf(.35f,.55f)){
   val focused=focusViewHalfAngles(h,v);val innerY=tan(focused.second)*d
@@ -19,6 +19,19 @@ fun main(){
   }
  }
 
+ // Every glyph region is one mesh in a single head-relative sphere, with no center collider.
+ val layout=hudSurfaceLayout(.6f,.5f,.35f)
+ check(layout.pixelWidth<=2048 && layout.pixelHeight<=2048)
+ check(layout==hudSurfaceLayout(.60001f,.50001f,.35f))
+ check(layout.regions.size==4 && layout.regions.none{it.contains(.5f,.5f)})
+ val hudMesh=MonitorMesh(layout.width,layout.height,floatArrayOf(0f,0f,.35f),focus=floatArrayOf(0f,0f))
+ val hudGeometry=clippedVideoGeometry(layout.width,layout.height,hudMesh,layout.regions.flatMap{listOf(it.left,it.top,it.right,it.bottom)}.toFloatArray(),0f)
+ check(hudGeometry.positions.isNotEmpty())
+ for(i in hudGeometry.texCoords.indices step 2)check(layout.regions.any{hudGeometry.texCoords[i]>=it.left-.00001f && hudGeometry.texCoords[i]<=it.right+.00001f && 1f-hudGeometry.texCoords[i+1]>=it.top-.00001f && 1f-hudGeometry.texCoords[i+1]<=it.bottom+.00001f})
+ for(i in hudMesh.positions.indices step 3){
+  val x=hudMesh.positions[i];val y=hudMesh.positions[i+1];val z=hudMesh.positions[i+2]-.35f
+  check(abs(sqrt(x*x+y*y+z*z)-.35f)<.00001f)
+ }
  val half=.35f
  val center=viewedRegion(8f,4f,null,half,half){p->floatArrayOf(p[0],p[1],-2f)}!!
  check(center.left>.2f && center.right<.8f && center.top>0f && center.bottom<1f)

@@ -2,6 +2,9 @@
 //! stream. The cursor is polled independently and composited into captured frames.
 //! Nothing is encoded until a client hello arrives.
 
+mod detail;
+mod resources;
+
 use crate::core::{
     epoch_ns, monotonic_ns, CaptureBackend, CursorBackend, DisplayBackend, EncodeBackend,
     MonitorRect,
@@ -111,6 +114,14 @@ struct Shared {
     screens: RwLock<Vec<MonitorRect>>,
     client: RwLock<Option<ClientTarget>>,
     session_id: u64,
+    view_until_ns: AtomicU64,
+    encoder_quality: AtomicU32,
+    encoder_bitrate: AtomicU32,
+    encoder_generation: AtomicU64,
+    encoded_frames: AtomicU64,
+    view_samples: AtomicU64,
+    view_capture_ns: AtomicU64,
+    view_encode_ns: AtomicU64,
     keys: [AtomicBool; 6],
     captured: AtomicU64,
     skipped: AtomicU64,
@@ -213,6 +224,7 @@ fn launch_streams(
         let encoder_name = opts.encoder.clone();
         let fps = opts.fps.max(1);
         let bitrate = *bitrate;
+        let total_bitrate = opts.bitrate_bps.max(1);
         threads.push(thread::spawn(move || {
             // Preserve RTP sequence numbers across capture/encoder reconnections.
             let mut packetizer = RtpH264Packetizer::new(ssrc);
@@ -226,6 +238,7 @@ fn launch_streams(
                     encoder_name.clone(),
                     fps,
                     bitrate,
+                    total_bitrate,
                 ) {
                     if shared.stream_active[rect.index as usize].load(Ordering::Relaxed)
                         && !shared.stop.load(Ordering::Relaxed)
@@ -346,6 +359,9 @@ fn update_streams(
     hellos: &mut Vec<MonitorHello>,
     threads: &mut Vec<thread::JoinHandle<()>>,
 ) -> Result<()> {
+    if let Err(error) = crate::platform::x11::notify_layout_clients() {
+        tracing::warn!(%error,"Could not notify desktop layout consumers")
+    }
     *shared.screens.write().unwrap_or_else(|e| e.into_inner()) =
         sources.iter().map(|(_, r)| *r).collect();
     let next = vec![desktop_rect(sources)?];
@@ -445,6 +461,10 @@ fn run(
     mut sources: Vec<(String, MonitorRect)>,
 ) -> Result<()> {
     let mut monitors = initial.to_vec();
+    if let Err(error) = crate::platform::x11::notify_layout_clients() {
+        tracing::warn!(%error,"Could not synchronize desktop layout consumers")
+    }
+
     let mut pointer = InputDevices::open()?;
     let socket = UdpSocket::bind(opts.listen)?;
     socket.set_nonblocking(true)?;
@@ -462,6 +482,14 @@ fn run(
         }),
         client: RwLock::new(None),
         session_id,
+        view_until_ns: AtomicU64::new(0),
+        encoder_quality: AtomicU32::new(0),
+        encoder_bitrate: AtomicU32::new(opts.bitrate_bps),
+        encoder_generation: AtomicU64::new(0),
+        encoded_frames: AtomicU64::new(0),
+        view_samples: AtomicU64::new(0),
+        view_capture_ns: AtomicU64::new(0),
+        view_encode_ns: AtomicU64::new(0),
         keys: std::array::from_fn(|_| AtomicBool::new(false)),
         captured: AtomicU64::new(0),
         skipped: AtomicU64::new(0),
@@ -481,6 +509,13 @@ fn run(
         stream_ssrc: std::array::from_fn(|_| AtomicU32::new(0)),
         stream_progress: std::array::from_fn(|_| AtomicU64::new(0)),
     });
+    let _detail_worker = detail::start(
+        Arc::clone(&shared),
+        opts.listen,
+        opts.encoder.clone(),
+        opts.fps,
+        opts.bitrate_bps,
+    );
     let stop_flag = Arc::clone(&shared);
     let _ = ctrlc::set_handler(move || {
         stop_flag.stop.store(true, Ordering::Relaxed);
@@ -536,6 +571,7 @@ fn run(
     let mut topology_epoch = Instant::now();
     let mut replies: std::collections::VecDeque<(SocketAddr, u32, Vec<u8>)> =
         std::collections::VecDeque::new();
+    let mut resources = resources::Sampler::new();
     let mut last_hello = Instant::now() - Duration::from_secs(2);
     let mut last_stats = Instant::now();
     let mut last_progress = [0u64; 6];
@@ -555,6 +591,59 @@ fn run(
                     let packet = floatdesk_protocol::decode_packet(&scratch[..size]);
                     if let Ok(ControlPacket::Workspace { json }) = &packet {
                         if let Ok(value) = serde_json::from_str::<serde_json::Value>(json) {
+                            if value["type"] == "encoderSettings" {
+                                if shared
+                                    .client
+                                    .read()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .as_ref()
+                                    .is_some_and(|c| c.control == from)
+                                {
+                                    let quality =
+                                        value["quality"].as_u64().unwrap_or(0).min(2) as u32;
+                                    let mbps = value["bitrateMbps"]
+                                        .as_f64()
+                                        .filter(|v| v.is_finite() && *v > 0.0);
+                                    let rate = mbps
+                                        .map(|v| (v.clamp(1.0, 200.0) * 1_000_000.0) as u32)
+                                        .unwrap_or(opts.bitrate_bps);
+                                    let changed =
+                                        shared.encoder_quality.swap(quality, Ordering::Relaxed)
+                                            != quality;
+                                    let changed =
+                                        (shared.encoder_bitrate.swap(rate, Ordering::Relaxed)
+                                            != rate)
+                                            || changed;
+                                    if changed {
+                                        shared.encoder_generation.fetch_add(1, Ordering::Relaxed);
+                                        for key in &shared.keys {
+                                            key.store(true, Ordering::Relaxed);
+                                        }
+                                    }
+                                    let _=socket.send_to(&ControlPacket::Workspace{json:serde_json::json!({"type":"encoderAck","quality":quality,"bitrate":rate}).to_string()}.encode(),from);
+                                }
+                                continue;
+                            }
+                            if value["type"] == "viewStop" || value["type"] == "viewIdle" {
+                                if shared
+                                    .client
+                                    .read()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .as_ref()
+                                    .is_some_and(|c| c.control == from)
+                                {
+                                    shared.view_until_ns.store(
+                                        if value["type"] == "viewIdle" {
+                                            monotonic_ns() + 500_000_000
+                                        } else {
+                                            0
+                                        },
+                                        Ordering::Relaxed,
+                                    );
+                                    shared.keys[0].store(true, Ordering::Relaxed);
+                                }
+                                continue;
+                            }
                             if value["type"] == "focus" {
                                 let allowed = shared
                                     .client
@@ -787,6 +876,9 @@ fn run(
                 send_reload(&shared, &socket, true);
                 let previous_bounds = monitors.clone();
                 sources = next;
+                if let Err(error) = crate::platform::x11::notify_layout_clients() {
+                    tracing::warn!(%error,"Could not notify external layout change")
+                }
                 *shared.screens.write().unwrap_or_else(|e| e.into_inner()) =
                     sources.iter().map(|(_, r)| *r).collect();
                 monitors = vec![desktop_rect(&sources)?];
@@ -823,6 +915,21 @@ fn run(
         pointer.expire();
         if last_hello.elapsed() >= Duration::from_secs(1) {
             send_hello(&shared, &socket, &hellos);
+            let stats = resources.sample(&shared);
+            if let Some(client) = shared
+                .client
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+            {
+                let _ = socket.send_to(
+                    &ControlPacket::Workspace {
+                        json: stats.to_string(),
+                    }
+                    .encode(),
+                    client.control,
+                );
+            }
             if !opts.listen.ip().is_loopback() {
                 send_beacon(opts.listen.port());
             }
@@ -945,6 +1052,7 @@ fn send_ready(
         };
         let Some(unit) = unit else { break };
         delivered += 1;
+        shared.encoded_frames.fetch_add(1, Ordering::Relaxed);
         for packet in packetizer.packetize(&unit.bytes, timestamp) {
             if shared.stop.load(Ordering::Relaxed)
                 || !shared.stream_active[monitor_index].load(Ordering::Relaxed)
@@ -994,13 +1102,19 @@ fn monitor_thread(
     encoder_name: String,
     fps: u32,
     bitrate: u32,
+    total_bitrate: u32,
 ) -> Result<()> {
     let (width, height) = stream_size(rect);
     let mut capture = X11Capture::open_scaled(rect, width, height)?;
     shared.capture_fd[rect.index as usize].store(capture.connection_fd(), Ordering::Relaxed);
     let _clear_fd = ClearCaptureFd(&shared.capture_fd[rect.index as usize]);
     let (width, height) = stream_size(rect);
-    let mut encoder = GstEncoder::open_scaled(
+    let generation = shared.encoder_generation.load(Ordering::Relaxed);
+    let quality = shared.encoder_quality.load(Ordering::Relaxed);
+    let bitrate = ((shared.encoder_bitrate.load(Ordering::Relaxed) as u64 * bitrate as u64)
+        / total_bitrate as u64)
+        .min(u32::MAX as u64) as u32;
+    let mut encoder = GstEncoder::open_scaled_quality(
         &encoder_name,
         crate::core::EncoderConfig {
             width: u32::from(width),
@@ -1009,6 +1123,7 @@ fn monitor_thread(
             bitrate_bps: bitrate.max(400_000),
         },
         capture.pixel_size(),
+        quality,
     )?;
     let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))?;
     encoder.set_bitrate(bitrate.max(400_000))?;
@@ -1055,6 +1170,7 @@ fn monitor_thread(
             result
         });
         let result = (|| {
+            let mut view_was_active = false;
             let mut seen_generation = 0;
             let mut seen_cursor = 0;
             let mut clip: Option<(Vec<MonitorRect>, crate::media::desktop_mask::DesktopMask)> =
@@ -1063,6 +1179,9 @@ fn monitor_thread(
                 && !shared.stop.load(Ordering::Relaxed)
                 && shared.stream_active[rect.index as usize].load(Ordering::Relaxed)
             {
+                if shared.encoder_generation.load(Ordering::Relaxed) != generation {
+                    break;
+                }
                 shared.stream_progress[rect.index as usize].fetch_add(1, Ordering::Relaxed);
                 let target = shared
                     .client
@@ -1073,6 +1192,18 @@ fn monitor_thread(
                     thread::sleep(Duration::from_millis(20));
                     continue;
                 };
+                let view_active = rect.index == 0
+                    && monotonic_ns() < shared.view_until_ns.load(Ordering::Relaxed);
+                if view_active {
+                    view_was_active = true;
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                if view_was_active {
+                    view_was_active = false;
+                    shared.keys[rect.index as usize].store(true, Ordering::Relaxed);
+                    capture.note_cursor();
+                }
                 let screens = shared
                     .screens
                     .read()
@@ -1537,8 +1668,24 @@ fn paint_cursor_scaled(
     rect: MonitorRect,
     cursor: &CursorSprite,
 ) {
-    if (frame.width, frame.height) == (rect.width, rect.height) {
-        paint_cursor(frame, rect.x, rect.y, cursor);
+    let destination = (0, 0, frame.width, frame.height);
+    paint_cursor_scaled_at(frame, rect, cursor, destination);
+}
+fn paint_cursor_scaled_at(
+    frame: &mut crate::core::CapturedFrame,
+    rect: MonitorRect,
+    cursor: &CursorSprite,
+    destination: (u32, u32, u32, u32),
+) {
+    let (x, y, width_px, height_px) = destination;
+    let clip = (
+        x as i32,
+        y as i32,
+        (x + width_px) as i32,
+        (y + height_px) as i32,
+    );
+    if (width_px, height_px) == (rect.width, rect.height) {
+        paint_cursor_clipped(frame, rect.x - x as i32, rect.y - y as i32, cursor, clip);
         return;
     }
     if cursor.width == 0
@@ -1547,8 +1694,8 @@ fn paint_cursor_scaled(
     {
         return;
     }
-    let sx = f64::from(frame.width) / f64::from(rect.width);
-    let sy = f64::from(frame.height) / f64::from(rect.height);
+    let sx = f64::from(width_px) / f64::from(rect.width);
+    let sy = f64::from(height_px) / f64::from(rect.height);
     let width = (f64::from(cursor.width) * sx).ceil().max(1.0) as u16;
     let height = (f64::from(cursor.height) * sy).ceil().max(1.0) as u16;
     let mut pixels = vec![0; usize::from(width) * usize::from(height) * 4];
@@ -1564,22 +1711,23 @@ fn paint_cursor_scaled(
         }
     }
     let scaled = CursorSprite {
-        root_x: (f64::from(cursor.root_x - rect.x) * sx).round() as i32,
-        root_y: (f64::from(cursor.root_y - rect.y) * sy).round() as i32,
+        root_x: x as i32 + (f64::from(cursor.root_x - rect.x) * sx).round() as i32,
+        root_y: y as i32 + (f64::from(cursor.root_y - rect.y) * sy).round() as i32,
         hotspot_x: (f64::from(cursor.hotspot_x) * sx).round() as i16,
         hotspot_y: (f64::from(cursor.hotspot_y) * sy).round() as i16,
         width,
         height,
         pixels,
     };
-    paint_cursor(frame, 0, 0, &scaled);
+    paint_cursor_clipped(frame, 0, 0, &scaled, clip);
 }
 
-fn paint_cursor(
+fn paint_cursor_clipped(
     frame: &mut crate::core::CapturedFrame,
     origin_x: i32,
     origin_y: i32,
     cursor: &CursorSprite,
+    clip: (i32, i32, i32, i32),
 ) {
     let width = cursor.width as i32;
     let height = cursor.height as i32;
@@ -1597,12 +1745,12 @@ fn paint_cursor(
     let stride = frame.stride as usize;
     for row in 0..height {
         let dst_y = top + row;
-        if dst_y < 0 || dst_y >= frame_h {
+        if dst_y < clip.1.max(0) || dst_y >= clip.3.min(frame_h) {
             continue;
         }
         for col in 0..width {
             let dst_x = left + col;
-            if dst_x < 0 || dst_x >= frame_w {
+            if dst_x < clip.0.max(0) || dst_x >= clip.2.min(frame_w) {
                 continue;
             }
             let src = ((row as usize * cursor.width as usize) + col as usize) * 4;
@@ -1815,6 +1963,46 @@ mod pointer_tests {
 #[cfg(test)]
 mod video_pacing_tests {
     use super::*;
+    #[test]
+    fn cursor_is_offset_into_its_atlas_tile_and_clipped_at_the_tile_edge() {
+        let mut frame = crate::core::CapturedFrame {
+            width: 12,
+            height: 8,
+            stride: 48,
+            bgra: vec![0; 384],
+            monotonic_ns: 0,
+            damage_generation: 0,
+        };
+        let rect = MonitorRect {
+            index: 0,
+            x: 0,
+            y: 0,
+            width: 8,
+            height: 8,
+        };
+        let cursor = CursorSprite {
+            root_x: 6,
+            root_y: 4,
+            hotspot_x: 0,
+            hotspot_y: 0,
+            width: 4,
+            height: 4,
+            pixels: [0, 255, 0, 255].repeat(16),
+        };
+        paint_cursor_scaled_at(&mut frame, rect, &cursor, (4, 2, 4, 4));
+        for y in 0..8 {
+            for x in 0..12 {
+                assert_eq!(
+                    frame.bgra[y * 48 + x * 4 + 1],
+                    if x == 7 && (4..6).contains(&y) {
+                        255
+                    } else {
+                        0
+                    }
+                );
+            }
+        }
+    }
     #[test]
     fn scaled_cursor_tracks_full_desktop_coordinates() {
         let mut frame = crate::core::CapturedFrame {

@@ -33,6 +33,7 @@ public final class DecoderIdleSmoke {
     @SuppressWarnings("unchecked")
     public static void main(String[] args) throws Exception {
         var reader=ImageReader.newInstance(320,240,PixelFormat.RGBA_8888,4);
+        var switched=ImageReader.newInstance(320,240,PixelFormat.RGBA_8888,4);
         var socket=new DatagramSocket();
         Class<?> function=Class.forName("kotlin.jvm.functions.Function0");
         Object callback=Proxy.newProxyInstance(function.getClassLoader(),new Class<?>[]{function},
@@ -45,20 +46,38 @@ public final class DecoderIdleSmoke {
             .newInstance(socket,320,240,null,callback,callback,repair);
         try {
             type.getMethod("attach",Surface.class).invoke(decoder,reader.getSurface());
+            type.getMethod("start").invoke(decoder);
+            long startupDeadline=SystemClock.uptimeMillis()+3000;
+            Object renderer;
+            while((renderer=field(decoder,"compositor"))==null && SystemClock.uptimeMillis()<startupDeadline)SystemClock.sleep(5);
+            if(renderer==null)throw new AssertionError("Compositor did not initialize without baseline input");
+            while(field(renderer,"target")!=reader.getSurface() && SystemClock.uptimeMillis()<startupDeadline)SystemClock.sleep(5);
+            if(field(renderer,"target")!=reader.getSurface())throw new AssertionError("Initial output waited for compressed input");
+            System.out.println("idle check: initial target bound without compressed input");
+
             ((AtomicReference<byte[]>)field(decoder,"sps")).set(Base64.getDecoder().decode("Z0LADdoFB+wEQAAAAwBAAAAMo8UKqA=="));
             ((AtomicReference<byte[]>)field(decoder,"pps")).set(Base64.getDecoder().decode("aM4PyA=="));
             ((BlockingQueue<byte[]>)field(decoder,"pending")).put(Base64.getDecoder().decode("AAAAAWdCwA3aBQfsBEAAAAMAQAAADKPFCqgAAAABaM4PyAAAAAFliIQ6EYoAAhjxwABA9jgACHlJycnJycnJycnJycnJycnJycnJ111111111111111111111111111111111111111111111111111111111111111111111111111111114AAAAAFlAyiIQ6EYoAAhjxwABA9jgACHlJycnJycnJycnJycnJycnJycnJ111111111111111111111111111111111111111111111111111111111111111111111111111111114AAAABZQGSIhDoRigACGPHAAED2OAAIeUnJycnJycnJycnJycnJycnJycnXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXgA=="));
-            type.getMethod("start").invoke(decoder);
+
+            awaitColor(reader,false);
+            // Switching the native canvas cannot wait for another baseline access unit.
+            type.getMethod("attach",Surface.class).invoke(decoder,switched.getSurface());
+            System.out.println("idle check: target switched with paused baseline");awaitColor(switched,false);
+            type.getMethod("attach",Surface.class).invoke(decoder,reader.getSurface());
             awaitColor(reader,false);
             type.getMethod("setRenderingActive",boolean.class).invoke(decoder,false);
             SystemClock.sleep(150);
+            type.getMethod("attach",Surface.class).invoke(decoder,switched.getSurface());
+            SystemClock.sleep(50);
+            try(Image hidden=switched.acquireLatestImage()){if(hidden!=null)throw new AssertionError("Hidden attach submitted a retained frame");}
+            type.getMethod("attach",Surface.class).invoke(decoder,reader.getSurface());
             try(Image image=reader.acquireLatestImage()) {
                 if(image!=null) throw new AssertionError("Hidden decoder kept submitting frames");
             }
             type.getMethod("setRenderingActive",boolean.class).invoke(decoder,true);
             ((BlockingQueue<byte[]>)field(decoder,"pending")).put(Base64.getDecoder().decode("AAAAAWdCwA3aBQfsBEAAAAMAQAAADKPFCqgAAAABaM4PyAAAAAFliIQ6EYoAAjFxwABDyjgACAXJycnJycnJycnJycnJycnJycnJ111111111111111111111111111111111111111111111111111111111111111111111111111111114AAAAAFlAyiIQ6EYoAAjFxwABDyjgACAXJycnJycnJycnJycnJycnJycnJ111111111111111111111111111111111111111111111111111111111111111111111111111111114AAAABZQGSIhDoRigACMXHAAEPKOAAIBcnJycnJycnJycnJycnJycnJycnXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXgA=="));
-            awaitColor(reader,true);
-            System.out.println("PASS: actual MediaCodec displays idle keyframe, pauses while hidden and resumes with a fresh frame");
-        } finally { type.getMethod("stop").invoke(decoder); socket.close(); reader.close(); }
+            System.out.println("idle check: resumed");awaitColor(reader,true);
+            System.out.println("PASS: actual MediaCodec displays idle keyframe, pauses while hidden and resumes with a fresh frame; surface changes bind immediately with no new compressed frame");
+        } catch(Throwable error){error.printStackTrace();throw error;} finally { type.getMethod("stop").invoke(decoder); socket.close(); reader.close(); switched.close(); }
     }
 }

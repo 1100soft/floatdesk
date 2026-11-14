@@ -42,8 +42,10 @@ internal open class Entity {
     fun isEnabled(includeParents: Boolean=true)=enabled
     var pointer: SpatialPointerComponent? = null
     fun addComponent(value: SpatialPointerComponent): Boolean { pointer=value;value.spatialPointerIcon=SpatialPointerIcon.DEFAULT;return true }
+    fun <T:Any> getComponentsOfType(type:Class<T>):List<T> = listOfNotNull(pointer,component).filterIsInstance(type)
     var component: InteractableComponent? = null
     fun addComponent(value: InteractableComponent): Boolean { component=value; colliderAttachments++; return true }
+    fun removeComponent(value:SpatialPointerComponent){if(pointer===value)pointer=null}
     fun removeComponent(value: InteractableComponent) { if(component === value) component=null }
     private var opacity = 1f
     private var pose = Pose()
@@ -67,7 +69,7 @@ internal class SpatialInputEvent(val origin: Vector3,val direction: Vector3,val 
 internal class Matrix4(val data: FloatArray) { val inverse get() = this }
 internal class InputEvent(val action: Action,val source: Int,val pointerType: String,val timestamp: Long,val origin: Vector3,val direction: Vector3,val hitInfoList: List<HitInfo>) {
     enum class Action { DOWN, UP, CANCEL, MOVE, HOVER_ENTER, HOVER_MOVE, HOVER_EXIT }
-    object Source { const val HANDS = 0 }
+    object Source { const val HANDS = 0;const val GAZE_AND_GESTURE=6 }
     class HitInfo(val inputEntity: Entity,val hitPosition: Vector3?,val transform: Matrix4)
 }
 internal class InteractableComponent(val listener: (InputEvent)->Unit) {
@@ -126,6 +128,12 @@ suspend fun main() {
     check(input.enabled && input.getAlpha() == .8f)
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,false,false)
     val flatPose=input.getPose();val flatShape=input.shape
+    warp.qualityResolution(5120 to 3200)
+    warp.update(session,root,floatArrayOf(0f,0f,0f),screen,false,false)
+    check(input.pixelDimensions==IntSize2d(5120,3200) && input.getPose()==flatPose && input.shape===flatShape)
+    warp.qualityResolution(null)
+    warp.update(session,root,floatArrayOf(0f,0f,0f),screen,false,false)
+    check(input.pixelDimensions==IntSize2d(screen.pixelWidth,screen.pixelHeight))
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,false,false,viewDirection=floatArrayOf(.8f,0f,-1f))
     check(warp.mesh==null && input.getPose()==flatPose && input.shape===flatShape)
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false)
@@ -133,6 +141,15 @@ suspend fun main() {
     SystemClock.now=1000L
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false,viewDirection=floatArrayOf(.1f,0f,-1f))
     check(warp.mesh!!.focus!=null && warp.outputSurface===stableOutput)
+    val stableReference=warp.gazeReference
+    SystemClock.now=1100L
+    warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false,viewFocus=floatArrayOf(.8f,.35f))
+    check(kotlin.math.abs(warp.mesh!!.focus!![0]-.24f)<.0001f && kotlin.math.abs(warp.mesh!!.focus!![1]-.0675f)<.0001f)
+    check(warp.gazeReference===stableReference) // Curvature must not feed its deformation back into gaze targeting.
+    val gazeMesh=warp.mesh
+    SystemClock.now=1160L
+    warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false,viewFocus=floatArrayOf(.8f,.35f))
+    check(warp.mesh===gazeMesh)
     val projected=warp.mesh
     SystemClock.now=1200L
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,true,viewDirection=floatArrayOf(-.2f,0f,-1f))
@@ -169,8 +186,8 @@ suspend fun main() {
     input.setScale(1.785f)
     val ip = input.getPose().translation
     val matrix = Matrix4(floatArrayOf(1f,0f,0f,0f, 0f,1f,0f,0f, 0f,0f,1f,0f, -ip.x,-ip.y,-ip.z,1f))
-    fun emit(side: String, action: InputEvent.Action) {
-        component.listener(InputEvent(action,0,side,0,Vector3(0f,0f,1f),Vector3(0f,0f,-1f),
+    fun emit(side: String, action: InputEvent.Action,source:Int=0) {
+        component.listener(InputEvent(action,source,side,0,Vector3(0f,0f,1f),Vector3(0f,0f,-1f),
             listOf(InputEvent.HitInfo(input,Vector3((ip.x+(if(side=="LEFT") -.2f else .2f))*1.785f,ip.y*1.785f,ip.z*1.785f),matrix))))
     }
     emit("LEFT",InputEvent.Action.HOVER_ENTER)
@@ -180,6 +197,17 @@ suspend fun main() {
     emit("LEFT",InputEvent.Action.DOWN); emit("RIGHT",InputEvent.Action.DOWN)
     emit("LEFT",InputEvent.Action.UP); emit("RIGHT",InputEvent.Action.UP)
     check(events.map { it.pointerType } == listOf("LEFT","RIGHT","LEFT","RIGHT"))
+    val beforeGazeEvents=events.size
+    emit("DEFAULT",InputEvent.Action.HOVER_ENTER,InputEvent.Source.GAZE_AND_GESTURE)
+    check(hovering.last().first=="GAZE")
+    emit("DEFAULT",InputEvent.Action.DOWN,InputEvent.Source.GAZE_AND_GESTURE)
+    emit("DEFAULT",InputEvent.Action.UP,InputEvent.Source.GAZE_AND_GESTURE)
+    check(events.size==beforeGazeEvents) // Eye+hand selection cannot arm a custom monitor grab.
+    check(input.pointer?.spatialPointerIcon==SpatialPointerIcon.NONE)
+    component.listener(InputEvent(InputEvent.Action.CANCEL,InputEvent.Source.GAZE_AND_GESTURE,"DEFAULT",0,Vector3(0f,0f,0f),Vector3(0f,0f,0f),emptyList()))
+    check(hovering.last().first=="GAZE" && hovering.last().second==null)
+
+
     check(kotlin.math.abs(events[0].hitPosition!!.x+200f) < .001f && kotlin.math.abs(events[1].hitPosition!!.x-200f) < .001f)
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false)
     warp.syncCurvedInput(session)
@@ -221,6 +249,32 @@ suspend fun main() {
     check(CurvedMonitorInput.last!!.entity.parent==null && warp.displayEntity==null)
     check(input.enabled) // Late collider completion must not disable the restored owner.
     CurvedMonitorInput.afterCreate=null
+    // An off-center focused desktop can put its flat reference plane beside the eye.
+    // Curvature must still track the current eye instead of freezing the previous mesh.
+    warp.attach(session,input.getSurface(),screen,PixelDensity(),onEvent={})
+    val sideScreen=MonitorPlacement(20f,12f,pose=WorkspacePose(floatArrayOf(-1.2f,0f,-.001f)))
+    warp.update(session,root,floatArrayOf(0f,0f,0f),sideScreen,true,false,forceUpdate=true)
+    check(kotlin.math.abs(warp.mesh!!.eye[2]-.001f)<.000001f)
+    warp.update(session,root,floatArrayOf(0f,.2f,-.01f),sideScreen,true,false,forceUpdate=true)
+    check(kotlin.math.abs(warp.mesh!!.eye[1]-.2f)<.000001f && warp.mesh!!.eye[2]<0f)
+    val centeredEye=MonitorPlacement(4f,2.4f,pose=WorkspacePose(floatArrayOf(0f,0f,0f)),viewCenterU=.8f)
+    warp.update(session,root,floatArrayOf(0f,0f,0f),centeredEye,true,false,forceUpdate=true)
+    check(kotlin.math.abs(warp.mesh!!.radius-1.2f)<.00001f && warp.mesh!!.eye.all{it==0f})
+    warp.close()
+    warp.attach(session,input.getSurface(),screen,PixelDensity(),onEvent={})
+    val anchored=MonitorPlacement(20f,12f,viewCenterU=.9f)
+    SystemClock.now+=1000
+    warp.update(session,root,floatArrayOf(0f,0f,0f),anchored,true,false,viewFocus=floatArrayOf(.2f,.6f))
+    val uvBefore=warp.mesh!!.focus!!.let{it[0]/anchored.physicalWidthM to it[1]/anchored.physicalHeightM}
+    for(i in 1..10){
+        SystemClock.now+=1 // Head-focus update has not elapsed; tiny depth corrections must not reset it.
+        val resized=anchored.copy(physicalWidthM=20f*(1f+i*.001f),physicalHeightM=12f*(1f+i*.001f))
+        warp.update(session,root,floatArrayOf(0f,0f,0f),resized,true,false)
+        val focusNow=warp.mesh!!.focus!!
+        check(kotlin.math.abs(focusNow[0]/resized.physicalWidthM-uvBefore.first)<.00001f)
+        check(kotlin.math.abs(focusNow[1]/resized.physicalHeightM-uvBefore.second)<.00001f)
+    }
+    warp.close()
     println("Passed: native matrix localization and independent left/right sequences, flat Compose surface/input/alpha/parent preserved, separate curved video and interaction ownership, mode-switch surface restoration, curvature freezes while held, video UVs, cleanup")
 }
 '''

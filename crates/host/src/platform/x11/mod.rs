@@ -274,3 +274,79 @@ mod pointer_device_tests {
         assert!(!held());
     }
 }
+
+/// Qt's RandR 1.5 path rescans logical monitor geometry on root ConfigureNotify.
+/// Moving outputs within an unchanged framebuffer need not generate that event.
+/// Publish the final real geometry, never an intermediate suspended-CRTC layout.
+pub fn notify_layout_clients() -> Result<()> {
+    use x11rb::protocol::xproto::{ConfigureNotifyEvent, EventMask, CONFIGURE_NOTIFY_EVENT};
+    let link = X11Link::open()?;
+    let geometry = link
+        .conn
+        .get_geometry(link.root)
+        .map_err(Error::x11)?
+        .reply()
+        .map_err(Error::x11)?;
+    let event = ConfigureNotifyEvent {
+        response_type: CONFIGURE_NOTIFY_EVENT,
+        event: link.root,
+        window: link.root,
+        width: geometry.width,
+        height: geometry.height,
+        ..Default::default()
+    };
+    link.conn
+        .send_event(false, link.root, EventMask::STRUCTURE_NOTIFY, event)
+        .map_err(Error::x11)?
+        .check()
+        .map_err(Error::x11)?;
+    link.conn.flush().map_err(Error::x11)
+}
+
+#[cfg(test)]
+mod notification_checks {
+    use super::*;
+    #[test]
+    #[ignore = "requires a private Xvfb and FLOATDESK_SYNTHETIC_DISPLAY=1"]
+    fn unchanged_framebuffer_still_notifies_layout_consumers() {
+        use x11rb::protocol::{
+            xproto::{ChangeWindowAttributesAux, EventMask},
+            Event,
+        };
+        assert_eq!(
+            std::env::var("FLOATDESK_SYNTHETIC_DISPLAY").as_deref(),
+            Ok("1")
+        );
+        let listener = X11Link::open().unwrap();
+        listener
+            .conn
+            .change_window_attributes(
+                listener.root,
+                &ChangeWindowAttributesAux::new().event_mask(EventMask::STRUCTURE_NOTIFY),
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+        let before = listener
+            .conn
+            .get_geometry(listener.root)
+            .unwrap()
+            .reply()
+            .unwrap();
+        notify_layout_clients().unwrap();
+        let Event::ConfigureNotify(event) = listener.conn.wait_for_event().unwrap() else {
+            panic!("Missing final layout notification")
+        };
+        assert_eq!(event.event, listener.root);
+        assert_eq!(event.window, listener.root);
+        assert_eq!((event.width, event.height), (before.width, before.height));
+        assert_ne!(event.response_type & 0x80, 0); // It is a final-state notification, not a modeset.
+        let after = listener
+            .conn
+            .get_geometry(listener.root)
+            .unwrap()
+            .reply()
+            .unwrap();
+        assert_eq!((before.width, before.height), (after.width, after.height));
+    }
+}

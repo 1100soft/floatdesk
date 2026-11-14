@@ -48,12 +48,22 @@ internal data class WorkspaceFile(
     val screenSpacing:Float=0f,
     val viewerReference:Pose?=null,
     val focusMode:Boolean=false,
+    val experimentalViewedDetail:Boolean=false,
+    val viewDetailDebug:Boolean=true,
+    val encoderQuality:Int=0,
+    val encoderMbps:Float=0f,
+    val sharpening:Float=0f,
+    val denseFraction:Float=.35f, // Legacy transport compatibility only.
+    val detailAreaPixels:Long=0, // Zero selects automatic allocation.
+    val detailTargetFps:Int=30,
+    val showResources:Boolean=true,
     val pinchThresholds:PinchThresholds=PinchThresholds.Default,
 )
 
 internal class WorkspaceStore(private val file: File) {
     private val lock = Any()
     @Volatile var viewerReference:Pose?=null
+    @Volatile var viewerUnitsPerMeter:Float=1f
 
     fun load(): WorkspaceFile = synchronized(lock) {
         if (!file.exists()) return WorkspaceFile()
@@ -103,7 +113,7 @@ internal fun WorkspaceFile.monitorPlaced(
     val current = layouts[activeLayout] ?: return this
     if (index !in current.indices) return this
     val updated = current.toMutableList()
-    updated[index] = placement
+    updated[index] = store.viewerReference?.let{fixedDesktopDepth(placement,it,store.viewerUnitsPerMeter,sphericalWarp)} ?: placement
     val nextLayouts = layouts.toMutableMap()
     nextLayouts[activeLayout] = updated
     val next = copy(layouts = nextLayouts)
@@ -137,6 +147,10 @@ private fun encode(workspace: WorkspaceFile): JSONObject {
         .put("spherical_warp", workspace.sphericalWarp)
         .put("eye_aiming", workspace.eyeAiming)
         .put("focus_mode",workspace.focusMode)
+        .put("experimental_viewed_detail",workspace.experimentalViewedDetail)
+        .put("view_detail_debug",workspace.viewDetailDebug)
+        .put("encoder_quality",workspace.encoderQuality).put("encoder_mbps",workspace.encoderMbps)
+        .put("sharpening",workspace.sharpening).put("dense_fraction",workspace.denseFraction).put("detail_area_pixels",workspace.detailAreaPixels).put("detail_target_fps",workspace.detailTargetFps).put("show_resources",workspace.showResources)
         .put("pinch_thresholds_mm",JSONArray(listOf(workspace.pinchThresholds.leftIndexMm,workspace.pinchThresholds.rightIndexMm,workspace.pinchThresholds.leftMiddleMm,workspace.pinchThresholds.rightMiddleMm)))
         .put("mouse_gestures", workspace.mouseGestures)
         .put("screen_spacing",workspace.screenSpacing.toDouble())
@@ -181,6 +195,15 @@ private fun decode(json: JSONObject): WorkspaceFile {
         control = json.optJSONObject("control")?.let { decodePanel(it) } ?: PanelPlacement(),
         sphericalWarp = json.optBoolean("spherical_warp", false),
         focusMode=json.optBoolean("focus_mode",false),
+        experimentalViewedDetail=json.optBoolean("experimental_viewed_detail",false),
+        viewDetailDebug=json.optBoolean("view_detail_debug",true),
+        encoderQuality=json.optInt("encoder_quality",0).coerceIn(0,2),
+        encoderMbps=json.optDouble("encoder_mbps",0.0).toFloat().takeIf{it.isFinite()}?.coerceIn(0f,200f) ?: 0f,
+        sharpening=json.optDouble("sharpening",0.0).toFloat().takeIf{it.isFinite()}?.coerceIn(0f,1.5f) ?: 0f,
+        detailAreaPixels=json.optLong("detail_area_pixels",0).coerceIn(0,16_777_216),
+        detailTargetFps=json.optInt("detail_target_fps",30).coerceIn(5,120),
+        denseFraction=json.optDouble("dense_fraction",.35).toFloat().takeIf{it.isFinite()}?.coerceIn(.2f,1f) ?: .35f,
+        showResources=json.optBoolean("show_resources",true),
         pinchThresholds=json.optJSONArray("pinch_thresholds_mm")?.takeIf{it.length()==4}?.let {a->
             PinchThresholds(a.optDouble(0,Double.NaN).toFloat(),a.optDouble(1,Double.NaN).toFloat(),a.optDouble(2,Double.NaN).toFloat(),a.optDouble(3,Double.NaN).toFloat()).takeIf{it.valid()}
         } ?: PinchThresholds.Default,

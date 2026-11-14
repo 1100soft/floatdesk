@@ -171,10 +171,13 @@ pub fn desktop_rect(sources: &[(String, MonitorRect)]) -> Result<MonitorRect> {
         height,
     })
 }
+pub const STREAM_MAX_WIDTH: u16 = 4096;
+pub const STREAM_MAX_HEIGHT: u16 = 2160;
+
 /// Fit a combined desktop within a practical single H.264 decoder envelope.
 pub fn stream_size(rect: MonitorRect) -> (u16, u16) {
-    let scale = (4096.0 / f64::from(rect.width))
-        .min(2160.0 / f64::from(rect.height))
+    let scale = (f64::from(STREAM_MAX_WIDTH) / f64::from(rect.width))
+        .min(f64::from(STREAM_MAX_HEIGHT) / f64::from(rect.height))
         .min(1.0);
     (
         ((f64::from(rect.width) * scale).floor() as u16 / 2 * 2).max(2),

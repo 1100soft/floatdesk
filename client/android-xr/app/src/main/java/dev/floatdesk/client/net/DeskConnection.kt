@@ -12,6 +12,8 @@ import androidx.compose.runtime.mutableStateOf
 import dev.floatdesk.client.ViewProjection
 import dev.floatdesk.client.FocusTarget
 import dev.floatdesk.client.FocusResult
+import dev.floatdesk.client.qualityOutputSize
+import dev.floatdesk.client.qualityDenseFraction
 import dev.floatdesk.client.FocusRect
 import dev.floatdesk.client.media.MonitorDecoder
 import dev.floatdesk.client.media.VideoAim
@@ -34,6 +36,63 @@ internal class DeskConnection(
     val displayState=mutableStateOf(Packet.MonitorStatus(0,true,0,0,"Checking available displays…"))
     val displayBusy=mutableStateOf(false)
     val workspaceInfo=mutableStateOf<WorkspaceInfo?>(null)
+    val resourceStatus=mutableStateOf("Waiting for resource telemetry…")
+    @Volatile private var videoQuality=0
+    @Volatile private var videoMbps=0f
+    @Volatile private var videoSharpen=0f
+    @Volatile private var denseFraction=.35f
+    @Volatile private var nativeAreaPixels=0L
+    @Volatile private var detailTargetFps=30
+    private var localResources:LocalResources?=null
+    fun configureVideo(quality:Int,mbps:Float,sharpen:Float,fraction:Float,areaPixels:Long=0,targetFps:Int=30){
+        val encodingChanged=videoQuality!=quality || videoMbps!=mbps
+        nativeAreaPixels=areaPixels;detailTargetFps=targetFps
+        videoQuality=quality;videoMbps=mbps;videoSharpen=sharpen;denseFraction=fraction
+        decoders.values.forEach{it.sharpening(sharpen)}
+        if(encodingChanged)sendEncoderSettings()
+    }
+    private fun sendEncoderSettings(){send(Protocol.workspace(org.json.JSONObject().put("type","encoderSettings").put("quality",videoQuality).put("bitrateMbps",videoMbps).toString()))}
+    private fun publishResources(){val state=detailDiagnostics.get();main.post{resourceStatus.value=state.hostResources+"\n"+state.localResources}}
+    val detailStatus=mutableStateOf("Experimental viewed detail off")
+    private var detailWorker:ViewedDetail?=null
+    @Volatile private var detailSession=0L
+    private val detailDiagnostics=AtomicReference(DetailDiagnostics())
+    fun refreshOutput(index:Int){decoders[index]?.refreshOutput()}
+    fun diagnosticSnapshot()=decoders[0]?.diagnosticSnapshot() ?: DiagnosticSnapshot(detailDiagnostics.get(),null,"Waiting for video")
+    fun displayedQualityFocus():Pair<Float,Float>?=decoders[0]?.displayedQualityFocus()
+    fun hasViewedDetail():Boolean=decoders[0]?.hasViewedDetail()==true
+    fun qualityOutputLimit():Int=decoders[0]?.qualityOutputLimit() ?: 4096
+    fun detailDebug(enabled:Boolean,showOverlay:Boolean=true,showResources:Boolean=false) {
+        if(detailDiagnostics.get().let{it.enabled==enabled && it.showOverlay==showOverlay && it.showResources==showResources})return
+        val state=detailDiagnostics.updateAndGet{it.copy(enabled=enabled,showOverlay=showOverlay,showResources=showResources)};decoders[0]?.detailDebug(state)
+    }
+    fun viewedDetail(rect:FocusRect?,blockedReason:String="No desktop in view",center:Pair<Float,Float>?=null,targeting:String="GAZE") {
+        val remote=pendingRemote
+        val bounds=workspaceInfo.value?.bounds()?.toList()
+        val format=currentMonitors.singleOrNull()
+        val target=bounds?.let{qualityOutputSize(it[2],it[3],qualityOutputLimit())}
+        val fraction=if(rect!=null && target!=null)qualityDenseFraction(denseFraction,rect,target.first,target.second) else denseFraction
+        val request=if(detailDiagnostics.get().enabled && rect!=null && renderingActive && remote!=null && bounds!=null && format!=null)DetailRequest(remote,detailSession,rect,bounds,center ?: (rect.centerU to rect.centerV),videoQuality,videoMbps,fraction,nativeAreaPixels,detailTargetFps) else null
+        val reason=when {
+            !detailDiagnostics.get().enabled->"Normal full-desktop streaming"
+            rect==null->blockedReason
+            format==null->"Waiting for one combined desktop stream"
+            !renderingActive->"Paused: app hidden"
+            remote==null || bounds==null->"Waiting for host/layout"
+            else->if(nativeAreaPixels==0L)"$targeting · Auto $detailTargetFps fps" else "$targeting · %.2f MP native".format(java.util.Locale.ROOT,nativeAreaPixels/1e6)
+        }
+        val state=detailDiagnostics.updateAndGet{it.copy(candidate=rect,reason=reason,
+            gainX=if(rect!=null && format!=null)2048f/((rect.right-rect.left)*fraction*format.width) else 0f,
+            gainY=if(rect!=null && format!=null)1024f/((rect.bottom-rect.top)*fraction*format.height) else 0f)}
+        decoders[0]?.detailDebug(state)
+        if(request!=null && detailWorker==null)detailWorker=ViewedDetail({decoders[0]?.viewDestination()},{message->
+            val updated=detailDiagnostics.updateAndGet{it.copy(transport=message)};decoders[0]?.detailDebug(updated)
+            main.post{detailStatus.value=message}
+        },{send(Protocol.workspace("{\"type\":\"viewStop\"}"));askKeyframe()})
+        detailWorker?.update(request)
+        if(rect==null && format!=null && blockedReason=="No desktop in view" && detailDiagnostics.get().enabled && renderingActive)
+            send(Protocol.workspace("{\"type\":\"viewIdle\"}"))
+    }
     val focusResult=mutableStateOf<FocusResult?>(null)
     val focusBusy=mutableStateOf(false)
     private val focusPending=AtomicInteger()
@@ -51,7 +110,7 @@ internal class DeskConnection(
     private val main = Handler(Looper.getMainLooper())
     private val assembler = CursorAssembler()
     @Volatile private var renderingActive=true
-    private val decoders = HashMap<Int, MonitorDecoder>()
+    private val decoders = ConcurrentHashMap<Int, MonitorDecoder>()
     private val viewProjections=HashMap<Int,ViewProjection?>()
     private val pendingCursors = ConcurrentHashMap<Int, CursorView>()
     private val cursorSeq = AtomicInteger()
@@ -102,12 +161,17 @@ internal class DeskConnection(
             acquire()
         }
         running = true
+        localResources=LocalResources {message->
+            val value=detailDiagnostics.updateAndGet{it.copy(localResources=message)};decoders[0]?.detailDebug(value);publishResources()
+        }
         outgoingThread = HandlerThread("floatdesk-input").also { it.start(); outgoing = Handler(it.looper) }
         status.value = "Looking for your computer…"
         thread = Thread({ controlLoop() }, "floatdesk-control").also { it.start() }
     }
 
     fun disconnect() {
+        localResources?.close();localResources=null
+        detailWorker?.close();detailWorker=null
         running = false
         control?.close()
         beacon?.close()
@@ -148,6 +212,7 @@ internal class DeskConnection(
     @Synchronized
     fun setRenderingActive(active: Boolean) {
         renderingActive=active
+        if(!active)viewedDetail(null)
         decoders.values.forEach { it.setRenderingActive(active) }
     }
 
@@ -274,6 +339,13 @@ internal class DeskConnection(
                                     focusBusy.value=false;focusResult.value=FocusResult(id,reply.optBoolean("ok") && rect!=null,rect,reply.optString("message"))
                                 }
                             }
+                            runCatching{org.json.JSONObject(decoded.json)}.getOrNull()?.takeIf{it.optString("type")=="resourceStats"}?.let{stats->
+                                fun n(key:String)=stats.optDouble(key,Double.NaN).takeIf{it.isFinite()}
+                                val gpu=n("gpuPct")?.let{String.format(java.util.Locale.ROOT,"%.0f%%",it)} ?: "n/a"
+                                val stages=if(n("captureMs")!=null && n("encodeMs")!=null)String.format(java.util.Locale.ROOT,"cap %.1fms enc %.1fms",n("captureMs"),n("encodeMs")) else "view timing n/a"
+                                val text=String.format(java.util.Locale.ROOT,"Host CPU(core) %.0f%% RSS %.0fMiB free %.0fMiB GPU(proc) %s\nHost video %.1ffps %.1fMbps · %s",n("cpuPct") ?: 0.0,n("rssMiB") ?: 0.0,n("availableMiB") ?: 0.0,gpu,n("fps") ?: 0.0,n("mbps") ?: 0.0,stages)
+                                val value=detailDiagnostics.updateAndGet{it.copy(hostResources=text)};decoders[0]?.detailDebug(value);publishResources()
+                            }
                             WorkspaceInfo.parse(decoded.json)?.let {info->main.post {workspaceInfo.value=info;configurePresentation(screenSpacing)}}
                         }
                     }
@@ -312,6 +384,8 @@ internal class DeskConnection(
 
     @Synchronized
     private fun onHello(hello: Packet.HostHello, remote: InetSocketAddress) {
+        sendEncoderSettings()
+        if(detailSession!=hello.sessionId){viewedDetail(null);detailSession=hello.sessionId}
         if (hello.monitors==currentMonitors && decoders.isNotEmpty()) {
             // A dropped one-shot progress notification must not leave an overlay
             // behind after the host has returned to its normal heartbeat.
@@ -337,6 +411,7 @@ internal class DeskConnection(
             val decoder = MonitorDecoder(video, monitor.width, monitor.height, dumpFile, ::askKeyframe,onFrame={
                 if(decoderGeneration.get()==generation && videoPending.compareAndSet(true,false)) main.post {reloading.value=false}
             },onNack={source,sequence->send(Protocol.videoNack(monitor.index,source,sequence))})
+            decoder.sharpening(videoSharpen)
             decoder.presentation(if(hello.monitors.size>1) ScreenPresentation() else screenPresentation.get())
             decoder.projection(viewProjections[monitor.index])
             activeSurfaces[monitor.index]?.let { decoder.attach(it) }

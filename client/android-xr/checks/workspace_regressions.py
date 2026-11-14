@@ -7,9 +7,36 @@ source=(root/'MonitorMesh.kt').read_text().split('\n',1)[1]+'\n'+(root/'VideoGeo
 w=(root/'workspace/Workspace.kt').read_text()
 source+='\n'+(root/'PinchPolicy.kt').read_text().split('\n',1)[1]
 source+='\n'+w[w.index('internal data class Pose'):w.index('internal class WorkspaceStore')]
-source+='\n'+(root/'workspace/WorkspacePlacement.kt').read_text().split('\n',1)[1]
+source+='\n'+'\n'.join(line for line in (root/'workspace/WorkspacePlacement.kt').read_text().splitlines() if not line.startswith(('package ','import ')))
 code=source+'''
 fun main() {
+ check(ViewLayers.DiagnosticsDistanceM<ViewLayers.ControlsDistanceM && ViewLayers.ControlsDistanceM<ViewLayers.DesktopDistanceM)
+ val viewer0=Pose()
+ val depthBase=MonitorPlacement("depth","existing-0",Pose(floatArrayOf(.3f,.2f,-2.4f)),2f,1f,0f,5120,2560,60)
+ val locked=fixedDesktopDepth(depthBase,viewer0,1f)
+ fun radius(p:FloatArray)=kotlin.math.sqrt(p.sumOf{(it*it).toDouble()}).toFloat()
+ check(kotlin.math.abs(radius(locked.pose.position)-ViewLayers.DesktopDistanceM)<.00001f)
+ check(kotlin.math.abs(locked.pose.position[0]/-locked.pose.position[2]-.3f/2.4f)<.00001f)
+ check(kotlin.math.abs(locked.physicalWidthM/-locked.pose.position[2]-2f/2.4f)<.00001f)
+ check(fixedDesktopDepth(locked,viewer0,1f)===locked)
+ val farther=depthBase.copy(pose=Pose(floatArrayOf(.3f,.2f,-4.8f)))
+ check(fixedDesktopDepth(farther,viewer0,1f).physicalWidthM<locked.physicalWidthM)
+ val tilted=depthBase.copy(pose=Pose(floatArrayOf(0f,0f,-1.2f),floatArrayOf(0f,.5f,0f,.8660254f)),physicalWidthM=100f,physicalHeightM=60f)
+ val flatDepth=fixedDesktopDepth(tilted,viewer0,1f,false)
+ val n=floatArrayOf(.8660254f,0f,.5f)
+ check(kotlin.math.abs((0..2).sumOf{(flatDepth.pose.position[it]*n[it]).toDouble()}.toFloat())>=1.1999f)
+ check(kotlin.math.abs(flatDepth.physicalWidthM/-flatDepth.pose.position[2]-tilted.physicalWidthM/1.2f)<.001f)
+ val focused=depthBase.copy(viewCenterU=.9f,viewCenterV=.2f)
+ val f=fixedDesktopDepth(focused,viewer0,1f)
+ val focus=floatArrayOf(f.pose.position[0]+(.9f-.5f)*f.physicalWidthM,f.pose.position[1]+(.5f-.2f)*f.physicalHeightM,f.pose.position[2])
+ check(kotlin.math.abs(radius(focus)-1.2f)<.00001f)
+ val rotated=depthBase.copy(pose=Pose(floatArrayOf(.3f,.2f,-2.4f),floatArrayOf(0f,.70710677f,0f,.70710677f)),viewCenterU=.9f,viewCenterV=.5f)
+ val r=fixedDesktopDepth(rotated,viewer0,1f)
+ check(kotlin.math.abs(radius(floatArrayOf(r.pose.position[0],r.pose.position[1],r.pose.position[2]-.4f*r.physicalWidthM))-1.2f)<.00001f)
+ check(fixedDesktopDepth(depthBase.copy(pose=Pose()),viewer0,1f).pose.position.all{it.isFinite()})
+ val rooted=fixedDesktopDepth(depthBase,Pose(floatArrayOf(1f,0f,0f)),1.785f)
+ check(kotlin.math.abs(radius(FloatArray(3){rooted.pose.position[it]-(if(it==0)1f else 0f)})-1.2f*1.785f)<.00001f)
+
  val full=floatArrayOf(0f,0f,.5f,1f,.5f,0f,1f,1f)
  check(videoCoverageIsFull(full,0f))
  check(!videoCoverageIsFull(full,.1f))

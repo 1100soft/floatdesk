@@ -134,11 +134,25 @@ impl X11Capture {
         Self::open_scaled(rect, rect.width as u16, rect.height as u16)
     }
     pub fn open_scaled(rect: MonitorRect, width: u16, height: u16) -> Result<Self> {
+        Self::open_scaled_policy(rect, width, height, true)
+    }
+    pub fn open_detail(rect: MonitorRect, width: u16, height: u16) -> Result<Self> {
+        Self::open_scaled_policy(rect, width, height, false)
+    }
+    fn open_scaled_policy(
+        rect: MonitorRect,
+        width: u16,
+        height: u16,
+        fallback: bool,
+    ) -> Result<Self> {
         let link = X11Link::open()?;
         let render = if u32::from(width) != rect.width || u32::from(height) != rect.height {
             match RenderTarget::create(&link, rect, width, height) {
                 Ok(target) => Some(target),
                 Err(error) => {
+                    if !fallback {
+                        return Err(error);
+                    }
                     tracing::warn!(%error,"Server scaling unavailable; using full desktop capture");
                     None
                 }
@@ -228,6 +242,152 @@ impl X11Capture {
             generation: 1,
             last: None,
         })
+    }
+
+    /// One bounded SHM allocation and target pixmap for all packed-atlas regions.
+    pub fn workspace(rect: MonitorRect, width: u16, height: u16) -> Result<Self> {
+        let mut result = Self::open_detail(rect, width, height)?;
+        if result.render.is_none() {
+            result.render = Some(RenderTarget::create(&result.link, rect, width, height)?)
+        }
+        // The viewed atlas is request-driven; it never waits for Damage notifications.
+        if result.damage_ok {
+            result
+                .link
+                .conn
+                .damage_destroy(result.damage)
+                .map_err(Error::x11)?
+                .check()
+                .map_err(Error::x11)?;
+        }
+        result.damage = 0;
+        result.damage_ok = false;
+        result.drain_damage()?;
+        Ok(result)
+    }
+    /// Queue all GPU tile composites before one SHM reply; that reply is the error/barrier point.
+    pub fn atlas(&self, tiles: &[(MonitorRect, u16, u16, u16, u16)]) -> Result<CapturedFrame> {
+        let target = self
+            .render
+            .as_ref()
+            .ok_or_else(|| Error::Msg("Missing atlas workspace".into()))?;
+        let mut checked = Vec::new();
+        checked.push(
+            self.link
+                .conn
+                .render_fill_rectangles(
+                    render::PictOp::SRC,
+                    target.destination,
+                    render::Color {
+                        red: 0,
+                        green: 0,
+                        blue: 0,
+                        alpha: 65535,
+                    },
+                    &[x11rb::protocol::xproto::Rectangle {
+                        x: 0,
+                        y: 0,
+                        width: self.width as u16,
+                        height: self.height as u16,
+                    }],
+                )
+                .map_err(Error::x11)?,
+        );
+        let fixed = |v: f64| (v * 65536.0).round() as i32;
+        for &(r, x, y, w, h) in tiles {
+            if w == 0
+                || h == 0
+                || x as u32 + w as u32 > self.width
+                || y as u32 + h as u32 > self.height
+            {
+                return Err(Error::Msg("Atlas tile exceeds allocation".into()));
+            }
+            checked.push(
+                self.link
+                    .conn
+                    .render_set_picture_transform(
+                        target.source,
+                        render::Transform {
+                            matrix11: fixed(r.width as f64 / w as f64),
+                            matrix12: 0,
+                            matrix13: fixed(r.x as f64),
+                            matrix21: 0,
+                            matrix22: fixed(r.height as f64 / h as f64),
+                            matrix23: fixed(r.y as f64),
+                            matrix31: 0,
+                            matrix32: 0,
+                            matrix33: 65536,
+                        },
+                    )
+                    .map_err(Error::x11)?,
+            );
+            checked.push(
+                self.link
+                    .conn
+                    .render_composite(
+                        render::PictOp::SRC,
+                        target.source,
+                        0u32,
+                        target.destination,
+                        0,
+                        0,
+                        0,
+                        0,
+                        x as i16,
+                        y as i16,
+                        w,
+                        h,
+                    )
+                    .map_err(Error::x11)?,
+            );
+        }
+        let reply = self
+            .link
+            .conn
+            .shm_get_image(
+                target.pixmap,
+                0,
+                0,
+                self.width as u16,
+                self.height as u16,
+                u32::MAX,
+                u8::from(ImageFormat::Z_PIXMAP),
+                self.seg,
+                0,
+            )
+            .map_err(Error::x11)?
+            .reply()
+            .map_err(Error::x11)?;
+        for cookie in checked {
+            cookie.check().map_err(Error::x11)?
+        }
+        let need = self.stride as usize * self.height as usize;
+        if need > self.mapping || (reply.size != 0 && reply.size as usize > need) {
+            return Err(Error::Msg("Atlas SHM reply exceeds allocation".into()));
+        }
+        let pixels = unsafe { std::slice::from_raw_parts(self.addr as *const u8, need) };
+        Ok(CapturedFrame {
+            width: self.width,
+            height: self.height,
+            stride: self.stride,
+            bgra: pixels.to_vec(),
+            monotonic_ns: crate::core::monotonic_ns(),
+            damage_generation: self.generation,
+        })
+    }
+
+    /// Reuse the bounded SHM/readback allocation when the viewed crop changes.
+    pub fn retarget(&mut self, rect: MonitorRect) -> Result<()> {
+        if self.rect == rect {
+            return Ok(());
+        }
+        let target = RenderTarget::create(&self.link, rect, self.width as u16, self.height as u16)?;
+        if let Some(previous) = self.render.replace(target) {
+            previous.free(&self.link)
+        }
+        self.rect = rect;
+        self.note_cursor();
+        Ok(())
     }
 
     fn grab(&self) -> Result<CapturedFrame> {
@@ -467,6 +627,117 @@ mod pacing_checks {
 mod scaled_checks {
     use super::*;
     use x11rb::protocol::xproto::{CreateGCAux, CreateWindowAux, Rectangle, WindowClass};
+    #[test]
+    #[ignore = "writes only private synthetic Xvfb pixels; requires FLOATDESK_SYNTHETIC_DISPLAY=1"]
+    fn server_capture_tracks_third_output_with_nonzero_desktop_origin() {
+        assert_eq!(
+            std::env::var("FLOATDESK_SYNTHETIC_DISPLAY").as_deref(),
+            Ok("1")
+        );
+        let link = X11Link::open().unwrap();
+        let gc = link.conn.generate_id().unwrap();
+        link.conn
+            .create_gc(gc, link.root, &CreateGCAux::new())
+            .unwrap()
+            .check()
+            .unwrap();
+        for (x, y, color) in [
+            (0, 1600, 0xFF0000u32),
+            (2560, 1600, 0x00FF00),
+            (0, 3200, 0x0000FF),
+            (2560, 3200, 0xFFFF00),
+        ] {
+            link.conn
+                .change_gc(
+                    gc,
+                    &x11rb::protocol::xproto::ChangeGCAux::new().foreground(color),
+                )
+                .unwrap()
+                .check()
+                .unwrap();
+            link.conn
+                .poly_fill_rectangle(
+                    link.root,
+                    gc,
+                    &[Rectangle {
+                        x,
+                        y,
+                        width: 2560,
+                        height: 1600,
+                    }],
+                )
+                .unwrap()
+                .check()
+                .unwrap();
+        }
+        let whole = MonitorRect {
+            index: 0,
+            x: 0,
+            y: 1600,
+            width: 5120,
+            height: 3200,
+        };
+        let third = MonitorRect {
+            index: 0,
+            x: 0,
+            y: 3200,
+            width: 2560,
+            height: 1600,
+        };
+        let mut capture = X11Capture::open_scaled(whole, 512, 320).unwrap();
+        let frame = capture.poll(Duration::ZERO, true).unwrap().unwrap();
+        for (x, y, bgr) in [
+            (128, 80, [0, 0, 255]),
+            (384, 80, [0, 255, 0]),
+            (128, 240, [255, 0, 0]),
+            (384, 240, [0, 255, 255]),
+        ] {
+            let offset = y * frame.stride as usize + x * 4;
+            assert_eq!(frame.bgra[offset..offset + 3], bgr);
+        }
+        capture.retarget(third).unwrap();
+        let frame = capture.poll(Duration::ZERO, true).unwrap().unwrap();
+        let offset = 160 * frame.stride as usize + 256 * 4;
+        assert_eq!(frame.bgra[offset..offset + 3], [255, 0, 0]);
+        link.conn
+            .change_gc(
+                gc,
+                &x11rb::protocol::xproto::ChangeGCAux::new().foreground(0xFFFFFFu32),
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+        link.conn
+            .poly_fill_rectangle(
+                link.root,
+                gc,
+                &[Rectangle {
+                    x: 1200,
+                    y: 3900,
+                    width: 160,
+                    height: 200,
+                }],
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+        let frame = capture.poll(Duration::ZERO, true).unwrap().unwrap();
+        assert_eq!(frame.bgra[offset..offset + 3], [255, 255, 255]);
+        capture
+            .retarget(MonitorRect {
+                x: 0,
+                y: 1600,
+                ..third
+            })
+            .unwrap();
+        let frame = capture.poll(Duration::ZERO, true).unwrap().unwrap();
+        assert_eq!(frame.bgra[offset..offset + 3], [0, 0, 255]);
+        capture.retarget(third).unwrap();
+        let frame = capture.poll(Duration::ZERO, true).unwrap().unwrap();
+        assert_eq!(frame.bgra[offset..offset + 3], [255, 255, 255]);
+        link.conn.free_gc(gc).unwrap().check().unwrap();
+    }
+
     #[test]
     #[ignore = "writes synthetic pixels; run only on a private Xvfb with FLOATDESK_SYNTHETIC_DISPLAY=1"]
     fn server_downscale_keeps_crop_and_child_pixels() {

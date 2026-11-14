@@ -234,6 +234,8 @@ internal class MonitorDecoder(
     private val pps = AtomicReference<ByteArray?>(null)
     private val awaitingKey = AtomicBoolean(true)
     @Volatile private var compositor: VideoCompositor? = null
+    private val sharpness=AtomicReference(0f)
+    fun sharpening(value:Float){sharpness.set(value);compositor?.sharpen(value)}
     private val aim = AtomicReference(VideoAim())
     private val presentation=AtomicReference(ScreenPresentation())
     private val projection=AtomicReference<ViewProjection?>(null)
@@ -257,6 +259,14 @@ internal class MonitorDecoder(
         if(active) recover("visible stream resumed") else awaitingKey.set(true)
     }
 
+    private val detailDiagnostics=AtomicReference(dev.floatdesk.client.net.DetailDiagnostics())
+    fun detailDebug(value:dev.floatdesk.client.net.DetailDiagnostics){detailDiagnostics.set(value);compositor?.detailDebug(value)}
+    fun refreshOutput(){compositor?.output(surface.get(),true)}
+    fun diagnosticSnapshot()=compositor?.diagnosticSnapshot()
+    fun displayedQualityFocus():Pair<Float,Float>?=compositor?.displayedQualityFocus()
+    fun hasViewedDetail():Boolean=compositor?.hasViewedDetail()==true
+    fun qualityOutputLimit():Int=compositor?.outputLimit ?: 4096
+    fun viewDestination():dev.floatdesk.client.net.ViewDestination?=compositor?.let{renderer->dev.floatdesk.client.net.ViewDestination(renderer.viewInput,renderer::viewFrame,renderer::clearView)}
     fun projection(value:ViewProjection?) {projection.set(value);compositor?.projection(value)}
     fun presentation(value:ScreenPresentation) {presentation.set(value);compositor?.presentation(value)}
 
@@ -264,10 +274,14 @@ internal class MonitorDecoder(
 
     fun attach(next: Surface) {
         surface.set(next)
+        // Dynamic streaming pauses baseline access units. Bind immediately rather than
+        // waiting for decodeLoop's next baseline unit when switching native canvases.
+        if(renderingActive.get())compositor?.output(next)
     }
 
     fun detach() {
         surface.set(null)
+        compositor?.output(null)
     }
 
     fun stop() {
@@ -345,15 +359,20 @@ internal class MonitorDecoder(
     private fun decodeLoop() {
         var codec: MediaCodec? = null
         var codecSurface: Surface? = null
+        var configured:Pair<ByteArray,ByteArray>?=null
         var rendered = 0
         var sawKeyframe = false
         val byteDump = dumpFile != null
         val renderer=if(byteDump) null else runCatching { VideoCompositor(width,height) }
             .onFailure { Log.e(TAG,"Live video compositor unavailable; using direct decode",it) }.getOrNull()
         compositor=renderer
+        renderer?.sharpen(sharpness.get())
+        renderer?.onViewPresented(onFrame)
+        renderer?.detailDebug(detailDiagnostics.get())
         renderer?.overlay(aim.get())
         renderer?.presentation(presentation.get())
         renderer?.projection(projection.get())
+        if(renderingActive.get())renderer?.output(surface.get())
         var displayedSurface: Surface?=null
         while (running.get()) {
             if(!renderingActive.get()) {
@@ -378,6 +397,10 @@ internal class MonitorDecoder(
             if(display !== displayedSurface) { renderer?.output(display); displayedSurface=display }
             val target = if (byteDump || display==null) null else renderer?.input ?: display
             val parameters = sps.get() to pps.get()
+            if(codec!=null && isKeyframe(accessUnit) && configured!=null &&
+                (!configured!!.first.contentEquals(parameters.first) || !configured!!.second.contentEquals(parameters.second))){
+                codec?.stop();codec?.release();codec=null;codecSurface=null;sawKeyframe=false
+            }
             val surfaceReady = byteDump || target != null
             if (surfaceReady && parameters.first != null && parameters.second != null &&
                 (codec == null || (!byteDump && target != codecSurface))
@@ -386,6 +409,7 @@ internal class MonitorDecoder(
                 codec?.release()
                 sawKeyframe = false
                 codec = startCodec(target, parameters.first!!, parameters.second!!)
+                configured=parameters.first!!.copyOf() to parameters.second!!.copyOf()
                 codecSurface = target
                 Log.i(TAG, "decoder ${if (codec == null) "failed" else "started"} ${width}x$height")
             }
@@ -523,10 +547,10 @@ internal class MonitorDecoder(
     }
 }
 
-private fun isKeyframe(accessUnit: ByteArray): Boolean =
+internal fun isKeyframe(accessUnit: ByteArray): Boolean =
     splitAnnexB(accessUnit).any { nalType(it) == 5 }
 
-private fun annexBParameterSets(sps: ByteArray, pps: ByteArray): ByteArray {
+internal fun annexBParameterSets(sps: ByteArray, pps: ByteArray): ByteArray {
     val out = ByteArray(8 + sps.size + pps.size)
     out[3] = 1
     sps.copyInto(out, 4)
@@ -536,9 +560,9 @@ private fun annexBParameterSets(sps: ByteArray, pps: ByteArray): ByteArray {
     return out
 }
 
-private fun nalType(nal: ByteArray): Int = if (nal.isEmpty()) 0 else nal[0].toInt() and 0x1F
+internal fun nalType(nal: ByteArray): Int = if (nal.isEmpty()) 0 else nal[0].toInt() and 0x1F
 
-private fun splitAnnexB(data: ByteArray): List<ByteArray> {
+internal fun splitAnnexB(data: ByteArray): List<ByteArray> {
     val marks = ArrayList<Pair<Int, Int>>()
     var i = 0
     while (i + 3 <= data.size) {

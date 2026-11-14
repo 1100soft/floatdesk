@@ -27,6 +27,14 @@ import java.nio.IntBuffer
 internal class MonitorWarp : AutoCloseable {
     var mesh: MonitorMesh? = null
         private set
+    private var qualitySize:Pair<Int,Int>?=null
+    private var pixelTarget:SurfaceEntity?=null
+    private var pixelSize:Pair<Int,Int>?=null
+    fun qualityResolution(size:Pair<Int,Int>?):Boolean {if(qualitySize==size)return false;qualitySize=size;return true}
+    private fun applyPixels(target:SurfaceEntity,placement:MonitorPlacement){
+        val size=qualitySize ?: (placement.pixelWidth to placement.pixelHeight)
+        if(pixelTarget!==target || pixelSize!=size){target.setSurfacePixelDimensions(androidx.xr.runtime.math.IntSize2d(size.first,size.second));pixelTarget=target;pixelSize=size}
+    }
     private var input: SurfaceEntity? = null
     private var live: SurfaceEntity? = null
     private var flatWidth = 0f
@@ -35,6 +43,9 @@ internal class MonitorWarp : AutoCloseable {
     private var interaction: InteractableComponent? = null
     private val sequences = mutableSetOf<String>()
     private var curvedInput: CurvedMonitorInput? = null
+    private var inputPointer:SpatialPointerComponent?=null
+    private var ownsInputPointer=false
+    private var pointerRefreshAt=0L
     private var inputListener: ((InputEvent) -> Unit)? = null
     private var mask: Texture? = null
     private var ownerEnabled=true
@@ -44,6 +55,7 @@ internal class MonitorWarp : AutoCloseable {
     private var presentationDirty=true
     private var focus:FloatArray?=null
     private var referenceMesh:MonitorMesh?=null
+    val gazeReference:MonitorMesh? get()=if(mesh==null)null else referenceMesh ?: mesh
     private var projectionUpdatedAt=0L
     private var geometryUpdatedAt=0L
     fun presentation(rects:FloatArray,inset:Float) {
@@ -128,9 +140,23 @@ internal class MonitorWarp : AutoCloseable {
                 // Decorative surfaces can appear before the actual monitor in the hit stack.
                 // Keep the native monitor hit and its matrix together instead of using the front hit.
                 val info = event.hitInfoList.firstOrNull { it.inputEntity === expected } ?: event.hitInfoList.firstOrNull()
-                val side = event.pointerType.toString()
+                val gazeSource=event.source==InputEvent.Source.GAZE_AND_GESTURE
+                // Native gaze can recreate its icon after shape/aiming-mode changes. Reapply
+                // the desktop-only policy to the entity actually receiving this hover.
+                if(gazeSource && info?.inputEntity===expected && expected!=null &&
+                    event.action!=InputEvent.Action.HOVER_EXIT && event.action!=InputEvent.Action.CANCEL){
+                    val now=android.os.SystemClock.uptimeMillis()
+                    if(event.action==InputEvent.Action.HOVER_ENTER || now-pointerRefreshAt>=1000){
+                        expected.getComponentsOfType(SpatialPointerComponent::class.java).forEach{it.spatialPointerIcon=SpatialPointerIcon.NONE}
+                        pointerRefreshAt=now
+                    }
+                }
+                val side = if(gazeSource)"GAZE" else event.pointerType.toString()
+                if(gazeSource && event.action==InputEvent.Action.CANCEL){
+                    onHover?.invoke(side,null,null,flatWidth,flatHeight);sequences.remove(side);return@listener
+                }
                 if (event.action == InputEvent.Action.HOVER_ENTER || event.action == InputEvent.Action.HOVER_MOVE || event.action == InputEvent.Action.HOVER_EXIT) {
-                    if (event.source == InputEvent.Source.HANDS) {
+                    if (event.source == InputEvent.Source.HANDS || gazeSource) {
                         val now=android.os.SystemClock.uptimeMillis()
                         if(hoverWindow==0L) hoverWindow=now
                         hoverLast.put(side,now)?.let { hoverGap=maxOf(hoverGap,now-it) }
@@ -171,9 +197,14 @@ internal class MonitorWarp : AutoCloseable {
                 if (event.action == InputEvent.Action.DOWN) {
                     Log.i("Floatdesk","native event contact=${local?.contentToString()} inputScale=$inputScale hit=$hit matrix=${info?.transform?.data?.contentToString()}")
                 }
-                if (event.source == InputEvent.Source.HANDS) {
+                if (event.source == InputEvent.Source.HANDS || gazeSource) {
                     val point=if(event.action==InputEvent.Action.CANCEL) null else local
-                    onHover?.invoke(side,point,point?.let { mesh?.unproject(it) ?: it },flatWidth,flatHeight)
+                    // A release can omit HitInfo; keep a still-hovered gaze target for repeated taps.
+                    if(!gazeSource || point!=null)onHover?.invoke(side,point,point?.let { mesh?.unproject(it) ?: it },flatWidth,flatHeight)
+                }
+                if(gazeSource){
+                    if(event.action==InputEvent.Action.UP || event.action==InputEvent.Action.CANCEL)sequences.remove(side)
+                    return@listener
                 }
                 fun pixels(v: Vector3) = Vector3(density.convertMetersToPixels(v.x),density.convertMetersToPixels(v.y),density.convertMetersToPixels(v.z))
                 onEvent(SpatialInputEvent(source=event.source,pointerType=event.pointerType,action=event.action,timestamp=event.timestamp,
@@ -186,6 +217,10 @@ internal class MonitorWarp : AutoCloseable {
             val component = NativeMonitorInput.create(session, listener)
             check(target.addComponent(component)) { "Could not attach native monitor input" }
             interaction = component
+            val existingPointer=target.getComponentsOfType(SpatialPointerComponent::class.java).firstOrNull()
+            val pointer=existingPointer ?: SpatialPointerComponent.create(session).also{check(target.addComponent(it))}
+            pointer.spatialPointerIcon=SpatialPointerIcon.NONE
+            inputPointer=pointer;ownsInputPointer=existingPointer==null
             directInteraction = true
         }
         return inputSurface
@@ -193,8 +228,9 @@ internal class MonitorWarp : AutoCloseable {
 
     @SuppressLint("RestrictedApi") // CustomMesh is available in the pinned SceneCore 1.0 runtime.
     fun update(session: Session, root: Entity, eye: FloatArray?, placement: MonitorPlacement,
-               enabled: Boolean, held: Boolean, forceUpdate: Boolean = false, viewDirection:FloatArray? = null, freezeProjection:Boolean=held) {
+               enabled: Boolean, held: Boolean, forceUpdate: Boolean = false, viewDirection:FloatArray? = null, freezeProjection:Boolean=held,viewFocus:FloatArray?=null) {
         val original = input ?: return
+        if(enabled==(mesh!=null))live?.let{applyPixels(it,placement)}
         if (live !== original) live?.let {
             it.parent = original.parent
             it.setPose(original.getPose())
@@ -204,11 +240,12 @@ internal class MonitorWarp : AutoCloseable {
         val modeChanged=enabled != (mesh!=null)
         if (held && !forceUpdate && !modeChanged) return
         val candidateViewer = eye?.let { viewerInMonitor(it,placement.pose.position,placement.pose.rotation) }
-        val viewer=candidateViewer?.takeIf { it[2]>.10f && kotlin.math.sqrt(it.sumOf { v->(v*v).toDouble() })>.15 }
+        val referenceCenter=projectionCenter(placement)
+        val viewer=candidateViewer?.takeIf { p->p.all{it.isFinite()} && (0..2).sumOf{val d=p[it]-referenceCenter[it];(d*d).toDouble()}>1e-8 }
             ?: mesh?.eye?.takeIf { forceUpdate }
-        val localEye = viewer?.let { Vector3(it[0],it[1],it[2]) }
-        // Freeze the last valid curvature during tracking gaps; never switch shape on a stale pose.
-        if (enabled && (localEye == null || localEye.z <= .10f || localEye.length <= .15f)) return
+        // A sphere is valid beside/behind its reference plane. A planar z threshold
+        // froze it at an old eye position after off-center enlargement or rotation.
+        if (enabled && viewer == null) return
         val usable = enabled
         if (!usable) {
             if (live !== original) { live?.parent = null; live = original }
@@ -218,26 +255,36 @@ internal class MonitorWarp : AutoCloseable {
                 flatWidth = placement.physicalWidthM; flatHeight = placement.physicalHeightM
                 mesh = null;focus=null;presentationDirty=false
             }
+            applyPixels(original,placement)
             return
         }
+        if (live!==original)live?.let{applyPixels(it,placement)}
         if (viewer == null) return
         val previous = mesh
         val now=android.os.SystemClock.uptimeMillis()
-        if(viewDirection!=null && previous!=null && !forceUpdate && !presentationDirty && matchesSize(placement) && now-geometryUpdatedAt<100) return
+        if((viewDirection!=null || viewFocus!=null) && previous!=null && !forceUpdate && !presentationDirty && matchesSize(placement) && now-geometryUpdatedAt<50) return
         val center=projectionCenter(placement)
         var reference=referenceMesh
         if(reference==null || reference.width!=placement.physicalWidthM || reference.height!=placement.physicalHeightM || !reference.center.contentEquals(center) ||
             viewer.indices.any {kotlin.math.abs(viewer[it]-reference!!.eye[it])>.01f}) {
-            if(reference?.center?.contentEquals(center)!=true)focus=center.copyOf(2)
+            val prior=reference
+            val sameAnchor=prior!=null && kotlin.math.abs(prior.center[0]/prior.width-center[0]/placement.physicalWidthM)<.000001f &&
+                kotlin.math.abs(prior.center[1]/prior.height-center[1]/placement.physicalHeightM)<.000001f
+            focus=if(sameAnchor)focus?.let{floatArrayOf(it[0]*placement.physicalWidthM/prior!!.width,it[1]*placement.physicalHeightM/prior.height)} ?: center.copyOf(2) else center.copyOf(2)
             reference=MonitorMesh(placement.physicalWidthM,placement.physicalHeightM,viewer,focus=center.copyOf(2),center=center)
             referenceMesh=reference
         }
-        if(!freezeProjection && eye!=null && viewDirection!=null && (previous==null || now-projectionUpdatedAt>=100)) {
-            val endpoint=viewerInMonitor(FloatArray(3){eye[it]+viewDirection[it]},placement.pose.position,placement.pose.rotation)
-            sphericalViewFocus(reference!!,FloatArray(3){endpoint[it]-viewer[it]})?.let {desired->
-                val next=floatArrayOf(desired[0].coerceIn(-reference.width*.5f,reference.width*.5f),desired[1].coerceIn(-reference.height*.5f,reference.height*.5f))
-                val old=focus?.let {floatArrayOf(it[0].coerceIn(-reference.width*.5f,reference.width*.5f),it[1].coerceIn(-reference.height*.5f,reference.height*.5f))}
-                focus=if(old==null) next else FloatArray(2){old[it]+.35f*(next[it]-old[it])}
+        if(!freezeProjection && (viewFocus!=null || eye!=null && viewDirection!=null) && (previous==null || now-projectionUpdatedAt>=50)) {
+            if(viewFocus!=null && viewFocus.size==2 && viewFocus.all{it.isFinite()}) {
+                // The shared gaze target was already filtered against the stable reference sphere.
+                focus=floatArrayOf(((viewFocus[0]-.5f)*placement.physicalWidthM).coerceIn(-reference!!.width*.5f,reference.width*.5f),((.5f-viewFocus[1])*placement.physicalHeightM).coerceIn(-reference.height*.5f,reference.height*.5f))
+            } else if(eye!=null && viewDirection!=null) {
+                val endpoint=viewerInMonitor(FloatArray(3){eye[it]+viewDirection[it]},placement.pose.position,placement.pose.rotation)
+                sphericalViewFocus(reference!!,FloatArray(3){endpoint[it]-viewer[it]})?.let {desired->
+                    val next=floatArrayOf(desired[0].coerceIn(-reference.width*.5f,reference.width*.5f),desired[1].coerceIn(-reference.height*.5f,reference.height*.5f))
+                    val old=focus
+                    focus=if(old==null)next else FloatArray(2){old[it]+.35f*(next[it]-old[it])}
+                }
             }
             projectionUpdatedAt=now
         }
@@ -252,14 +299,14 @@ internal class MonitorWarp : AutoCloseable {
                 val h=next.project(floatArrayOf(next.width*.5f,0f,0f))
                 val v=next.project(floatArrayOf(0f,next.height*.5f,0f))
                 fun sag(point: FloatArray) = (0..2).sumOf { (point[it]*viewer[it]/next.radius).toDouble() }.toFloat()
-                Log.i("Floatdesk","warp geometry map=geodesic viewer=${viewer.contentToString()} sdkViewer=$sdkEye radius=${next.radius} image=${placement.pixelWidth}x${placement.pixelHeight} extent=${next.width}x${next.height} horizontalSag=${sag(h)} verticalSag=${sag(v)}")
+                Log.i("Floatdesk","warp geometry map=geodesic viewer=${viewer.contentToString()} sdkViewer=$sdkEye radius=${next.radius} radiusActivity=${next.radius*original.getScale(Space.ACTIVITY)} image=${placement.pixelWidth}x${placement.pixelHeight} extent=${next.width}x${next.height} horizontalSag=${sag(h)} verticalSag=${sag(v)}")
             }
             val shape = videoShape(next.width,next.height,next)
             val target = if (live === original) SurfaceEntity.create(session,
                 shape = shape, pose = original.getPose(), parent = original.parent,
                 superSampling = SurfaceEntity.SuperSampling.NONE).also {
                 it.setScale(original.getScale())
-                it.setSurfacePixelDimensions(androidx.xr.runtime.math.IntSize2d(placement.pixelWidth,placement.pixelHeight))
+                applyPixels(it,placement)
                 it.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE
                 val pointer=SpatialPointerComponent.create(session)
                 check(it.addComponent(pointer))
@@ -286,6 +333,7 @@ internal class MonitorWarp : AutoCloseable {
         inputListener = null
         interaction?.let { component -> runCatching { input?.removeComponent(component) } }
         interaction = null; sequences.clear()
+        if(ownsInputPointer)inputPointer?.let{runCatching{input?.removeComponent(it)}};inputPointer=null;ownsInputPointer=false
         directInteraction = false
         live = null
         input = null

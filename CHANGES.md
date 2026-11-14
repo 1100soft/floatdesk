@@ -1,4 +1,35 @@
 # Changes since the LAN proof of concept
+- Add combined index/middle Focus pinch for whole-desktop Reset, sharing saved contact thresholds and release-based selection. Fix HUD disposal using a bitmap after recycling; make Show diagnostics hide all HUD clusters and label the encoding presets Encoder effort.
+- Keep a native-resolution square around gaze even when zoomed out. Replace percentage coverage with saved Auto/FPS-target and fixed pixel-area controls; adapt Auto using measured processing/delivery time. Preserve curvature focus through size corrections, and move diagnostics into a foreground UI group above desktop video.
+- Keep tilted flat desktops at fixed plane depth and adapt large spherical meshes around the view to prevent inward triangle chords. Budget dynamic quality against normal streaming: zoomed-out views use the normal stream; zoomed-in native detail uses the configured AVC encoder within its pixel budget.
+- Fix HUD header/body overlap using glyph bounds. Tight-pack dynamic video samples and batch XRender composites into one SHM readback, preserving sample density while reducing low-coverage encoding work; keep cursor and gap clipping within packed tiles.
+- Consolidate diagnostics into one transparent spherical HUD with larger text, shared pose and square unclipped text regions. Preserve observed mixed gaze availability through scene recovery so Focus can resume from fine-eye rays without another pinch.
+- Place HUD clusters immediately outside Focus’s shared target bounds. Replace the experimental fixed-budget dense tile with bounded native-density HEVC tiles and normal-density visible periphery; honor all coverage values through 100%. Reapply desktop-only gaze cursor suppression after native hover changes.
+
+- Add a larger four-cluster game-style peripheral HUD with an empty center. Make 100% quality cover the full visible view without gaze shifts or low-tile blending. Support mixed native gaze/hand targeting in Focus mode while preserving mouse routing, and hide native desktop target icons.
+
+- Move diagnostics to eye level in the left view periphery. Raise the experimental dense-region maximum from 65% to 100% while retaining automatic density protection. Verify a synthetic native 5120×3200 HEVC frame through host hardware encoding and headset decoding/compositing.
+
+- Fix stale exposed pixels caused by Plasma retaining old monitor geometry: publish a final root geometry notification after display changes and on host startup, without changing refresh rates or restarting the shell.
+
+- Bring direct-touch controls to 40 cm. Render transparent diagnostics through the working Compose spatial-panel path, with FOV-bounded placement and a streaming-independent switch. Add numbered four-screen GPU/capture regressions, including isolated screen 3 and nonzero desktop origins.
+
+- Use UI-panel compositing above desktop video for transparent diagnostics. Fix flat/curved output rebinding while baseline encoding is paused. Keep desktop focus at 1.2 m with depth-to-size conversion; center controls at arm’s length.
+
+- Retain a bounded GPU atlas across rejected dynamic frames and stream handoffs to avoid blanking. Move diagnostic text outside the previous near-eye clipping range. Auto-narrow dense crops to preserve final-output detail and report effective sampling gain.
+
+- Put transparent bright diagnostics in the upper view periphery, adapting depth to stay ahead of desktop geometry. Prevent dynamic-stream flashes of the paused baseline on duplicate callbacks or frame-age expiry; require fresh decoded baseline frames during handoff.
+
+- Restore head-driven spherical curvature while retaining gaze-targeted streaming. Move diagnostics to a separate noninteractive view-following overlay, remove desktop diagnostic tint/borders/text, and clarify core-summed CPU and target video bitrate labels.
+
+- Synchronize spherical curvature with fine gaze and the displayed high-density frame. Narrow the configurable dense region to 35% by default. Add saved encoder effort/bitrate and GPU sharpening settings, plus live host/headset resource and streaming telemetry in both streaming modes.
+
+- Follow fine gaze for the dense streaming region, retain targets beyond desktop edges and during tracking gaps, and separate debug visibility from streaming. Preserve captured detail in bounded source-native XR output buffers instead of downscaling into the normal-stream buffer.
+
+- Replace the experimental JPEG overlay with a view-only H.264 atlas: dense center, lower-density visible periphery, frame-exact crop mapping and full-desktop encoder suspension. Fix large spherical viewport bounds by clipping rendered triangles to the frustum.
+
+- Visualize experimental viewed-area quality with a live desktop map, candidate/active patch borders, GPU-only tint, sampling gains, transport counters, timing, upload age and explicit gating reasons.
+
 
 - Focus selection places the cursor at the captured pinch/ray contact rather than the target center.
 

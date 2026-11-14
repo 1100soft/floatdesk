@@ -6,6 +6,7 @@ import sys
 import tempfile
 root=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
 source=(root/'ScreenArrangement.kt').read_text().split('\n',1)[1]+'\n'+(root/'media/ScreenPresentation.kt').read_text().split('\n',1)[1]
+focus=(root/'FocusInteraction.kt').read_text();source=source.replace('dev.floatdesk.client.FocusRect','FocusRect')+'\n'+focus[focus.index('internal data class FocusRect'):focus.index('internal data class FocusTarget')]
 code=source+'''
 fun main() {
  val drop=ArrangementDropHistory()

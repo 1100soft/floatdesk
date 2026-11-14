@@ -11,6 +11,9 @@ for name in ['MonitorMesh.kt','ResizeFrameGeometry.kt','MonitorSystemControls.kt
     imports += [l for l in lines if l.startswith('import kotlin.')]
     sources.append('\n'.join(l for l in lines if not l.startswith(('package ','import ')) and not l.strip().startswith('@OptIn(')))
 stubs='''
+internal object SpatialPointerIcon { const val NONE=0 }
+internal class SpatialPointerComponent { var spatialPointerIcon=0; companion object{fun create(session:Session)=SpatialPointerComponent()} }
+
 internal data class FloatSize3d(val width:Float,val height:Float,val depth:Float)
 internal data class Vector3(val x:Float=0f,val y:Float=0f,val z:Float=0f)
 internal data class Quaternion(val normal:Vector3=Vector3(0f,0f,1f),val up:Vector3=Vector3(0f,1f,0f)) {
@@ -31,6 +34,7 @@ internal open class Entity {
     fun getScale()=scale
     fun setScale(s:Float) { scale=s }
     fun setEnabled(e:Boolean) { enabled=e }
+    fun addComponent(c:SpatialPointerComponent):Boolean = true
     fun addComponent(c:ResizableComponent):Boolean { resize=c; return true }
     fun addComponent(c:MovableComponent):Boolean { move=c; return true }
     fun removeComponent(c:MovableComponent) { if(move===c) move=null }

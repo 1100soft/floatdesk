@@ -60,6 +60,13 @@ fun main(){
    check(abs(length-side.radius)<.00001f)
   }
  }
+ val foreground=hudForegroundPatches(.6f,.5f,.35f)
+ check(foreground.size==4)
+ for(p in foreground){
+  check(p.width>0f && p.height>0f && p.position.all{it.isFinite()} && p.vertices.all{it.isFinite()})
+  for(i in p.vertices.indices step 2){check(p.vertices[i] in -.01f..800.01f && p.vertices[i+1] in -.01f..400.01f)}
+  check(abs(p.position[1])>tan(focusViewHalfAngles(.6f,.5f).second)*.35f)
+ }
  val half=.35f
  val center=viewedRegion(8f,4f,null,half,half){p->floatArrayOf(p[0],p[1],-2f)}!!
  check(center.left>.2f && center.right<.8f && center.top>0f && center.bottom<1f)

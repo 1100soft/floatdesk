@@ -197,6 +197,26 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-view-x11-') as temp:
        comparison.settimeout(5);dynamic=baseline_rate(True,comparison)
       print(f'Quality-preset baseline comparison: normal={normal:.1f}fps dynamic-wide={dynamic:.1f}fps (unique RTP frames after warmup, private synthetic source)',flush=True)
     print('PASS budgeted wide-view baseline, zoomed native AVC and immediate baseline resumption')
+    with socket.create_connection(('127.0.0.1',port),2) as stream:
+     stream.settimeout(5)
+     def area_frame(rect,area=1048576,feedback=0):
+      payload=json.dumps(dict(mode='view-tiles-v2',areaBudget=True,frameBudget=True,sessionId=session,rect=rect,center=[.7,.5],nativeAreaPixels=area,targetFps=30,feedbackMs=feedback)).encode()
+      stream.sendall(struct.pack('>I',len(payload))+payload)
+      meta=json.loads(exact(stream,struct.unpack('>I',exact(stream,4))[0]));unit=exact(stream,meta['bytes'])
+      assert meta['type']=='view-tiles-v2' and meta['codec']=='video/avc','Native square was disabled or selected an expensive codec'
+      high,dest=meta['tiles'][0]
+      source_w=round((high[2]-high[0])*width);source_h=round((high[3]-high[1])*height)
+      assert abs((dest[2]-dest[0])*meta['width']-source_w)<1.1 and abs((dest[3]-dest[1])*meta['height']-source_h)<1.1,'Native square was resampled'
+      assert meta['nativeAreaPixels']==source_w*source_h
+      return meta,unit
+     for rect in ([0,0,1,1],[.1,0,.9,1]):
+      meta,unit=area_frame(rect)
+      assert meta['nativeAreaPixels']==1048576 and len(meta['tiles'])==2
+     areas=[]
+     for _ in range(31):
+      meta,_=area_frame([0,0,1,1],0,250);areas.append(meta['nativeAreaPixels']);time.sleep(.04)
+     assert min(areas)<areas[0], 'Auto failed to reduce native area under measured contention'
+     print(f'PASS full-view fixed native 1024-square at different zooms; Auto shrank {areas[0]} to {min(areas)} source pixels under injected latency',flush=True)
     send(15,json.dumps(dict(type='encoderSettings',quality=0,bitrateMbps=0)).encode())
     assert control_json('encoderAck')['quality']==0
     decoded=subprocess.check_output(['ffmpeg','-v','error','-f','h264','-i','pipe:0','-frames:v','2','-f','rawvideo','-pix_fmt','rgb24','pipe:1'],input=b''.join(units[:2]))

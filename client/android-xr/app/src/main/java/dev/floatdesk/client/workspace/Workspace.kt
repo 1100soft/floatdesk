@@ -53,7 +53,9 @@ internal data class WorkspaceFile(
     val encoderQuality:Int=0,
     val encoderMbps:Float=0f,
     val sharpening:Float=0f,
-    val denseFraction:Float=.35f,
+    val denseFraction:Float=.35f, // Legacy transport compatibility only.
+    val detailAreaPixels:Long=0, // Zero selects automatic allocation.
+    val detailTargetFps:Int=30,
     val showResources:Boolean=true,
     val pinchThresholds:PinchThresholds=PinchThresholds.Default,
 )
@@ -148,7 +150,7 @@ private fun encode(workspace: WorkspaceFile): JSONObject {
         .put("experimental_viewed_detail",workspace.experimentalViewedDetail)
         .put("view_detail_debug",workspace.viewDetailDebug)
         .put("encoder_quality",workspace.encoderQuality).put("encoder_mbps",workspace.encoderMbps)
-        .put("sharpening",workspace.sharpening).put("dense_fraction",workspace.denseFraction).put("show_resources",workspace.showResources)
+        .put("sharpening",workspace.sharpening).put("dense_fraction",workspace.denseFraction).put("detail_area_pixels",workspace.detailAreaPixels).put("detail_target_fps",workspace.detailTargetFps).put("show_resources",workspace.showResources)
         .put("pinch_thresholds_mm",JSONArray(listOf(workspace.pinchThresholds.leftIndexMm,workspace.pinchThresholds.rightIndexMm,workspace.pinchThresholds.leftMiddleMm,workspace.pinchThresholds.rightMiddleMm)))
         .put("mouse_gestures", workspace.mouseGestures)
         .put("screen_spacing",workspace.screenSpacing.toDouble())
@@ -198,6 +200,8 @@ private fun decode(json: JSONObject): WorkspaceFile {
         encoderQuality=json.optInt("encoder_quality",0).coerceIn(0,2),
         encoderMbps=json.optDouble("encoder_mbps",0.0).toFloat().takeIf{it.isFinite()}?.coerceIn(0f,200f) ?: 0f,
         sharpening=json.optDouble("sharpening",0.0).toFloat().takeIf{it.isFinite()}?.coerceIn(0f,1.5f) ?: 0f,
+        detailAreaPixels=json.optLong("detail_area_pixels",0).coerceIn(0,16_777_216),
+        detailTargetFps=json.optInt("detail_target_fps",30).coerceIn(5,120),
         denseFraction=json.optDouble("dense_fraction",.35).toFloat().takeIf{it.isFinite()}?.coerceIn(.2f,1f) ?: .35f,
         showResources=json.optBoolean("show_resources",true),
         pinchThresholds=json.optJSONArray("pinch_thresholds_mm")?.takeIf{it.length()==4}?.let {a->

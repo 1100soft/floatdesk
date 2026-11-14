@@ -41,11 +41,15 @@ internal class DeskConnection(
     @Volatile private var videoMbps=0f
     @Volatile private var videoSharpen=0f
     @Volatile private var denseFraction=.35f
+    @Volatile private var nativeAreaPixels=0L
+    @Volatile private var detailTargetFps=30
     private var localResources:LocalResources?=null
-    fun configureVideo(quality:Int,mbps:Float,sharpen:Float,fraction:Float){
+    fun configureVideo(quality:Int,mbps:Float,sharpen:Float,fraction:Float,areaPixels:Long=0,targetFps:Int=30){
+        val encodingChanged=videoQuality!=quality || videoMbps!=mbps
+        nativeAreaPixels=areaPixels;detailTargetFps=targetFps
         videoQuality=quality;videoMbps=mbps;videoSharpen=sharpen;denseFraction=fraction
         decoders.values.forEach{it.sharpening(sharpen)}
-        sendEncoderSettings()
+        if(encodingChanged)sendEncoderSettings()
     }
     private fun sendEncoderSettings(){send(Protocol.workspace(org.json.JSONObject().put("type","encoderSettings").put("quality",videoQuality).put("bitrateMbps",videoMbps).toString()))}
     private fun publishResources(){val state=detailDiagnostics.get();main.post{resourceStatus.value=state.hostResources+"\n"+state.localResources}}
@@ -68,14 +72,14 @@ internal class DeskConnection(
         val format=currentMonitors.singleOrNull()
         val target=bounds?.let{qualityOutputSize(it[2],it[3],qualityOutputLimit())}
         val fraction=if(rect!=null && target!=null)qualityDenseFraction(denseFraction,rect,target.first,target.second) else denseFraction
-        val request=if(detailDiagnostics.get().enabled && rect!=null && renderingActive && remote!=null && bounds!=null && format!=null)DetailRequest(remote,detailSession,rect,bounds,if(fraction>=.999f)(rect.centerU to rect.centerV) else center ?: (rect.centerU to rect.centerV),videoQuality,videoMbps,fraction) else null
+        val request=if(detailDiagnostics.get().enabled && rect!=null && renderingActive && remote!=null && bounds!=null && format!=null)DetailRequest(remote,detailSession,rect,bounds,center ?: (rect.centerU to rect.centerV),videoQuality,videoMbps,fraction,nativeAreaPixels,detailTargetFps) else null
         val reason=when {
             !detailDiagnostics.get().enabled->"Normal full-desktop streaming"
             rect==null->blockedReason
             format==null->"Waiting for one combined desktop stream"
             !renderingActive->"Paused: app hidden"
             remote==null || bounds==null->"Waiting for host/layout"
-            else->"$targeting · dense %.0f%%".format(java.util.Locale.ROOT,fraction*100)
+            else->if(nativeAreaPixels==0L)"$targeting · Auto $detailTargetFps fps" else "$targeting · %.2f MP native".format(java.util.Locale.ROOT,nativeAreaPixels/1e6)
         }
         val state=detailDiagnostics.updateAndGet{it.copy(candidate=rect,reason=reason,
             gainX=if(rect!=null && format!=null)2048f/((rect.right-rect.left)*fraction*format.width) else 0f,

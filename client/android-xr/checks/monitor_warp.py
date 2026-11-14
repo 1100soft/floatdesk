@@ -261,6 +261,20 @@ suspend fun main() {
     warp.update(session,root,floatArrayOf(0f,0f,0f),centeredEye,true,false,forceUpdate=true)
     check(kotlin.math.abs(warp.mesh!!.radius-1.2f)<.00001f && warp.mesh!!.eye.all{it==0f})
     warp.close()
+    warp.attach(session,input.getSurface(),screen,PixelDensity(),onEvent={})
+    val anchored=MonitorPlacement(20f,12f,viewCenterU=.9f)
+    SystemClock.now+=1000
+    warp.update(session,root,floatArrayOf(0f,0f,0f),anchored,true,false,viewFocus=floatArrayOf(.2f,.6f))
+    val uvBefore=warp.mesh!!.focus!!.let{it[0]/anchored.physicalWidthM to it[1]/anchored.physicalHeightM}
+    for(i in 1..10){
+        SystemClock.now+=1 // Head-focus update has not elapsed; tiny depth corrections must not reset it.
+        val resized=anchored.copy(physicalWidthM=20f*(1f+i*.001f),physicalHeightM=12f*(1f+i*.001f))
+        warp.update(session,root,floatArrayOf(0f,0f,0f),resized,true,false)
+        val focusNow=warp.mesh!!.focus!!
+        check(kotlin.math.abs(focusNow[0]/resized.physicalWidthM-uvBefore.first)<.00001f)
+        check(kotlin.math.abs(focusNow[1]/resized.physicalHeightM-uvBefore.second)<.00001f)
+    }
+    warp.close()
     println("Passed: native matrix localization and independent left/right sequences, flat Compose surface/input/alpha/parent preserved, separate curved video and interaction ownership, mode-switch surface restoration, curvature freezes while held, video UVs, cleanup")
 }
 '''

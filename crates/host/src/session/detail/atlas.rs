@@ -340,3 +340,157 @@ mod tests {
         }
     }
 }
+
+/// One native square plus one bounded lower-density visible crop. Overlap is intentional:
+/// the shader selects the native tile first, then the peripheral tile.
+pub(super) fn area_plan(
+    desktop: MonitorRect,
+    outer: MonitorRect,
+    inner: MonitorRect,
+    periphery: u64,
+    automatic: bool,
+) -> Option<Plan> {
+    let (bw, bh) = stream_size(desktop);
+    let limit = if automatic {
+        u32::from(bw) * u32::from(bh)
+    } else {
+        16_777_216
+    };
+    let mut source = inner;
+    for _ in 0..12 {
+        let high_w = source.width.min(8192) as u16;
+        let high_h = source.height.min(8192) as u16;
+        let mut low_pixels = periphery.max(16_384);
+        for _ in 0..10 {
+            let scale = (low_pixels as f64 / (outer.width as f64 * outer.height as f64))
+                .sqrt()
+                .min(1.)
+                .min(STREAM_MAX_WIDTH as f64 / outer.width as f64)
+                .min(STREAM_MAX_HEIGHT as f64 / outer.height as f64);
+            let low_w = pixels(outer.width, scale);
+            let low_h = pixels(outer.height, scale);
+            let mut candidates = Vec::new();
+            let only = source == outer;
+            for vertical in [false, true] {
+                let (w, h, x, y) = if only {
+                    (high_w, high_h, 0, 0)
+                } else if vertical {
+                    (high_w.max(low_w), high_h + low_h, 0, high_h)
+                } else {
+                    (high_w + low_w, high_h.max(low_h), high_w, 0)
+                };
+                if let Some((width, height)) = extent(
+                    w,
+                    h,
+                    if automatic {
+                        Some((STREAM_MAX_WIDTH, STREAM_MAX_HEIGHT))
+                    } else {
+                        None
+                    },
+                ) {
+                    if u32::from(width) * u32::from(height) > limit {
+                        continue;
+                    }
+                    let mut tiles = vec![Tile {
+                        source,
+                        x: 0,
+                        y: 0,
+                        width: high_w,
+                        height: high_h,
+                    }];
+                    if !only {
+                        tiles.push(Tile {
+                            source: outer,
+                            x,
+                            y,
+                            width: low_w,
+                            height: low_h,
+                        })
+                    }
+                    candidates.push(Plan {
+                        width,
+                        height,
+                        tiles,
+                    });
+                }
+            }
+            // Prefer the normal AVC path when it fits, even if HEVC has a slightly smaller layout.
+            candidates.sort_by_key(|p| {
+                (
+                    (p.width > STREAM_MAX_WIDTH || p.height > STREAM_MAX_HEIGHT) as u8,
+                    u32::from(p.width) * u32::from(p.height),
+                )
+            });
+            if let Some(p) = candidates.into_iter().next() {
+                return Some(p);
+            }
+            low_pixels = (low_pixels * 3 / 4).max(16_384);
+        }
+        let side = ((source.width.max(source.height) as f64) * 0.85)
+            .floor()
+            .max(1.) as u32;
+        let w = side.min(outer.width);
+        let h = side.min(outer.height);
+        source = MonitorRect {
+            index: 0,
+            x: (source.x + source.width as i32 / 2 - w as i32 / 2)
+                .clamp(outer.x, outer.x + (outer.width - w) as i32),
+            y: (source.y + source.height as i32 / 2 - h as i32 / 2)
+                .clamp(outer.y, outer.y + (outer.height - h) as i32),
+            width: w,
+            height: h,
+        };
+    }
+    None
+}
+
+#[cfg(test)]
+mod area_tests {
+    use super::*;
+    #[test]
+    fn fixed_square_preserves_native_samples_across_view_sizes() {
+        let desktop = MonitorRect {
+            index: 0,
+            x: 0,
+            y: 0,
+            width: 5120,
+            height: 3200,
+        };
+        for outer in [
+            desktop,
+            MonitorRect {
+                index: 0,
+                x: 500,
+                y: 500,
+                width: 3000,
+                height: 1800,
+            },
+        ] {
+            let inner = MonitorRect {
+                index: 0,
+                x: 1000,
+                y: 700,
+                width: 1024,
+                height: 1024,
+            };
+            let p = area_plan(desktop, outer, inner, 2_000_000, true).unwrap();
+            assert_eq!(p.tiles.len(), 2);
+            assert_eq!((p.tiles[0].width, p.tiles[0].height), (1024, 1024));
+            assert_eq!(p.tiles[0].source, inner);
+            assert_eq!(p.tiles[1].source, outer);
+            assert!(p.width <= 4096 && p.height <= 2160);
+            assert!(u32::from(p.width) * u32::from(p.height) <= 3456 * 2160);
+            for t in &p.tiles {
+                assert!(t.x + t.width <= p.width && t.y + t.height <= p.height)
+            }
+            let a = p.tiles[0];
+            let b = p.tiles[1];
+            assert!(
+                a.x + a.width <= b.x
+                    || b.x + b.width <= a.x
+                    || a.y + a.height <= b.y
+                    || b.y + b.height <= a.y
+            );
+        }
+    }
+}

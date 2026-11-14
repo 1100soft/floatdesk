@@ -14,7 +14,7 @@ import org.json.JSONObject
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicReference
 
-internal data class DetailRequest(val host:InetSocketAddress,val sessionId:Long,val rect:FocusRect,val desktop:List<Int>,val center:Pair<Float,Float> = rect.centerU to rect.centerV,val quality:Int=0,val bitrateMbps:Float=0f,val fraction:Float=.35f)
+internal data class DetailRequest @JvmOverloads constructor(val host:InetSocketAddress,val sessionId:Long,val rect:FocusRect,val desktop:List<Int>,val center:Pair<Float,Float> = rect.centerU to rect.centerV,val quality:Int=0,val bitrateMbps:Float=0f,val fraction:Float=.35f,val nativeAreaPixels:Long=0,val targetFps:Int=30)
 internal data class ViewFrame @JvmOverloads constructor(val outer:FocusRect,val inner:FocusRect,val capturedAt:Long,val focusU:Float=inner.centerU,val focusV:Float=inner.centerV,val atlasWidth:Int=2048,val atlasHeight:Int=1536,val tiles:FloatArray=floatArrayOf())
 internal data class ViewDestination(val surface:Surface,val frame:(Long,ViewFrame)->Unit,val clear:()->Unit)
 
@@ -32,7 +32,7 @@ internal class ViewedDetail(private val destination:()->ViewDestination?,private
             if(first==null || output==null){Thread.sleep(30);continue}
             var codec:MediaCodec?=null
             var dimensions=0 to 0
-            val usePacked=packed;var framesHere=0;var usingBaseline=false;var baselineStatusAt=0L
+            val usePacked=packed;var framesHere=0;var usingBaseline=false;var baselineStatusAt=0L;var feedbackMs=0L
             try {
                 val connection=Socket();socket=connection
                 connection.use {stream->
@@ -45,7 +45,7 @@ internal class ViewedDetail(private val destination:()->ViewDestination?,private
                         val start=SystemClock.elapsedRealtime();attempts++
                         val json=JSONObject().put("mode",if(usePacked)"view-tiles-v2" else "view-h264-v1").put("sessionId",next.sessionId)
                             .put("rect",org.json.JSONArray(listOf(next.rect.left,next.rect.top,next.rect.right,next.rect.bottom)))
-                            .put("frameBudget",usePacked).put("quality",next.quality).put("bitrateMbps",next.bitrateMbps).put("fraction",next.fraction)
+                            .put("areaBudget",usePacked).put("nativeAreaPixels",next.nativeAreaPixels).put("targetFps",next.targetFps).put("feedbackMs",feedbackMs).put("frameBudget",usePacked).put("quality",next.quality).put("bitrateMbps",next.bitrateMbps).put("fraction",next.fraction)
                             .put("center",org.json.JSONArray(listOf(next.center.first,next.center.second))).toString().toByteArray(Charsets.UTF_8)
                         writer.writeInt(json.size);writer.write(json);writer.flush()
                         val size=input.readInt();require(size in 1..4096);val header=ByteArray(size);input.readFully(header)
@@ -94,12 +94,13 @@ internal class ViewedDetail(private val destination:()->ViewDestination?,private
                         check(index>=0){"View decoder backpressure"}
                         val buffer=active.getInputBuffer(index) ?: error("No view input buffer");require(count<=buffer.capacity());buffer.clear();buffer.put(bytes)
                         val pts=System.nanoTime()/1000
-                        val age=SystemClock.elapsedRealtime()-start
+                        val age=SystemClock.elapsedRealtime()-start;feedbackMs=age
                         if(age>250)late++
                         output.frame(pts,ViewFrame(outer,inner,SystemClock.uptimeMillis()-age,next.center.first,next.center.second,width,height,tiles))
                         active.queueInputBuffer(index,0,count,pts,if(if(hevc)splitAnnexB(bytes).any{((it[0].toInt() ushr 1) and 63) in 16..21} else isKeyframe(bytes))MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
                         drain(active);received++;framesHere++
-                        if(received%10L==1L)report("${age}ms · ${if(hevc)"HEVC native tiles" else if(tiled)"H264 native tiles" else "legacy H264"} ${width}x${height} · ${count/1024}KiB")
+                        val areaText=if(meta.has("nativeAreaPixels"))" · ${if(meta.optBoolean("autoArea"))"Auto" else "Fixed"} %.2fMP / ${meta.optInt("targetFps",next.targetFps)}fps".format(java.util.Locale.ROOT,meta.optLong("nativeAreaPixels")/1e6) else ""
+                        if(received%10L==1L)report("${age}ms · ${if(hevc)"HEVC native tiles" else if(tiled)"H264 native tiles" else "legacy H264"} ${width}x${height} · ${count/1024}KiB$areaText")
                     }
                 }
             } catch(error:Exception){if(usePacked && framesHere==0 && running && request.get()!=null)packed=false;if(running && request.get()!=null){errors++;report("${error.javaClass.simpleName}: ${error.message.orEmpty().take(45)}");fallback();Thread.sleep(400)}}

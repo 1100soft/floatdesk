@@ -121,3 +121,29 @@ internal fun hudSurfaceLayout(horizontal:Float,vertical:Float,distance:Float):Hu
                   .5f+(it.x+it.width*.5f)/width,.5f-(it.y-it.height*.5f)/height)
     })
 }
+
+/** Project each spherical glyph patch onto its foreground tangent UI surface. */
+internal data class HudForegroundPatch(val width:Float,val height:Float,val position:FloatArray,val normal:FloatArray,val up:FloatArray,val vertices:FloatArray,val columns:Int=16,val rows:Int=8)
+internal fun hudForegroundPatches(horizontal:Float,vertical:Float,distance:Float):List<HudForegroundPatch>{
+    val layout=hudSurfaceLayout(horizontal,vertical,distance)
+    val sphere=MonitorMesh(layout.width,layout.height,floatArrayOf(0f,0f,distance),focus=floatArrayOf(0f,0f))
+    fun dot(a:FloatArray,b:FloatArray)=(0..2).sumOf{(a[it]*b[it]).toDouble()}.toFloat()
+    fun cross(a:FloatArray,b:FloatArray)=floatArrayOf(a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0])
+    fun unit(a:FloatArray):FloatArray{val n=kotlin.math.sqrt(dot(a,a));return FloatArray(3){a[it]/n}}
+    fun point(x:Float,y:Float)=sphere.project(floatArrayOf(x,y,0f)).let{floatArrayOf(it[0],it[1],it[2]-distance)}
+    return peripheralHudPanels(horizontal,vertical,distance).map{box->
+        val center=point(box.x,box.y);val normal=unit(FloatArray(3){-center[it]})
+        val right=unit(cross(floatArrayOf(0f,1f,0f),normal));val up=cross(normal,right)
+        val coordinates=FloatArray(17*9*2)
+        for(row in 0..8)for(col in 0..16){
+            val p=point(box.x+(col/16f-.5f)*box.width,box.y+(.5f-row/8f)*box.height)
+            val scale=dot(center,normal)/dot(p,normal)
+            val delta=FloatArray(3){p[it]*scale-center[it]};val i=(row*17+col)*2
+            coordinates[i]=dot(delta,right);coordinates[i+1]=dot(delta,up)
+        }
+        val left=coordinates.indices.filter{it%2==0}.minOf{coordinates[it]};val bottom=coordinates.indices.filter{it%2==1}.minOf{coordinates[it]}
+        val width=coordinates.indices.filter{it%2==0}.maxOf{coordinates[it]}-left;val height=coordinates.indices.filter{it%2==1}.maxOf{coordinates[it]}-bottom
+        val position=FloatArray(3){center[it]+right[it]*(left+width*.5f)+up[it]*(bottom+height*.5f)}
+        HudForegroundPatch(width,height,position,normal,up,FloatArray(coordinates.size){i->if(i%2==0)(coordinates[i]-left)/width*800f else (bottom+height-coordinates[i])/height*400f})
+    }
+}

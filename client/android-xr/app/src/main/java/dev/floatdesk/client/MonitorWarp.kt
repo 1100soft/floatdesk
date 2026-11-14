@@ -267,7 +267,10 @@ internal class MonitorWarp : AutoCloseable {
         var reference=referenceMesh
         if(reference==null || reference.width!=placement.physicalWidthM || reference.height!=placement.physicalHeightM || !reference.center.contentEquals(center) ||
             viewer.indices.any {kotlin.math.abs(viewer[it]-reference!!.eye[it])>.01f}) {
-            if(reference?.center?.contentEquals(center)!=true)focus=center.copyOf(2)
+            val prior=reference
+            val sameAnchor=prior!=null && kotlin.math.abs(prior.center[0]/prior.width-center[0]/placement.physicalWidthM)<.000001f &&
+                kotlin.math.abs(prior.center[1]/prior.height-center[1]/placement.physicalHeightM)<.000001f
+            focus=if(sameAnchor)focus?.let{floatArrayOf(it[0]*placement.physicalWidthM/prior!!.width,it[1]*placement.physicalHeightM/prior.height)} ?: center.copyOf(2) else center.copyOf(2)
             reference=MonitorMesh(placement.physicalWidthM,placement.physicalHeightM,viewer,focus=center.copyOf(2),center=center)
             referenceMesh=reference
         }

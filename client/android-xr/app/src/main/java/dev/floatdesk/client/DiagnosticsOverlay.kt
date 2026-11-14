@@ -1,6 +1,13 @@
 package dev.floatdesk.client
 
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.xr.compose.subspace.draw.scale
+import androidx.xr.compose.subspace.layout.pointerHoverIcon
+import androidx.xr.scenecore.scene
 import kotlinx.coroutines.isActive
 import android.graphics.Canvas
 import android.graphics.Color
@@ -14,86 +21,68 @@ import androidx.xr.runtime.math.Vector3
 import dev.floatdesk.client.net.DiagnosticSnapshot
 import dev.floatdesk.client.workspace.ViewLayers
 
-/** One head-relative spherical surface, without panel corner clipping or independent poses. */
+/** One foreground UI group. Child surfaces stay outside the central aiming area. */
 @androidx.compose.runtime.Composable
 internal fun DiagnosticsPanel(connection:dev.floatdesk.client.net.DeskConnection,
     viewer:java.util.concurrent.atomic.AtomicReference<dev.floatdesk.client.workspace.Pose?>,
-    units:()->Float,angles:()->FloatArray,
-    resources:Boolean,quality:Boolean,qualityDebug:Boolean) {
+    units:()->Float,angles:()->FloatArray,resources:Boolean,quality:Boolean,qualityDebug:Boolean) {
     if(!resources && !qualityDebug)return
     val session=androidx.xr.compose.platform.LocalSession.current ?: return
-    val hud=androidx.compose.runtime.remember(session){SphericalDiagnosticsHud(session)}
-    val options by androidx.compose.runtime.rememberUpdatedState(Triple(resources,quality,qualityDebug))
-    androidx.compose.runtime.DisposableEffect(hud){onDispose{hud.close()}}
-    androidx.compose.runtime.LaunchedEffect(connection,viewer,hud){
-        var sampled=0L
+    val density=androidx.compose.ui.platform.LocalDensity.current
+    val pixelDensity=session.scene.virtualPixelDensity
+    var head by androidx.compose.runtime.remember{androidx.compose.runtime.mutableStateOf(viewer.get())}
+    var snapshot by androidx.compose.runtime.remember{androidx.compose.runtime.mutableStateOf(connection.diagnosticSnapshot())}
+    var stamp by androidx.compose.runtime.remember{androidx.compose.runtime.mutableStateOf(0L)}
+    androidx.compose.runtime.LaunchedEffect(connection,viewer){
         while(kotlinx.coroutines.currentCoroutineContext().isActive){
-            androidx.compose.runtime.withFrameNanos {
-                val head=viewer.get()
-                val parent=findDeskSpace(session)
-                val resumed=session.lifecycleOwner.lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)
-                if(head==null || parent==null || !resumed){hud.hide();return@withFrameNanos}
-                val fov=angles();val selected=options
-                hud.place(parent,head,units(),fov[0],fov[1],selected.first,selected.third)
+            androidx.compose.runtime.withFrameNanos{
+                head=viewer.get()
                 val now=SystemClock.uptimeMillis()
-                if(now-sampled>=250 || hud.needsRedraw){
-                    val snapshot=connection.diagnosticSnapshot()
-                    hud.draw(snapshot.copy(state=snapshot.state.copy(enabled=selected.second,showOverlay=selected.third,showResources=selected.first)),connection.presentation().rects,now)
-                    sampled=now
+                if(now-stamp>=250){snapshot=connection.diagnosticSnapshot();stamp=now}
+            }
+        }
+    }
+    val pose=head ?: return
+    val fov=angles();val h=kotlin.math.round(fov[0]*100f)/100f;val v=kotlin.math.round(fov[1]*100f)/100f
+    val patches=androidx.compose.runtime.remember(h,v){hudForegroundPatches(h,v,ViewLayers.DiagnosticsDistanceM)}
+    val state=androidx.compose.runtime.remember(snapshot,resources,quality,qualityDebug){snapshot.copy(state=snapshot.state.copy(enabled=quality,showOverlay=qualityDebug,showResources=resources))}
+    val unit=units().takeIf{it.isFinite() && it>0f} ?: 1f
+    // Only this parent follows the head. Text refreshes never update individual block poses.
+    androidx.xr.compose.subspace.SpatialBox(modifier=placedPanel(pose,unit,unit,density,pixelDensity)){
+        for((index,patch) in patches.withIndex()){
+            if(index<2 && !resources || index>=2 && !qualityDebug)continue
+            androidx.compose.runtime.key(index){
+                val texture=androidx.compose.runtime.remember{HudGlyphTexture()}
+                androidx.compose.runtime.DisposableEffect(texture){onDispose{texture.close()}}
+                val q=androidx.xr.runtime.math.Quaternion.fromLookTowards(Vector3(patch.normal[0],patch.normal[1],patch.normal[2]),Vector3(patch.up[0],patch.up[1],patch.up[2]))
+                val local=dev.floatdesk.client.workspace.Pose(FloatArray(3){patch.position[it]*unit},floatArrayOf(q.x,q.y,q.z,q.w))
+                val supersample=6f
+                androidx.xr.compose.subspace.SpatialPanel(
+                    modifier=placedPanel(local,patch.width*unit*supersample,patch.height*unit*supersample,density,pixelDensity).scale(1f/supersample).pointerHoverIcon(androidx.xr.scenecore.SpatialPointerIcon.NONE),
+                    shape=androidx.xr.compose.subspace.layout.SpatialRoundedCornerShape(androidx.compose.foundation.shape.CornerSize(androidx.compose.ui.unit.Dp(0f)))){
+                    androidx.compose.foundation.Canvas(androidx.compose.ui.Modifier.fillMaxSize()){
+                        drawIntoCanvas{target->
+                            texture.update(state,connection.presentation().rects,stamp,index)
+                            val c=target.nativeCanvas;val saved=c.save();c.scale(size.width/800f,size.height/400f)
+                            c.drawBitmapMesh(texture.bitmap,patch.columns,patch.rows,patch.vertices,0,null,0,texture.paint)
+                            c.restoreToCount(saved)
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-/** Shared desktop sphere geometry and video UV convention; only the four glyph regions have geometry. */
-@android.annotation.SuppressLint("RestrictedApi")
-@OptIn(androidx.xr.scenecore.ExperimentalSurfaceEntityPixelDimensionsApi::class)
-internal class SphericalDiagnosticsHud(private val session:androidx.xr.runtime.Session):AutoCloseable {
-    private var entity:androidx.xr.scenecore.SurfaceEntity?=null
-    private var layout:HudSurfaceLayout?=null
-    private var visibility=0
-    private var shown=false
-    private var placedScale=Float.NaN
-    private var placedParent:androidx.xr.scenecore.Entity?=null
-    var needsRedraw=true;private set
-    fun place(parent:androidx.xr.scenecore.Entity,head:dev.floatdesk.client.workspace.Pose,units:Float,horizontal:Float,vertical:Float,resources:Boolean,quality:Boolean){
-        val scale=units.takeIf{it.isFinite() && it>0f} ?: 1f
-        val next=hudSurfaceLayout(horizontal,vertical,ViewLayers.DiagnosticsDistanceM)
-        val enabled=(if(resources)1 else 0) or (if(quality)2 else 0)
-        if(entity==null || layout?.width!=next.width || layout?.height!=next.height || visibility!=enabled){
-            val mesh=MonitorMesh(next.width,next.height,floatArrayOf(0f,0f,ViewLayers.DiagnosticsDistanceM),focus=floatArrayOf(0f,0f))
-            val regions=next.regions.filterIndexed{index,_->if(index<2)resources else quality}.flatMap{listOf(it.left,it.top,it.right,it.bottom)}.toFloatArray()
-            val geometry=clippedVideoGeometry(next.width,next.height,mesh,regions,0f)
-            val shape=androidx.xr.scenecore.SurfaceEntity.Shape.CustomMesh(androidx.xr.scenecore.SurfaceEntity.Shape.TriangleMesh(
-                java.nio.FloatBuffer.wrap(geometry.positions),java.nio.FloatBuffer.wrap(geometry.texCoords),java.nio.IntBuffer.wrap(geometry.indices)))
-            val target=entity ?: androidx.xr.scenecore.SurfaceEntity.create(session,shape=shape,parent=parent,
-                superSampling=androidx.xr.scenecore.SurfaceEntity.SuperSampling.NONE).also{
-                it.mediaBlendingMode=androidx.xr.scenecore.SurfaceEntity.MediaBlendingMode.TRANSPARENT
-                entity=it
-            }
-            target.shape=shape
-            if(layout?.pixelWidth!=next.pixelWidth || layout?.pixelHeight!=next.pixelHeight)
-                target.setSurfacePixelDimensions(androidx.xr.runtime.math.IntSize2d(next.pixelWidth,next.pixelHeight))
-            layout=next;visibility=enabled;needsRedraw=true
-            android.util.Log.i("Floatdesk","HUD spherical canvas ${next.pixelWidth}x${next.pixelHeight} glyphs=60px mask=$enabled")
-        }
-        val camera=Pose(Vector3(head.position[0],head.position[1],head.position[2]),androidx.xr.runtime.math.Quaternion(head.rotation[0],head.rotation[1],head.rotation[2],head.rotation[3]))
-        entity?.let{
-            if(placedParent!==parent){it.parent=parent;placedParent=parent}
-            if(placedScale!=scale){it.setScale(scale);placedScale=scale}
-            it.setPose(camera.compose(Pose(Vector3(0f,0f,-ViewLayers.DiagnosticsDistanceM*scale))))
-            if(!shown){it.setEnabled(true);shown=true}
-        }
+private class HudGlyphTexture:AutoCloseable{
+    val bitmap=android.graphics.Bitmap.createBitmap(800,400,android.graphics.Bitmap.Config.ARGB_8888)
+    val paint=Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+    private var stamp=Long.MIN_VALUE;private var state:DiagnosticSnapshot?=null
+    fun update(value:DiagnosticSnapshot,screens:FloatArray,now:Long,index:Int){
+        if(stamp==now && state===value)return
+        DiagnosticsCanvas.drawCluster(Canvas(bitmap),value,screens,now,index);stamp=now;state=value
     }
-    fun draw(snapshot:DiagnosticSnapshot,screens:FloatArray,now:Long){
-        val target=entity ?: return;val surface=layout ?: return
-        val canvas=target.getSurface().lockCanvas(null)
-        try{DiagnosticsCanvas.drawSurface(canvas,snapshot,screens,now,surface);needsRedraw=false}
-        finally{target.getSurface().unlockCanvasAndPost(canvas)}
-    }
-    fun hide(){if(shown)entity?.setEnabled(false);shown=false}
-    override fun close(){entity?.dispose();entity=null;layout=null}
+    override fun close(){bitmap.recycle()}
 }
 
 /** Canvas-only diagnostics, separate from scene placement and desktop video rendering. */

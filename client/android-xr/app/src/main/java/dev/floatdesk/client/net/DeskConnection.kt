@@ -52,6 +52,7 @@ internal class DeskConnection(
     @Volatile private var detailSession=0L
     private val detailDiagnostics=AtomicReference(DetailDiagnostics())
     fun refreshOutput(index:Int){decoders[index]?.refreshOutput()}
+    fun diagnosticSnapshot()=decoders[0]?.diagnosticSnapshot() ?: DiagnosticSnapshot(detailDiagnostics.get(),null,"Waiting for video")
     fun displayedQualityFocus():Pair<Float,Float>?=decoders[0]?.displayedQualityFocus()
     fun qualityOutputLimit():Int=decoders[0]?.qualityOutputLimit() ?: 4096
     fun detailDebug(enabled:Boolean,showOverlay:Boolean=true,showResources:Boolean=false) {
@@ -333,7 +334,7 @@ internal class DeskConnection(
                                 fun n(key:String)=stats.optDouble(key,Double.NaN).takeIf{it.isFinite()}
                                 val gpu=n("gpuPct")?.let{String.format(java.util.Locale.ROOT,"%.0f%%",it)} ?: "n/a"
                                 val stages=if(n("captureMs")!=null && n("encodeMs")!=null)String.format(java.util.Locale.ROOT,"cap %.1fms enc %.1fms",n("captureMs"),n("encodeMs")) else "view timing n/a"
-                                val text=String.format(java.util.Locale.ROOT,"Host CPU %.0f%% RSS %.0fMiB free %.0fMiB GPU(proc) %s\nHost video %.1ffps %.1fMbps · %s",n("cpuPct") ?: 0.0,n("rssMiB") ?: 0.0,n("availableMiB") ?: 0.0,gpu,n("fps") ?: 0.0,n("mbps") ?: 0.0,stages)
+                                val text=String.format(java.util.Locale.ROOT,"Host CPU(core) %.0f%% RSS %.0fMiB free %.0fMiB GPU(proc) %s\nHost video %.1ffps %.1fMbps · %s",n("cpuPct") ?: 0.0,n("rssMiB") ?: 0.0,n("availableMiB") ?: 0.0,gpu,n("fps") ?: 0.0,n("mbps") ?: 0.0,stages)
                                 val value=detailDiagnostics.updateAndGet{it.copy(hostResources=text)};decoders[0]?.detailDebug(value);publishResources()
                             }
                             WorkspaceInfo.parse(decoded.json)?.let {info->main.post {workspaceInfo.value=info;configurePresentation(screenSpacing)}}

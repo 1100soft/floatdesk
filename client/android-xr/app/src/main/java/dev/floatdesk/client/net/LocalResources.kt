@@ -18,12 +18,12 @@ internal class LocalResources(private val publish:(String)->Unit):AutoCloseable 
             val now=SystemClock.elapsedRealtime();val next=Process.getElapsedCpuTime()
             val percent=(next-cpu)*100.0/(now-at).coerceAtLeast(1)
             val info=Debug.MemoryInfo()
-            if(runCatching{Debug.getMemoryInfo(info)}.isFailure){publish("XR CPU %.0f%% · memory unavailable".format(Locale.ROOT,percent));at=now;cpu=next;continue}
+            if(runCatching{Debug.getMemoryInfo(info)}.isFailure){publish("XR CPU(core) %.0f%% · memory unavailable".format(Locale.ROOT,percent));at=now;cpu=next;continue}
             val graphics=runCatching{info.getMemoryStat("summary.graphics")?.toLongOrNull()?.let{it/1024.0}}.getOrNull()
             val gpu=runCatching{val values=File("/sys/class/kgsl/kgsl-3d0/gpubusy").readText().trim().split(Regex("\\s+")).map{it.toDouble()};if(values.size>=2 && values[1]>0)100*values[0]/values[1] else null}.getOrNull()
             val available=runCatching{File("/proc/meminfo").readLines().firstOrNull{it.startsWith("MemAvailable:")}?.substringAfter(':')?.trim()?.split(Regex("\\s+"))?.firstOrNull()?.toLongOrNull()?.div(1024.0)}.getOrNull()
             val gpuText=gpu?.let{String.format(Locale.ROOT,"%.0f%%",it)} ?: "n/a"
-            publish(String.format(Locale.ROOT,"XR CPU %.0f%% PSS %.0fMiB free %.0fMiB gfx %.0fMiB GPU %s",percent,info.totalPss/1024.0,available ?: 0.0,graphics ?: 0.0,gpuText))
+            publish(String.format(Locale.ROOT,"XR CPU(core) %.0f%% PSS %.0fMiB free %.0fMiB gfx %.0fMiB GPU %s",percent,info.totalPss/1024.0,available ?: 0.0,graphics ?: 0.0,gpuText))
             at=now;cpu=next
         }
     },"floatdesk-resources").also{it.isDaemon=true;it.start()}

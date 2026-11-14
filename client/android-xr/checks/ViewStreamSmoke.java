@@ -50,9 +50,9 @@ public final class ViewStreamSmoke {
             var nals=H264Kt.splitAnnexB(ViewFrameFixture.DATA);byte[] sps=null,pps=null;for(byte[] nal:nals){if(H264Kt.nalType(nal)==7)sps=nal;if(H264Kt.nalType(nal)==8)pps=nal;}
             var format=MediaFormat.createVideoFormat("video/avc",2048,1536);format.setByteBuffer("csd-0",ByteBuffer.wrap(H264Kt.annexBParameterSets(sps,pps)));format.setInteger(MediaFormat.KEY_LOW_LATENCY,1);
             codec=MediaCodec.createDecoderByType("video/avc");codec.configure(format,compositor.getViewInput(),null,0);codec.start();System.out.println("view test: codec started");
-            submit(codec,compositor,1000000,true);System.out.println("view test: first output released");await(reader,0);System.out.println("view test: first frame verified");
+            submit(codec,compositor,1000000,true);System.out.println("view test: first output released");await(reader,2);System.out.println("view test: diagnostic-enabled video remains untinted");
             compositor.detailDebug(new DetailDiagnostics(true,new FocusRect(.1f,.1f,.9f,.9f),"gaze test","H264",2f,2f,false));
-            System.out.println("view test: hiding HUD");await(reader,2);System.out.println("view test: hidden HUD verified"); // Hiding diagnostics must not switch off the high-density stream.
+            System.out.println("view test: hiding diagnostics");submit(codec,compositor,1500000,true);await(reader,2);System.out.println("view test: hidden HUD verified"); // Hiding diagnostics must not switch off the high-density stream.
             submit(codec,compositor,2000000,false);await(reader,1);
             submit(codec,compositor,3000000,true);await(reader,0);
             compositor.clearView();await(reader,1);

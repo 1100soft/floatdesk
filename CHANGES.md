@@ -1,5 +1,7 @@
 # Changes since the LAN proof of concept
 
+- Restore head-driven spherical curvature while retaining gaze-targeted streaming. Move diagnostics to a separate noninteractive view-following overlay, remove desktop diagnostic tint/borders/text, and clarify core-summed CPU and target video bitrate labels.
+
 - Synchronize spherical curvature with fine gaze and the displayed high-density frame. Narrow the configurable dense region to 35% by default. Add saved encoder effort/bitrate and GPU sharpening settings, plus live host/headset resource and streaming telemetry in both streaming modes.
 
 - Follow fine gaze for the dense streaming region, retain targets beyond desktop edges and during tracking gaps, and separate debug visibility from streaming. Preserve captured detail in bounded source-native XR output buffers instead of downscaling into the normal-stream buffer.

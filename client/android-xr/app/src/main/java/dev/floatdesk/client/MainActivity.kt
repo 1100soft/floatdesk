@@ -380,6 +380,8 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     }
     val density = LocalDensity.current
     val pixelDensity = session?.scene?.virtualPixelDensity
+    val diagnosticsOverlay=remember(session){session?.let{DiagnosticsOverlay(it)}}
+    DisposableEffect(diagnosticsOverlay){onDispose{diagnosticsOverlay?.close()}}
     LaunchedEffect(session) {
         val current = session ?: return@LaunchedEffect
         current.scene.requestFullSpace()
@@ -576,6 +578,8 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             handTracking.pinched.clear()
             val candidateHead = perceived?.let { deskPose(current, root, it) }
             displayHead.set(candidateHead?.toWorkspacePose())
+            runCatching { diagnosticsOverlay?.update(root,candidateHead?.takeIf{trackingAvailable},unitsPerMeter,connection.diagnosticSnapshot(),connection.presentation().rects) }
+                .onFailure { Log.w("Floatdesk","Diagnostics overlay update failed",it) }
             val reliable = trackingGuard.update(handTracking.nowMs, candidateHead?.takeIf { trackingAvailable }?.translation?.toArray(),
                 candidateHead?.let { floatArrayOf(it.rotation.x,it.rotation.y,it.rotation.z,it.rotation.w) },unitsPerMeter)
             val head = candidateHead?.takeIf { reliable }
@@ -611,13 +615,11 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             val qualityTargets=if(screen==null)emptyList() else eyeRays.mapNotNull{(origin,direction)->
                 val local=viewerInMonitor(origin,screen.pose.position,screen.pose.rotation)
                 val endpoint=viewerInMonitor(add(origin,direction),screen.pose.position,screen.pose.rotation)
-                extendedQualityTarget(local,subtract(endpoint,local),screen.physicalWidthM,screen.physicalHeightM,pointerControl.qualityReferences[0] ?: pointerControl.meshes[0])
+                extendedQualityTarget(local,subtract(endpoint,local),screen.physicalWidthM,screen.physicalHeightM,pointerControl.meshes[0])
                     ?.let{connection.presentation().extendedDesktopPoint(it.first,it.second)}
             }
             val raw=if(qualityTargets.isEmpty())null else qualityTargets.map{it.first}.average().toFloat() to qualityTargets.map{it.second}.average().toFloat()
             val sharedGaze=qualityGaze.update(raw,handTracking.nowMs)
-            val curveGaze=if(workspace.experimentalViewedDetail)connection.displayedQualityFocus() ?: sharedGaze else sharedGaze
-            handTracking.curvatureFocus=curveGaze?.let{connection.presentation().extendedDisplayPoint(it.first,it.second)}?.let{floatArrayOf(it.first,it.second)}
             connection.detailDebug(workspace.experimentalViewedDetail,workspace.viewDetailDebug,workspace.showResources)
             if(displayControlsOpen || head==null || manipulating || !workspace.experimentalViewedDetail && !workspace.showResources) {
                 connection.viewedDetail(null,when {
@@ -1100,7 +1102,7 @@ private fun DeskContent(
                         warp.update(current, root, handTracking.points["VIEWER"] ?: handTracking.points["HEAD"], screen, file.sphericalWarp,
                             (hands.busy && !hands.engaged) || nativeMove || nativeResize || handTracking.pointerHeld,
                             forceUpdate=(hands.engaged || !hands.busy) && (nativeGeometryPending || !warp.matchesSize(screen)),
-                            viewDirection=null,viewFocus=handTracking.curvatureFocus,
+                            viewDirection=handTracking.points["VIEW_DIRECTION"],
                             freezeProjection=(hands.busy && !hands.engaged) || nativeMove || nativeResize || handTracking.pointerHeld)
                         grabProjectionAt=projectionNow
                     }

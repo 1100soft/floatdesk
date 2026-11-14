@@ -154,7 +154,7 @@ private fun StreamingSettings(value:dev.floatdesk.client.workspace.WorkspaceFile
     }
     var rate by remember(value.encoderMbps){mutableStateOf(value.encoderMbps.toString())}
     Row(horizontalArrangement=Arrangement.spacedBy(6.dp),verticalAlignment=Alignment.CenterVertically){
-        androidx.compose.material3.OutlinedTextField(rate,{rate=it},Modifier.weight(1f),label={Text("Mbps · 0 = host default")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Decimal))
+        androidx.compose.material3.OutlinedTextField(rate,{rate=it},Modifier.weight(1f),label={Text("Bitrate (Mbps) · 0 = host default")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Decimal))
         val parsed=rate.toFloatOrNull()?.takeIf{it.isFinite() && it in 0f..200f}
         Button(enabled=parsed!=null,onClick={parsed?.let{onApply(value.copy(encoderMbps=it))}}){Text("Apply")}
     }

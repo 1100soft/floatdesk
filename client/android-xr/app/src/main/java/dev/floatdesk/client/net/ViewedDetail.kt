@@ -45,7 +45,7 @@ internal class ViewedDetail(private val destination:()->ViewDestination?,private
                         val start=SystemClock.elapsedRealtime();attempts++
                         val json=JSONObject().put("mode",if(usePacked)"view-tiles-v2" else "view-h264-v1").put("sessionId",next.sessionId)
                             .put("rect",org.json.JSONArray(listOf(next.rect.left,next.rect.top,next.rect.right,next.rect.bottom)))
-                            .put("areaBudget",usePacked).put("nativeAreaPixels",next.nativeAreaPixels).put("targetFps",next.targetFps).put("feedbackMs",feedbackMs).put("frameBudget",usePacked).put("quality",next.quality).put("bitrateMbps",next.bitrateMbps).put("fraction",next.fraction)
+                            .put("regionSampling",usePacked).put("areaBudget",usePacked).put("nativeAreaPixels",next.nativeAreaPixels).put("targetFps",next.targetFps).put("feedbackMs",feedbackMs).put("frameBudget",usePacked).put("quality",next.quality).put("bitrateMbps",next.bitrateMbps).put("fraction",next.fraction)
                             .put("center",org.json.JSONArray(listOf(next.center.first,next.center.second))).toString().toByteArray(Charsets.UTF_8)
                         writer.writeInt(json.size);writer.write(json);writer.flush()
                         val size=input.readInt();require(size in 1..4096);val header=ByteArray(size);input.readFully(header)
@@ -69,7 +69,7 @@ internal class ViewedDetail(private val destination:()->ViewDestination?,private
                         require(mime=="video/avc" || mime=="video/hevc");val hevc=mime=="video/hevc"
                         if(!tiled)require(width==2048 && height==1536)
                         val tiles=if(tiled){
-                            val array=meta.getJSONArray("tiles");require(array.length() in 1..5)
+                            val array=meta.getJSONArray("tiles");require(array.length() in 1..32)
                             FloatArray(array.length()*8){n->array.getJSONArray(n/8).getJSONArray((n%8)/4).getDouble(n%4).toFloat()}.also{values->
                                 for(i in values.indices step 4)require(values.slice(i..i+3).all{it.isFinite() && it in 0f..1f} && values[i+2]>values[i] && values[i+3]>values[i+1])
                             }
@@ -99,8 +99,9 @@ internal class ViewedDetail(private val destination:()->ViewDestination?,private
                         output.frame(pts,ViewFrame(outer,inner,SystemClock.uptimeMillis()-age,next.center.first,next.center.second,width,height,tiles))
                         active.queueInputBuffer(index,0,count,pts,if(if(hevc)splitAnnexB(bytes).any{((it[0].toInt() ushr 1) and 63) in 16..21} else isKeyframe(bytes))MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
                         drain(active);received++;framesHere++
+                        val peripheralText=if(meta.optBoolean("regionSampling"))" · peripheral %.1f%%".format(java.util.Locale.ROOT,meta.optDouble("peripheryScale",0.0)*100) else ""
                         val areaText=if(meta.has("nativeAreaPixels"))" · ${if(meta.optBoolean("autoArea"))"Auto" else "Fixed"} %.2fMP / ${meta.optInt("targetFps",next.targetFps)}fps".format(java.util.Locale.ROOT,meta.optLong("nativeAreaPixels")/1e6) else ""
-                        if(received%10L==1L)report("${age}ms · ${if(hevc)"HEVC native tiles" else if(tiled)"H264 native tiles" else "legacy H264"} ${width}x${height} · ${count/1024}KiB$areaText")
+                        if(received%10L==1L)report("${age}ms · ${if(hevc)"HEVC native tiles" else if(tiled)"H264 native tiles" else "legacy H264"} ${width}x${height} · ${count/1024}KiB$peripheralText$areaText")
                     }
                 }
             } catch(error:Exception){if(usePacked && framesHere==0 && running && request.get()!=null)packed=false;if(running && request.get()!=null){errors++;report("${error.javaClass.simpleName}: ${error.message.orEmpty().take(45)}");fallback();Thread.sleep(400)}}

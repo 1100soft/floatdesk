@@ -8,6 +8,7 @@ pub(super) struct Governor {
     samples: u32,
     warm: u32,
     maximum: u64,
+    peripheral_factor: f64,
 }
 impl Governor {
     pub fn new() -> Self {
@@ -20,6 +21,7 @@ impl Governor {
             samples: 0,
             warm: 3,
             maximum: 4_194_304,
+            peripheral_factor: 1.,
         }
     }
     pub fn configure(&mut self, requested: u64, target: u32, normal_pixels: u64) {
@@ -36,6 +38,7 @@ impl Governor {
             self.samples = 0;
             self.last = 0;
             self.warm = 3;
+            self.peripheral_factor = 1.;
         }
     }
     pub fn automatic(&self) -> bool {
@@ -48,6 +51,9 @@ impl Governor {
         } else {
             ceiling
         }
+    }
+    pub fn peripheral_factor(&self) -> f64 {
+        self.peripheral_factor
     }
     pub fn rebuilt(&mut self) {
         self.warm = 3;
@@ -91,6 +97,13 @@ impl Governor {
             .round()
             .max(4.) as u64
             * 64;
+        if self.ema > budget * 1.08 && self.area <= 65_536 {
+            self.peripheral_factor = (self.peripheral_factor
+                * (budget * 0.8 / self.ema).sqrt().clamp(0.85, 0.97))
+            .max(0.25);
+        } else if self.ema < budget * 0.75 && self.peripheral_factor < 1. {
+            self.peripheral_factor = (self.peripheral_factor * 1.08).min(1.);
+        }
         self.area = (side * side).clamp(65_536, self.maximum);
         self.last = now_ms;
         self.samples = 0;
@@ -118,6 +131,25 @@ mod tests {
             g.observe(2., 3., i * 20, true)
         }
         assert_eq!(g.area, prior);
+    }
+    #[test]
+    fn peripheral_density_only_changes_after_native_area_reaches_its_floor() {
+        let mut g = Governor::new();
+        g.configure(0, 30, 4096 * 2160);
+        for i in 0..20 {
+            g.observe(100., 100., i * 100, false)
+        }
+        assert!(g.area > 65_536);
+        assert_eq!(g.peripheral_factor(), 1.);
+        for i in 20..250 {
+            g.observe(100., 100., i * 100, false)
+        }
+        assert_eq!(g.area, 65_536);
+        assert!(g.peripheral_factor() < 1.);
+        for i in 250..600 {
+            g.observe(2., 2., i * 100, false)
+        }
+        assert_eq!(g.peripheral_factor(), 1.);
     }
     #[test]
     fn manual_area_does_not_drift_and_fps_is_configurable() {

@@ -10,7 +10,7 @@ pub(super) struct Tile {
     pub width: u16,
     pub height: u16,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct Plan {
     pub width: u16,
     pub height: u16,

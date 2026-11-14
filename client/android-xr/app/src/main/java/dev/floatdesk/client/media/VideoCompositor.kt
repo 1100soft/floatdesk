@@ -228,7 +228,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     fun diagnosticSnapshot():dev.floatdesk.client.net.DiagnosticSnapshot = dev.floatdesk.client.net.DiagnosticSnapshot(
         diagnostics,viewCurrent?.takeIf{viewLatched},presentationStats,
         "Output ${outputPixels.first}x${outputPixels.second} · base ${baseWidth}x${baseHeight} · rejected $rejectedViews" +
-        (viewCurrent?.let { f -> java.lang.String.format(java.util.Locale.ROOT," · effective X%.2f Y%.2f",minOf((if(f.tiles.isNotEmpty())f.atlasWidth*(f.tiles[6]-f.tiles[4]) else 2048f)/((f.inner.right-f.inner.left)*baseWidth),outputPixels.first.toFloat()/baseWidth),minOf((if(f.tiles.isNotEmpty())f.atlasHeight*(f.tiles[7]-f.tiles[5]) else 1024f)/((f.inner.bottom-f.inner.top)*baseHeight),outputPixels.second.toFloat()/baseHeight)) } ?: ""))
+        (viewCurrent?.let { f -> java.lang.String.format(java.util.Locale.ROOT," · effective X%.2f Y%.2f",minOf((if(f.tiles.isNotEmpty())f.atlasWidth*(f.tiles[6]-f.tiles[4]) else 2048f)/((if(f.tiles.isNotEmpty())f.tiles[2]-f.tiles[0] else f.inner.right-f.inner.left)*baseWidth),outputPixels.first.toFloat()/baseWidth),minOf((if(f.tiles.isNotEmpty())f.atlasHeight*(f.tiles[7]-f.tiles[5]) else 1024f)/((if(f.tiles.isNotEmpty())f.tiles[3]-f.tiles[1] else f.inner.bottom-f.inner.top)*baseHeight),outputPixels.second.toFloat()/baseHeight)) } ?: ""))
 
 
     fun overlay(value: VideoAim) {
@@ -486,8 +486,8 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             }
             uniform int viewMode;
             uniform int viewTileCount;
-            uniform vec4 viewSources[5];
-            uniform vec4 viewDestinations[5];
+            uniform vec4 viewSources[32];
+            uniform vec4 viewDestinations[32];
             uniform vec4 viewOuter;
             uniform vec4 viewInner;
             varying vec2 uv;
@@ -513,7 +513,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                             if(viewMode==2){
                                 if(source.x<viewOuter.x || source.x>viewOuter.z || source.y<viewOuter.y || source.y>viewOuter.w)discard;
                                 bool matched=false;
-                                for(int t=0;t<5;t++){
+                                for(int t=0;t<32;t++){
                                     if(t<viewTileCount){
                                         vec4 a=viewSources[t];vec4 b=viewDestinations[t];
                                         if(source.x>=a.x && source.x<=a.z && source.y>=a.y && source.y<=a.w){

@@ -16,7 +16,7 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-view-x11-') as temp:
    assert number
    env=dict(os.environ,DISPLAY=':'+number,FLOATDESK_SYNTHETIC_DISPLAY='1');env.pop('XAUTHORITY',None)
    with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as probe:probe.bind(('127.0.0.1',0));port=probe.getsockname()[1]
-   host=subprocess.Popen([str(root/'target/release/floatdesk'),'serve','--existing','--listen',f'127.0.0.1:{port}','--fps',os.environ.get('FLOATDESK_CHECK_FPS','10'),'--encoder',os.environ.get('FLOATDESK_CHECK_ENCODER','x264enc'),'--duration','40'],env=env,stdout=log,stderr=log)
+   host=subprocess.Popen([str(root/'target/release/floatdesk'),'serve','--existing','--listen',f'127.0.0.1:{port}','--fps',os.environ.get('FLOATDESK_CHECK_FPS','10'),'--encoder',os.environ.get('FLOATDESK_CHECK_ENCODER','x264enc'),'--duration','75'],env=env,stdout=log,stderr=log)
    with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as control,socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as video:
     control.bind(('127.0.0.1',0));control.settimeout(.2);video.bind(('127.0.0.1',0));video.setblocking(False)
     def send(kind,payload):control.sendto(b'FDC1'+struct.pack('<BBHII',1,kind,0,len(payload),0)+payload,('127.0.0.1',port))
@@ -217,6 +217,55 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-view-x11-') as temp:
       meta,_=area_frame([0,0,1,1],0,250);areas.append(meta['nativeAreaPixels']);time.sleep(.04)
      assert min(areas)<areas[0], 'Auto failed to reduce native area under measured contention'
      print(f'PASS full-view fixed native 1024-square at different zooms; Auto shrank {areas[0]} to {min(areas)} source pixels under injected latency',flush=True)
+    with socket.create_connection(('127.0.0.1',port),2) as stream:
+     stream.settimeout(5);native_units=[];native_metas=[];timings=[]
+     for i in range(40):
+      began=time.monotonic()
+      payload=json.dumps(dict(mode='view-tiles-v2',areaBudget=True,regionSampling=True,frameBudget=True,sessionId=session,rect=[0,0,1,1],center=[.7,.5],nativeAreaPixels=1048576,targetFps=30,feedbackMs=0)).encode()
+      stream.sendall(struct.pack('>I',len(payload))+payload)
+      meta=json.loads(exact(stream,struct.unpack('>I',exact(stream,4))[0]));unit=exact(stream,meta['bytes'])
+      assert meta['regionSampling'] and meta['type']=='view-tiles-v2'
+      assert abs(meta['peripheryScale']-.675)<.002,meta
+      assert meta['nativeAreaPixels']==1048576
+      sampled=0
+      for j,(src,dst) in enumerate(meta['tiles']):
+       sw=round((src[2]-src[0])*width);sh=round((src[3]-src[1])*height)
+       dw=round((dst[2]-dst[0])*meta['width']);dh=round((dst[3]-dst[1])*meta['height'])
+       assert (sw==dw and sh==dh) or (abs(dw-sw*.675)<=1.1 and abs(dh-sh*.675)<=1.1)
+       sampled+=sw*sh
+       for other,_ in meta['tiles'][j+1:]:
+        assert min(src[2],other[2])-max(src[0],other[0])<1e-6 or min(src[3],other[3])-max(src[1],other[1])<1e-6
+      assert abs(sampled-width*height)<width*2,'Duplicate or missing source regions'
+      timings.append(time.monotonic()-began)
+      if i<2:native_units.append(unit);native_metas.append(meta)
+     regional_stats=None
+     while True:
+      try:data=control.recv(65535)
+      except socket.timeout:break
+      if data[5]==15:
+       value=json.loads(data[16:])
+       if value.get('type')=='resourceStats':regional_stats=value
+     if regional_stats:print('Region profile '+json.dumps(regional_stats),flush=True)
+     print(f"PASS layout-independent regions: {meta['codec']} {meta['width']}x{meta['height']}, {len(meta['tiles'])} tiles, {meta['sampledPixels']/1e6:.2f}MP sampled; {1/(sum(timings[5:])/len(timings[5:])):.1f} responses/s, density {meta['peripheryScale']:.3f}",flush=True)
+    with socket.create_connection(('127.0.0.1',port),2) as stream:
+     stream.settimeout(5);densities=[];auto_areas=[]
+     for _ in range(120):
+      payload=json.dumps(dict(mode='view-tiles-v2',areaBudget=True,regionSampling=True,frameBudget=True,sessionId=session,rect=[0,0,1,1],center=[.7,.5],nativeAreaPixels=0,targetFps=30,feedbackMs=250)).encode()
+      stream.sendall(struct.pack('>I',len(payload))+payload)
+      meta=json.loads(exact(stream,struct.unpack('>I',exact(stream,4))[0]));exact(stream,meta['bytes'])
+      densities.append(meta['peripheryScale']);auto_areas.append(meta['nativeAreaPixels']);time.sleep(.04)
+     assert min(auto_areas)<=65536,'Native area did not reach its minimum under sustained pressure'
+     assert min(densities)<.67,'Peripheral density never adapted after native area reached its floor'
+     print(f'PASS regional Auto under sustained pressure: native {min(auto_areas)} pixels, peripheral {min(densities):.3f}',flush=True)
+    first=native_metas[0]
+    decoded_region=subprocess.check_output(['ffmpeg','-v','error','-threads','2','-f','h264' if first['codec']=='video/avc' else 'hevc','-i','pipe:0','-frames:v','2','-f','rawvideo','-pix_fmt','rgb24','pipe:1'],input=b''.join(native_units))
+    for src,dst in first['tiles']:
+     u=src[0]+(src[2]-src[0])*.27;v=src[1]+(src[3]-src[1])*.31
+     px=int((dst[0]+(dst[2]-dst[0])*.27)*first['width']);py=int((dst[1]+(dst[3]-dst[1])*.31)*first['height'])
+     at=(py*first['width']+px)*3;actual=decoded_region[at:at+3]
+     expected=[(255,0,0),(0,255,0),(0,0,255),(255,255,0)][(1 if u>=.5 else 0)+(2 if v>=.5 else 0)]
+     assert len(actual)==3 and all(abs(a-b)<45 for a,b in zip(actual,expected)),(src,dst,tuple(actual),expected)
+    print('PASS decoded native/peripheral region colors and coordinate mapping',flush=True)
     send(15,json.dumps(dict(type='encoderSettings',quality=0,bitrateMbps=0)).encode())
     assert control_json('encoderAck')['quality']==0
     decoded=subprocess.check_output(['ffmpeg','-v','error','-f','h264','-i','pipe:0','-frames:v','2','-f','rawvideo','-pix_fmt','rgb24','pipe:1'],input=b''.join(units[:2]))

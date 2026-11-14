@@ -51,6 +51,15 @@ public final class PackedViewSmoke {
                 .25f,.75f,.75f,1, .25f,.75f,.5f,.875f};
             codec=decode(compositor,1024,768,"/data/local/tmp/floatdesk-packed.hevc",tiles,1000000);await(reader,false);System.out.println("packed: five tiles verified");
             codec.stop();codec.release();codec=null;
+            float[] seven={.25f,.25f,.75f,.75f,.25f,.25f,.75f,.75f,
+                0,0,.25f,1,0,0,.125f,.5f, .75f,0,1,1,.75f,0,.875f,.5f,
+                .25f,0,.75f,.25f,.25f,0,.5f,.125f,
+                .25f,.75f,.35f,1,.25f,.75f,.30f,.875f,
+                .65f,.75f,.75f,1,.45f,.75f,.5f,.875f,
+                .35f,.75f,.65f,1,.30f,.75f,.45f,.875f};
+            codec=decode(compositor,1024,768,"/data/local/tmp/floatdesk-packed.hevc",seven,1500000);await(reader,false);
+            System.out.println("PASS peripheral region beyond the old five-tile shader limit");
+            codec.stop();codec.release();codec=null;
             codec=decode(compositor,5120,3200,"/data/local/tmp/floatdesk-native.hevc",new float[]{0,0,1,1,0,0,1,1},2000000);await(reader,true);
             System.out.println("PASS hardware HEVC five-tile reconstruction, native 5120x3200 cache resizing and 100% coverage; process PSS="+android.os.Debug.getPss()/1024+"MiB");
         }catch(Throwable error){error.printStackTrace();throw error;}finally{if(codec!=null){codec.stop();codec.release();}compositor.close();reader.close();}

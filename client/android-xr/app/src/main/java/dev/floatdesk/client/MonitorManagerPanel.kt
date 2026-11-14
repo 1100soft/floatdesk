@@ -70,9 +70,9 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
                 androidx.compose.material3.Switch(checked=viewedDetail,onCheckedChange=onViewedDetail)
                 Text("Experimental viewed-area quality",color=Color.White)
             }
-            if(viewedDetail)Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                 androidx.compose.material3.Switch(checked=viewDebug,onCheckedChange=onViewDebug)
-                Text("Show quality diagnostics",color=Color.White)
+                Text("Show diagnostics",color=Color.White)
             }
             if(viewedDetail)Text(connection.detailStatus.value,color=Color(0xFFB8D9EA),fontSize=13.sp)
             StreamingSettings(quality,onQuality)
@@ -162,8 +162,8 @@ private fun StreamingSettings(value:dev.floatdesk.client.workspace.WorkspaceFile
     var dense by remember(value.denseFraction){mutableStateOf(value.denseFraction)}
     Text(String.format(Locale.ROOT,"Sharpening %.2f",sharp),color=Color.White)
     androidx.compose.material3.Slider(value=sharp,onValueChange={sharp=(it*20).roundToInt()/20f},onValueChangeFinished={onApply(value.copy(sharpening=sharp))},valueRange=0f..1.5f,steps=29)
-    Text(String.format(Locale.ROOT,"Dense region maximum %.0f%% of view",dense*100),color=Color.White)
-    androidx.compose.material3.Slider(value=dense,onValueChange={dense=(it*100).roundToInt()/100f},onValueChangeFinished={onApply(value.copy(denseFraction=dense))},valueRange=.2f.. .65f,steps=44)
+    Text(if(dense>=.999f)"High detail: whole visible view" else String.format(Locale.ROOT,"Dense region maximum %.0f%% of view",dense*100),color=Color.White)
+    androidx.compose.material3.Slider(value=dense,onValueChange={dense=(it*100).roundToInt()/100f},onValueChangeFinished={onApply(value.copy(denseFraction=dense))},valueRange=.2f..1f,steps=79)
     Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)){
         androidx.compose.material3.Switch(checked=value.showResources,onCheckedChange={onApply(value.copy(showResources=it))});Text("Live resources",color=Color.White)
     }

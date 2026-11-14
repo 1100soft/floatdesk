@@ -1,5 +1,13 @@
 # Changes since the LAN proof of concept
 
+- Add a larger four-cluster game-style peripheral HUD with an empty center. Make 100% quality cover the full visible view without gaze shifts or low-tile blending. Support mixed native gaze/hand targeting in Focus mode while preserving mouse routing, and hide native desktop target icons.
+
+- Move diagnostics to eye level in the left view periphery. Raise the experimental dense-region maximum from 65% to 100% while retaining automatic density protection. Verify a synthetic native 5120×3200 HEVC frame through host hardware encoding and headset decoding/compositing.
+
+- Fix stale exposed pixels caused by Plasma retaining old monitor geometry: publish a final root geometry notification after display changes and on host startup, without changing refresh rates or restarting the shell.
+
+- Bring direct-touch controls to 40 cm. Render transparent diagnostics through the working Compose spatial-panel path, with FOV-bounded placement and a streaming-independent switch. Add numbered four-screen GPU/capture regressions, including isolated screen 3 and nonzero desktop origins.
+
 - Use UI-panel compositing above desktop video for transparent diagnostics. Fix flat/curved output rebinding while baseline encoding is paused. Keep desktop focus at 1.2 m with depth-to-size conversion; center controls at arm’s length.
 
 - Retain a bounded GPU atlas across rejected dynamic frames and stream handoffs to avoid blanking. Move diagnostic text outside the previous near-eye clipping range. Auto-narrow dense crops to preserve final-output detail and report effective sampling gain.

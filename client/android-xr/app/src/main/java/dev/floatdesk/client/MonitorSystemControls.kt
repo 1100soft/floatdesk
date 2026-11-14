@@ -12,6 +12,8 @@ import androidx.xr.runtime.math.Quaternion
 import androidx.xr.runtime.math.Ray
 import androidx.xr.runtime.math.Vector3
 import androidx.xr.scenecore.Entity
+import androidx.xr.scenecore.SpatialPointerComponent
+import androidx.xr.scenecore.SpatialPointerIcon
 import androidx.xr.scenecore.EntityMoveListener
 import androidx.xr.scenecore.MovableComponent
 import androidx.xr.scenecore.ResizeEvent
@@ -63,6 +65,8 @@ internal class MonitorSystemControls : AutoCloseable {
             val token=++generation
             val root=SurfaceEntity.create(session,shape=SurfaceEntity.Shape.Quad(FloatSize2d(frame.width+2f*padding,frame.height+2f*padding)),
                 parent=null,superSampling=SurfaceEntity.SuperSampling.NONE)
+            val pointer=SpatialPointerComponent.create(session)
+            check(root.addComponent(pointer));pointer.spatialPointerIcon=SpatialPointerIcon.NONE
             root.setSurfacePixelDimensions(IntSize2d(256,256))
             root.mediaBlendingMode=SurfaceEntity.MediaBlendingMode.TRANSPARENT
             val canvas=root.getSurface().lockCanvas(null)

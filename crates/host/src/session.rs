@@ -359,6 +359,9 @@ fn update_streams(
     hellos: &mut Vec<MonitorHello>,
     threads: &mut Vec<thread::JoinHandle<()>>,
 ) -> Result<()> {
+    if let Err(error) = crate::platform::x11::notify_layout_clients() {
+        tracing::warn!(%error,"Could not notify desktop layout consumers")
+    }
     *shared.screens.write().unwrap_or_else(|e| e.into_inner()) =
         sources.iter().map(|(_, r)| *r).collect();
     let next = vec![desktop_rect(sources)?];
@@ -458,6 +461,10 @@ fn run(
     mut sources: Vec<(String, MonitorRect)>,
 ) -> Result<()> {
     let mut monitors = initial.to_vec();
+    if let Err(error) = crate::platform::x11::notify_layout_clients() {
+        tracing::warn!(%error,"Could not synchronize desktop layout consumers")
+    }
+
     let mut pointer = InputDevices::open()?;
     let socket = UdpSocket::bind(opts.listen)?;
     socket.set_nonblocking(true)?;
@@ -869,6 +876,9 @@ fn run(
                 send_reload(&shared, &socket, true);
                 let previous_bounds = monitors.clone();
                 sources = next;
+                if let Err(error) = crate::platform::x11::notify_layout_clients() {
+                    tracing::warn!(%error,"Could not notify external layout change")
+                }
                 *shared.screens.write().unwrap_or_else(|e| e.into_inner()) =
                     sources.iter().map(|(_, r)| *r).collect();
                 monitors = vec![desktop_rect(&sources)?];

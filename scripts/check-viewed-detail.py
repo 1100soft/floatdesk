@@ -74,6 +74,10 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-view-x11-') as temp:
       stream.settimeout(3)
       meta,_=request(stream,[.1,.1,.9,.9],quality=quality,bitrateMbps=14,fraction=.25)
       assert abs((meta['inner'][2]-meta['inner'][0])/(meta['rect'][2]-meta['rect'][0])-.25)<.002
+    with socket.create_connection(('127.0.0.1',port),2) as stream:
+     stream.settimeout(3)
+     meta,_=request(stream,[.2,.2,.6,.6],quality=0,bitrateMbps=14,fraction=1.0,center=[100,-100])
+     assert all(abs(a-b)<.002 for a,b in zip(meta['inner'],meta['rect'])), '100% dense crop was capped'
     send(15,json.dumps(dict(type='encoderSettings',quality=0,bitrateMbps=0)).encode())
     assert control_json('encoderAck')['quality']==0
     decoded=subprocess.check_output(['ffmpeg','-v','error','-f','h264','-i','pipe:0','-frames:v','2','-f','rawvideo','-pix_fmt','rgb24','pipe:1'],input=b''.join(units[:2]))

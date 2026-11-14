@@ -43,6 +43,8 @@ internal class MonitorWarp : AutoCloseable {
     private var interaction: InteractableComponent? = null
     private val sequences = mutableSetOf<String>()
     private var curvedInput: CurvedMonitorInput? = null
+    private var inputPointer:SpatialPointerComponent?=null
+    private var ownsInputPointer=false
     private var inputListener: ((InputEvent) -> Unit)? = null
     private var mask: Texture? = null
     private var ownerEnabled=true
@@ -137,9 +139,13 @@ internal class MonitorWarp : AutoCloseable {
                 // Decorative surfaces can appear before the actual monitor in the hit stack.
                 // Keep the native monitor hit and its matrix together instead of using the front hit.
                 val info = event.hitInfoList.firstOrNull { it.inputEntity === expected } ?: event.hitInfoList.firstOrNull()
-                val side = event.pointerType.toString()
+                val gazeSource=event.source==InputEvent.Source.GAZE_AND_GESTURE
+                val side = if(gazeSource)"GAZE" else event.pointerType.toString()
+                if(gazeSource && event.action==InputEvent.Action.CANCEL){
+                    onHover?.invoke(side,null,null,flatWidth,flatHeight);sequences.remove(side);return@listener
+                }
                 if (event.action == InputEvent.Action.HOVER_ENTER || event.action == InputEvent.Action.HOVER_MOVE || event.action == InputEvent.Action.HOVER_EXIT) {
-                    if (event.source == InputEvent.Source.HANDS) {
+                    if (event.source == InputEvent.Source.HANDS || gazeSource) {
                         val now=android.os.SystemClock.uptimeMillis()
                         if(hoverWindow==0L) hoverWindow=now
                         hoverLast.put(side,now)?.let { hoverGap=maxOf(hoverGap,now-it) }
@@ -180,9 +186,14 @@ internal class MonitorWarp : AutoCloseable {
                 if (event.action == InputEvent.Action.DOWN) {
                     Log.i("Floatdesk","native event contact=${local?.contentToString()} inputScale=$inputScale hit=$hit matrix=${info?.transform?.data?.contentToString()}")
                 }
-                if (event.source == InputEvent.Source.HANDS) {
+                if (event.source == InputEvent.Source.HANDS || gazeSource) {
                     val point=if(event.action==InputEvent.Action.CANCEL) null else local
-                    onHover?.invoke(side,point,point?.let { mesh?.unproject(it) ?: it },flatWidth,flatHeight)
+                    // A release can omit HitInfo; keep a still-hovered gaze target for repeated taps.
+                    if(!gazeSource || point!=null)onHover?.invoke(side,point,point?.let { mesh?.unproject(it) ?: it },flatWidth,flatHeight)
+                }
+                if(gazeSource){
+                    if(event.action==InputEvent.Action.UP || event.action==InputEvent.Action.CANCEL)sequences.remove(side)
+                    return@listener
                 }
                 fun pixels(v: Vector3) = Vector3(density.convertMetersToPixels(v.x),density.convertMetersToPixels(v.y),density.convertMetersToPixels(v.z))
                 onEvent(SpatialInputEvent(source=event.source,pointerType=event.pointerType,action=event.action,timestamp=event.timestamp,
@@ -195,6 +206,10 @@ internal class MonitorWarp : AutoCloseable {
             val component = NativeMonitorInput.create(session, listener)
             check(target.addComponent(component)) { "Could not attach native monitor input" }
             interaction = component
+            val existingPointer=target.getComponentsOfType(SpatialPointerComponent::class.java).firstOrNull()
+            val pointer=existingPointer ?: SpatialPointerComponent.create(session).also{check(target.addComponent(it))}
+            pointer.spatialPointerIcon=SpatialPointerIcon.NONE
+            inputPointer=pointer;ownsInputPointer=existingPointer==null
             directInteraction = true
         }
         return inputSurface
@@ -303,6 +318,7 @@ internal class MonitorWarp : AutoCloseable {
         inputListener = null
         interaction?.let { component -> runCatching { input?.removeComponent(component) } }
         interaction = null; sequences.clear()
+        if(ownsInputPointer)inputPointer?.let{runCatching{input?.removeComponent(it)}};inputPointer=null;ownsInputPointer=false
         directInteraction = false
         live = null
         input = null

@@ -42,8 +42,10 @@ internal open class Entity {
     fun isEnabled(includeParents: Boolean=true)=enabled
     var pointer: SpatialPointerComponent? = null
     fun addComponent(value: SpatialPointerComponent): Boolean { pointer=value;value.spatialPointerIcon=SpatialPointerIcon.DEFAULT;return true }
+    fun <T:Any> getComponentsOfType(type:Class<T>):List<T> = listOfNotNull(pointer,component).filterIsInstance(type)
     var component: InteractableComponent? = null
     fun addComponent(value: InteractableComponent): Boolean { component=value; colliderAttachments++; return true }
+    fun removeComponent(value:SpatialPointerComponent){if(pointer===value)pointer=null}
     fun removeComponent(value: InteractableComponent) { if(component === value) component=null }
     private var opacity = 1f
     private var pose = Pose()
@@ -67,7 +69,7 @@ internal class SpatialInputEvent(val origin: Vector3,val direction: Vector3,val 
 internal class Matrix4(val data: FloatArray) { val inverse get() = this }
 internal class InputEvent(val action: Action,val source: Int,val pointerType: String,val timestamp: Long,val origin: Vector3,val direction: Vector3,val hitInfoList: List<HitInfo>) {
     enum class Action { DOWN, UP, CANCEL, MOVE, HOVER_ENTER, HOVER_MOVE, HOVER_EXIT }
-    object Source { const val HANDS = 0 }
+    object Source { const val HANDS = 0;const val GAZE_AND_GESTURE=6 }
     class HitInfo(val inputEntity: Entity,val hitPosition: Vector3?,val transform: Matrix4)
 }
 internal class InteractableComponent(val listener: (InputEvent)->Unit) {
@@ -184,8 +186,8 @@ suspend fun main() {
     input.setScale(1.785f)
     val ip = input.getPose().translation
     val matrix = Matrix4(floatArrayOf(1f,0f,0f,0f, 0f,1f,0f,0f, 0f,0f,1f,0f, -ip.x,-ip.y,-ip.z,1f))
-    fun emit(side: String, action: InputEvent.Action) {
-        component.listener(InputEvent(action,0,side,0,Vector3(0f,0f,1f),Vector3(0f,0f,-1f),
+    fun emit(side: String, action: InputEvent.Action,source:Int=0) {
+        component.listener(InputEvent(action,source,side,0,Vector3(0f,0f,1f),Vector3(0f,0f,-1f),
             listOf(InputEvent.HitInfo(input,Vector3((ip.x+(if(side=="LEFT") -.2f else .2f))*1.785f,ip.y*1.785f,ip.z*1.785f),matrix))))
     }
     emit("LEFT",InputEvent.Action.HOVER_ENTER)
@@ -195,6 +197,17 @@ suspend fun main() {
     emit("LEFT",InputEvent.Action.DOWN); emit("RIGHT",InputEvent.Action.DOWN)
     emit("LEFT",InputEvent.Action.UP); emit("RIGHT",InputEvent.Action.UP)
     check(events.map { it.pointerType } == listOf("LEFT","RIGHT","LEFT","RIGHT"))
+    val beforeGazeEvents=events.size
+    emit("DEFAULT",InputEvent.Action.HOVER_ENTER,InputEvent.Source.GAZE_AND_GESTURE)
+    check(hovering.last().first=="GAZE")
+    emit("DEFAULT",InputEvent.Action.DOWN,InputEvent.Source.GAZE_AND_GESTURE)
+    emit("DEFAULT",InputEvent.Action.UP,InputEvent.Source.GAZE_AND_GESTURE)
+    check(events.size==beforeGazeEvents) // Eye+hand selection cannot arm a custom monitor grab.
+    check(input.pointer?.spatialPointerIcon==SpatialPointerIcon.NONE)
+    component.listener(InputEvent(InputEvent.Action.CANCEL,InputEvent.Source.GAZE_AND_GESTURE,"DEFAULT",0,Vector3(0f,0f,0f),Vector3(0f,0f,0f),emptyList()))
+    check(hovering.last().first=="GAZE" && hovering.last().second==null)
+
+
     check(kotlin.math.abs(events[0].hitPosition!!.x+200f) < .001f && kotlin.math.abs(events[1].hitPosition!!.x-200f) < .001f)
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false)
     warp.syncCurvedInput(session)

@@ -382,8 +382,6 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     }
     val density = LocalDensity.current
     val pixelDensity = session?.scene?.virtualPixelDensity
-    val diagnosticsOverlay=remember(session){session?.let{DiagnosticsOverlay(it)}}
-    DisposableEffect(diagnosticsOverlay){onDispose{diagnosticsOverlay?.close()}}
     LaunchedEffect(session) {
         val current = session ?: return@LaunchedEffect
         current.scene.requestFullSpace()
@@ -580,9 +578,6 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             handTracking.pinched.clear()
             val candidateHead = perceived?.let { deskPose(current, root, it) }
             displayHead.set(candidateHead?.toWorkspacePose())
-            runCatching { diagnosticsOverlay?.update(root,candidateHead?.takeIf{trackingAvailable},unitsPerMeter,
-                connection.diagnosticSnapshot(),connection.presentation().rects,viewHalfAngles.get()[1]) }
-                .onFailure { Log.w("Floatdesk","Diagnostics overlay update failed",it) }
             val reliable = trackingGuard.update(handTracking.nowMs, candidateHead?.takeIf { trackingAvailable }?.translation?.toArray(),
                 candidateHead?.let { floatArrayOf(it.rotation.x,it.rotation.y,it.rotation.z,it.rotation.w) },unitsPerMeter)
             val head = candidateHead?.takeIf { reliable }
@@ -814,23 +809,26 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             panelFocused=panelInput.focused?.let { PalmAction.entries.getOrNull(it) }
             if(activate!=null) PalmAction.entries.getOrNull(activate)?.let { palmActionNow.value(it) }
             if(panel!=null && tick%50==0) Log.i("Floatdesk","panel gaze resources=${gazeEyes.size} tracked=${gazeEyes.count { it.state.value.trackingState==TrackingState.TRACKING }} open=${gazeEyes.count { it.state.value.isOpen }} device=${deviceState?.trackingState} rays=${eyeRays.size} hits=${panelHits.size}")
-            val gazeTargets=if(workspace.eyeAiming && reliable) eyeRays.mapNotNull { (origin,direction) -> gazePointerTarget(origin,direction,workspace,pointerControl.meshes) } else emptyList()
+            val contextHands=if(workspace.focusMode)pointerControl.focusHands(hoverHands) else hoverHands
+            val nativeFocusGaze=if(workspace.focusMode)pointerControl.systemGaze() else null
+            val gazeTargets=if((workspace.eyeAiming || nativeFocusGaze!=null) && reliable) eyeRays.mapNotNull { (origin,direction) -> gazePointerTarget(origin,direction,workspace,pointerControl.meshes) } else emptyList()
             // Average binocular contacts on the same monitor; a valid single eye can still aim.
             val rawGazeTarget = gazeTargets.firstOrNull()?.let { first ->
                 val same = gazeTargets.filter { it.monitor == first.monitor }
                 first.copy(u=same.map { it.u }.average().toFloat(),v=same.map { it.v }.average().toFloat())
             }
-            val gazeTarget=if(hoverHands.isEmpty()) gazeStabilizer.update(rawGazeTarget?.takeIf {connection.desktopPoint(it.monitor,it.u,it.v)!=null},handTracking.nowMs) else { gazeStabilizer.reset(); null }
+            val gazeTarget=if(contextHands.isEmpty()) gazeStabilizer.update(rawGazeTarget?.takeIf {connection.desktopPoint(it.monitor,it.u,it.v)!=null},handTracking.nowMs) else { gazeStabilizer.reset(); null }
             val monitorGrab=grabs.values.any { it.engaged }
             val nativeManipulation=pointerControl.nativeManipulating
-            val choice = pointerControl.choose(workspace.eyeAiming,gazeTarget,hoverHands,monitorGrab || nativeManipulation,handTracking.nowMs)
+            val choice = pointerControl.choose(workspace.eyeAiming || nativeFocusGaze!=null,gazeTarget ?: nativeFocusGaze,contextHands,monitorGrab || nativeManipulation,handTracking.nowMs)
             if (choice.mode != lastPointerMode) {
                 Log.i("Floatdesk","mouse source=${choice.mode} hands=${hoverHands.mapValues {it.value.monitor}} eyes=${gazeTargets.size} native=$nativeManipulation palm=${palmPanel!=null}")
                 lastPointerMode = choice.mode
             }
             dimPointer = choice.mode == PointerMode.HAND
             val focusInfo=connection.workspaceInfo.value
-            val focusHover=if(workspace.focusMode && focusInfo!=null)hoverHands.mapNotNull {(side,hit)->
+            val focusContacts=focusAimContacts(contextHands,nativeFocusGaze?.let{gazeTarget ?: it})
+            val focusHover=if(workspace.focusMode && focusInfo!=null)focusContacts.mapNotNull {(side,hit)->
                 if(hit.monitor!=0)return@mapNotNull null
                 connection.desktopPoint(hit.monitor,hit.u,hit.v)?.let{(u,v)->focusInfo.hover(u,v)}?.let{side to it}
             }.toMap() else emptyMap()
@@ -987,6 +985,8 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
         val desk: @Composable () -> Unit = {
             DeskContent(
                 connection = connection,
+                viewer=displayHead,
+                viewerAngles=viewHalfAngles,
                 workspace = workspace,
                 onWorkspace = {
                     workspace = it
@@ -1021,6 +1021,8 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
 @Composable
 private fun DeskContent(
     connection: DeskConnection,
+    viewer:AtomicReference<Pose?>,
+    viewerAngles:AtomicReference<FloatArray>,
     workspace: WorkspaceFile,
     onWorkspace: (WorkspaceFile) -> Unit,
     monitors: List<MonitorHello>,
@@ -1047,6 +1049,8 @@ private fun DeskContent(
     val handInputNow=rememberUpdatedState(handInputAllowed)
     val reloading by connection.reloading
     val layout = workspace.reconcileMonitors(monitors.map { Triple(it.name,it.width,it.height) }).layouts[workspace.activeLayout].orEmpty()
+    DiagnosticsPanel(connection,viewer,{handTracking.unitsPerMeter},{viewerAngles.get()},density,pixelDensity,
+        workspace.showResources,workspace.experimentalViewedDetail,workspace.viewDetailDebug)
     if(displayControlsOpen) SpatialPanel(modifier=placedPanel(displayControlsPose,.95f,.70f,density,pixelDensity)) {
         MonitorManagerPanel(connection,workspace.screenSpacing,{onWorkspace(workspace.copy(screenSpacing=it))},{store.save(latest.value)},onCloseDisplays,workspace.pinchThresholds,{profile->
             val next=latest.value.copy(pinchThresholds=profile);onWorkspace(next);store.save(next)
@@ -1262,7 +1266,7 @@ private fun DeskContent(
 }
 
 @Composable
-private fun placedPanel(
+internal fun placedPanel(
     pose: Pose,
     widthM: Float,
     heightM: Float,

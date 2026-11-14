@@ -45,7 +45,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         private set
     @Volatile private var diagnostics=dev.floatdesk.client.net.DetailDiagnostics()
     private var detailUploads=0L
-    private val debugTick=object:Runnable {override fun run(){if(closed || (!(diagnostics.enabled && diagnostics.showOverlay) && !diagnostics.showResources))return;samplePresentation();handler.postDelayed(this,250)}}
+    private val debugTick=object:Runnable {override fun run(){if(closed || (!diagnostics.showOverlay && !diagnostics.showResources))return;samplePresentation();handler.postDelayed(this,250)}}
     private var viewTextureId=0
     private lateinit var viewTexture:SurfaceTexture
     lateinit var viewInput:Surface
@@ -131,6 +131,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                 copyProgram=link(VERTEX,COPY_FRAGMENT)
                 program=link(VERTEX,FRAGMENT)
                 inkProgram=link(INK_VERTEX,INK_FRAGMENT)
+                if(diagnostics.showOverlay || diagnostics.showResources)handler.postDelayed(debugTick,250)
                 Log.i("Floatdesk","live video compositor ready ${width}x$height")
             } catch(error: Throwable) { failure=error }
             finally { ready.countDown() }
@@ -214,8 +215,8 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
 
     fun detailDebug(value:dev.floatdesk.client.net.DetailDiagnostics) {
         val before=diagnostics;diagnostics=value
-        if(!(before.enabled && before.showOverlay || before.showResources) && (value.enabled && value.showOverlay || value.showResources) && !closed)handler.postDelayed(debugTick,250)
-        if(!(value.enabled && value.showOverlay || value.showResources))handler.removeCallbacks(debugTick)
+        if(!(before.showOverlay || before.showResources) && (value.showOverlay || value.showResources) && !closed)handler.postDelayed(debugTick,250)
+        if(!(value.showOverlay || value.showResources))handler.removeCallbacks(debugTick)
     }
 
     fun diagnosticSnapshot():dev.floatdesk.client.net.DiagnosticSnapshot = dev.floatdesk.client.net.DiagnosticSnapshot(
@@ -503,10 +504,11 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                             }
                             vec2 sample=(textureMatrix*vec4(sampleSource.x,1.0-sampleSource.y,0.0,1.0)).xy;
                             gl_FragColor=vec4(filteredVideo(sampleSource,viewMode==1?vec4(0.0,2.0/3.0,1.0,1.0):vec4(0.0,0.0,1.0,1.0)),1.0);
-                            if(viewMode==1 && source.x>viewInner.x && source.x<viewInner.z && source.y>viewInner.y && source.y<viewInner.w){
+                            bool wholeHigh=viewMode==1 && all(lessThan(abs(viewInner-viewOuter),vec4(0.000001)));
+                            if(viewMode==1 && (wholeHigh || (source.x>viewInner.x && source.x<viewInner.z && source.y>viewInner.y && source.y<viewInner.w))){
                                 vec2 high=(source-viewInner.xy)/(viewInner.zw-viewInner.xy);
                                 vec2 highSample=(textureMatrix*vec4(high.x,1.0-high.y*2.0/3.0,0.0,1.0)).xy;
-                                float feather=smoothstep(0.0,0.025,min(min(high.x,1.0-high.x),min(high.y,1.0-high.y)));
+                                float feather=wholeHigh?1.0:smoothstep(0.0,0.025,min(min(high.x,1.0-high.x),min(high.y,1.0-high.y)));
                                 gl_FragColor.rgb=mix(gl_FragColor.rgb,filteredVideo(vec2(high.x,high.y*2.0/3.0),vec4(0.0,0.0,1.0,2.0/3.0)),feather);
                             }
                             found=true;

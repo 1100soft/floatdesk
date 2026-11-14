@@ -3,8 +3,8 @@ package dev.floatdesk.client.workspace
 /** UI panel compositing plus ordered physical planes; all values are in meters. */
 internal object ViewLayers {
     const val DesktopDistanceM=1.2f
-    const val ControlsDistanceM=.65f
-    const val DiagnosticsDistanceM=.55f
+    const val ControlsDistanceM=.40f
+    const val DiagnosticsDistanceM=.35f
 }
 
 /** Without a restored room anchor, keep the saved arrangement relative to the startup viewer. */

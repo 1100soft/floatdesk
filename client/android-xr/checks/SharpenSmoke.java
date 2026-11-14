@@ -16,6 +16,7 @@ public final class SharpenSmoke {
   dev.floatdesk.client.DiagnosticsCanvas.INSTANCE.draw(new Canvas(overlay),new dev.floatdesk.client.net.DiagnosticSnapshot(overlayState,null,"60fps"),new float[]{0,0,1,1},SystemClock.uptimeMillis());
   if(Color.alpha(overlay.getPixel(0,0))!=0 || Color.alpha(overlay.getPixel(1279,479))!=0)throw new AssertionError("Diagnostics background is opaque");
   int lit=0;for(int y=0;y<480;y++)for(int x=0;x<1280;x++)if(Color.alpha(overlay.getPixel(x,y))>0)lit++;
+  for(int y=120;y<360;y++)for(int x=384;x<896;x++)if(Color.alpha(overlay.getPixel(x,y))!=0)throw new AssertionError("HUD obstructed the central focus area");
   if(lit<100 || lit>1280*480/8)throw new AssertionError("Diagnostics are not isolated floating glyphs");overlay.recycle();
   var reader=ImageReader.newInstance(64,48,PixelFormat.RGBA_8888,4);var video=new VideoCompositor(64,48);
   try{

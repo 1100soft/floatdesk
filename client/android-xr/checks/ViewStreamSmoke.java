@@ -21,7 +21,8 @@ public final class ViewStreamSmoke {
         while(SystemClock.uptimeMillis()<until){
             try(Image image=reader.acquireLatestImage()){
                 if(image!=null){
-                    int[] high=pixel(image,32,16),low=pixel(image,12,10),outside=pixel(image,1,1);
+                    int[] high=pixel(image,32,16),low=pixel(image,12,10),outside=pixel(image,1,1),edge=pixel(image,6,6);
+                    if(mode==4 && high[0]>180 && high[1]<40 && low[0]>180 && low[2]<40 && edge[0]>180 && edge[2]<40 && outside[3]<10)return;
                     if(mode==3 && high[3]<10 && low[3]<10 && outside[3]<10)return;
                     if(mode==0 && high[0]>180 && low[2]>180 && outside[3]<10)return;
                     if(mode==2 && high[0]>180 && high[1]<40 && low[2]>180 && low[1]<40 && outside[3]<10)return;
@@ -33,7 +34,10 @@ public final class ViewStreamSmoke {
         throw new AssertionError("View atlas did not match its PTS metadata, mode="+mode);
     }
     static void submit(MediaCodec codec,VideoCompositor compositor,long pts,boolean match) throws Exception {
-        compositor.viewFrame(match?pts:pts+10,new ViewFrame(new FocusRect(.1f,.1f,.9f,.9f),new FocusRect(.3f,.3f,.7f,.7f),SystemClock.uptimeMillis()));
+        submit(codec,compositor,pts,match,false);
+    }
+    static void submit(MediaCodec codec,VideoCompositor compositor,long pts,boolean match,boolean whole) throws Exception {
+        compositor.viewFrame(match?pts:pts+10,new ViewFrame(new FocusRect(.1f,.1f,.9f,.9f),(whole?new FocusRect(.1f,.1f,.9f,.9f):new FocusRect(.3f,.3f,.7f,.7f)),SystemClock.uptimeMillis()));
         int index=codec.dequeueInputBuffer(100000);if(index<0)throw new AssertionError("No view input buffer");
         ByteBuffer input=codec.getInputBuffer(index);input.put(ViewFrameFixture.DATA);codec.queueInputBuffer(index,0,ViewFrameFixture.DATA.length,pts,MediaCodec.BUFFER_FLAG_KEY_FRAME);
         var info=new MediaCodec.BufferInfo();long until=SystemClock.uptimeMillis()+800;
@@ -64,9 +68,11 @@ public final class ViewStreamSmoke {
             SystemClock.sleep(350);compositor.output(reader.getSurface(),true);await(reader,2);
             submit(codec,compositor,2000000,false);await(reader,2);
             submit(codec,compositor,3000000,true);await(reader,0);
-            compositor.clearView();compositor.output(reader.getSurface(),true);await(reader,2);
+            submit(codec,compositor,4000000,true,true);await(reader,4); // 100% must use dense pixels across the whole view.
+            submit(codec,compositor,5000000,false);await(reader,4);
+            compositor.clearView();compositor.output(reader.getSurface(),true);await(reader,4);
             Canvas fresh=compositor.getInput().lockCanvas(null);fresh.drawColor(Color.GREEN);compositor.getInput().unlockCanvasAndPost(fresh);await(reader,1);
-            System.out.println("PASS: actual H264 atlas center/periphery sampling, out-of-view alpha, exact PTS association duplicate callback retention, no stale timeout fallback and cached-image recovery across unknown mappings and fresh baseline handoff");
+            System.out.println("PASS: actual H264 atlas center/periphery sampling, out-of-view alpha, exact PTS association duplicate callback retention, no stale timeout fallback and cached-image recovery, full-view 100% detail without low-tile bleed and fresh baseline handoff");
         } catch(Throwable failure){failure.printStackTrace();throw failure;} finally {if(codec!=null){codec.stop();codec.release();}compositor.close();reader.close();}
     }
 }

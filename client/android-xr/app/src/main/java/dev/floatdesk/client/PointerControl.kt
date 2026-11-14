@@ -15,6 +15,12 @@ internal class PointerControl {
     private val handPoses=mutableMapOf<String,HandAimPose>()
     private val hoverPoses=mutableMapOf<String,HandAimPose>()
     private var resumeAfterGrab = 0L
+    private var gazeHover:PointerTarget?=null
+    private var hoverOrder=0L
+    private var gazeOrder=0L
+    private val handOrder=mutableMapOf<String,Long>()
+    fun focusHands(contacts:Map<String,PointerTarget>):Map<String,PointerTarget> = contacts.filter{(side,_)->departedAt[side]==null && (gazeHover==null || (handOrder[side] ?: 0L)>gazeOrder)}
+    fun systemGaze():PointerTarget?=gazeHover
     val qualityReferences=mutableMapOf<Int,MonitorMesh?>()
     val meshes = mutableMapOf<Int, MonitorMesh?>()
     private val nativeOwners=mutableSetOf<Int>()
@@ -22,6 +28,11 @@ internal class PointerControl {
     fun nativeManipulation(monitor:Int,active:Boolean) {if(active)nativeOwners.add(monitor) else nativeOwners.remove(monitor)}
 
     fun hover(monitor: Int, side: String, point: FloatArray?, flat: FloatArray?, width: Float, height: Float, nowMs: Long = 0) {
+        if(side=="GAZE"){
+            gazeOrder=++hoverOrder
+            gazeHover=if(point!=null && flat!=null)PointerTarget(monitor,flat[0]/width+.5f,.5f-flat[1]/height,point.copyOf()).takeIf{it.u.isFinite() && it.v.isFinite() && it.u in 0f..1f && it.v in 0f..1f} else null
+            return
+        }
         if (side !in listOf("LEFT", "RIGHT")) return
         if (point == null || flat == null) {
             // Native mesh replacement can briefly end/restart hover. Avoid a gaze takeover
@@ -37,20 +48,22 @@ internal class PointerControl {
         hovering[side] = PointerTarget(monitor,u,v,point.copyOf())
         handPoses[side]?.let { hoverPoses[side]=it }
         lastHoverAt[side] = nowMs
+        handOrder[side]=++hoverOrder
         departedAt.remove(side)
     }
 
     fun rejectHand(side: String) {
-        hovering.remove(side);departedAt.remove(side);lastHoverAt.remove(side);handPoses.remove(side);hoverPoses.remove(side)
+        hovering.remove(side);departedAt.remove(side);lastHoverAt.remove(side);handPoses.remove(side);hoverPoses.remove(side);handOrder.remove(side)
     }
 
     fun clearMonitor(monitor: Int) {
+        if(gazeHover?.monitor==monitor)gazeHover=null
         hovering.entries.removeAll { it.value.monitor == monitor }
         meshes.remove(monitor);qualityReferences.remove(monitor)
         nativeOwners.remove(monitor)
     }
 
-    fun clear() { hovering.clear(); departedAt.clear(); lastHoverAt.clear(); handPoses.clear(); hoverPoses.clear() }
+    fun clear() { gazeHover=null;handOrder.clear();hovering.clear(); departedAt.clear(); lastHoverAt.clear(); handPoses.clear(); hoverPoses.clear() }
 
     fun hands(tracked: Set<String>, nowMs: Long = 0, poses: Map<String,HandAimPose> = emptyMap()): Map<String, PointerTarget> {
         // The OS aim ray can remain valid through a brief missing joint sample. Fresh
@@ -70,6 +83,7 @@ internal class PointerControl {
         departedAt.keys.retainAll(hovering.keys)
         lastHoverAt.keys.retainAll(hovering.keys)
         hoverPoses.keys.retainAll(hovering.keys)
+        handOrder.keys.retainAll(hovering.keys)
         return hovering.toMap()
     }
 

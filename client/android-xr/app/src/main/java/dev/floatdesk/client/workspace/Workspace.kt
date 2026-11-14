@@ -198,7 +198,7 @@ private fun decode(json: JSONObject): WorkspaceFile {
         encoderQuality=json.optInt("encoder_quality",0).coerceIn(0,2),
         encoderMbps=json.optDouble("encoder_mbps",0.0).toFloat().takeIf{it.isFinite()}?.coerceIn(0f,200f) ?: 0f,
         sharpening=json.optDouble("sharpening",0.0).toFloat().takeIf{it.isFinite()}?.coerceIn(0f,1.5f) ?: 0f,
-        denseFraction=json.optDouble("dense_fraction",.35).toFloat().takeIf{it.isFinite()}?.coerceIn(.2f,.65f) ?: .35f,
+        denseFraction=json.optDouble("dense_fraction",.35).toFloat().takeIf{it.isFinite()}?.coerceIn(.2f,1f) ?: .35f,
         showResources=json.optBoolean("show_resources",true),
         pinchThresholds=json.optJSONArray("pinch_thresholds_mm")?.takeIf{it.length()==4}?.let {a->
             PinchThresholds(a.optDouble(0,Double.NaN).toFloat(),a.optDouble(1,Double.NaN).toFloat(),a.optDouble(2,Double.NaN).toFloat(),a.optDouble(3,Double.NaN).toFloat()).takeIf{it.valid()}

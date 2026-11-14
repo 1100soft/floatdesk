@@ -14,6 +14,10 @@ internal data class FocusTarget(val rect:FocusRect,val screen:String,val windowI
 internal data class FocusHover(val screen:FocusTarget,val window:FocusTarget?=null)
 internal data class FocusResult(val requestId:Int,val ok:Boolean,val rect:FocusRect?,val message:String="")
 
+/** One targeting context: hands win, system gaze is the fallback; mouse routing stays separate. */
+internal fun focusAimContacts(hands:Map<String,PointerTarget>,gaze:PointerTarget?):Map<String,PointerTarget> =
+    if(hands.isNotEmpty())hands else gaze?.let{mapOf("GAZE" to it)} ?: emptyMap()
+
 /** Capture the highlighted target at contact, select on release; no hold timer or chord veto. */
 internal class FocusGestures(private val thresholds:()->PinchThresholds={PinchThresholds.Default}) {
     private data class Hold(val side:String,val index:Boolean,val target:FocusTarget)

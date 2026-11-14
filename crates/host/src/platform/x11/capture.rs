@@ -496,6 +496,117 @@ mod scaled_checks {
     use super::*;
     use x11rb::protocol::xproto::{CreateGCAux, CreateWindowAux, Rectangle, WindowClass};
     #[test]
+    #[ignore = "writes only private synthetic Xvfb pixels; requires FLOATDESK_SYNTHETIC_DISPLAY=1"]
+    fn server_capture_tracks_third_output_with_nonzero_desktop_origin() {
+        assert_eq!(
+            std::env::var("FLOATDESK_SYNTHETIC_DISPLAY").as_deref(),
+            Ok("1")
+        );
+        let link = X11Link::open().unwrap();
+        let gc = link.conn.generate_id().unwrap();
+        link.conn
+            .create_gc(gc, link.root, &CreateGCAux::new())
+            .unwrap()
+            .check()
+            .unwrap();
+        for (x, y, color) in [
+            (0, 1600, 0xFF0000u32),
+            (2560, 1600, 0x00FF00),
+            (0, 3200, 0x0000FF),
+            (2560, 3200, 0xFFFF00),
+        ] {
+            link.conn
+                .change_gc(
+                    gc,
+                    &x11rb::protocol::xproto::ChangeGCAux::new().foreground(color),
+                )
+                .unwrap()
+                .check()
+                .unwrap();
+            link.conn
+                .poly_fill_rectangle(
+                    link.root,
+                    gc,
+                    &[Rectangle {
+                        x,
+                        y,
+                        width: 2560,
+                        height: 1600,
+                    }],
+                )
+                .unwrap()
+                .check()
+                .unwrap();
+        }
+        let whole = MonitorRect {
+            index: 0,
+            x: 0,
+            y: 1600,
+            width: 5120,
+            height: 3200,
+        };
+        let third = MonitorRect {
+            index: 0,
+            x: 0,
+            y: 3200,
+            width: 2560,
+            height: 1600,
+        };
+        let mut capture = X11Capture::open_scaled(whole, 512, 320).unwrap();
+        let frame = capture.poll(Duration::ZERO, true).unwrap().unwrap();
+        for (x, y, bgr) in [
+            (128, 80, [0, 0, 255]),
+            (384, 80, [0, 255, 0]),
+            (128, 240, [255, 0, 0]),
+            (384, 240, [0, 255, 255]),
+        ] {
+            let offset = y * frame.stride as usize + x * 4;
+            assert_eq!(frame.bgra[offset..offset + 3], bgr);
+        }
+        capture.retarget(third).unwrap();
+        let frame = capture.poll(Duration::ZERO, true).unwrap().unwrap();
+        let offset = 160 * frame.stride as usize + 256 * 4;
+        assert_eq!(frame.bgra[offset..offset + 3], [255, 0, 0]);
+        link.conn
+            .change_gc(
+                gc,
+                &x11rb::protocol::xproto::ChangeGCAux::new().foreground(0xFFFFFFu32),
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+        link.conn
+            .poly_fill_rectangle(
+                link.root,
+                gc,
+                &[Rectangle {
+                    x: 1200,
+                    y: 3900,
+                    width: 160,
+                    height: 200,
+                }],
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+        let frame = capture.poll(Duration::ZERO, true).unwrap().unwrap();
+        assert_eq!(frame.bgra[offset..offset + 3], [255, 255, 255]);
+        capture
+            .retarget(MonitorRect {
+                x: 0,
+                y: 1600,
+                ..third
+            })
+            .unwrap();
+        let frame = capture.poll(Duration::ZERO, true).unwrap().unwrap();
+        assert_eq!(frame.bgra[offset..offset + 3], [0, 0, 255]);
+        capture.retarget(third).unwrap();
+        let frame = capture.poll(Duration::ZERO, true).unwrap().unwrap();
+        assert_eq!(frame.bgra[offset..offset + 3], [255, 255, 255]);
+        link.conn.free_gc(gc).unwrap().check().unwrap();
+    }
+
+    #[test]
     #[ignore = "writes synthetic pixels; run only on a private Xvfb with FLOATDESK_SYNTHETIC_DISPLAY=1"]
     fn server_downscale_keeps_crop_and_child_pixels() {
         assert_eq!(

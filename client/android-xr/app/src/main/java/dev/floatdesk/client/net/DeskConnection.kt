@@ -67,7 +67,7 @@ internal class DeskConnection(
         val format=currentMonitors.singleOrNull()
         val target=bounds?.let{qualityOutputSize(it[2],it[3],qualityOutputLimit())}
         val fraction=if(rect!=null && target!=null)qualityDenseFraction(denseFraction,rect,target.first,target.second) else denseFraction
-        val request=if(detailDiagnostics.get().enabled && rect!=null && renderingActive && remote!=null && bounds!=null && format!=null)DetailRequest(remote,detailSession,rect,bounds,center ?: (rect.centerU to rect.centerV),videoQuality,videoMbps,fraction) else null
+        val request=if(detailDiagnostics.get().enabled && rect!=null && renderingActive && remote!=null && bounds!=null && format!=null)DetailRequest(remote,detailSession,rect,bounds,if(fraction>=.999f)(rect.centerU to rect.centerV) else center ?: (rect.centerU to rect.centerV),videoQuality,videoMbps,fraction) else null
         val reason=when {
             !detailDiagnostics.get().enabled->"Normal full-desktop streaming"
             rect==null->blockedReason

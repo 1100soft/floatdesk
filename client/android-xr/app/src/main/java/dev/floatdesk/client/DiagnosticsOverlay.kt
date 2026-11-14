@@ -1,6 +1,11 @@
 package dev.floatdesk.client
 
-import android.annotation.SuppressLint
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
+import kotlinx.coroutines.isActive
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.PorterDuff
@@ -8,91 +13,108 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.os.SystemClock
-import androidx.xr.runtime.Session
-import androidx.xr.runtime.math.FloatSize2d
-import androidx.xr.runtime.math.IntSize2d
 import androidx.xr.runtime.math.Pose
 import androidx.xr.runtime.math.Vector3
-import androidx.xr.scenecore.Entity
 import dev.floatdesk.client.net.DiagnosticSnapshot
 import dev.floatdesk.client.workspace.ViewLayers
 
-/** View-following Android panel, ordered above video by the scene panel clipping policy. */
-internal class DiagnosticsOverlay(private val session:Session):AutoCloseable {
-    private var entity:androidx.xr.scenecore.PanelEntity?=null
-    private var drawnAt=0L
-    private var scale=Float.NaN
-    private var data:DiagnosticSnapshot?=null
-    private var screens=floatArrayOf(0f,0f,1f,1f)
-    private val view=object:android.view.View(session.context){
-        init {setBackgroundColor(Color.TRANSPARENT);isClickable=false;isFocusable=false;isEnabled=false;importantForAccessibility=IMPORTANT_FOR_ACCESSIBILITY_NO}
-        override fun onTouchEvent(event:android.view.MotionEvent)=false
-        override fun onDraw(canvas:Canvas){
-            super.onDraw(canvas)
-            val value=data ?: return
-            val checkpoint=canvas.save()
-            canvas.scale(width/1280f,height/480f)
-            DiagnosticsCanvas.draw(canvas,value,screens,SystemClock.uptimeMillis())
-            canvas.restoreToCount(checkpoint)
+/** The same Compose spatial-panel path used by the working touch controls. */
+@androidx.compose.runtime.Composable
+internal fun DiagnosticsPanel(connection:dev.floatdesk.client.net.DeskConnection,
+    viewer:java.util.concurrent.atomic.AtomicReference<dev.floatdesk.client.workspace.Pose?>,
+    units:()->Float,angles:()->FloatArray,density:androidx.compose.ui.unit.Density,pixelDensity:androidx.xr.scenecore.PixelDensity,
+    resources:Boolean,quality:Boolean,qualityDebug:Boolean) {
+    if(!resources && !qualityDebug)return
+    var head by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(viewer.get()) }
+    var snapshot by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(connection.diagnosticSnapshot()) }
+    androidx.compose.runtime.LaunchedEffect(connection,viewer){
+        var sampled=0L
+        while(kotlinx.coroutines.currentCoroutineContext().isActive){
+            head=viewer.get()
+            val now=SystemClock.uptimeMillis()
+            if(now-sampled>=250){snapshot=connection.diagnosticSnapshot();sampled=now}
+            kotlinx.coroutines.delay(20)
         }
     }
-    fun update(root:Entity,head:Pose?,units:Float,snapshot:DiagnosticSnapshot,screens:FloatArray,verticalHalfAngle:Float) {
-        val state=snapshot.state
-        if(head==null || !(state.enabled && state.showOverlay) && !state.showResources){entity?.parent=null;return}
-        val panel=entity ?: androidx.xr.scenecore.PanelEntity.create(session,view,IntSize2d(1280,480),"Floatdesk diagnostics",parent=null).also {
-            it.size=FloatSize2d(.72f,.27f);it.cornerRadius=0f;entity=it
-            android.util.Log.i("Floatdesk","Diagnostics Android panel created; depth testing disabled for UI panels")
+    val h=head ?: return
+    val unitsNow=units().takeIf{it.isFinite() && it>0f} ?: 1f
+    val fov=angles()
+    val boxes=peripheralHudPanels(fov[0],fov[1],ViewLayers.DiagnosticsDistanceM)
+    val state=snapshot.copy(state=snapshot.state.copy(enabled=quality,showOverlay=qualityDebug,showResources=resources))
+    val camera=Pose(Vector3(h.position[0],h.position[1],h.position[2]),androidx.xr.runtime.math.Quaternion(h.rotation[0],h.rotation[1],h.rotation[2],h.rotation[3]))
+    for((index,box) in boxes.withIndex()){
+        if(index<2 && !resources || index>=2 && !qualityDebug)continue
+        val pose=camera.compose(Pose(Vector3(box.x*unitsNow,box.y*unitsNow,-ViewLayers.DiagnosticsDistanceM*unitsNow))).let{
+            dev.floatdesk.client.workspace.Pose(floatArrayOf(it.translation.x,it.translation.y,it.translation.z),floatArrayOf(it.rotation.x,it.rotation.y,it.rotation.z,it.rotation.w))}
+        androidx.compose.runtime.key(index){
+            androidx.xr.compose.subspace.SpatialPanel(modifier=placedPanel(pose,box.width*unitsNow,box.height*unitsNow,density,pixelDensity)){
+                androidx.compose.foundation.Canvas(androidx.compose.ui.Modifier.fillMaxSize()){
+                    drawIntoCanvas { target ->
+                        val canvas=target.nativeCanvas;val saved=canvas.save()
+                        canvas.scale(size.width/800f,size.height/400f)
+                        DiagnosticsCanvas.drawCluster(canvas,state,connection.presentation().rects,SystemClock.uptimeMillis(),index)
+                        canvas.restoreToCount(saved)
+                    }
+                }
+            }
         }
-        // Explicit layer distances: desktop 1.2m, controls .65m, diagnostics .55m.
-        val distance=ViewLayers.DiagnosticsDistanceM
-        val halfAngle=verticalHalfAngle.takeIf{it.isFinite() && it>0f} ?: .6f
-        val upper=kotlin.math.tan(halfAngle*.9f)
-        val lower=kotlin.math.tan(halfAngle*.25f)
-        val angularScale=((upper-lower)/(.27f/.85f)).coerceIn(.4f,1f)
-        val vertical=upper-(.27f/(2f*.85f))*angularScale
-        val nextScale=units*distance/.85f*angularScale
-        if(scale!=nextScale){panel.setScale(nextScale);scale=nextScale}
-        panel.setPose(head.compose(Pose(Vector3(0f,vertical*distance*units,-distance*units))))
-        panel.parent=root
-        val now=SystemClock.uptimeMillis()
-        if(now-drawnAt<250)return
-        data=snapshot;this.screens=screens;view.invalidate();drawnAt=now
     }
-    @Suppress("DEPRECATION")
-    @SuppressLint("RestrictedApi")
-    override fun close(){entity?.let{it.parent=null;it.dispose()};entity=null;data=null}
 }
 
 /** Canvas-only diagnostics, separate from scene placement and desktop video rendering. */
 internal object DiagnosticsCanvas {
-    private val paint=Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface=Typeface.MONOSPACE;textSize=22f }
-    fun draw(canvas:Canvas,snapshot:DiagnosticSnapshot,screens:FloatArray,now:Long) {
+    private val paint=Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface=Typeface.MONOSPACE;textSize=40f }
+    /** Offscreen overview used by regression checks; the application uses independent panels. */
+    fun draw(canvas:Canvas,snapshot:DiagnosticSnapshot,screens:FloatArray,now:Long){
         canvas.drawColor(Color.TRANSPARENT,PorterDuff.Mode.CLEAR)
-        val state=snapshot.state;val debug=state.enabled && state.showOverlay
-        val lines=mutableListOf<String>()
-        if(state.showResources){lines.addAll(state.hostResources.lines());lines.add(state.localResources);lines.add(snapshot.presentation);lines.add("CPU: 100% = one core")}
-        if(debug){
-            lines.add("VIEW ${if(snapshot.frame!=null)"ACTIVE" else "BASELINE"} · age ${snapshot.frame?.let{"${now-it.capturedAt}ms"} ?: "n/a"}")
-            lines.add(state.reason);lines.add(state.transport)
-            lines.add(java.lang.String.format(java.util.Locale.ROOT,"Dense sampling gain X%.2fx Y%.2fx",state.gainX,state.gainY))
-            lines.add(snapshot.sampling.substringBefore(" · effective "))
-            if(snapshot.sampling.contains(" · effective "))lines.add("Effective sampling gain " + snapshot.sampling.substringAfter(" · effective "))
+        val width=canvas.width*.40f;val height=canvas.height*.23f
+        for(i in 0..3){
+            val saved=canvas.save()
+            val x=if(i%2==0)0f else canvas.width-width
+            val y=if(i<2)0f else canvas.height-height
+            canvas.clipRect(x,y,x+width,y+height);canvas.translate(x,y);canvas.scale(width/800f,height/400f)
+            drawCluster(canvas,snapshot,screens,now,i);canvas.restoreToCount(saved)
         }
-        paint.style=Paint.Style.FILL;paint.color=Color.CYAN
-        lines.forEachIndexed { i,line->
-            val x=if(debug)278f else 16f
-            paint.textSize=22f
-            val measured=paint.measureText(line)
-            if(measured>1264-x)paint.textSize*=((1264-x)/measured)
-            canvas.drawText(line,x,32f+i*43f,paint)
+    }
+    fun drawCluster(canvas:Canvas,snapshot:DiagnosticSnapshot,screens:FloatArray,now:Long,index:Int){
+        canvas.drawColor(Color.TRANSPARENT,PorterDuff.Mode.CLEAR)
+        val state=snapshot.state
+        if(index<2 && !state.showResources || index>=2 && !state.showOverlay)return
+        val title=listOf("HOST","HEADSET","STREAM","QUALITY")[index]
+        val text=when(index){
+            0->state.hostResources
+            1->state.localResources+"\n"+snapshot.presentation+"\nCPU 100% = one core"
+            2->"${if(snapshot.frame!=null)"VIEW ACTIVE" else "NORMAL STREAM"} · frame age ${snapshot.frame?.let{"${now-it.capturedAt}ms"} ?: "n/a"}\n${state.reason}\n${state.transport}"
+            else->snapshot.sampling.replace(" · ","\n").ifEmpty{"Waiting for video"}
         }
-        if(debug){
-            val map=RectF(14f,80f,254f,320f)
+        paint.style=Paint.Style.FILL;paint.color=when(index){0->Color.CYAN;1->Color.rgb(210,170,255);2->Color.rgb(150,255,190);else->Color.rgb(255,210,100)}
+        paint.textSize=44f;paint.typeface=Typeface.create(Typeface.MONOSPACE,Typeface.BOLD)
+        canvas.drawText(title,18f,44f,paint)
+        paint.typeface=Typeface.MONOSPACE;paint.textSize=40f
+        val left=if(index==3)280f else 18f
+        val maxWidth=780f-left
+        var row=0
+        for(paragraph in text.lines()){
+            var remaining=paragraph
+            while(remaining.isNotEmpty() && row<6){
+                val fit=paint.breakText(remaining,true,maxWidth,null).coerceAtLeast(1)
+                val end=if(fit<remaining.length)remaining.lastIndexOf(' ',fit).takeIf{it>0} ?: fit else fit
+                canvas.drawText(remaining.substring(0,end),left,100f+row*54f,paint)
+                remaining=remaining.substring(end).trimStart();row++
+            }
+        }
+        if(index==3){
+            val map=RectF(18f,100f,248f,330f)
             fun rect(r:FocusRect)=RectF(map.left+r.left*map.width(),map.top+r.top*map.height(),map.left+r.right*map.width(),map.top+r.bottom*map.height())
-            paint.style=Paint.Style.STROKE;paint.strokeWidth=2f;paint.color=Color.LTGRAY
-            for(i in 0 until screens.size/4){val n=i*4;canvas.drawRect(rect(FocusRect(screens[n],screens[n+1],screens[n+2],screens[n+3])),paint)}
-            state.candidate?.let {paint.color=Color.rgb(255,190,30);canvas.drawRect(rect(it),paint)}
-            snapshot.frame?.inner?.let {paint.style=Paint.Style.STROKE;paint.color=Color.GREEN;canvas.drawRect(rect(it),paint)}
+            paint.strokeWidth=3f
+            for(i in 0 until screens.size/4){
+                val n=i*4;val r=rect(FocusRect(screens[n],screens[n+1],screens[n+2],screens[n+3]))
+                paint.style=Paint.Style.STROKE;paint.color=Color.LTGRAY;canvas.drawRect(r,paint)
+                paint.style=Paint.Style.FILL;paint.textSize=28f;canvas.drawText("${i+1}",r.centerX()-8f,r.centerY()+10f,paint)
+            }
+            paint.style=Paint.Style.STROKE
+            state.candidate?.let{paint.color=Color.rgb(255,190,30);canvas.drawRect(rect(it),paint)}
+            snapshot.frame?.inner?.let{paint.color=Color.GREEN;canvas.drawRect(rect(it),paint)}
         }
     }
 }

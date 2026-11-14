@@ -8,9 +8,35 @@ workspace=body('workspace/Workspace.kt');workspace=workspace[workspace.index('in
 metadata=body('net/WorkspaceInfo.kt');metadata=metadata[:metadata.index('    companion object')]+'}\n'
 code='import kotlin.math.*\n'+body('MonitorMesh.kt')+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+body('workspace/WorkspacePlacement.kt')+metadata+r'''
 fun main() {
+ val routing=PointerControl();routing.hover(0,"GAZE",floatArrayOf(0f,0f,0f),floatArrayOf(0f,0f,0f),2f,2f,1)
+ val eye=routing.systemGaze()!!
+ check(routing.hands(emptySet(),2).isEmpty())
+ check(routing.choose(false,eye,emptyMap(),false,2).mode==PointerMode.OFF) // System gaze cannot enable mouse mode.
+ check(focusAimContacts(emptyMap(),eye).keys==setOf("GAZE"))
+ val manual=mapOf("LEFT" to eye.copy(u=.2f))
+ check(focusAimContacts(manual,eye)===manual)
+ routing.hover(0,"LEFT",floatArrayOf(0f,0f,0f),floatArrayOf(-.3f,0f,0f),2f,2f,1)
+ val retained=routing.hands(setOf("LEFT"),2)
+ routing.hover(0,"GAZE",floatArrayOf(0f,0f,0f),floatArrayOf(0f,0f,0f),2f,2f,3)
+ check(routing.focusHands(retained).isEmpty()) // A retained mouse beam must not suppress native gaze focus.
+ check(routing.choose(false,null,retained,false,3).mode==PointerMode.HAND) // Mouse retains its original behavior.
+ routing.hover(0,"LEFT",floatArrayOf(0f,0f,0f),floatArrayOf(-.3f,0f,0f),2f,2f,4)
+ check(routing.focusHands(retained).keys==setOf("LEFT"))
+ routing.hover(0,"GAZE",floatArrayOf(0f,0f,0f),floatArrayOf(0f,0f,0f),2f,2f,4)
+ check(routing.focusHands(retained).isEmpty()) // Distinct events can share a millisecond.
+ routing.hover(0,"LEFT",floatArrayOf(0f,0f,0f),floatArrayOf(-.3f,0f,0f),2f,2f,4)
+ check(routing.focusHands(retained).keys==setOf("LEFT"))
+
+ routing.hover(0,"GAZE",null,null,2f,2f,5);check(routing.systemGaze()==null)
+
  val screen=FocusTarget(FocusRect(0f,0f,.5f,1f),"screen")
  val window=FocusTarget(FocusRect(.1f,.2f,.3f,.5f),"screen",42)
  val hover=mapOf("LEFT" to FocusHover(screen,window));val input=FocusGestures()
+ val gazeInput=FocusGestures();val gazeHover=mapOf("GAZE" to FocusHover(screen,window))
+ gazeInput.update(true,false,mapOf("RIGHT" to FingerPinch(.05f,.05f)),gazeHover)
+ gazeInput.update(true,false,mapOf("RIGHT" to FingerPinch(.001f,.05f)),gazeHover)
+ check(gazeInput.update(true,false,mapOf("RIGHT" to FingerPinch(.05f,.05f)),gazeHover)==window)
+
  fun frame(index:Float,middle:Float,enabled:Boolean=true,blocked:Boolean=false)=input.update(enabled,blocked,mapOf("LEFT" to FingerPinch(index,middle)),hover)
  check(frame(.05f,.05f)==null)
  check(frame(.01f,.05f)==null);check(frame(.01f,.05f)==null);check(frame(.05f,.05f)==window)

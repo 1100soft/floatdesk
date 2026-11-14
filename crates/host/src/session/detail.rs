@@ -108,7 +108,7 @@ pub(super) fn start(
                         .as_f64()
                         .filter(|v| v.is_finite())
                         .unwrap_or(0.35)
-                        .clamp(0.2, 0.65);
+                        .clamp(0.2, 1.0);
                     let capture_start = Instant::now();
                     let iw = ((outer.width as f64 * fraction).round() as u32).clamp(1, outer.width);
                     let ih =

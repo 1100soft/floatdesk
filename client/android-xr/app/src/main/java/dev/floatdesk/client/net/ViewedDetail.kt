@@ -23,7 +23,7 @@ internal class ViewedDetail(private val publish:(DetailPatch?)->Unit,private val
     private var received=0L
     private var late=0L
     private var errors=0L
-    private fun report(message:String){status("TX $attempts / RX $received / late $late / errors $errors · $message")}
+    private fun report(message:String){status("REQ $attempts / RX $received / late $late / errors $errors · $message")}
     private val worker=Thread({
         while(running) {
             val next=request.get()

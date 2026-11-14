@@ -1,5 +1,7 @@
 # Changes since the LAN proof of concept
 
+- Visualize experimental viewed-area quality with a live desktop map, candidate/active patch borders, GPU-only tint, sampling gains, transport counters, timing, upload age and explicit gating reasons.
+
 - Add a default-off viewed-area quality experiment: bounded high-quality JPEG crops over normal live video, exact source-region mapping, stale-patch fallback and a separate Settings toggle. Baseline streaming and desktop geometry remain unchanged.
 
 - Focus selection places the cursor at the captured pinch/ray contact rather than the target center.

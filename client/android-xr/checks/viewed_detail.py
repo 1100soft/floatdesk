@@ -18,6 +18,14 @@ fun main(){
  val mesh=MonitorMesh(8f,4f,floatArrayOf(0f,0f,2f),focus=floatArrayOf(0f,0f))
  val curved=viewedRegion(8f,4f,mesh,.35f,.35f){p->floatArrayOf(p[0],p[1],p[2]-2f)}!!
  check(curved.contains(.5f,.5f) && curved.left>0f && curved.right<1f)
+ // Large off-center spheres must not include far eye-plane-crossing cells wholesale.
+ val huge=MonitorMesh(50f,30f,floatArrayOf(0f,0f,1f),focus=floatArrayOf(20f,10f))
+ val corner=viewedRegion(50f,30f,huge,.5f,.4f){p->
+  val d=FloatArray(3){p[it]-huge.eye[it]}
+  floatArrayOf((0..2).sumOf{(d[it]*huge.frameTangentX[it]).toDouble()}.toFloat(),(0..2).sumOf{(d[it]*huge.frameTangentY[it]).toDouble()}.toFloat(),(0..2).sumOf{(d[it]*huge.frameNormal[it]).toDouble()}.toFloat())
+ }!!
+ check(corner.right-corner.left<.2f && corner.bottom-corner.top<.3f)
+ check(corner.contains(.9f,.5f-10f/30f))
  val spaced=ScreenPresentation(floatArrayOf(0f,0f,.4f,1f,.6f,0f,1f,1f),.1f)
  check(spaced.desktopBounds(FocusRect(.45f,0f,.55f,1f))==null)
  val source=spaced.desktopBounds(FocusRect(.02f,.05f,.38f,.95f))!!

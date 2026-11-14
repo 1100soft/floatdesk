@@ -113,6 +113,7 @@ struct Shared {
     screens: RwLock<Vec<MonitorRect>>,
     client: RwLock<Option<ClientTarget>>,
     session_id: u64,
+    view_until_ns: AtomicU64,
     keys: [AtomicBool; 6],
     captured: AtomicU64,
     skipped: AtomicU64,
@@ -464,6 +465,7 @@ fn run(
         }),
         client: RwLock::new(None),
         session_id,
+        view_until_ns: AtomicU64::new(0),
         keys: std::array::from_fn(|_| AtomicBool::new(false)),
         captured: AtomicU64::new(0),
         skipped: AtomicU64::new(0),
@@ -483,7 +485,13 @@ fn run(
         stream_ssrc: std::array::from_fn(|_| AtomicU32::new(0)),
         stream_progress: std::array::from_fn(|_| AtomicU64::new(0)),
     });
-    let _detail_worker = detail::start(Arc::clone(&shared), opts.listen);
+    let _detail_worker = detail::start(
+        Arc::clone(&shared),
+        opts.listen,
+        opts.encoder.clone(),
+        opts.fps,
+        opts.bitrate_bps,
+    );
     let stop_flag = Arc::clone(&shared);
     let _ = ctrlc::set_handler(move || {
         stop_flag.stop.store(true, Ordering::Relaxed);
@@ -558,6 +566,26 @@ fn run(
                     let packet = floatdesk_protocol::decode_packet(&scratch[..size]);
                     if let Ok(ControlPacket::Workspace { json }) = &packet {
                         if let Ok(value) = serde_json::from_str::<serde_json::Value>(json) {
+                            if value["type"] == "viewStop" || value["type"] == "viewIdle" {
+                                if shared
+                                    .client
+                                    .read()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .as_ref()
+                                    .is_some_and(|c| c.control == from)
+                                {
+                                    shared.view_until_ns.store(
+                                        if value["type"] == "viewIdle" {
+                                            monotonic_ns() + 500_000_000
+                                        } else {
+                                            0
+                                        },
+                                        Ordering::Relaxed,
+                                    );
+                                    shared.keys[0].store(true, Ordering::Relaxed);
+                                }
+                                continue;
+                            }
                             if value["type"] == "focus" {
                                 let allowed = shared
                                     .client
@@ -1058,6 +1086,7 @@ fn monitor_thread(
             result
         });
         let result = (|| {
+            let mut view_was_active = false;
             let mut seen_generation = 0;
             let mut seen_cursor = 0;
             let mut clip: Option<(Vec<MonitorRect>, crate::media::desktop_mask::DesktopMask)> =
@@ -1076,6 +1105,18 @@ fn monitor_thread(
                     thread::sleep(Duration::from_millis(20));
                     continue;
                 };
+                let view_active = rect.index == 0
+                    && monotonic_ns() < shared.view_until_ns.load(Ordering::Relaxed);
+                if view_active {
+                    view_was_active = true;
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                if view_was_active {
+                    view_was_active = false;
+                    shared.keys[rect.index as usize].store(true, Ordering::Relaxed);
+                    capture.note_cursor();
+                }
                 let screens = shared
                     .screens
                     .read()

@@ -259,9 +259,7 @@ internal class MonitorDecoder(
 
     private val detailDiagnostics=AtomicReference(dev.floatdesk.client.net.DetailDiagnostics())
     fun detailDebug(value:dev.floatdesk.client.net.DetailDiagnostics){detailDiagnostics.set(value);compositor?.detailDebug(value)}
-    fun detail(patch:dev.floatdesk.client.net.DetailPatch?) {val renderer=compositor;if(renderer!=null)renderer.detail(patch) else patch?.bitmap?.recycle()}
-    fun detailCursor(u:Float,v:Float){compositor?.detailCursor(u,v)}
-
+    fun viewDestination():dev.floatdesk.client.net.ViewDestination?=compositor?.let{renderer->dev.floatdesk.client.net.ViewDestination(renderer.viewInput,renderer::viewFrame,renderer::clearView)}
     fun projection(value:ViewProjection?) {projection.set(value);compositor?.projection(value)}
     fun presentation(value:ScreenPresentation) {presentation.set(value);compositor?.presentation(value)}
 
@@ -356,6 +354,7 @@ internal class MonitorDecoder(
         val renderer=if(byteDump) null else runCatching { VideoCompositor(width,height) }
             .onFailure { Log.e(TAG,"Live video compositor unavailable; using direct decode",it) }.getOrNull()
         compositor=renderer
+        renderer?.onViewPresented(onFrame)
         renderer?.detailDebug(detailDiagnostics.get())
         renderer?.overlay(aim.get())
         renderer?.presentation(presentation.get())
@@ -529,10 +528,10 @@ internal class MonitorDecoder(
     }
 }
 
-private fun isKeyframe(accessUnit: ByteArray): Boolean =
+internal fun isKeyframe(accessUnit: ByteArray): Boolean =
     splitAnnexB(accessUnit).any { nalType(it) == 5 }
 
-private fun annexBParameterSets(sps: ByteArray, pps: ByteArray): ByteArray {
+internal fun annexBParameterSets(sps: ByteArray, pps: ByteArray): ByteArray {
     val out = ByteArray(8 + sps.size + pps.size)
     out[3] = 1
     sps.copyInto(out, 4)
@@ -542,9 +541,9 @@ private fun annexBParameterSets(sps: ByteArray, pps: ByteArray): ByteArray {
     return out
 }
 
-private fun nalType(nal: ByteArray): Int = if (nal.isEmpty()) 0 else nal[0].toInt() and 0x1F
+internal fun nalType(nal: ByteArray): Int = if (nal.isEmpty()) 0 else nal[0].toInt() and 0x1F
 
-private fun splitAnnexB(data: ByteArray): List<ByteArray> {
+internal fun splitAnnexB(data: ByteArray): List<ByteArray> {
     val marks = ArrayList<Pair<Int, Int>>()
     var i = 0
     while (i + 3 <= data.size) {

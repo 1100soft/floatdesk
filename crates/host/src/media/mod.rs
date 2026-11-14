@@ -1,5 +1,5 @@
 mod encoder;
-pub(crate) mod gst;
+mod gst;
 
 pub use encoder::{available_encoders, EncodedOutput, GstEncoder};
 

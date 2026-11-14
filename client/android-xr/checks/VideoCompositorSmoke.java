@@ -92,31 +92,6 @@ public final class VideoCompositorSmoke {
             }
             compositor.projection(null);
             try(Image image=frame(first)){require(pixel(image,32,23)[0]>220,"Disabling projection did not restore retained image");}
-            android.graphics.Bitmap detail=android.graphics.Bitmap.createBitmap(64,48,android.graphics.Bitmap.Config.ARGB_8888);
-            new Canvas(detail).drawColor(Color.GREEN);
-            compositor.detail(new dev.floatdesk.client.net.DetailPatch(new dev.floatdesk.client.FocusRect(.2f,.1f,.8f,.9f),detail,4096,2160));
-            try(Image image=frame(first)) {
-                require(pixel(image,32,16)[1]>220,"Viewed detail did not overlay source region");
-                require(pixel(image,2,8)[0]>220,"Viewed detail leaked outside source region");
-            }
-            compositor.detailCursor(.5f,.34f);
-            compositor.overlay(new VideoAim(new float[]{},new float[]{},2f,.2f));
-            try(Image image=frame(first)){require(pixel(image,32,16)[0]>200,"Detail covered the live mouse cursor region");}
-            compositor.detailCursor(-1f,-1f);
-            SystemClock.sleep(340);
-            try(Image image=frame(first)){require(pixel(image,32,16)[0]>220,"Expired detail did not restore baseline video");}
-            compositor.detail(null);
-            compositor.detailDebug(new dev.floatdesk.client.net.DetailDiagnostics(true,new dev.floatdesk.client.FocusRect(.1f,.1f,.9f,.9f),"SKIPPED test","TX 2 / RX 1 / late 0 / errors 0",2f,2f));
-            try(Image image=frame(first)){require(pixel(image,12,10)[1]<20,"Debug claimed detail before a GPU upload");}
-            android.graphics.Bitmap debugPatch=android.graphics.Bitmap.createBitmap(64,48,android.graphics.Bitmap.Config.ARGB_8888);new Canvas(debugPatch).drawColor(Color.RED);
-            compositor.detail(new dev.floatdesk.client.net.DetailPatch(new dev.floatdesk.client.FocusRect(.1f,.1f,.9f,.9f),debugPatch,4096,2160));
-            try(Image image=frame(first)){require(pixel(image,12,10)[1]>20,"Fresh GPU detail debug tint missing");}
-            java.lang.reflect.Field uploaded=VideoCompositor.class.getDeclaredField("detailUploads");uploaded.setAccessible(true);require(uploaded.getLong(compositor)==2,"Debug GPU counter did not count actual uploads");
-            java.lang.reflect.Field hud=VideoCompositor.class.getDeclaredField("hudBitmap");hud.setAccessible(true);require(hud.get(compositor)!=null,"Debug HUD not created");
-            compositor.detailDebug(new dev.floatdesk.client.net.DetailDiagnostics(false,null,"off","",0f,0f));
-            try(Image image=frame(first)){require(pixel(image,12,10)[1]<20,"Disabling debug left its tint visible");}
-            compositor.detail(null);
-            try(Image image=frame(first)){require(pixel(image,12,10)[0]>220,"Clearing debug detail failed");}
             compositor.overlay(new VideoAim(new float[]{.1f,.25f,.9f,.25f},new float[]{},3f,1f,new float[]{.757f,.502f,1f}));
             try(Image image=frame(first)){int[] color=pixel(image,32,12);require(color[0]>170 && color[0]<215 && color[1]>110 && color[1]<150 && color[2]>230,"Focus window highlight color corrupt");}
             compositor.overlay(new VideoAim(new float[]{.1f,.25f,.9f,.25f},new float[]{},3f,1f,new float[]{.4236f,.9777f,1f}));

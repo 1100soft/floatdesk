@@ -601,14 +601,17 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                     head==null->"Paused: head tracking unavailable"
                     else->"Paused: desktop manipulation"
                 })
-            } else if(handTracking.nowMs-lastDetailAt>=125){
+            } else if(handTracking.nowMs-lastDetailAt>=50){
                 lastDetailAt=handTracking.nowMs
                 val screen=workspace.monitorAt(0)
                 val angles=viewHalfAngles.get()
                 val view=if(screen==null)null else viewedRegion(screen.physicalWidthM,screen.physicalHeightM,pointerControl.meshes[0],angles[0],angles[1]) {point->
                     viewerInMonitor(transformPoint(screen.pose,point),head.translation.toArray(),floatArrayOf(head.rotation.x,head.rotation.y,head.rotation.z,head.rotation.w))
                 }
-                connection.viewedDetail(view?.let{connection.presentation().desktopBounds(it)})
+                val q=floatArrayOf(head.rotation.x,head.rotation.y,head.rotation.z,head.rotation.w)
+                val centerHit=gazePointerTarget(head.translation.toArray(),rotateVector(q,0f,0f,-1f),workspace,pointerControl.meshes)?.takeIf{it.monitor==0}
+                val center=centerHit?.let{connection.desktopPoint(0,it.u,it.v)}
+                connection.viewedDetail(view?.let{connection.presentation().desktopBounds(it)},center=center)
             }
             var anyFist = false
             var anyOpen = false

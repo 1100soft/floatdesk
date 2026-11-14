@@ -1,17 +1,23 @@
-//! Opt-in, bounded viewed-region detail. Baseline H.264 is independent and remains the fallback.
+//! Experimental view-only H.264 atlas: dense center above lower-density visible periphery.
 use super::*;
 use std::io::{Read, Write};
 use std::net::TcpListener;
+const WIDTH: u16 = 2048;
+const HIGH: u16 = 1024;
+const LOW: u16 = 512;
+const MAX_FRAME: usize = 8 * 1024 * 1024;
 
-const WIDTH: u16 = 1536;
-const HEIGHT: u16 = 1024;
-const MAX_JPEG: usize = 4 * 1024 * 1024;
-
-pub(super) fn start(shared: Arc<Shared>, address: SocketAddr) -> Option<thread::JoinHandle<()>> {
+pub(super) fn start(
+    shared: Arc<Shared>,
+    address: SocketAddr,
+    encoder_name: String,
+    fps: u32,
+    bitrate: u32,
+) -> Option<thread::JoinHandle<()>> {
     let listener = match TcpListener::bind(address) {
         Ok(v) => v,
         Err(error) => {
-            tracing::warn!(%error,"Experimental detail unavailable");
+            tracing::warn!(%error,"View streaming unavailable");
             return None;
         }
     };
@@ -19,9 +25,6 @@ pub(super) fn start(shared: Arc<Shared>, address: SocketAddr) -> Option<thread::
         return None;
     }
     Some(thread::spawn(move || {
-        let mut capture: Option<X11Capture> = None;
-        let mut encoder: Option<crate::media::gst::Pipeline> = None;
-        let mut last = Instant::now() - Duration::from_secs(1);
         while !shared.stop.load(Ordering::Relaxed) {
             let (mut socket, peer) = match listener.accept() {
                 Ok(v) => v,
@@ -30,92 +33,171 @@ pub(super) fn start(shared: Arc<Shared>, address: SocketAddr) -> Option<thread::
                     continue;
                 }
             };
-            let allowed = shared
+            if !shared
                 .client
                 .read()
                 .unwrap_or_else(|e| e.into_inner())
                 .as_ref()
-                .is_some_and(|c| c.control.ip() == peer.ip());
-            if !allowed {
+                .is_some_and(|c| c.control.ip() == peer.ip())
+            {
                 continue;
             }
-            let _ = socket.set_read_timeout(Some(Duration::from_millis(500)));
-            let _ = socket.set_write_timeout(Some(Duration::from_millis(500)));
+            let _ = socket.set_read_timeout(Some(Duration::from_millis(600)));
+            let _ = socket.set_write_timeout(Some(Duration::from_millis(600)));
+            let _ = socket.set_nodelay(true);
             let result = (|| -> Result<()> {
-                let mut size = [0u8; 4];
-                socket.read_exact(&mut size)?;
-                let size = u32::from_be_bytes(size) as usize;
-                if size > 512 {
-                    return Err(Error::Msg("Detail request too large".into()));
+                let mut high: Option<X11Capture> = None;
+                let mut low: Option<X11Capture> = None;
+                let mut encoder: Option<GstEncoder> = None;
+                let mut sequence = 0u64;
+                let mut last = Instant::now() - Duration::from_secs(1);
+                let interval = Duration::from_secs_f64(1.0 / fps.clamp(1, 60) as f64);
+                while !shared.stop.load(Ordering::Relaxed) {
+                    let mut size = [0u8; 4];
+                    socket.read_exact(&mut size)?;
+                    let size = u32::from_be_bytes(size) as usize;
+                    if size > 1024 {
+                        return Err(Error::Msg("View request too large".into()));
+                    }
+                    let mut bytes = vec![0; size];
+                    socket.read_exact(&mut bytes)?;
+                    let request: serde_json::Value =
+                        serde_json::from_slice(&bytes).map_err(|e| Error::Msg(e.to_string()))?;
+                    let allowed = shared
+                        .client
+                        .read()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .as_ref()
+                        .is_some_and(|c| c.control.ip() == peer.ip());
+                    if !allowed
+                        || request["sessionId"].as_u64() != Some(shared.session_id)
+                        || request["mode"] != "view-h264-v1"
+                    {
+                        return Err(Error::Msg("Expired or unsupported view session".into()));
+                    }
+                    if let Some(wait) = interval.checked_sub(last.elapsed()) {
+                        thread::sleep(wait)
+                    }
+                    last = Instant::now();
+                    let screens = shared
+                        .screens
+                        .read()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone();
+                    let sources = screens
+                        .iter()
+                        .map(|r| (String::new(), *r))
+                        .collect::<Vec<_>>();
+                    let desktop = desktop_rect(&sources)?;
+                    let (outer, outer_uv) = region(desktop, &request)
+                        .ok_or_else(|| Error::Msg("Invalid view crop".into()))?;
+                    let center = request["center"]
+                        .as_array()
+                        .filter(|a| a.len() == 2)
+                        .and_then(|a| Some((a[0].as_f64()?, a[1].as_f64()?)));
+                    let (cx, cy) = center
+                        .filter(|(x, y)| x.is_finite() && y.is_finite())
+                        .unwrap_or((
+                            (outer_uv[0] + outer_uv[2]) as f64 / 2.0,
+                            (outer_uv[1] + outer_uv[3]) as f64 / 2.0,
+                        ));
+                    let iw = ((outer.width as f64 * 0.55).round() as u32).clamp(1, outer.width);
+                    let ih = ((outer.height as f64 * 0.55).round() as u32).clamp(1, outer.height);
+                    let ix = ((desktop.x as f64 + cx * desktop.width as f64).round() as i32
+                        - iw as i32 / 2)
+                        .clamp(outer.x, outer.x + (outer.width - iw) as i32);
+                    let iy = ((desktop.y as f64 + cy * desktop.height as f64).round() as i32
+                        - ih as i32 / 2)
+                        .clamp(outer.y, outer.y + (outer.height - ih) as i32);
+                    let inner = MonitorRect {
+                        index: 0,
+                        x: ix,
+                        y: iy,
+                        width: iw,
+                        height: ih,
+                    };
+                    let inner_uv = [
+                        (ix - desktop.x) as f32 / desktop.width as f32,
+                        (iy - desktop.y) as f32 / desktop.height as f32,
+                        (ix - desktop.x + iw as i32) as f32 / desktop.width as f32,
+                        (iy - desktop.y + ih as i32) as f32 / desktop.height as f32,
+                    ];
+                    if high.is_none() {
+                        high = Some(X11Capture::open_detail(inner, WIDTH, HIGH)?);
+                        low = Some(X11Capture::open_detail(outer, WIDTH, LOW)?)
+                    }
+                    let mut atlas = crate::core::CapturedFrame {
+                        width: WIDTH.into(),
+                        height: (HIGH + LOW).into(),
+                        stride: u32::from(WIDTH) * 4,
+                        bgra: vec![0; WIDTH as usize * (HIGH + LOW) as usize * 4],
+                        monotonic_ns: monotonic_ns(),
+                        damage_generation: sequence,
+                    };
+                    for (capture, rect, height, offset) in [
+                        (high.as_mut().unwrap(), inner, HIGH, 0usize),
+                        (low.as_mut().unwrap(), outer, LOW, HIGH as usize),
+                    ] {
+                        capture.retarget(rect)?;
+                        let mut frame = capture
+                            .poll(Duration::ZERO, true)?
+                            .ok_or_else(|| Error::Msg("View capture unavailable".into()))?;
+                        crate::media::desktop_mask::DesktopMask::new(
+                            rect,
+                            WIDTH.into(),
+                            height.into(),
+                            &screens,
+                        )
+                        .apply(&mut frame);
+                        if let Ok(cursor) = shared.cursor.lock() {
+                            paint_cursor_scaled(&mut frame, rect, &cursor)
+                        }
+                        for row in 0..height as usize {
+                            let from = row * frame.stride as usize;
+                            let to = (offset + row) * WIDTH as usize * 4;
+                            atlas.bgra[to..to + WIDTH as usize * 4]
+                                .copy_from_slice(&frame.bgra[from..from + WIDTH as usize * 4]);
+                        }
+                    }
+                    if encoder.is_none() {
+                        encoder = Some(GstEncoder::open(
+                            &encoder_name,
+                            crate::core::EncoderConfig {
+                                width: WIDTH.into(),
+                                height: (HIGH + LOW).into(),
+                                fps: fps.clamp(1, 60),
+                                bitrate_bps: bitrate.max(4_000_000),
+                            },
+                        )?)
+                    }
+                    let encoder = encoder.as_mut().unwrap();
+                    encoder.submit(&atlas)?;
+                    // Exactly one in-flight submission: no positional metadata can overtake its frame.
+                    let frame = encoder
+                        .pull_wait(250_000_000)?
+                        .ok_or_else(|| Error::Msg("View encoder timeout".into()))?;
+                    if frame.bytes.len() > MAX_FRAME {
+                        return Err(Error::Msg("View frame exceeds bound".into()));
+                    }
+                    sequence += 1;
+                    shared
+                        .view_until_ns
+                        .store(monotonic_ns() + 500_000_000, Ordering::Relaxed);
+                    let header=serde_json::json!({"type":"view-h264-v1","frame":sequence,"rect":outer_uv,"inner":inner_uv,"width":WIDTH,"height":HIGH+LOW,"bytes":frame.bytes.len(),"desktop":[desktop.x,desktop.y,desktop.width,desktop.height]}).to_string();
+                    socket.write_all(&(header.len() as u32).to_be_bytes())?;
+                    socket.write_all(header.as_bytes())?;
+                    socket.write_all(&frame.bytes)?;
                 }
-                let mut bytes = vec![0; size];
-                socket.read_exact(&mut bytes)?;
-                let request: serde_json::Value =
-                    serde_json::from_slice(&bytes).map_err(|e| Error::Msg(e.to_string()))?;
-                if request["sessionId"].as_u64() != Some(shared.session_id) {
-                    return Err(Error::Msg("Expired detail session".into()));
-                }
-                if last.elapsed() < Duration::from_millis(100) {
-                    return Err(Error::Msg("Detail rate limited".into()));
-                }
-                last = Instant::now();
-                let screens = shared
-                    .screens
-                    .read()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone();
-                let sources = screens
-                    .iter()
-                    .map(|r| (String::new(), *r))
-                    .collect::<Vec<_>>();
-                let desktop = desktop_rect(&sources)?;
-                let Some((region, uv)) = region(desktop, &request) else {
-                    return Err(Error::Msg("Invalid detail region".into()));
-                };
-                if capture.is_none() {
-                    capture = Some(X11Capture::open_detail(region, WIDTH, HEIGHT)?)
-                }
-                let capture = capture.as_mut().unwrap();
-                capture.retarget(region)?;
-                let mut frame = capture
-                    .poll(Duration::ZERO, true)?
-                    .ok_or_else(|| Error::Msg("Detail capture unavailable".into()))?;
-                let (w, h) = capture.pixel_size();
-                crate::media::desktop_mask::DesktopMask::new(region, w, h, &screens)
-                    .apply(&mut frame);
-                if encoder.is_none() {
-                    let pipeline=crate::media::gst::Pipeline::launch("appsrc name=src is-live=true format=time do-timestamp=true block=false max-buffers=1 leaky-type=downstream ! videoconvert ! jpegenc name=enc quality=92 ! appsink name=sink sync=false max-buffers=1 drop=true")?;
-                    pipeline.set_arg(
-                        crate::media::gst::Element::Source,
-                        "caps",
-                        &format!("video/x-raw,format=BGRx,width={w},height={h},framerate=10/1"),
-                    )?;
-                    pipeline.play()?;
-                    encoder = Some(pipeline);
-                }
-                let encoder = encoder.as_ref().unwrap();
-                encoder.push(&frame.bgra)?;
-                let jpeg = encoder
-                    .pull(150_000_000)?
-                    .ok_or_else(|| Error::Msg("Detail encode timeout".into()))?;
-                if jpeg.len() > MAX_JPEG {
-                    return Err(Error::Msg("Detail frame too large".into()));
-                }
-                let header=serde_json::json!({"rect":uv,"width":w,"height":h,"bytes":jpeg.len(),"desktop":[desktop.x,desktop.y,desktop.width,desktop.height]}).to_string();
-                socket.write_all(&(header.len() as u32).to_be_bytes())?;
-                socket.write_all(header.as_bytes())?;
-                socket.write_all(&jpeg)?;
                 Ok(())
             })();
+            shared.view_until_ns.store(0, Ordering::Relaxed);
+            shared.keys[0].store(true, Ordering::Relaxed);
             if let Err(error) = result {
-                encoder = None;
-                capture = None;
-                tracing::debug!(%error,"Experimental detail request failed");
+                tracing::debug!(%error,"View streaming ended")
             }
         }
     }))
 }
-
 fn region(desktop: MonitorRect, request: &serde_json::Value) -> Option<(MonitorRect, [f32; 4])> {
     let a = request["rect"].as_array()?;
     if a.len() != 4 {

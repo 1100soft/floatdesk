@@ -39,6 +39,15 @@ internal data class ScreenPresentation(val rects:FloatArray=floatArrayOf(0f,0f,1
         }
         return if(pieces.isEmpty())null else dev.floatdesk.client.FocusRect(pieces.minOf{it.left}.coerceIn(0f,1f),pieces.minOf{it.top}.coerceIn(0f,1f),pieces.maxOf{it.right}.coerceIn(0f,1f),pieces.maxOf{it.bottom}.coerceIn(0f,1f))
     }
+    fun extendedDisplayPoint(u:Float,v:Float):Pair<Float,Float>? {
+        if(!u.isFinite() || !v.isFinite())return null
+        val scale=1f-spacing.coerceIn(0f,.15f);var best=Float.POSITIVE_INFINITY;var result:Pair<Float,Float>?=null
+        for(i in 0 until rects.size/4){
+            val n=i*4;val dx=u-u.coerceIn(rects[n],rects[n+2]);val dy=v-v.coerceIn(rects[n+1],rects[n+3]);val d=dx*dx+dy*dy
+            if(d<best){best=d;val cx=(rects[n]+rects[n+2])*.5f;val cy=(rects[n+1]+rects[n+3])*.5f;result=(cx+(u-cx)*scale) to (cy+(v-cy)*scale)}
+        }
+        return result
+    }
     fun displayBounds(source:dev.floatdesk.client.FocusRect):dev.floatdesk.client.FocusRect? {
         val pieces=mutableListOf<dev.floatdesk.client.FocusRect>()
         val scale=1f-spacing.coerceIn(0f,.15f)

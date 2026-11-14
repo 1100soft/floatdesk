@@ -14,8 +14,8 @@ import org.json.JSONObject
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicReference
 
-internal data class DetailRequest(val host:InetSocketAddress,val sessionId:Long,val rect:FocusRect,val desktop:List<Int>,val center:Pair<Float,Float> = rect.centerU to rect.centerV)
-internal data class ViewFrame(val outer:FocusRect,val inner:FocusRect,val capturedAt:Long)
+internal data class DetailRequest(val host:InetSocketAddress,val sessionId:Long,val rect:FocusRect,val desktop:List<Int>,val center:Pair<Float,Float> = rect.centerU to rect.centerV,val quality:Int=0,val bitrateMbps:Float=0f,val fraction:Float=.35f)
+internal data class ViewFrame @JvmOverloads constructor(val outer:FocusRect,val inner:FocusRect,val capturedAt:Long,val focusU:Float=inner.centerU,val focusV:Float=inner.centerV)
 internal data class ViewDestination(val surface:Surface,val frame:(Long,ViewFrame)->Unit,val clear:()->Unit)
 
 /** One H.264 access unit in flight. Every decoded image is paired with its own crop by PTS. */
@@ -38,10 +38,11 @@ internal class ViewedDetail(private val destination:()->ViewDestination?,private
                     var previous=0L
                     while(running){
                         val next=request.get() ?: break
-                        if(next.host!=first.host || next.sessionId!=first.sessionId || destination()?.surface!==output.surface)break
+                        if(next.host!=first.host || next.sessionId!=first.sessionId || destination()?.surface!==output.surface || next.quality!=first.quality || next.bitrateMbps!=first.bitrateMbps)break
                         val start=SystemClock.elapsedRealtime();attempts++
                         val json=JSONObject().put("mode","view-h264-v1").put("sessionId",next.sessionId)
                             .put("rect",org.json.JSONArray(listOf(next.rect.left,next.rect.top,next.rect.right,next.rect.bottom)))
+                            .put("quality",next.quality).put("bitrateMbps",next.bitrateMbps).put("fraction",next.fraction)
                             .put("center",org.json.JSONArray(listOf(next.center.first,next.center.second))).toString().toByteArray(Charsets.UTF_8)
                         writer.writeInt(json.size);writer.write(json);writer.flush()
                         val size=input.readInt();require(size in 1..1024);val header=ByteArray(size);input.readFully(header)
@@ -69,7 +70,7 @@ internal class ViewedDetail(private val destination:()->ViewDestination?,private
                         val pts=System.nanoTime()/1000
                         val age=SystemClock.elapsedRealtime()-start
                         if(age>250)late++
-                        output.frame(pts,ViewFrame(outer,inner,SystemClock.uptimeMillis()-age))
+                        output.frame(pts,ViewFrame(outer,inner,SystemClock.uptimeMillis()-age,next.center.first,next.center.second))
                         active.queueInputBuffer(index,0,count,pts,if(isKeyframe(bytes))MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
                         drain(active);received++
                         if(received%10L==1L)report("${age}ms · H.264 2048x1536 · ${count/1024}KiB")

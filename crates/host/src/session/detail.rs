@@ -104,8 +104,15 @@ pub(super) fn start(
                     // Preserve an off-desktop gaze target, but clip capture safely to the visible crop.
                     let cx = cx.clamp(outer_uv[0] as f64, outer_uv[2] as f64);
                     let cy = cy.clamp(outer_uv[1] as f64, outer_uv[3] as f64);
-                    let iw = ((outer.width as f64 * 0.55).round() as u32).clamp(1, outer.width);
-                    let ih = ((outer.height as f64 * 0.55).round() as u32).clamp(1, outer.height);
+                    let fraction = request["fraction"]
+                        .as_f64()
+                        .filter(|v| v.is_finite())
+                        .unwrap_or(0.35)
+                        .clamp(0.2, 0.65);
+                    let capture_start = Instant::now();
+                    let iw = ((outer.width as f64 * fraction).round() as u32).clamp(1, outer.width);
+                    let ih =
+                        ((outer.height as f64 * fraction).round() as u32).clamp(1, outer.height);
                     let ix = ((desktop.x as f64 + cx * desktop.width as f64).round() as i32
                         - iw as i32 / 2)
                         .clamp(outer.x, outer.x + (outer.width - iw) as i32);
@@ -162,18 +169,30 @@ pub(super) fn start(
                                 .copy_from_slice(&frame.bgra[from..from + WIDTH as usize * 4]);
                         }
                     }
+                    let capture_ns = capture_start.elapsed().as_nanos() as u64;
                     if encoder.is_none() {
-                        encoder = Some(GstEncoder::open(
+                        let quality = request["quality"]
+                            .as_u64()
+                            .unwrap_or(shared.encoder_quality.load(Ordering::Relaxed) as u64)
+                            .min(2) as u32;
+                        let rate = request["bitrateMbps"]
+                            .as_f64()
+                            .filter(|v| v.is_finite() && *v > 0.0)
+                            .map(|v| (v.clamp(1.0, 200.0) * 1_000_000.0) as u32)
+                            .unwrap_or(bitrate);
+                        encoder = Some(GstEncoder::open_quality(
                             &encoder_name,
                             crate::core::EncoderConfig {
                                 width: WIDTH.into(),
                                 height: (HIGH + LOW).into(),
                                 fps: fps.clamp(1, 60),
-                                bitrate_bps: bitrate.max(4_000_000),
+                                bitrate_bps: rate.max(400_000),
                             },
+                            quality,
                         )?)
                     }
                     let encoder = encoder.as_mut().unwrap();
+                    let encode_start = Instant::now();
                     encoder.submit(&atlas)?;
                     // Exactly one in-flight submission: no positional metadata can overtake its frame.
                     let frame = encoder
@@ -182,6 +201,13 @@ pub(super) fn start(
                     if frame.bytes.len() > MAX_FRAME {
                         return Err(Error::Msg("View frame exceeds bound".into()));
                     }
+                    shared
+                        .view_capture_ns
+                        .fetch_add(capture_ns, Ordering::Relaxed);
+                    shared
+                        .view_encode_ns
+                        .fetch_add(encode_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                    shared.view_samples.fetch_add(1, Ordering::Relaxed);
                     sequence += 1;
                     shared
                         .view_until_ns
@@ -190,6 +216,10 @@ pub(super) fn start(
                     socket.write_all(&(header.len() as u32).to_be_bytes())?;
                     socket.write_all(header.as_bytes())?;
                     socket.write_all(&frame.bytes)?;
+                    shared.encoded_frames.fetch_add(1, Ordering::Relaxed);
+                    shared
+                        .bytes
+                        .fetch_add(frame.bytes.len() as u64, Ordering::Relaxed);
                 }
                 Ok(())
             })();

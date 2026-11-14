@@ -46,6 +46,7 @@ public final class VideoCompositorSmoke {
             org.json.JSONObject monitor=new org.json.JSONObject().put("logical_monitor_uuid","focus-test").put("host_source_id","desktop").put("pixel_width",3840).put("pixel_height",2160).put("view_center_u",.8).put("view_center_v",.25);
             saved.put("pinch_thresholds_mm",new org.json.JSONArray().put(8.0).put(9.0).put(10.0).put(11.0));
             saved.put("experimental_viewed_detail",true).put("view_detail_debug",false);
+            saved.put("encoder_quality",2).put("encoder_mbps",24.5).put("sharpening",.6).put("dense_fraction",.3).put("show_resources",false);
             saved.put("focus_mode",true).put("layouts",new org.json.JSONObject().put("Desk",new org.json.JSONArray().put(monitor)));
             java.nio.file.Files.write(workspaceFile.toPath(),saved.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
             require(reloaded.load().getFocusMode(),"Focus mode not restored");
@@ -54,6 +55,7 @@ public final class VideoCompositorSmoke {
             require(reloaded.load().getPinchThresholds().getRightIndexMm()==9f,"Shared pinch settings not restored");
             require(Math.abs(reloaded.load().getLayouts().get("Desk").get(0).getViewCenterU()-.8f)<.00001f,"Selected spherical source center not restored");
             reloaded.save(reloaded.load());
+            require(reloaded.load().getEncoderQuality()==2 && reloaded.load().getEncoderMbps()==24.5f && reloaded.load().getSharpening()==.6f && reloaded.load().getDenseFraction()==.3f && !reloaded.load().getShowResources(),"Streaming settings not preserved on disk");
             require(reloaded.load().getPinchThresholds().getLeftMiddleMm()==10f,"Shared pinch settings not saved");
             require(Math.abs(reloaded.load().getLayouts().get("Desk").get(0).getViewCenterV()-.25f)<.00001f,"Selected source center not saved");
         } finally {workspaceFile.delete();}

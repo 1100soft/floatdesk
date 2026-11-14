@@ -234,6 +234,8 @@ internal class MonitorDecoder(
     private val pps = AtomicReference<ByteArray?>(null)
     private val awaitingKey = AtomicBoolean(true)
     @Volatile private var compositor: VideoCompositor? = null
+    private val sharpness=AtomicReference(0f)
+    fun sharpening(value:Float){sharpness.set(value);compositor?.sharpen(value)}
     private val aim = AtomicReference(VideoAim())
     private val presentation=AtomicReference(ScreenPresentation())
     private val projection=AtomicReference<ViewProjection?>(null)
@@ -260,6 +262,7 @@ internal class MonitorDecoder(
     private val detailDiagnostics=AtomicReference(dev.floatdesk.client.net.DetailDiagnostics())
     fun detailDebug(value:dev.floatdesk.client.net.DetailDiagnostics){detailDiagnostics.set(value);compositor?.detailDebug(value)}
     fun refreshOutput(){compositor?.output(surface.get(),true)}
+    fun displayedQualityFocus():Pair<Float,Float>?=compositor?.displayedQualityFocus()
     fun qualityOutputLimit():Int=compositor?.outputLimit ?: 4096
     fun viewDestination():dev.floatdesk.client.net.ViewDestination?=compositor?.let{renderer->dev.floatdesk.client.net.ViewDestination(renderer.viewInput,renderer::viewFrame,renderer::clearView)}
     fun projection(value:ViewProjection?) {projection.set(value);compositor?.projection(value)}
@@ -350,12 +353,14 @@ internal class MonitorDecoder(
     private fun decodeLoop() {
         var codec: MediaCodec? = null
         var codecSurface: Surface? = null
+        var configured:Pair<ByteArray,ByteArray>?=null
         var rendered = 0
         var sawKeyframe = false
         val byteDump = dumpFile != null
         val renderer=if(byteDump) null else runCatching { VideoCompositor(width,height) }
             .onFailure { Log.e(TAG,"Live video compositor unavailable; using direct decode",it) }.getOrNull()
         compositor=renderer
+        renderer?.sharpen(sharpness.get())
         renderer?.onViewPresented(onFrame)
         renderer?.detailDebug(detailDiagnostics.get())
         renderer?.overlay(aim.get())
@@ -385,6 +390,10 @@ internal class MonitorDecoder(
             if(display !== displayedSurface) { renderer?.output(display); displayedSurface=display }
             val target = if (byteDump || display==null) null else renderer?.input ?: display
             val parameters = sps.get() to pps.get()
+            if(codec!=null && isKeyframe(accessUnit) && configured!=null &&
+                (!configured!!.first.contentEquals(parameters.first) || !configured!!.second.contentEquals(parameters.second))){
+                codec?.stop();codec?.release();codec=null;codecSurface=null;sawKeyframe=false
+            }
             val surfaceReady = byteDump || target != null
             if (surfaceReady && parameters.first != null && parameters.second != null &&
                 (codec == null || (!byteDump && target != codecSurface))
@@ -393,6 +402,7 @@ internal class MonitorDecoder(
                 codec?.release()
                 sawKeyframe = false
                 codec = startCodec(target, parameters.first!!, parameters.second!!)
+                configured=parameters.first!!.copyOf() to parameters.second!!.copyOf()
                 codecSurface = target
                 Log.i(TAG, "decoder ${if (codec == null) "failed" else "started"} ${width}x$height")
             }

@@ -3,6 +3,7 @@
 //! Nothing is encoded until a client hello arrives.
 
 mod detail;
+mod resources;
 
 use crate::core::{
     epoch_ns, monotonic_ns, CaptureBackend, CursorBackend, DisplayBackend, EncodeBackend,
@@ -114,6 +115,13 @@ struct Shared {
     client: RwLock<Option<ClientTarget>>,
     session_id: u64,
     view_until_ns: AtomicU64,
+    encoder_quality: AtomicU32,
+    encoder_bitrate: AtomicU32,
+    encoder_generation: AtomicU64,
+    encoded_frames: AtomicU64,
+    view_samples: AtomicU64,
+    view_capture_ns: AtomicU64,
+    view_encode_ns: AtomicU64,
     keys: [AtomicBool; 6],
     captured: AtomicU64,
     skipped: AtomicU64,
@@ -216,6 +224,7 @@ fn launch_streams(
         let encoder_name = opts.encoder.clone();
         let fps = opts.fps.max(1);
         let bitrate = *bitrate;
+        let total_bitrate = opts.bitrate_bps.max(1);
         threads.push(thread::spawn(move || {
             // Preserve RTP sequence numbers across capture/encoder reconnections.
             let mut packetizer = RtpH264Packetizer::new(ssrc);
@@ -229,6 +238,7 @@ fn launch_streams(
                     encoder_name.clone(),
                     fps,
                     bitrate,
+                    total_bitrate,
                 ) {
                     if shared.stream_active[rect.index as usize].load(Ordering::Relaxed)
                         && !shared.stop.load(Ordering::Relaxed)
@@ -466,6 +476,13 @@ fn run(
         client: RwLock::new(None),
         session_id,
         view_until_ns: AtomicU64::new(0),
+        encoder_quality: AtomicU32::new(0),
+        encoder_bitrate: AtomicU32::new(opts.bitrate_bps),
+        encoder_generation: AtomicU64::new(0),
+        encoded_frames: AtomicU64::new(0),
+        view_samples: AtomicU64::new(0),
+        view_capture_ns: AtomicU64::new(0),
+        view_encode_ns: AtomicU64::new(0),
         keys: std::array::from_fn(|_| AtomicBool::new(false)),
         captured: AtomicU64::new(0),
         skipped: AtomicU64::new(0),
@@ -547,6 +564,7 @@ fn run(
     let mut topology_epoch = Instant::now();
     let mut replies: std::collections::VecDeque<(SocketAddr, u32, Vec<u8>)> =
         std::collections::VecDeque::new();
+    let mut resources = resources::Sampler::new();
     let mut last_hello = Instant::now() - Duration::from_secs(2);
     let mut last_stats = Instant::now();
     let mut last_progress = [0u64; 6];
@@ -566,6 +584,39 @@ fn run(
                     let packet = floatdesk_protocol::decode_packet(&scratch[..size]);
                     if let Ok(ControlPacket::Workspace { json }) = &packet {
                         if let Ok(value) = serde_json::from_str::<serde_json::Value>(json) {
+                            if value["type"] == "encoderSettings" {
+                                if shared
+                                    .client
+                                    .read()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .as_ref()
+                                    .is_some_and(|c| c.control == from)
+                                {
+                                    let quality =
+                                        value["quality"].as_u64().unwrap_or(0).min(2) as u32;
+                                    let mbps = value["bitrateMbps"]
+                                        .as_f64()
+                                        .filter(|v| v.is_finite() && *v > 0.0);
+                                    let rate = mbps
+                                        .map(|v| (v.clamp(1.0, 200.0) * 1_000_000.0) as u32)
+                                        .unwrap_or(opts.bitrate_bps);
+                                    let changed =
+                                        shared.encoder_quality.swap(quality, Ordering::Relaxed)
+                                            != quality;
+                                    let changed =
+                                        (shared.encoder_bitrate.swap(rate, Ordering::Relaxed)
+                                            != rate)
+                                            || changed;
+                                    if changed {
+                                        shared.encoder_generation.fetch_add(1, Ordering::Relaxed);
+                                        for key in &shared.keys {
+                                            key.store(true, Ordering::Relaxed);
+                                        }
+                                    }
+                                    let _=socket.send_to(&ControlPacket::Workspace{json:serde_json::json!({"type":"encoderAck","quality":quality,"bitrate":rate}).to_string()}.encode(),from);
+                                }
+                                continue;
+                            }
                             if value["type"] == "viewStop" || value["type"] == "viewIdle" {
                                 if shared
                                     .client
@@ -854,6 +905,21 @@ fn run(
         pointer.expire();
         if last_hello.elapsed() >= Duration::from_secs(1) {
             send_hello(&shared, &socket, &hellos);
+            let stats = resources.sample(&shared);
+            if let Some(client) = shared
+                .client
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+            {
+                let _ = socket.send_to(
+                    &ControlPacket::Workspace {
+                        json: stats.to_string(),
+                    }
+                    .encode(),
+                    client.control,
+                );
+            }
             if !opts.listen.ip().is_loopback() {
                 send_beacon(opts.listen.port());
             }
@@ -976,6 +1042,7 @@ fn send_ready(
         };
         let Some(unit) = unit else { break };
         delivered += 1;
+        shared.encoded_frames.fetch_add(1, Ordering::Relaxed);
         for packet in packetizer.packetize(&unit.bytes, timestamp) {
             if shared.stop.load(Ordering::Relaxed)
                 || !shared.stream_active[monitor_index].load(Ordering::Relaxed)
@@ -1025,13 +1092,19 @@ fn monitor_thread(
     encoder_name: String,
     fps: u32,
     bitrate: u32,
+    total_bitrate: u32,
 ) -> Result<()> {
     let (width, height) = stream_size(rect);
     let mut capture = X11Capture::open_scaled(rect, width, height)?;
     shared.capture_fd[rect.index as usize].store(capture.connection_fd(), Ordering::Relaxed);
     let _clear_fd = ClearCaptureFd(&shared.capture_fd[rect.index as usize]);
     let (width, height) = stream_size(rect);
-    let mut encoder = GstEncoder::open_scaled(
+    let generation = shared.encoder_generation.load(Ordering::Relaxed);
+    let quality = shared.encoder_quality.load(Ordering::Relaxed);
+    let bitrate = ((shared.encoder_bitrate.load(Ordering::Relaxed) as u64 * bitrate as u64)
+        / total_bitrate as u64)
+        .min(u32::MAX as u64) as u32;
+    let mut encoder = GstEncoder::open_scaled_quality(
         &encoder_name,
         crate::core::EncoderConfig {
             width: u32::from(width),
@@ -1040,6 +1113,7 @@ fn monitor_thread(
             bitrate_bps: bitrate.max(400_000),
         },
         capture.pixel_size(),
+        quality,
     )?;
     let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))?;
     encoder.set_bitrate(bitrate.max(400_000))?;
@@ -1095,6 +1169,9 @@ fn monitor_thread(
                 && !shared.stop.load(Ordering::Relaxed)
                 && shared.stream_active[rect.index as usize].load(Ordering::Relaxed)
             {
+                if shared.encoder_generation.load(Ordering::Relaxed) != generation {
+                    break;
+                }
                 shared.stream_progress[rect.index as usize].fetch_add(1, Ordering::Relaxed);
                 let target = shared
                     .client

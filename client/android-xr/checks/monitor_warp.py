@@ -139,6 +139,15 @@ suspend fun main() {
     SystemClock.now=1000L
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false,viewDirection=floatArrayOf(.1f,0f,-1f))
     check(warp.mesh!!.focus!=null && warp.outputSurface===stableOutput)
+    val stableReference=warp.gazeReference
+    SystemClock.now=1100L
+    warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false,viewFocus=floatArrayOf(.8f,.35f))
+    check(kotlin.math.abs(warp.mesh!!.focus!![0]-.24f)<.0001f && kotlin.math.abs(warp.mesh!!.focus!![1]-.0675f)<.0001f)
+    check(warp.gazeReference===stableReference) // Curvature must not feed its deformation back into gaze targeting.
+    val gazeMesh=warp.mesh
+    SystemClock.now=1160L
+    warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false,viewFocus=floatArrayOf(.8f,.35f))
+    check(warp.mesh===gazeMesh)
     val projected=warp.mesh
     SystemClock.now=1200L
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,true,viewDirection=floatArrayOf(-.2f,0f,-1f))

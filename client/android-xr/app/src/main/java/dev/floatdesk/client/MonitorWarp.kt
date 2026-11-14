@@ -52,6 +52,7 @@ internal class MonitorWarp : AutoCloseable {
     private var presentationDirty=true
     private var focus:FloatArray?=null
     private var referenceMesh:MonitorMesh?=null
+    val gazeReference:MonitorMesh? get()=if(mesh==null)null else referenceMesh ?: mesh
     private var projectionUpdatedAt=0L
     private var geometryUpdatedAt=0L
     fun presentation(rects:FloatArray,inset:Float) {
@@ -201,7 +202,7 @@ internal class MonitorWarp : AutoCloseable {
 
     @SuppressLint("RestrictedApi") // CustomMesh is available in the pinned SceneCore 1.0 runtime.
     fun update(session: Session, root: Entity, eye: FloatArray?, placement: MonitorPlacement,
-               enabled: Boolean, held: Boolean, forceUpdate: Boolean = false, viewDirection:FloatArray? = null, freezeProjection:Boolean=held) {
+               enabled: Boolean, held: Boolean, forceUpdate: Boolean = false, viewDirection:FloatArray? = null, freezeProjection:Boolean=held,viewFocus:FloatArray?=null) {
         val original = input ?: return
         if(enabled==(mesh!=null))live?.let{applyPixels(it,placement)}
         if (live !== original) live?.let {
@@ -234,7 +235,7 @@ internal class MonitorWarp : AutoCloseable {
         if (viewer == null) return
         val previous = mesh
         val now=android.os.SystemClock.uptimeMillis()
-        if(viewDirection!=null && previous!=null && !forceUpdate && !presentationDirty && matchesSize(placement) && now-geometryUpdatedAt<100) return
+        if((viewDirection!=null || viewFocus!=null) && previous!=null && !forceUpdate && !presentationDirty && matchesSize(placement) && now-geometryUpdatedAt<50) return
         val center=projectionCenter(placement)
         var reference=referenceMesh
         if(reference==null || reference.width!=placement.physicalWidthM || reference.height!=placement.physicalHeightM || !reference.center.contentEquals(center) ||
@@ -243,12 +244,17 @@ internal class MonitorWarp : AutoCloseable {
             reference=MonitorMesh(placement.physicalWidthM,placement.physicalHeightM,viewer,focus=center.copyOf(2),center=center)
             referenceMesh=reference
         }
-        if(!freezeProjection && eye!=null && viewDirection!=null && (previous==null || now-projectionUpdatedAt>=100)) {
-            val endpoint=viewerInMonitor(FloatArray(3){eye[it]+viewDirection[it]},placement.pose.position,placement.pose.rotation)
-            sphericalViewFocus(reference!!,FloatArray(3){endpoint[it]-viewer[it]})?.let {desired->
-                val next=floatArrayOf(desired[0].coerceIn(-reference.width*.5f,reference.width*.5f),desired[1].coerceIn(-reference.height*.5f,reference.height*.5f))
-                val old=focus?.let {floatArrayOf(it[0].coerceIn(-reference.width*.5f,reference.width*.5f),it[1].coerceIn(-reference.height*.5f,reference.height*.5f))}
-                focus=if(old==null) next else FloatArray(2){old[it]+.35f*(next[it]-old[it])}
+        if(!freezeProjection && (viewFocus!=null || eye!=null && viewDirection!=null) && (previous==null || now-projectionUpdatedAt>=50)) {
+            if(viewFocus!=null && viewFocus.size==2 && viewFocus.all{it.isFinite()}) {
+                // The shared gaze target was already filtered against the stable reference sphere.
+                focus=floatArrayOf(((viewFocus[0]-.5f)*placement.physicalWidthM).coerceIn(-reference!!.width*.5f,reference.width*.5f),((.5f-viewFocus[1])*placement.physicalHeightM).coerceIn(-reference.height*.5f,reference.height*.5f))
+            } else if(eye!=null && viewDirection!=null) {
+                val endpoint=viewerInMonitor(FloatArray(3){eye[it]+viewDirection[it]},placement.pose.position,placement.pose.rotation)
+                sphericalViewFocus(reference!!,FloatArray(3){endpoint[it]-viewer[it]})?.let {desired->
+                    val next=floatArrayOf(desired[0].coerceIn(-reference.width*.5f,reference.width*.5f),desired[1].coerceIn(-reference.height*.5f,reference.height*.5f))
+                    val old=focus
+                    focus=if(old==null)next else FloatArray(2){old[it]+.35f*(next[it]-old[it])}
+                }
             }
             projectionUpdatedAt=now
         }

@@ -197,6 +197,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
         }
     }
     LaunchedEffect(workspace.screenSpacing) {connection.configurePresentation(workspace.screenSpacing)}
+    LaunchedEffect(workspace.encoderQuality,workspace.encoderMbps,workspace.sharpening,workspace.denseFraction){connection.configureVideo(workspace.encoderQuality,workspace.encoderMbps,workspace.sharpening,workspace.denseFraction)}
     val pointerControl = remember { PointerControl() }
     val gazeStabilizer = remember { GazeStabilizer() }
     val pinchSettings=rememberUpdatedState(workspace.pinchThresholds)
@@ -214,8 +215,8 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     val eyePermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (!granted) android.widget.Toast.makeText(context,"Gaze permission was not granted. Hand pointing remains available.",android.widget.Toast.LENGTH_LONG).show()
     }
-    LaunchedEffect(workspace.experimentalViewedDetail) {
-        if(workspace.experimentalViewedDetail && context.checkSelfPermission("android.permission.EYE_TRACKING_FINE")!=android.content.pm.PackageManager.PERMISSION_GRANTED)
+    LaunchedEffect(workspace.experimentalViewedDetail,workspace.sphericalWarp) {
+        if((workspace.experimentalViewedDetail || workspace.sphericalWarp) && context.checkSelfPermission("android.permission.EYE_TRACKING_FINE")!=android.content.pm.PackageManager.PERMISSION_GRANTED)
             eyePermission.launch("android.permission.EYE_TRACKING_FINE")
     }
     val monitors by connection.monitors
@@ -606,31 +607,33 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                     gaze.translation.toArray() to rotateVector(floatArrayOf(q.x,q.y,q.z,q.w),0f,0f,-1f)
                 }
             } else emptyList()
-            connection.detailDebug(workspace.experimentalViewedDetail,workspace.viewDetailDebug)
-            if(!workspace.experimentalViewedDetail || displayControlsOpen || head==null || manipulating) {
+            val screen=workspace.monitorAt(0)
+            val qualityTargets=if(screen==null)emptyList() else eyeRays.mapNotNull{(origin,direction)->
+                val local=viewerInMonitor(origin,screen.pose.position,screen.pose.rotation)
+                val endpoint=viewerInMonitor(add(origin,direction),screen.pose.position,screen.pose.rotation)
+                extendedQualityTarget(local,subtract(endpoint,local),screen.physicalWidthM,screen.physicalHeightM,pointerControl.qualityReferences[0] ?: pointerControl.meshes[0])
+                    ?.let{connection.presentation().extendedDesktopPoint(it.first,it.second)}
+            }
+            val raw=if(qualityTargets.isEmpty())null else qualityTargets.map{it.first}.average().toFloat() to qualityTargets.map{it.second}.average().toFloat()
+            val sharedGaze=qualityGaze.update(raw,handTracking.nowMs)
+            val curveGaze=if(workspace.experimentalViewedDetail)connection.displayedQualityFocus() ?: sharedGaze else sharedGaze
+            handTracking.curvatureFocus=curveGaze?.let{connection.presentation().extendedDisplayPoint(it.first,it.second)}?.let{floatArrayOf(it.first,it.second)}
+            connection.detailDebug(workspace.experimentalViewedDetail,workspace.viewDetailDebug,workspace.showResources)
+            if(displayControlsOpen || head==null || manipulating || !workspace.experimentalViewedDetail && !workspace.showResources) {
                 connection.viewedDetail(null,when {
-                    !workspace.experimentalViewedDetail->"Experimental mode off"
                     displayControlsOpen->"Paused: Workspace open"
                     head==null->"Paused: head tracking unavailable"
-                    else->"Paused: desktop manipulation"
+                    manipulating->"Paused: desktop manipulation"
+                    else->"Normal full-desktop streaming"
                 })
             } else if(handTracking.nowMs-lastDetailAt>=50){
                 lastDetailAt=handTracking.nowMs
-                val screen=workspace.monitorAt(0)
                 val angles=viewHalfAngles.get()
                 val view=if(screen==null)null else viewedRegion(screen.physicalWidthM,screen.physicalHeightM,pointerControl.meshes[0],angles[0],angles[1]) {point->
                     viewerInMonitor(transformPoint(screen.pose,point),head.translation.toArray(),floatArrayOf(head.rotation.x,head.rotation.y,head.rotation.z,head.rotation.w))
                 }
-                val gazeTargets=if(screen==null)emptyList() else eyeRays.mapNotNull{(origin,direction)->
-                    val local=viewerInMonitor(origin,screen.pose.position,screen.pose.rotation)
-                    val endpoint=viewerInMonitor(add(origin,direction),screen.pose.position,screen.pose.rotation)
-                    extendedQualityTarget(local,subtract(endpoint,local),screen.physicalWidthM,screen.physicalHeightM,pointerControl.meshes[0])
-                        ?.let{connection.presentation().extendedDesktopPoint(it.first,it.second)}
-                }
-                val raw=if(gazeTargets.isEmpty())null else gazeTargets.map{it.first}.average().toFloat() to gazeTargets.map{it.second}.average().toFloat()
-                val lastQualityCenter=qualityGaze.update(raw,handTracking.nowMs)
-                connection.viewedDetail(view?.let{connection.presentation().desktopBounds(it)},center=lastQualityCenter,
-                    targeting=if(raw!=null)"GAZE" else if(lastQualityCenter!=null)"GAZE LOST: holding target" else "GAZE unavailable: initial view center")
+                connection.viewedDetail(view?.let{connection.presentation().desktopBounds(it)},center=sharedGaze,
+                    targeting=if(raw!=null)"GAZE" else if(sharedGaze!=null)"GAZE LOST: holding target" else "GAZE unavailable: initial view center")
             }
             var anyFist = false
             var anyOpen = false
@@ -1038,7 +1041,7 @@ private fun DeskContent(
             val next=latest.value.copy(experimentalViewedDetail=enabled);onWorkspace(next);store.save(next)
         },workspace.viewDetailDebug,{enabled->
             val next=latest.value.copy(viewDetailDebug=enabled);onWorkspace(next);store.save(next)
-        })
+        },workspace,{next->onWorkspace(next);store.save(next)})
     }
     if(reloading && layout.isNotEmpty()) {
         val screen=layout.first()
@@ -1097,7 +1100,7 @@ private fun DeskContent(
                         warp.update(current, root, handTracking.points["VIEWER"] ?: handTracking.points["HEAD"], screen, file.sphericalWarp,
                             (hands.busy && !hands.engaged) || nativeMove || nativeResize || handTracking.pointerHeld,
                             forceUpdate=(hands.engaged || !hands.busy) && (nativeGeometryPending || !warp.matchesSize(screen)),
-                            viewDirection=handTracking.points["VIEW_DIRECTION"],
+                            viewDirection=null,viewFocus=handTracking.curvatureFocus,
                             freezeProjection=(hands.busy && !hands.engaged) || nativeMove || nativeResize || handTracking.pointerHeld)
                         grabProjectionAt=projectionNow
                     }
@@ -1144,6 +1147,7 @@ private fun DeskContent(
                     })
                     pointerControl.nativeManipulation(index,systemControls.isManipulating)
                     pointerControl.meshes[index] = warp.mesh
+                    pointerControl.qualityReferences[index]=warp.gazeReference
                     connection.projection(index,null) // Geometry projection uses the original streamed pixels.
                     warp.outputSurface?.let { display ->
                         if (videoSurface.get() !== display) {

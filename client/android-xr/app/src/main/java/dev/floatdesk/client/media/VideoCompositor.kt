@@ -50,7 +50,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     private var hudProgram=0
     private var hudAt=0L
     private var hudActive=false
-    private val debugTick=object:Runnable {override fun run(){if(closed || (!diagnostics.enabled || !diagnostics.showOverlay))return;guard{draw()};handler.postDelayed(this,250)}}
+    private val debugTick=object:Runnable {override fun run(){if(closed || (!(diagnostics.enabled && diagnostics.showOverlay) && !diagnostics.showResources))return;guard{draw()};handler.postDelayed(this,250)}}
     private var hudBitmap:android.graphics.Bitmap?=null
     private var viewTextureId=0
     private lateinit var viewTexture:SurfaceTexture
@@ -59,7 +59,8 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     private val viewTransform=FloatArray(16)
     private val viewFrames=java.util.concurrent.ConcurrentSkipListMap<Long,dev.floatdesk.client.net.ViewFrame>()
     private val viewExpiry=Runnable{if(!closed)guard{draw()}}
-    private var viewCurrent:dev.floatdesk.client.net.ViewFrame?=null
+    @Volatile private var viewCurrent:dev.floatdesk.client.net.ViewFrame?=null
+    fun displayedQualityFocus():Pair<Float,Float>?=viewCurrent?.takeIf{diagnostics.enabled && android.os.SystemClock.uptimeMillis()-it.capturedAt<300}?.let{it.focusU to it.focusV}
     @Volatile private var viewPresented:(()->Unit)?=null
     fun onViewPresented(callback:()->Unit){viewPresented=callback}
     private var textureId=0
@@ -73,6 +74,13 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     @Volatile var outputLimit:Int=4096
         private set
     private var hasFrame=false
+    @Volatile private var sharpening=0f
+    fun sharpen(value:Float){val next=value.takeIf{it.isFinite()}?.coerceIn(0f,1.5f) ?: 0f;if(sharpening==next)return;sharpening=next;if(!closed)handler.post{if(!closed)guard{draw()}}}
+    private var baseFrames=0L
+    private var swaps=0L
+    private var submitNs=0L
+    private var statsAt=0L;private var statsBase=0L;private var statsView=0L;private var statsSwaps=0L;private var statsSubmit=0L
+    private var presentationStats="XR image 0fps · submit 0ms"
     private var lastDraw=0L
     private val transform=FloatArray(16)
     private val vertices=ByteBuffer.allocateDirect(8*4).order(ByteOrder.nativeOrder()).asFloatBuffer()
@@ -105,7 +113,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                 input=Surface(texture)
                 texture.setOnFrameAvailableListener({
                     if(!closed) guard {
-                        texture.updateTexImage(); texture.getTransformMatrix(transform); hasFrame=true; draw()
+                        texture.updateTexImage(); texture.getTransformMatrix(transform); hasFrame=true;baseFrames++; draw()
                     }
                 },handler)
                 val viewIds=IntArray(1);GLES20.glGenTextures(1,viewIds,0);viewTextureId=viewIds[0]
@@ -164,9 +172,9 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
 
     fun detailDebug(value:dev.floatdesk.client.net.DetailDiagnostics) {
         val before=diagnostics;diagnostics=value
-        if(!(before.enabled && before.showOverlay) && value.enabled && value.showOverlay && !closed)handler.postDelayed(debugTick,250)
-        if(!value.enabled || !value.showOverlay)handler.removeCallbacks(debugTick)
-        if((!value.showOverlay && !before.showOverlay && before.enabled==value.enabled) || before==value || closed || !diagnosticsPosted.compareAndSet(false,true))return
+        if(!(before.enabled && before.showOverlay || before.showResources) && (value.enabled && value.showOverlay || value.showResources) && !closed)handler.postDelayed(debugTick,250)
+        if(!(value.enabled && value.showOverlay || value.showResources))handler.removeCallbacks(debugTick)
+        if((!value.showOverlay && !before.showOverlay && before.enabled==value.enabled && before.showResources==value.showResources) || before==value || closed || !diagnosticsPosted.compareAndSet(false,true))return
         handler.post {diagnosticsPosted.set(false);if(!closed)guard{draw()}}
     }
 
@@ -203,6 +211,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
 
     private fun draw() {
         if((!hasFrame && viewCurrent==null) || window==EGL14.EGL_NO_SURFACE || target?.isValid!=true) return
+        val drawStarted=System.nanoTime()
         val w=IntArray(1); val h=IntArray(1)
         EGL14.eglQuerySurface(display,window,EGL14.EGL_WIDTH,w,0); EGL14.eglQuerySurface(display,window,EGL14.EGL_HEIGHT,h,0)
         val view=viewCurrent?.takeIf{diagnostics.enabled && android.os.SystemClock.uptimeMillis()-it.capturedAt<300}
@@ -227,6 +236,8 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         }
         val region=view?.inner
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(program,"sharpenStrength"),sharpening)
+        GLES20.glUniform2f(GLES20.glGetUniformLocation(program,"videoTexel"),if(view!=null)1f/2048 else 1f/baseWidth,if(view!=null)1f/1536 else 1f/baseHeight)
         val debug=diagnostics
         GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"detailDebug"),if(debug.enabled && debug.showOverlay)1 else 0)
         val candidate=debug.candidate
@@ -277,14 +288,15 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         drawInk(w[0],h[0])
         drawDiagnostics(w[0],h[0],region,view?.capturedAt ?: 0L)
         check(EGL14.eglSwapBuffers(display,window)) { "video swap failed" }
-        lastDraw=System.nanoTime()
+        lastDraw=System.nanoTime();submitNs+=lastDraw-drawStarted;swaps++
     }
 
     /** Video-layer HUD: no new native input target or independent overlay entity. */
     private fun drawDiagnostics(width:Int,height:Int,activeRect:dev.floatdesk.client.FocusRect?,stamp:Long) {
         val active=activeRect!=null
         val debug=diagnostics
-        if(!debug.enabled || !debug.showOverlay)return
+        val debugVisible=debug.enabled && debug.showOverlay
+        if(!debugVisible && !debug.showResources)return
         val now=android.os.SystemClock.uptimeMillis()
         val candidate=debug.candidate ?: dev.floatdesk.client.FocusRect(.15f,.2f,.85f,.8f)
         val pieces=mutableListOf<dev.floatdesk.client.FocusRect>()
@@ -295,31 +307,36 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             pieces.add(dev.floatdesk.client.FocusRect(r.centerU+(hit.left-r.centerU)*scale,r.centerV+(hit.top-r.centerV)*scale,r.centerU+(hit.right-r.centerU)*scale,r.centerV+(hit.bottom-r.centerV)*scale))
         }
         val piece=pieces.maxByOrNull{(it.right-it.left)*(it.bottom-it.top)} ?: return
-        if(hudTexture==0 || now-hudAt>=200 || hudActive!=active){
-            val bitmap=hudBitmap ?: android.graphics.Bitmap.createBitmap(1280,256,android.graphics.Bitmap.Config.ARGB_8888).also{hudBitmap=it}
+        val hudHeight=if(debugVisible){if(debug.showResources)424 else 256}else 184
+        if(now-statsAt>=1000){
+            val seconds=(now-statsAt).coerceAtLeast(1)/1000f
+            val images=if(active)detailUploads-statsView else baseFrames-statsBase
+            presentationStats=java.lang.String.format(java.util.Locale.ROOT,"Image %.1ffps redraw %.1ffps · GL submit %.2fms",images/seconds,(swaps-statsSwaps)/seconds,if(swaps>statsSwaps)(submitNs-statsSubmit).toDouble()/(swaps-statsSwaps)/1e6 else 0.0)
+            statsAt=now;statsBase=baseFrames;statsView=detailUploads;statsSwaps=swaps;statsSubmit=submitNs
+        }
+        if(hudTexture==0 || now-hudAt>=200 || hudActive!=active || hudBitmap?.height!=hudHeight){
+            if(hudBitmap?.height!=hudHeight){hudBitmap?.recycle();hudBitmap=null}
+            val bitmap=hudBitmap ?: android.graphics.Bitmap.createBitmap(1280,hudHeight,android.graphics.Bitmap.Config.ARGB_8888).also{hudBitmap=it}
             val canvas=android.graphics.Canvas(bitmap);canvas.drawColor(android.graphics.Color.rgb(15,21,30))
             val paint=android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply{textSize=26f;typeface=android.graphics.Typeface.MONOSPACE;color=android.graphics.Color.WHITE}
             val age=if(stamp>0)"${now-stamp}ms" else "none"
-            val lines=listOf(
+            val lines=mutableListOf<String>()
+            if(debug.showResources){lines.addAll(debug.hostResources.lines());lines.add(debug.localResources);lines.add(presentationStats)}
+            if(debugVisible)lines.addAll(listOf(
                 "VIEW ${width}x${height} ${if(active)"ACTIVE" else "BASELINE"} frames=$detailUploads age=$age",
-                debug.reason,
-                debug.transport,
+                debug.reason,debug.transport,
                 java.lang.String.format(java.util.Locale.ROOT,"gain X%.2fx Y%.2fx · atlas %.2f/%.2f",minOf(debug.gainX,width.toFloat()/baseWidth),minOf(debug.gainY,height.toFloat()/baseHeight),debug.gainX,debug.gainY),
                 java.lang.String.format(java.util.Locale.ROOT,"crop L%.0f%% T%.0f%% W%.0f%% H%.0f%%",candidate.left*100,candidate.top*100,(candidate.right-candidate.left)*100,(candidate.bottom-candidate.top)*100),
-                "AMBER: candidate   GREEN + tint: live GPU detail")
-            lines.forEachIndexed{i,line->
-                paint.color=if(i==4)android.graphics.Color.rgb(255,192,60) else android.graphics.Color.WHITE
-                canvas.drawText(line.take(65),260f,29f+i*42f,paint)
+                "AMBER: candidate   GREEN + tint: live GPU detail"))
+            lines.forEachIndexed{i,line->canvas.drawText(line.take(if(debugVisible)65 else 80),if(debugVisible)260f else 14f,29f+i*40f,paint)}
+            if(debugVisible){
+                val mapWidth=minOf(220f,170f*width/height);val mapHeight=mapWidth*height/width
+                fun mapRect(r:dev.floatdesk.client.FocusRect)=android.graphics.RectF(12+r.left*mapWidth,40+r.top*mapHeight,12+r.right*mapWidth,40+r.bottom*mapHeight)
+                paint.style=android.graphics.Paint.Style.STROKE;paint.strokeWidth=2f;paint.color=android.graphics.Color.GRAY
+                for(i in 0 until mapping.rects.size/4){val n=i*4;canvas.drawRect(mapRect(dev.floatdesk.client.FocusRect(mapping.rects[n],mapping.rects[n+1],mapping.rects[n+2],mapping.rects[n+3])),paint)}
+                if(active)activeRect?.let{r->paint.style=android.graphics.Paint.Style.FILL;paint.color=android.graphics.Color.argb(75,20,255,50);canvas.drawRect(mapRect(r),paint);paint.style=android.graphics.Paint.Style.STROKE;paint.color=android.graphics.Color.GREEN;paint.strokeWidth=4f;canvas.drawRect(mapRect(r),paint)}
+                paint.color=android.graphics.Color.rgb(255,190,30);paint.strokeWidth=2f;canvas.drawRect(mapRect(candidate),paint)
             }
-            val mapWidth=minOf(220f,170f*width/height);val mapHeight=mapWidth*height/width
-            fun mapRect(r:dev.floatdesk.client.FocusRect)=android.graphics.RectF(12+r.left*mapWidth,40+r.top*mapHeight,12+r.right*mapWidth,40+r.bottom*mapHeight)
-            paint.style=android.graphics.Paint.Style.STROKE;paint.strokeWidth=2f;paint.color=android.graphics.Color.GRAY
-            for(i in 0 until mapping.rects.size/4){val n=i*4;canvas.drawRect(mapRect(dev.floatdesk.client.FocusRect(mapping.rects[n],mapping.rects[n+1],mapping.rects[n+2],mapping.rects[n+3])),paint)}
-            if(active)activeRect?.let{r->
-                paint.style=android.graphics.Paint.Style.FILL;paint.color=android.graphics.Color.argb(75,20,255,50);canvas.drawRect(mapRect(r),paint)
-                paint.style=android.graphics.Paint.Style.STROKE;paint.color=android.graphics.Color.GREEN;paint.strokeWidth=4f;canvas.drawRect(mapRect(r),paint)
-            }
-            paint.color=android.graphics.Color.rgb(255,190,30);paint.strokeWidth=2f;canvas.drawRect(mapRect(candidate),paint)
             GLES20.glActiveTexture(GLES20.GL_TEXTURE3)
             if(hudTexture==0){val ids=IntArray(1);GLES20.glGenTextures(1,ids,0);hudTexture=ids[0]}
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D,hudTexture)
@@ -330,7 +347,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             android.opengl.GLUtils.texImage2D(GLES20.GL_TEXTURE_2D,0,bitmap,0);hudAt=now;hudActive=active
         }
         var boxWidth=(piece.right-piece.left)*.85f
-        var boxHeight=boxWidth*width/height*(256f/1280f)
+        var boxHeight=boxWidth*width/height*(hudHeight.toFloat()/1280f)
         val maxHeight=(piece.bottom-piece.top)*.3f
         if(boxHeight>maxHeight){boxWidth*=maxHeight/boxHeight;boxHeight=maxHeight}
         val x=((piece.centerU-boxWidth*.5f)*width).toInt().coerceAtLeast(0)
@@ -449,6 +466,24 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             uniform sampler2D projectionMap;
             uniform vec2 projectionGrid;
             uniform int projectionEnabled;
+            uniform float sharpenStrength;
+            uniform vec2 videoTexel;
+            vec3 videoAt(vec2 point){return texture2D(video,(textureMatrix*vec4(point.x,1.0-point.y,0.0,1.0)).xy).rgb;}
+            vec3 filteredVideo(vec2 point,vec4 bounds){
+                vec2 lo=bounds.xy+videoTexel*0.5;vec2 hi=bounds.zw-videoTexel*0.5;
+                vec3 base=videoAt(clamp(point,lo,hi));
+                if(sharpenStrength<0.001)return base;
+                vec3 a=videoAt(clamp(point+vec2(videoTexel.x,0.0),lo,hi));
+                vec3 b=videoAt(clamp(point-vec2(videoTexel.x,0.0),lo,hi));
+                vec3 c=videoAt(clamp(point+vec2(0.0,videoTexel.y),lo,hi));
+                vec3 d=videoAt(clamp(point-vec2(0.0,videoTexel.y),lo,hi));
+                vec3 weights=vec3(0.2126,0.7152,0.0722);
+                float y=dot(base,weights);float blur=dot((a+b+c+d)*0.25,weights);
+                float minimum=min(y,min(min(dot(a,weights),dot(b,weights)),min(dot(c,weights),dot(d,weights))));
+                float maximum=max(y,max(max(dot(a,weights),dot(b,weights)),max(dot(c,weights),dot(d,weights))));
+                float adjusted=clamp(y+sharpenStrength*(y-blur),minimum,maximum);
+                return clamp(base+vec3(adjusted-y),0.0,1.0);
+            }
             uniform int viewMode;
             uniform vec4 viewOuter;
             uniform vec4 viewInner;
@@ -487,12 +522,12 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                                 sampleSource=vec2(low.x,2.0/3.0+low.y/3.0);
                             }
                             vec2 sample=(textureMatrix*vec4(sampleSource.x,1.0-sampleSource.y,0.0,1.0)).xy;
-                            gl_FragColor=vec4(texture2D(video,sample).rgb,1.0);
+                            gl_FragColor=vec4(filteredVideo(sampleSource,viewMode==1?vec4(0.0,2.0/3.0,1.0,1.0):vec4(0.0,0.0,1.0,1.0)),1.0);
                             if(viewMode==1 && source.x>viewInner.x && source.x<viewInner.z && source.y>viewInner.y && source.y<viewInner.w){
                                 vec2 high=(source-viewInner.xy)/(viewInner.zw-viewInner.xy);
                                 vec2 highSample=(textureMatrix*vec4(high.x,1.0-high.y*2.0/3.0,0.0,1.0)).xy;
                                 float feather=smoothstep(0.0,0.025,min(min(high.x,1.0-high.x),min(high.y,1.0-high.y)));
-                                gl_FragColor.rgb=mix(gl_FragColor.rgb,texture2D(video,highSample).rgb,feather);
+                                gl_FragColor.rgb=mix(gl_FragColor.rgb,filteredVideo(vec2(high.x,high.y*2.0/3.0),vec4(0.0,0.0,1.0,2.0/3.0)),feather);
                             }
                             if(detailDebug==1) {
                                 float amber=border(source,candidateRect);

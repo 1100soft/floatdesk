@@ -146,6 +146,17 @@ impl GstEncoder {
         config: EncoderConfig,
         input_size: (u32, u32),
     ) -> Result<Self> {
+        Self::open_scaled_quality(preference, config, input_size, 0)
+    }
+    pub fn open_quality(preference: &str, config: EncoderConfig, quality: u32) -> Result<Self> {
+        Self::open_scaled_quality(preference, config, (config.width, config.height), quality)
+    }
+    pub fn open_scaled_quality(
+        preference: &str,
+        config: EncoderConfig,
+        input_size: (u32, u32),
+        quality: u32,
+    ) -> Result<Self> {
         if config.width % 2 != 0 || config.height % 2 != 0 {
             return Err(Error::Encoder(
                 "encoder width and height must be even".into(),
@@ -171,7 +182,7 @@ impl GstEncoder {
         }
         let mut errors = Vec::new();
         for profile in chosen {
-            match Self::start(profile, config, input_size) {
+            match Self::start(profile, config, input_size, quality) {
                 Ok(encoder) => {
                     tracing::info!(encoder = profile.element, "using H.264 encoder");
                     return Ok(encoder);
@@ -185,7 +196,12 @@ impl GstEncoder {
         Err(Error::Encoder(errors.join("; ")))
     }
 
-    fn start(profile: Profile, config: EncoderConfig, input_size: (u32, u32)) -> Result<Self> {
+    fn start(
+        profile: Profile,
+        config: EncoderConfig,
+        input_size: (u32, u32),
+        quality: u32,
+    ) -> Result<Self> {
         let max_bytes = (input_size.0 as u64 * input_size.1 as u64 * 4).saturating_mul(2);
         // A fused, parallel conversion avoids the serial full-size conversion
         // followed by a second scaling pass over a large combined desktop.
@@ -219,6 +235,40 @@ impl GstEncoder {
         pipeline.set_arg(Element::Source, "caps", &caps)?;
         for (name, value) in profile.props {
             pipeline.set_arg(Element::Encoder, name, value)?;
+        }
+        if quality > 0 {
+            match profile.element {
+                "vah264enc" | "vaapih264enc" => pipeline.set_arg(
+                    Element::Encoder,
+                    "target-usage",
+                    if quality == 1 { "4" } else { "1" },
+                )?,
+                "x264enc" => {
+                    pipeline.set_arg(
+                        Element::Encoder,
+                        "speed-preset",
+                        if quality == 1 {
+                            "superfast"
+                        } else {
+                            "veryfast"
+                        },
+                    )?;
+                    pipeline.set_arg(Element::Encoder, "cabac", "false")?;
+                    pipeline.set_arg(Element::Encoder, "dct8x8", "false")?;
+                    pipeline.set_arg(Element::Encoder, "ref", "1")?;
+                }
+                "nvh264enc" => pipeline.set_arg(
+                    Element::Encoder,
+                    "preset",
+                    if quality == 1 { "p4" } else { "p6" },
+                )?,
+                "openh264enc" => pipeline.set_arg(
+                    Element::Encoder,
+                    "complexity",
+                    if quality == 1 { "medium" } else { "high" },
+                )?,
+                _ => {}
+            }
         }
         // Bound recovery time even if the client's IDR request is lost.
         let gop = config.fps.max(1).to_string();

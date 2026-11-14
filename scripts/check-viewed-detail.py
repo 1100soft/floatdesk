@@ -15,7 +15,7 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-view-x11-') as temp:
    assert number
    env=dict(os.environ,DISPLAY=':'+number,FLOATDESK_SYNTHETIC_DISPLAY='1');env.pop('XAUTHORITY',None)
    with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as probe:probe.bind(('127.0.0.1',0));port=probe.getsockname()[1]
-   host=subprocess.Popen([str(root/'target/release/floatdesk'),'serve','--existing','--listen',f'127.0.0.1:{port}','--fps','10','--encoder','x264enc','--duration','20'],env=env,stdout=log,stderr=log)
+   host=subprocess.Popen([str(root/'target/release/floatdesk'),'serve','--existing','--listen',f'127.0.0.1:{port}','--fps','10','--encoder',os.environ.get('FLOATDESK_CHECK_ENCODER','x264enc'),'--duration','40'],env=env,stdout=log,stderr=log)
    with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as control,socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as video:
     control.bind(('127.0.0.1',0));control.settimeout(.2);video.bind(('127.0.0.1',0));video.setblocking(False)
     def send(kind,payload):control.sendto(b'FDC1'+struct.pack('<BBHII',1,kind,0,len(payload),0)+payload,('127.0.0.1',port))
@@ -31,8 +31,8 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-view-x11-') as temp:
      while len(out)<n:
       block=stream.recv(n-len(out));assert block,'View connection closed';out+=block
      return out
-    def request(stream,rect,session_id=session,center=None):
-     payload=json.dumps(dict(mode='view-h264-v1',sessionId=session_id,rect=rect,center=center)).encode();stream.sendall(struct.pack('>I',len(payload))+payload)
+    def request(stream,rect,session_id=session,center=None,**settings):
+     payload=json.dumps(dict(mode='view-h264-v1',sessionId=session_id,rect=rect,center=center,**settings)).encode();stream.sendall(struct.pack('>I',len(payload))+payload)
      meta=json.loads(exact(stream,struct.unpack('>I',exact(stream,4))[0]));unit=exact(stream,meta['bytes'])
      assert meta['type']=='view-h264-v1' and meta['width']==2048 and meta['height']==1536 and len(unit)<8*1024*1024
      outer,inner=meta['rect'],meta['inner'];assert outer[0]<=inner[0]<inner[2]<=outer[2] and outer[1]<=inner[1]<inner[3]<=outer[3]
@@ -42,6 +42,19 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-view-x11-') as temp:
      while True:
       try:video.recv(2048);count+=1
       except BlockingIOError:return count
+    def control_json(kind,timeout=3):
+     deadline=time.monotonic()+timeout
+     while time.monotonic()<deadline:
+      try:data=control.recv(65535)
+      except socket.timeout:continue
+      if data[5]==15:
+       value=json.loads(data[16:])
+       if value.get('type')==kind:return value
+     raise AssertionError('Missing control message '+kind)
+    send(15,json.dumps(dict(type='encoderSettings',quality=1,bitrateMbps=14)).encode())
+    ack=control_json('encoderAck');assert ack['quality']==1 and ack['bitrate']==14000000
+    telemetry=control_json('resourceStats')
+    assert telemetry['cpuPct']>=0 and telemetry['rssMiB']>0 and telemetry['fps']>=0
     units=[];regions=[]
     with socket.create_connection(('127.0.0.1',port),2) as stream:
      stream.settimeout(2)
@@ -56,6 +69,13 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-view-x11-') as temp:
       count=packets()
       if index>=3:assert count==0,'Full-desktop RTP continued during view-only streaming'
     assert regions[0]!=regions[1]
+    for quality in (1,2):
+     with socket.create_connection(('127.0.0.1',port),2) as stream:
+      stream.settimeout(3)
+      meta,_=request(stream,[.1,.1,.9,.9],quality=quality,bitrateMbps=14,fraction=.25)
+      assert abs((meta['inner'][2]-meta['inner'][0])/(meta['rect'][2]-meta['rect'][0])-.25)<.002
+    send(15,json.dumps(dict(type='encoderSettings',quality=0,bitrateMbps=0)).encode())
+    assert control_json('encoderAck')['quality']==0
     decoded=subprocess.check_output(['ffmpeg','-v','error','-f','h264','-i','pipe:0','-frames:v','2','-f','rawvideo','-pix_fmt','rgb24','pipe:1'],input=b''.join(units[:2]))
     stride=2048*1536*3
     assert len(decoded)==2*stride
@@ -82,7 +102,7 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-view-x11-') as temp:
      try:request(stream,[0,0,1,1],session+1)
      except (AssertionError,ConnectionError):pass
      else:raise AssertionError('Expired session accepted')
-    print('PASS actual view-only H.264 atlas, high/low capture pixels, per-frame crops, baseline pause/resume, off-view idle lease/expiry and session rejection')
+    print('PASS actual view-only H.264 atlas, high/low capture pixels, per-frame crops, baseline pause/resume, off-view idle lease/expiry and session rejection, encoder presets/bitrate, dense fraction and telemetry')
   finally:
    if host and host.poll() is None:host.send_signal(signal.SIGTERM);host.wait(timeout=5)
    x.terminate();x.wait(timeout=5)

@@ -15,6 +15,7 @@ internal class PointerControl {
     private val handPoses=mutableMapOf<String,HandAimPose>()
     private val hoverPoses=mutableMapOf<String,HandAimPose>()
     private var resumeAfterGrab = 0L
+    val qualityReferences=mutableMapOf<Int,MonitorMesh?>()
     val meshes = mutableMapOf<Int, MonitorMesh?>()
     private val nativeOwners=mutableSetOf<Int>()
     val nativeManipulating:Boolean get()=nativeOwners.isNotEmpty()
@@ -45,7 +46,7 @@ internal class PointerControl {
 
     fun clearMonitor(monitor: Int) {
         hovering.entries.removeAll { it.value.monitor == monitor }
-        meshes.remove(monitor)
+        meshes.remove(monitor);qualityReferences.remove(monitor)
         nativeOwners.remove(monitor)
     }
 

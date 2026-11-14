@@ -33,13 +33,13 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-compositor-') as temp:
     pattern_video=subprocess.check_output(['ffmpeg','-v','error','-f','rawvideo','-pixel_format','bgra','-video_size','2048x1536','-i','pipe:0','-frames:v','1','-c:v','libx264','-pix_fmt','yuv420p','-threads','2','-preset','ultrafast','-tune','zerolatency','-crf','10','-f','h264','pipe:1'],input=pattern)
     pattern_file=folder/'pattern.h264';pattern_file.write_bytes(pattern_video)
     fixture=folder/'ViewFrameFixture.java';fixture.write_text('final class ViewFrameFixture {static final byte[] DATA=java.util.Base64.getDecoder().decode("'+base64.b64encode(encoded).decode()+'");}')
-    subprocess.run([str(javac),'--release','17','-cp',f'{platform}:{classes}','-d',str(folder/'classes'),str(root/'checks/VideoCompositorSmoke.java'),str(root/'checks/DecoderIdleSmoke.java'),str(root/'checks/ViewStreamSmoke.java'),str(root/'checks/OutputResolutionSmoke.java'),str(fixture)],check=True)
+    subprocess.run([str(javac),'--release','17','-cp',f'{platform}:{classes}','-d',str(folder/'classes'),str(root/'checks/VideoCompositorSmoke.java'),str(root/'checks/DecoderIdleSmoke.java'),str(root/'checks/ViewStreamSmoke.java'),str(root/'checks/OutputResolutionSmoke.java'),str(root/'checks/SharpenSmoke.java'),str(fixture)],check=True)
     subprocess.run([str(d8),'--lib',str(platform),'--output',str(folder/'dex'),*[str(file) for file in (folder/'classes').glob('*.class')]],check=True)
     remote='/data/local/tmp/floatdesk-compositor-smoke.dex'
     subprocess.run([adb,'push',str(folder/'dex/classes.dex'),remote],check=True)
     subprocess.run([adb,'push',str(pattern_file),'/data/local/tmp/floatdesk-detail-pattern.h264'],check=True)
     try:
-        for main in os.environ.get('FLOATDESK_DEVICE_CHECKS','VideoCompositorSmoke,DecoderIdleSmoke,ViewStreamSmoke,OutputResolutionSmoke').split(','):
+        for main in os.environ.get('FLOATDESK_DEVICE_CHECKS','VideoCompositorSmoke,DecoderIdleSmoke,ViewStreamSmoke,OutputResolutionSmoke,SharpenSmoke').split(','):
             print('Running '+main,flush=True)
             subprocess.run([adb,'shell',f'CLASSPATH={shlex.quote(remote+":"+installed)} app_process /system/bin {main}'],check=True,timeout=45)
     finally:

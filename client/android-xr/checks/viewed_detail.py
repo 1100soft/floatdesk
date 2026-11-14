@@ -47,6 +47,11 @@ fun main(){
  check(spaced.desktopBounds(FocusRect(.45f,0f,.55f,1f))==null)
  val source=spaced.desktopBounds(FocusRect(.02f,.05f,.38f,.95f))!!
  check(spaced.extendedDesktopPoint(1.05f,.5f)!!.first>1f)
+ for(point in listOf(.1f to .2f,.9f to .8f,1.05f to .5f)){
+  val display=spaced.extendedDisplayPoint(point.first,point.second)!!
+  val restored=spaced.extendedDesktopPoint(display.first,display.second)!!
+  check(abs(restored.first-point.first)<.0001f && abs(restored.second-point.second)<.0001f)
+ }
  check(abs(source.left)<.0001f && abs(source.right-.4f)<.0001f && abs(source.top)<.0001f && abs(source.bottom-1f)<.0001f)
  println("PASS viewed crop follows head framing, flat/curved coverage, behind-view rejection and gap/spacing inversion")
 }

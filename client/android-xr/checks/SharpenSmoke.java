@@ -11,6 +11,12 @@ public final class SharpenSmoke {
  static int pixel(Image image,int x,int y){var p=image.getPlanes()[0];return p.getBuffer().get(y*p.getRowStride()+x*p.getPixelStride())&255;}
  public static void main(String[] args)throws Exception{
   var fonts=Typeface.class.getDeclaredMethod("loadPreinstalledSystemFontMap");fonts.setAccessible(true);fonts.invoke(null);
+  var overlay=Bitmap.createBitmap(1280,480,Bitmap.Config.ARGB_8888);
+  var overlayState=new DetailDiagnostics(false,null,"","",0f,0f,false,true,"Host CPU(core) 120%","XR CPU(core) 130%");
+  dev.floatdesk.client.DiagnosticsCanvas.INSTANCE.draw(new Canvas(overlay),new dev.floatdesk.client.net.DiagnosticSnapshot(overlayState,null,"60fps"),new float[]{0,0,1,1},SystemClock.uptimeMillis());
+  if(Color.alpha(overlay.getPixel(0,0))!=0 || Color.alpha(overlay.getPixel(1279,479))!=0)throw new AssertionError("Diagnostics background is opaque");
+  int lit=0;for(int y=0;y<480;y++)for(int x=0;x<1280;x++)if(Color.alpha(overlay.getPixel(x,y))>0)lit++;
+  if(lit<100 || lit>1280*480/8)throw new AssertionError("Diagnostics are not isolated floating glyphs");overlay.recycle();
   var reader=ImageReader.newInstance(64,48,PixelFormat.RGBA_8888,4);var video=new VideoCompositor(64,48);
   try{
    video.output(reader.getSurface());Canvas canvas=video.getInput().lockCanvas(null);canvas.drawColor(Color.BLACK);Paint p=new Paint();

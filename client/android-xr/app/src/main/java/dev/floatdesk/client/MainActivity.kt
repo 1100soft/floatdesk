@@ -578,7 +578,13 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             handTracking.pinched.clear()
             val candidateHead = perceived?.let { deskPose(current, root, it) }
             displayHead.set(candidateHead?.toWorkspacePose())
-            runCatching { diagnosticsOverlay?.update(root,candidateHead?.takeIf{trackingAvailable},unitsPerMeter,connection.diagnosticSnapshot(),connection.presentation().rects) }
+            runCatching { diagnosticsOverlay?.update(root,candidateHead?.takeIf{trackingAvailable},unitsPerMeter,connection.diagnosticSnapshot(),connection.presentation().rects,
+                workspace.layouts[workspace.activeLayout].orEmpty().mapIndexed { index,screen ->
+                    val eye=viewerInMonitor(candidateHead?.translation?.toArray() ?: floatArrayOf(0f,0f,0f),screen.pose.position,screen.pose.rotation)
+                    val mesh=pointerControl.meshes[index]
+                    val separation=if(mesh==null)kotlin.math.abs(eye[2]) else mesh.radius*.9f-kotlin.math.sqrt((0..2).sumOf{val d=eye[it]-mesh.eye[it];(d*d).toDouble()}).toFloat()
+                    (separation/unitsPerMeter).coerceAtLeast(0f)
+                }.minOrNull() ?: 1f,viewHalfAngles.get()[1]) }
                 .onFailure { Log.w("Floatdesk","Diagnostics overlay update failed",it) }
             val reliable = trackingGuard.update(handTracking.nowMs, candidateHead?.takeIf { trackingAvailable }?.translation?.toArray(),
                 candidateHead?.let { floatArrayOf(it.rotation.x,it.rotation.y,it.rotation.z,it.rotation.w) },unitsPerMeter)

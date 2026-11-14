@@ -52,9 +52,10 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         private set
     private val viewTransform=FloatArray(16)
     private val viewFrames=java.util.concurrent.ConcurrentSkipListMap<Long,dev.floatdesk.client.net.ViewFrame>()
-    private val viewExpiry=Runnable{if(!closed)guard{draw()}}
+    private var viewTimestamp=Long.MIN_VALUE
+    private var viewLatched=false
     @Volatile private var viewCurrent:dev.floatdesk.client.net.ViewFrame?=null
-    fun displayedQualityFocus():Pair<Float,Float>?=viewCurrent?.takeIf{diagnostics.enabled && android.os.SystemClock.uptimeMillis()-it.capturedAt<300}?.let{it.focusU to it.focusV}
+    fun displayedQualityFocus():Pair<Float,Float>?=viewCurrent?.takeIf{diagnostics.enabled && viewLatched}?.let{it.focusU to it.focusV}
     @Volatile private var viewPresented:(()->Unit)?=null
     fun onViewPresented(callback:()->Unit){viewPresented=callback}
     private var textureId=0
@@ -118,16 +119,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                 GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,GLES20.GL_TEXTURE_WRAP_T,GLES20.GL_CLAMP_TO_EDGE)
                 viewTexture=SurfaceTexture(viewTextureId).also{it.setDefaultBufferSize(2048,1536)}
                 viewInput=Surface(viewTexture)
-                viewTexture.setOnFrameAvailableListener({if(!closed)guard{
-                    viewTexture.updateTexImage();viewTexture.getTransformMatrix(viewTransform)
-                    val pts=viewTexture.timestamp/1000
-                    viewCurrent=viewFrames.remove(pts)
-                    viewFrames.headMap(pts,true).clear()
-                    if(viewCurrent!=null){detailUploads++;viewPresented?.invoke()}
-                    handler.removeCallbacks(viewExpiry)
-                    viewCurrent?.let{handler.postDelayed(viewExpiry,(300-(android.os.SystemClock.uptimeMillis()-it.capturedAt)).coerceAtLeast(0))}
-                    draw()
-                }},handler)
+                viewTexture.setOnFrameAvailableListener({if(!closed)guard{latchView()}},handler)
                 program=link(VERTEX,FRAGMENT)
                 inkProgram=link(INK_VERTEX,INK_FRAGMENT)
                 Log.i("Floatdesk","live video compositor ready ${width}x$height")
@@ -136,6 +128,23 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         }
         check(ready.await(5,TimeUnit.SECONDS)) { "video compositor initialization timed out" }
         failure?.let { close(); throw IllegalStateException("video compositor initialization failed",it) }
+    }
+
+    private fun latchView() {
+        viewTexture.updateTexImage()
+        val pts=viewTexture.timestamp/1000
+        // Queued callbacks can latch the same newest image. Keep its consumed metadata.
+        if(pts==viewTimestamp)return
+        val previous=viewTimestamp
+        viewTimestamp=maxOf(viewTimestamp,pts)
+        val next=if(pts>previous)viewFrames.remove(pts) else null
+        viewFrames.headMap(pts,true).clear()
+        viewLatched=next!=null
+        if(next!=null){
+            viewTexture.getTransformMatrix(viewTransform);viewCurrent=next
+            detailUploads++;viewPresented?.invoke()
+        } else hasFrame=false // Unknown/older atlas must never reveal a retained baseline.
+        draw()
     }
 
     @JvmOverloads
@@ -161,7 +170,12 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         viewFrames[ptsUs]=value
         while(viewFrames.size>64)viewFrames.pollFirstEntry()
     }
-    fun clearView(){viewFrames.clear();if(!closed)handler.post{viewCurrent=null;guard{draw()}}}
+    fun clearView(){viewFrames.clear();if(!closed)handler.post{
+        // Baseline capture was paused. Wait for a newly decoded baseline, not its old retained image.
+        if(viewCurrent!=null)hasFrame=false
+        viewCurrent=null;viewLatched=false
+        guard{draw()}
+    }}
 
     fun detailDebug(value:dev.floatdesk.client.net.DetailDiagnostics) {
         val before=diagnostics;diagnostics=value
@@ -170,7 +184,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     }
 
     fun diagnosticSnapshot():dev.floatdesk.client.net.DiagnosticSnapshot = dev.floatdesk.client.net.DiagnosticSnapshot(
-        diagnostics,viewCurrent?.takeIf{diagnostics.enabled && android.os.SystemClock.uptimeMillis()-it.capturedAt<300},presentationStats)
+        diagnostics,viewCurrent?.takeIf{diagnostics.enabled && viewLatched},presentationStats)
 
 
     fun overlay(value: VideoAim) {
@@ -205,11 +219,15 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     }
 
     private fun draw() {
-        if((!hasFrame && viewCurrent==null) || window==EGL14.EGL_NO_SURFACE || target?.isValid!=true) return
+        if(window==EGL14.EGL_NO_SURFACE || target?.isValid!=true) return
         val drawStarted=System.nanoTime()
         val w=IntArray(1); val h=IntArray(1)
         EGL14.eglQuerySurface(display,window,EGL14.EGL_WIDTH,w,0); EGL14.eglQuerySurface(display,window,EGL14.EGL_HEIGHT,h,0)
-        val view=viewCurrent?.takeIf{diagnostics.enabled && android.os.SystemClock.uptimeMillis()-it.capturedAt<300}
+        val view=viewCurrent?.takeIf{diagnostics.enabled && viewLatched}
+        if((diagnostics.enabled && viewCurrent!=null && !viewLatched) || view==null && !hasFrame){
+            GLES20.glDisable(GLES20.GL_SCISSOR_TEST);GLES20.glClearColor(0f,0f,0f,0f);GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+            check(EGL14.eglSwapBuffers(display,window));return
+        }
         GLES20.glViewport(0,0,w[0],h[0]); GLES20.glUseProgram(program)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"viewMode"),if(view!=null)1 else 0)
         if(view!=null){

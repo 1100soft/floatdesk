@@ -22,6 +22,7 @@ public final class ViewStreamSmoke {
             try(Image image=reader.acquireLatestImage()){
                 if(image!=null){
                     int[] high=pixel(image,32,16),low=pixel(image,12,10),outside=pixel(image,1,1);
+                    if(mode==3 && high[3]<10 && low[3]<10 && outside[3]<10)return;
                     if(mode==0 && high[0]>180 && low[2]>180 && outside[3]<10)return;
                     if(mode==2 && high[0]>180 && high[1]<40 && low[2]>180 && low[1]<40 && outside[3]<10)return;
                     if(mode==1 && high[1]>180 && high[0]<40 && low[1]>180)return;
@@ -53,10 +54,19 @@ public final class ViewStreamSmoke {
             submit(codec,compositor,1000000,true);System.out.println("view test: first output released");await(reader,2);System.out.println("view test: diagnostic-enabled video remains untinted");
             compositor.detailDebug(new DetailDiagnostics(true,new FocusRect(.1f,.1f,.9f,.9f),"gaze test","H264",2f,2f,false));
             System.out.println("view test: hiding diagnostics");submit(codec,compositor,1500000,true);await(reader,2);System.out.println("view test: hidden HUD verified"); // Hiding diagnostics must not switch off the high-density stream.
-            submit(codec,compositor,2000000,false);await(reader,1);
+            // Duplicate SurfaceTexture callbacks must retain exact metadata, not flash baseline.
+            var handlerField=VideoCompositor.class.getDeclaredField("handler");handlerField.setAccessible(true);
+            var handler=(android.os.Handler)handlerField.get(compositor);
+            var latch=VideoCompositor.class.getDeclaredMethod("latchView");latch.setAccessible(true);
+            handler.post(()->{try{latch.invoke(compositor);latch.invoke(compositor);}catch(Exception error){throw new RuntimeException(error);}});
+            SystemClock.sleep(40);compositor.output(reader.getSurface(),true);await(reader,2);
+            // A slow next frame must hold the latest picture, never resurrect the paused baseline.
+            SystemClock.sleep(350);compositor.output(reader.getSurface(),true);await(reader,2);
+            submit(codec,compositor,2000000,false);await(reader,3);
             submit(codec,compositor,3000000,true);await(reader,0);
-            compositor.clearView();await(reader,1);
-            System.out.println("PASS: actual H264 atlas center/periphery sampling, out-of-view alpha, exact PTS association and baseline restoration");
+            compositor.clearView();await(reader,3);
+            Canvas fresh=compositor.getInput().lockCanvas(null);fresh.drawColor(Color.GREEN);compositor.getInput().unlockCanvasAndPost(fresh);await(reader,1);
+            System.out.println("PASS: actual H264 atlas center/periphery sampling, out-of-view alpha, exact PTS association duplicate callback retention, no stale timeout fallback and fresh-only baseline restoration");
         } catch(Throwable failure){failure.printStackTrace();throw failure;} finally {if(codec!=null){codec.stop();codec.release();}compositor.close();reader.close();}
     }
 }

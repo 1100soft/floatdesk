@@ -80,7 +80,18 @@ internal class ViewedDetail(private val destination:()->ViewDestination?,private
             finally {socket=null;runCatching{codec?.stop()};runCatching{codec?.release()};output.clear();fallback()}
         }
     },"floatdesk-view-h264").also{it.isDaemon=true;it.start()}
-    private fun drain(codec:MediaCodec){val info=MediaCodec.BufferInfo();while(true){val index=codec.dequeueOutputBuffer(info,0);if(index<0)return;codec.releaseOutputBuffer(index,info.size>0)}}
+    private fun drain(codec:MediaCodec){
+        val info=MediaCodec.BufferInfo();var newest=-1
+        while(true){
+            val index=codec.dequeueOutputBuffer(info,0)
+            if(index==MediaCodec.INFO_OUTPUT_FORMAT_CHANGED)continue
+            if(index<0)break
+            if(info.size<=0){codec.releaseOutputBuffer(index,false);continue}
+            if(newest>=0)codec.releaseOutputBuffer(newest,false)
+            newest=index
+        }
+        if(newest>=0)codec.releaseOutputBuffer(newest,true)
+    }
     fun update(value:DetailRequest?){val before=request.getAndSet(value);if(value==null && before!=null){socket?.runCatching{close()};destination()?.clear();fallback()}}
     override fun close(){running=false;request.set(null);socket?.runCatching{close()};destination()?.clear();fallback()}
 }

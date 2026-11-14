@@ -1,5 +1,7 @@
 # Changes since the LAN proof of concept
 
+- Put transparent bright diagnostics in the upper view periphery, adapting depth to stay ahead of desktop geometry. Prevent dynamic-stream flashes of the paused baseline on duplicate callbacks or frame-age expiry; require fresh decoded baseline frames during handoff.
+
 - Restore head-driven spherical curvature while retaining gaze-targeted streaming. Move diagnostics to a separate noninteractive view-following overlay, remove desktop diagnostic tint/borders/text, and clarify core-summed CPU and target video bitrate labels.
 
 - Synchronize spherical curvature with fine gaze and the displayed high-density frame. Narrow the configurable dense region to 35% by default. Add saved encoder effort/bitrate and GPU sharpening settings, plus live host/headset resource and streaming telemetry in both streaming modes.

@@ -26,7 +26,7 @@ import dev.floatdesk.client.workspace.ViewLayers
 internal fun DiagnosticsPanel(connection:dev.floatdesk.client.net.DeskConnection,
     viewer:java.util.concurrent.atomic.AtomicReference<dev.floatdesk.client.workspace.Pose?>,
     units:()->Float,angles:()->FloatArray,resources:Boolean,quality:Boolean,qualityDebug:Boolean) {
-    if(!resources && !qualityDebug)return
+    if(!qualityDebug)return
     val session=androidx.xr.compose.platform.LocalSession.current ?: return
     val density=androidx.compose.ui.platform.LocalDensity.current
     val pixelDensity=session.scene.virtualPixelDensity
@@ -62,9 +62,8 @@ internal fun DiagnosticsPanel(connection:dev.floatdesk.client.net.DeskConnection
                     shape=androidx.xr.compose.subspace.layout.SpatialRoundedCornerShape(androidx.compose.foundation.shape.CornerSize(androidx.compose.ui.unit.Dp(0f)))){
                     androidx.compose.foundation.Canvas(androidx.compose.ui.Modifier.fillMaxSize()){
                         drawIntoCanvas{target->
-                            texture.update(state,connection.presentation().rects,stamp,index)
                             val c=target.nativeCanvas;val saved=c.save();c.scale(size.width/800f,size.height/400f)
-                            c.drawBitmapMesh(texture.bitmap,patch.columns,patch.rows,patch.vertices,0,null,0,texture.paint)
+                            texture.draw(c,state,connection.presentation().rects,stamp,index,patch.columns,patch.rows,patch.vertices)
                             c.restoreToCount(saved)
                         }
                     }
@@ -74,15 +73,23 @@ internal fun DiagnosticsPanel(connection:dev.floatdesk.client.net.DeskConnection
     }
 }
 
-private class HudGlyphTexture:AutoCloseable{
+internal class HudGlyphTexture:AutoCloseable{
     val bitmap=android.graphics.Bitmap.createBitmap(800,400,android.graphics.Bitmap.Config.ARGB_8888)
     val paint=Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private var stamp=Long.MIN_VALUE;private var state:DiagnosticSnapshot?=null
-    fun update(value:DiagnosticSnapshot,screens:FloatArray,now:Long,index:Int){
+    private var closed=false
+    private fun update(value:DiagnosticSnapshot,screens:FloatArray,now:Long,index:Int){
         if(stamp==now && state===value)return
         DiagnosticsCanvas.drawCluster(Canvas(bitmap),value,screens,now,index);stamp=now;state=value
     }
-    override fun close(){bitmap.recycle()}
+    fun draw(canvas:Canvas,value:DiagnosticSnapshot,screens:FloatArray,now:Long,index:Int,columns:Int,rows:Int,vertices:FloatArray){
+        if(closed)return
+        update(value,screens,now,index)
+        canvas.drawBitmapMesh(bitmap,columns,rows,vertices,0,null,0,paint)
+    }
+    // Compose/RenderThread can retain recorded draws after disposal. Let the bitmap be
+    // collected with those references instead of recycling storage they may still use.
+    override fun close(){closed=true}
 }
 
 /** Canvas-only diagnostics, separate from scene placement and desktop video rendering. */

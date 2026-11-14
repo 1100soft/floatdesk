@@ -10,7 +10,7 @@ internal data class FocusRect(val left:Float,val top:Float,val right:Float,val b
         return r.takeIf{it.right>it.left && it.bottom>it.top}
     }
 }
-internal data class FocusTarget(val rect:FocusRect,val screen:String,val windowId:Long?=null,val contactU:Float=rect.centerU,val contactV:Float=rect.centerV)
+internal data class FocusTarget(val rect:FocusRect,val screen:String,val windowId:Long?=null,val contactU:Float=rect.centerU,val contactV:Float=rect.centerV,val resetDesktop:Boolean=false)
 internal data class FocusHover(val screen:FocusTarget,val window:FocusTarget?=null)
 internal data class FocusResult(val requestId:Int,val ok:Boolean,val rect:FocusRect?,val message:String="")
 
@@ -18,11 +18,12 @@ internal data class FocusResult(val requestId:Int,val ok:Boolean,val rect:FocusR
 internal fun focusAimContacts(hands:Map<String,PointerTarget>,gaze:PointerTarget?):Map<String,PointerTarget> =
     if(hands.isNotEmpty())hands else gaze?.let{mapOf("GAZE" to it)} ?: emptyMap()
 
-/** Capture the highlighted target at contact, select on release; no hold timer or chord veto. */
+/** Capture on contact, select on release. A deliberate overlapping two-finger contact wins. */
 internal class FocusGestures(private val thresholds:()->PinchThresholds={PinchThresholds.Default}) {
-    private data class Hold(val side:String,val index:Boolean,val target:FocusTarget)
+    private data class Hold(val side:String,val fingers:Int,val target:FocusTarget)
     private val previous=mutableMapOf<String,Int>()
     private var hold:Hold?=null
+    private var chordRelease:String?=null
     fun update(enabled:Boolean,blocked:Boolean,samples:Map<String,FingerPinch>,hover:Map<String,FocusHover>):FocusTarget? {
         previous.keys.retainAll(samples.keys)
         val policy=thresholds()
@@ -33,20 +34,33 @@ internal class FocusGestures(private val thresholds:()->PinchThresholds={PinchTh
             bits to (bits and before.inv())
         }
         // Observe opens while blocked, rather than clearing a latch that requires another wide opening.
-        if(!enabled || blocked) {hold=null;return null}
+        if(!enabled || blocked) {hold=null;chordRelease=null;return null}
+        chordRelease?.let{side->
+            if((edges[side]?.first ?: 0)==0)chordRelease=null
+            return null
+        }
         hold?.let {current->
             val sample=samples[current.side]
             if(sample==null) {hold=null;return null}
-            val closed=if(current.index)policy.indexClosed(current.side,sample.indexMetres) else policy.middleClosed(current.side,sample.middleMetres)
-            if(closed)return null
-            hold=null;return current.target
+            val bits=edges.getValue(current.side).first
+            // Upgrade only when the second finger newly closes while the owned finger is closed.
+            // A finger already resting closed before this gesture must not turn it into Reset.
+            if(current.fingers!=3 && bits==3 && edges.getValue(current.side).second and current.fingers.inv()!=0) {
+                hold=current.copy(fingers=3,target=current.target.copy(resetDesktop=true));return null
+            }
+            if(bits and current.fingers==current.fingers)return null
+            hold=null
+            if(current.fingers==3)chordRelease=current.side.takeIf{bits!=0}
+            return current.target
         }
         for((side,state) in edges) {
             val pressed=state.second
             if(pressed==0)continue
             val target=hover[side] ?: hover.values.singleOrNull() ?: continue
             val index=pressed and 1 != 0
-            hold=Hold(side,index,if(index)target.window ?: target.screen else target.screen)
+            val fingers=if(pressed==3)3 else if(index)1 else 2
+            val captured=if(index)target.window ?: target.screen else target.screen
+            hold=Hold(side,fingers,if(fingers==3)captured.copy(resetDesktop=true) else captured)
             break
         }
         return null

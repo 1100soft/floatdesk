@@ -861,7 +861,8 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 val uncertain=quality.overlapping && quality.continuousOwner==null
                 val selected=focusGestures.update(workspace.focusMode,
                     focusGate.isNotEmpty(),samples,focusHover)
-                if(selected!=null && connection.requestFocus(selected))pendingFocusMonitor=0
+                if(selected?.resetDesktop==true)resetDesk()
+                else if(selected!=null && connection.requestFocus(selected))pendingFocusMonitor=0
                 val mouse=mouseGestures.update(frame.at,workspace.mouseGestures && !workspace.focusMode,
                     gestureBlocked || uncertain || workspace.focusMode,samples,if(workspace.focusMode)null else choice.target)
                 mouse.scroll?.let {

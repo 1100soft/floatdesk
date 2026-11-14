@@ -146,7 +146,7 @@ private fun PinchSettings(value:PinchThresholds,onApply:(PinchThresholds)->Unit)
 
 @Composable
 private fun StreamingSettings(value:dev.floatdesk.client.workspace.WorkspaceFile,onApply:(dev.floatdesk.client.workspace.WorkspaceFile)->Unit){
-    Text("Video quality",color=Color.White,fontSize=18.sp)
+    Text("Encoder effort",color=Color.White,fontSize=18.sp)
     Row(horizontalArrangement=Arrangement.spacedBy(6.dp)){
         listOf("Fast","Balanced","Quality").forEachIndexed{i,label->
             Button(onClick={onApply(value.copy(encoderQuality=i))}){Text(if(value.encoderQuality==i)"✓ $label" else label)}

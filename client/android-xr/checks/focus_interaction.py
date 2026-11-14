@@ -69,9 +69,15 @@ fun main() {
  check(frame(.01f,.05f,false)==null);check(frame(.01f,.01f)==null);check(frame(.01f,.05f)==screen)
  // Opens while blocked rearm normally; no extra wide opening after the block ends.
  check(frame(.05f,.05f,blocked=true)==null);check(frame(.01f,.05f)==null);check(frame(.05f,.05f)==window)
- // Contact capture survives an incidental chord and does not become a middle action.
- check(frame(.01f,.05f)==null);check(frame(.01f,.01f)==null);check(frame(.05f,.01f)==window)
+ // A second finger closing during the owned contact upgrades to desktop Reset.
+ check(frame(.01f,.05f)==null);check(frame(.01f,.01f)==null);check(frame(.05f,.01f)?.resetDesktop==true)
+ check(frame(.01f,.01f)==null);check(frame(.01f,.05f)==null) // Swapping held fingers cannot emit a trailing selection.
  frame(.05f,.05f)
+ // Simultaneous contact and middle-first overlap both reset without a hold timer.
+ check(frame(.01f,.01f)==null);check(frame(.05f,.05f)?.resetDesktop==true)
+ check(frame(.05f,.01f)==null);check(frame(.01f,.01f)==null);check(frame(.01f,.05f)?.resetDesktop==true)
+ check(frame(.05f,.05f)==null)
+ check(frame(.01f,.01f,blocked=true)==null);check(frame(.05f,.05f)==null)
  val fallback=FocusGestures();fallback.update(true,false,mapOf("RIGHT" to FingerPinch(.05f,.05f)),mapOf("RIGHT" to FocusHover(screen)))
  check(fallback.update(true,false,mapOf("RIGHT" to FingerPinch(.01f,.05f)),mapOf("RIGHT" to FocusHover(screen)))==null)
  check(fallback.update(true,false,mapOf("RIGHT" to FingerPinch(.05f,.05f)),emptyMap())==screen)

@@ -48,6 +48,20 @@ public final class SharpenSmoke {
   }
   if(!headerSeen || gap<8)throw new AssertionError("HUD header overlaps content; gap="+gap);
   System.out.println("HUD header/body gap="+gap+"px");
+  // Draws queued during spatial-panel removal must remain safe after texture disposal.
+  var glyph=new dev.floatdesk.client.HudGlyphTexture();
+  var targetBitmap=Bitmap.createBitmap(800,400,Bitmap.Config.ARGB_8888);
+  var targetCanvas=new Canvas(targetBitmap);
+  float[] glyphMesh={0,0,800,0,0,400,800,400};
+  var diagnostic=new dev.floatdesk.client.net.DiagnosticSnapshot(hudState,null,"60fps");
+  glyph.draw(targetCanvas,diagnostic,new float[]{0,0,1,1},1,0,1,1,glyphMesh);
+  int glyphCount=0;for(int y=0;y<400;y++)for(int x=0;x<800;x++)if(Color.alpha(targetBitmap.getPixel(x,y))!=0)glyphCount++;
+  if(glyphCount<100)throw new AssertionError("Foreground glyph draw is empty");
+  glyph.close();glyph.close();targetCanvas.drawColor(Color.TRANSPARENT,PorterDuff.Mode.CLEAR);
+  glyph.draw(targetCanvas,diagnostic,new float[]{0,0,1,1},2,0,1,1,glyphMesh);
+  if(glyph.getBitmap().isRecycled())throw new AssertionError("Recorded HUD bitmap was recycled during disposal");
+  for(int y=0;y<400;y++)for(int x=0;x<800;x++)if(Color.alpha(targetBitmap.getPixel(x,y))!=0)throw new AssertionError("Disposed HUD rendered a queued draw");
+  targetBitmap.recycle();System.out.println("PASS queued HUD draw after repeated disposal is safe and blank");
   hud.recycle();
   var reader=ImageReader.newInstance(64,48,PixelFormat.RGBA_8888,4);var video=new VideoCompositor(64,48);
   try{

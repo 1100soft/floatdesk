@@ -14,25 +14,37 @@ import androidx.xr.runtime.math.IntSize2d
 import androidx.xr.runtime.math.Pose
 import androidx.xr.runtime.math.Vector3
 import androidx.xr.scenecore.Entity
-import androidx.xr.scenecore.SurfaceEntity
 import dev.floatdesk.client.net.DiagnosticSnapshot
+import dev.floatdesk.client.workspace.ViewLayers
 
-/** Independent view-following canvas. No input, move or resize components are attached. */
-@SuppressLint("RestrictedApi")
-@OptIn(androidx.xr.scenecore.ExperimentalSurfaceEntityPixelDimensionsApi::class)
+/** View-following Android panel, ordered above video by the scene panel clipping policy. */
 internal class DiagnosticsOverlay(private val session:Session):AutoCloseable {
-    private var entity:SurfaceEntity?=null
+    private var entity:androidx.xr.scenecore.PanelEntity?=null
     private var drawnAt=0L
     private var scale=Float.NaN
-    fun update(root:Entity,head:Pose?,units:Float,snapshot:DiagnosticSnapshot,screens:FloatArray,clearance:Float,verticalHalfAngle:Float) {
-        val state=snapshot.state
-        val debug=state.enabled && state.showOverlay
-        if(head==null || !debug && !state.showResources){entity?.parent=null;return}
-        val panel=entity ?: SurfaceEntity.create(session,shape=SurfaceEntity.Shape.Quad(FloatSize2d(.72f,.27f)),parent=null,superSampling=SurfaceEntity.SuperSampling.NONE).also {
-            it.setSurfacePixelDimensions(IntSize2d(1280,480));it.mediaBlendingMode=SurfaceEntity.MediaBlendingMode.TRANSPARENT;entity=it
+    private var data:DiagnosticSnapshot?=null
+    private var screens=floatArrayOf(0f,0f,1f,1f)
+    private val view=object:android.view.View(session.context){
+        init {setBackgroundColor(Color.TRANSPARENT);isClickable=false;isFocusable=false;isEnabled=false;importantForAccessibility=IMPORTANT_FOR_ACCESSIBILITY_NO}
+        override fun onTouchEvent(event:android.view.MotionEvent)=false
+        override fun onDraw(canvas:Canvas){
+            super.onDraw(canvas)
+            val value=data ?: return
+            val checkpoint=canvas.save()
+            canvas.scale(width/1280f,height/480f)
+            DiagnosticsCanvas.draw(canvas,value,screens,SystemClock.uptimeMillis())
+            canvas.restoreToCount(checkpoint)
         }
-        // Keep angular size constant as the HUD moves in front of nearby desktop geometry.
-        val distance=(clearance*.6f).coerceIn(.35f,.5f)
+    }
+    fun update(root:Entity,head:Pose?,units:Float,snapshot:DiagnosticSnapshot,screens:FloatArray,verticalHalfAngle:Float) {
+        val state=snapshot.state
+        if(head==null || !(state.enabled && state.showOverlay) && !state.showResources){entity?.parent=null;return}
+        val panel=entity ?: androidx.xr.scenecore.PanelEntity.create(session,view,IntSize2d(1280,480),"Floatdesk diagnostics",parent=null).also {
+            it.size=FloatSize2d(.72f,.27f);it.cornerRadius=0f;entity=it
+            android.util.Log.i("Floatdesk","Diagnostics Android panel created; depth testing disabled for UI panels")
+        }
+        // Explicit layer distances: desktop 1.2m, controls .65m, diagnostics .55m.
+        val distance=ViewLayers.DiagnosticsDistanceM
         val halfAngle=verticalHalfAngle.takeIf{it.isFinite() && it>0f} ?: .6f
         val upper=kotlin.math.tan(halfAngle*.9f)
         val lower=kotlin.math.tan(halfAngle*.25f)
@@ -44,13 +56,11 @@ internal class DiagnosticsOverlay(private val session:Session):AutoCloseable {
         panel.parent=root
         val now=SystemClock.uptimeMillis()
         if(now-drawnAt<250)return
-        val canvas=panel.getSurface().lockCanvas(null)
-        try { DiagnosticsCanvas.draw(canvas,snapshot,screens,now) } finally {panel.getSurface().unlockCanvasAndPost(canvas)}
-        drawnAt=now
+        data=snapshot;this.screens=screens;view.invalidate();drawnAt=now
     }
     @Suppress("DEPRECATION")
     @SuppressLint("RestrictedApi")
-    override fun close(){entity?.let{it.parent=null;it.dispose()};entity=null}
+    override fun close(){entity?.let{it.parent=null;it.dispose()};entity=null;data=null}
 }
 
 /** Canvas-only diagnostics, separate from scene placement and desktop video rendering. */

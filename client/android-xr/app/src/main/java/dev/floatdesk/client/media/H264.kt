@@ -273,10 +273,14 @@ internal class MonitorDecoder(
 
     fun attach(next: Surface) {
         surface.set(next)
+        // Dynamic streaming pauses baseline access units. Bind immediately rather than
+        // waiting for decodeLoop's next baseline unit when switching native canvases.
+        if(renderingActive.get())compositor?.output(next)
     }
 
     fun detach() {
         surface.set(null)
+        compositor?.output(null)
     }
 
     fun stop() {
@@ -367,6 +371,7 @@ internal class MonitorDecoder(
         renderer?.overlay(aim.get())
         renderer?.presentation(presentation.get())
         renderer?.projection(projection.get())
+        if(renderingActive.get())renderer?.output(surface.get())
         var displayedSurface: Surface?=null
         while (running.get()) {
             if(!renderingActive.get()) {

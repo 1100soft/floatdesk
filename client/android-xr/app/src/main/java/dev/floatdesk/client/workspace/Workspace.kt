@@ -61,6 +61,7 @@ internal data class WorkspaceFile(
 internal class WorkspaceStore(private val file: File) {
     private val lock = Any()
     @Volatile var viewerReference:Pose?=null
+    @Volatile var viewerUnitsPerMeter:Float=1f
 
     fun load(): WorkspaceFile = synchronized(lock) {
         if (!file.exists()) return WorkspaceFile()
@@ -110,7 +111,7 @@ internal fun WorkspaceFile.monitorPlaced(
     val current = layouts[activeLayout] ?: return this
     if (index !in current.indices) return this
     val updated = current.toMutableList()
-    updated[index] = placement
+    updated[index] = store.viewerReference?.let{fixedDesktopDepth(placement,it,store.viewerUnitsPerMeter)} ?: placement
     val nextLayouts = layouts.toMutableMap()
     nextLayouts[activeLayout] = updated
     val next = copy(layouts = nextLayouts)

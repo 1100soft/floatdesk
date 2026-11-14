@@ -1,5 +1,7 @@
 # Changes since the LAN proof of concept
 
+- Use UI-panel compositing above desktop video for transparent diagnostics. Fix flat/curved output rebinding while baseline encoding is paused. Keep desktop focus at 1.2 m with depth-to-size conversion; center controls at arm’s length.
+
 - Retain a bounded GPU atlas across rejected dynamic frames and stream handoffs to avoid blanking. Move diagnostic text outside the previous near-eye clipping range. Auto-narrow dense crops to preserve final-output detail and report effective sampling gain.
 
 - Put transparent bright diagnostics in the upper view periphery, adapting depth to stay ahead of desktop geometry. Prevent dynamic-stream flashes of the paused baseline on duplicate callbacks or frame-age expiry; require fresh decoded baseline frames during handoff.

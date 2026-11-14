@@ -1,5 +1,12 @@
 package dev.floatdesk.client.workspace
 
+/** UI panel compositing plus ordered physical planes; all values are in meters. */
+internal object ViewLayers {
+    const val DesktopDistanceM=1.2f
+    const val ControlsDistanceM=.65f
+    const val DiagnosticsDistanceM=.55f
+}
+
 /** Without a restored room anchor, keep the saved arrangement relative to the startup viewer. */
 internal fun WorkspaceFile.restoreViewer(viewer:Pose):WorkspaceFile {
     val prior=viewerReference ?: Pose()
@@ -20,7 +27,7 @@ internal fun fitDesktopInView(screens:List<MonitorPlacement>,viewer:Pose,horizon
                              verticalHalfAngle:Float,unitsPerMeter:Float,spherical:Boolean,centralView:Boolean=false):MutableList<MonitorPlacement> {
     if(screens.isEmpty())return mutableListOf()
     val units=unitsPerMeter.takeIf{it.isFinite() && it>0f} ?: 1f
-    val distance=1.2f*units
+    val distance=ViewLayers.DesktopDistanceM*units
     fun angle(value:Float,fallback:Float)=((value.takeIf{it.isFinite() && it>.05f} ?: fallback)*.85f).coerceAtMost(1.2f)
     val horizontal=minOf(angle(horizontalHalfAngle,Math.toRadians(35.0).toFloat()),if(centralView)Math.toRadians(18.0).toFloat() else Float.POSITIVE_INFINITY)
     val vertical=minOf(angle(verticalHalfAngle,Math.toRadians(30.0).toFloat()),if(centralView)Math.toRadians(12.0).toFloat() else Float.POSITIVE_INFINITY)
@@ -68,4 +75,23 @@ internal fun focusDesktopRegion(screen:MonitorPlacement,rect:FloatArray,viewer:P
     val offset=floatArrayOf(x+q[3]*tx+q[1]*tz-q[2]*ty,y+q[3]*ty+q[2]*tx-q[0]*tz,q[3]*tz+q[0]*ty-q[1]*tx)
     return screen.copy(pose=Pose(FloatArray(3){fitted.pose.position[it]-offset[it]},q.copyOf()),
         physicalWidthM=width,physicalHeightM=height,viewCenterU=u,viewCenterV=v)
+}
+
+
+/** Preserve angular location/size while keeping the desktop's focus point at a fixed radius. */
+internal fun fixedDesktopDepth(screen:MonitorPlacement,viewer:Pose,unitsPerMeter:Float):MonitorPlacement {
+    val units=unitsPerMeter.takeIf{it.isFinite() && it>0f} ?: 1f
+    val x=(screen.viewCenterU-.5f)*screen.physicalWidthM
+    val y=(.5f-screen.viewCenterV)*screen.physicalHeightM
+    val q=screen.pose.rotation
+    val tx=-2f*q[2]*y;val ty=2f*q[2]*x;val tz=2f*(q[0]*y-q[1]*x)
+    val offset=floatArrayOf(x+q[3]*tx+q[1]*tz-q[2]*ty,y+q[3]*ty+q[2]*tx-q[0]*tz,q[3]*tz+q[0]*ty-q[1]*tx)
+    val d=FloatArray(3){screen.pose.position[it]+offset[it]-viewer.position[it]}
+    val distance=kotlin.math.sqrt(d.sumOf{(it*it).toDouble()}).toFloat()
+    if(!distance.isFinite() || distance<.05f*units)return screen
+    val target=ViewLayers.DesktopDistanceM*units
+    if(kotlin.math.abs(distance-target)<.002f*units)return screen
+    val scale=target/distance
+    return screen.copy(pose=Pose(FloatArray(3){viewer.position[it]+(screen.pose.position[it]-viewer.position[it])*scale},screen.pose.rotation),
+        physicalWidthM=screen.physicalWidthM*scale,physicalHeightM=screen.physicalHeightM*scale)
 }

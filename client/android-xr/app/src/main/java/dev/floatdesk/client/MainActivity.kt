@@ -107,6 +107,8 @@ import dev.floatdesk.client.workspace.Pose
 import dev.floatdesk.client.workspace.WorkspaceFile
 import dev.floatdesk.client.workspace.WorkspaceStore
 import dev.floatdesk.client.workspace.focusDesktopRegion
+import dev.floatdesk.client.workspace.ViewLayers
+import dev.floatdesk.client.workspace.fixedDesktopDepth
 import dev.floatdesk.client.workspace.fitDesktopInView
 import dev.floatdesk.client.workspace.restoreViewer
 import dev.floatdesk.client.workspace.reconcileMonitors
@@ -238,7 +240,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     }
     val grabs = remember { mutableMapOf<Int, TwoHandState>() }
     DisposableEffect(session) {
-        session?.scene?.panelClippingConfig=androidx.xr.scenecore.PanelClippingConfig(isDepthTestEnabled=true)
+        session?.scene?.panelClippingConfig=androidx.xr.scenecore.PanelClippingConfig(isDepthTestEnabled=false)
         val current = session
         val listener = Runnable {
             Log.w("Floatdesk","XR activity origin changed; cancelling gestures")
@@ -578,13 +580,8 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             handTracking.pinched.clear()
             val candidateHead = perceived?.let { deskPose(current, root, it) }
             displayHead.set(candidateHead?.toWorkspacePose())
-            runCatching { diagnosticsOverlay?.update(root,candidateHead?.takeIf{trackingAvailable},unitsPerMeter,connection.diagnosticSnapshot(),connection.presentation().rects,
-                workspace.layouts[workspace.activeLayout].orEmpty().mapIndexed { index,screen ->
-                    val eye=viewerInMonitor(candidateHead?.translation?.toArray() ?: floatArrayOf(0f,0f,0f),screen.pose.position,screen.pose.rotation)
-                    val mesh=pointerControl.meshes[index]
-                    val separation=if(mesh==null)kotlin.math.abs(eye[2]) else mesh.radius*.9f-kotlin.math.sqrt((0..2).sumOf{val d=eye[it]-mesh.eye[it];(d*d).toDouble()}).toFloat()
-                    (separation/unitsPerMeter).coerceAtLeast(0f)
-                }.minOrNull() ?: 1f,viewHalfAngles.get()[1]) }
+            runCatching { diagnosticsOverlay?.update(root,candidateHead?.takeIf{trackingAvailable},unitsPerMeter,
+                connection.diagnosticSnapshot(),connection.presentation().rects,viewHalfAngles.get()[1]) }
                 .onFailure { Log.w("Floatdesk","Diagnostics overlay update failed",it) }
             val reliable = trackingGuard.update(handTracking.nowMs, candidateHead?.takeIf { trackingAvailable }?.translation?.toArray(),
                 candidateHead?.let { floatArrayOf(it.rotation.x,it.rotation.y,it.rotation.z,it.rotation.w) },unitsPerMeter)
@@ -603,6 +600,12 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                     restoreViewerPending=false
                 }
                 store.viewerReference=reference
+                store.viewerUnitsPerMeter=unitsPerMeter
+                val active=workspace.layouts[workspace.activeLayout]
+                if(active!=null){
+                    val fixed=active.map{fixedDesktopDepth(it,reference,unitsPerMeter)}
+                    if(fixed.indices.any{fixed[it] !== active[it]})workspace=workspace.copy(layouts=workspace.layouts.toMutableMap().also{it[workspace.activeLayout]=fixed.toMutableList()})
+                }
             }
             if (!reliable) {
                 trackingRecovery.update(handTracking.nowMs,false,null,null,unitsPerMeter)
@@ -766,9 +769,11 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 if (palmPanel == null) Log.i("Floatdesk", "palm panel shown side=${candidate.side} unitsPerMeter=${candidate.unitsPerMeter} pose=${candidate.pose.toRuntimePose()}")
                 panelHand = candidate.side
                 lastPalmSeen = SystemClock.uptimeMillis()
-                palmPanel = candidate
+                val centered=candidate.copy(pose=palmPanel?.pose ?: (head ?: candidate.pose.toRuntimePose()).compose(
+                    androidx.xr.runtime.math.Pose(Vector3(0f,0f,-ViewLayers.ControlsDistanceM*unitsPerMeter))).toWorkspacePose())
+                palmPanel = centered
                 val other = if (candidate.side == "LEFT") "RIGHT" else "LEFT"
-                poke.update(candidate, fingerTips[other])?.let { palmActionNow.value(it) }
+                poke.update(centered, fingerTips[other])?.let { palmActionNow.value(it) }
                 // A platform click may arrive on release after our direct-contact press.
                 if (poke.latchedContact) lastPalmAction = SystemClock.uptimeMillis()
             }

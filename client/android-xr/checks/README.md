@@ -170,3 +170,5 @@ Quality-gaze checks cover analytic flat/spherical targeting past desktop edges, 
 The hardware view-stream check also repeats SurfaceTexture latches, waits beyond the former 300 ms timeout, rejects unmapped images, and requires a fresh baseline after handoff. The sharpening check verifies diagnostic canvas transparency outside glyphs/outlines.
 
 Dynamic view regressions now verify the cached atlas survives missing mappings and EGL output rebinding, holds through handoff, and gives way to a fresh baseline. Density tests cover auto-narrowing a full-view 50% crop to 32% for a 5120×3200 output while retaining requested fractions for closer views.
+
+The idle-decoder device regression reattaches output canvases without another compressed frame, reproducing the dynamic-mode flat/curved handoff stall. It also checks hidden attaches do not render. Workspace regressions cover shared depth ordering, fixed-radius preservation of angular position/size, source-focus centering, depth-to-zoom conversion and scene-unit scaling.

@@ -36,6 +36,18 @@ public final class SharpenSmoke {
     int x1=(int)(region.getRight()*hud.getWidth())-3,y1=(int)(region.getBottom()*hud.getHeight())-3;
     if(Color.alpha(hud.getPixel(x0,y0))!=0 || Color.alpha(hud.getPixel(x1,y1))!=0)throw new AssertionError("HUD corners have a background");
   }
+  var hostRegion=hudLayout.getRegions().get(0);
+  int hx0=(int)(hostRegion.getLeft()*hud.getWidth()),hx1=(int)(hostRegion.getRight()*hud.getWidth());
+  int hy0=(int)(hostRegion.getTop()*hud.getHeight()),hy1=(int)(hostRegion.getBottom()*hud.getHeight());
+  boolean headerSeen=false,afterHeader=false;int gap=0;
+  for(int y=hy0;y<hy1;y++){
+    boolean ink=false;for(int x=hx0;x<hx1;x++)if(Color.alpha(hud.getPixel(x,y))>0){ink=true;break;}
+    if(!headerSeen){if(ink)headerSeen=true;}
+    else if(!afterHeader){if(!ink){afterHeader=true;gap=1;}}
+    else if(ink)break;else gap++;
+  }
+  if(!headerSeen || gap<8)throw new AssertionError("HUD header overlaps content; gap="+gap);
+  System.out.println("HUD header/body gap="+gap+"px");
   hud.recycle();
   var reader=ImageReader.newInstance(64,48,PixelFormat.RGBA_8888,4);var video=new VideoCompositor(64,48);
   try{

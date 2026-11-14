@@ -1668,8 +1668,24 @@ fn paint_cursor_scaled(
     rect: MonitorRect,
     cursor: &CursorSprite,
 ) {
-    if (frame.width, frame.height) == (rect.width, rect.height) {
-        paint_cursor(frame, rect.x, rect.y, cursor);
+    let destination = (0, 0, frame.width, frame.height);
+    paint_cursor_scaled_at(frame, rect, cursor, destination);
+}
+fn paint_cursor_scaled_at(
+    frame: &mut crate::core::CapturedFrame,
+    rect: MonitorRect,
+    cursor: &CursorSprite,
+    destination: (u32, u32, u32, u32),
+) {
+    let (x, y, width_px, height_px) = destination;
+    let clip = (
+        x as i32,
+        y as i32,
+        (x + width_px) as i32,
+        (y + height_px) as i32,
+    );
+    if (width_px, height_px) == (rect.width, rect.height) {
+        paint_cursor_clipped(frame, rect.x - x as i32, rect.y - y as i32, cursor, clip);
         return;
     }
     if cursor.width == 0
@@ -1678,8 +1694,8 @@ fn paint_cursor_scaled(
     {
         return;
     }
-    let sx = f64::from(frame.width) / f64::from(rect.width);
-    let sy = f64::from(frame.height) / f64::from(rect.height);
+    let sx = f64::from(width_px) / f64::from(rect.width);
+    let sy = f64::from(height_px) / f64::from(rect.height);
     let width = (f64::from(cursor.width) * sx).ceil().max(1.0) as u16;
     let height = (f64::from(cursor.height) * sy).ceil().max(1.0) as u16;
     let mut pixels = vec![0; usize::from(width) * usize::from(height) * 4];
@@ -1695,22 +1711,23 @@ fn paint_cursor_scaled(
         }
     }
     let scaled = CursorSprite {
-        root_x: (f64::from(cursor.root_x - rect.x) * sx).round() as i32,
-        root_y: (f64::from(cursor.root_y - rect.y) * sy).round() as i32,
+        root_x: x as i32 + (f64::from(cursor.root_x - rect.x) * sx).round() as i32,
+        root_y: y as i32 + (f64::from(cursor.root_y - rect.y) * sy).round() as i32,
         hotspot_x: (f64::from(cursor.hotspot_x) * sx).round() as i16,
         hotspot_y: (f64::from(cursor.hotspot_y) * sy).round() as i16,
         width,
         height,
         pixels,
     };
-    paint_cursor(frame, 0, 0, &scaled);
+    paint_cursor_clipped(frame, 0, 0, &scaled, clip);
 }
 
-fn paint_cursor(
+fn paint_cursor_clipped(
     frame: &mut crate::core::CapturedFrame,
     origin_x: i32,
     origin_y: i32,
     cursor: &CursorSprite,
+    clip: (i32, i32, i32, i32),
 ) {
     let width = cursor.width as i32;
     let height = cursor.height as i32;
@@ -1728,12 +1745,12 @@ fn paint_cursor(
     let stride = frame.stride as usize;
     for row in 0..height {
         let dst_y = top + row;
-        if dst_y < 0 || dst_y >= frame_h {
+        if dst_y < clip.1.max(0) || dst_y >= clip.3.min(frame_h) {
             continue;
         }
         for col in 0..width {
             let dst_x = left + col;
-            if dst_x < 0 || dst_x >= frame_w {
+            if dst_x < clip.0.max(0) || dst_x >= clip.2.min(frame_w) {
                 continue;
             }
             let src = ((row as usize * cursor.width as usize) + col as usize) * 4;
@@ -1946,6 +1963,46 @@ mod pointer_tests {
 #[cfg(test)]
 mod video_pacing_tests {
     use super::*;
+    #[test]
+    fn cursor_is_offset_into_its_atlas_tile_and_clipped_at_the_tile_edge() {
+        let mut frame = crate::core::CapturedFrame {
+            width: 12,
+            height: 8,
+            stride: 48,
+            bgra: vec![0; 384],
+            monotonic_ns: 0,
+            damage_generation: 0,
+        };
+        let rect = MonitorRect {
+            index: 0,
+            x: 0,
+            y: 0,
+            width: 8,
+            height: 8,
+        };
+        let cursor = CursorSprite {
+            root_x: 6,
+            root_y: 4,
+            hotspot_x: 0,
+            hotspot_y: 0,
+            width: 4,
+            height: 4,
+            pixels: [0, 255, 0, 255].repeat(16),
+        };
+        paint_cursor_scaled_at(&mut frame, rect, &cursor, (4, 2, 4, 4));
+        for y in 0..8 {
+            for x in 0..12 {
+                assert_eq!(
+                    frame.bgra[y * 48 + x * 4 + 1],
+                    if x == 7 && (4..6).contains(&y) {
+                        255
+                    } else {
+                        0
+                    }
+                );
+            }
+        }
+    }
     #[test]
     fn scaled_cursor_tracks_full_desktop_coordinates() {
         let mut frame = crate::core::CapturedFrame {

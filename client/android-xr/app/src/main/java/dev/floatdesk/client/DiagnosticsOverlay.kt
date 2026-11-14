@@ -145,17 +145,25 @@ internal object DiagnosticsCanvas {
         }
         paint.style=Paint.Style.FILL;paint.color=when(index){0->Color.CYAN;1->Color.rgb(210,170,255);2->Color.rgb(150,255,190);else->Color.rgb(255,210,100)}
         paint.textSize=64f;paint.typeface=Typeface.create(Typeface.MONOSPACE,Typeface.BOLD)
-        canvas.drawText(title,18f,66f,paint)
+        val titleInk=android.graphics.Rect()
+        paint.getTextBounds(title,0,title.length,titleInk)
+        val titleBaseline=12f-titleInk.top
+        canvas.drawText(title,18f,titleBaseline,paint)
         paint.typeface=Typeface.MONOSPACE;paint.textSize=60f
+        val bodyInk=android.graphics.Rect();val sample="Agjp0123456789"
+        paint.getTextBounds(sample,0,sample.length,bodyInk)
+        val headerBottom=maxOf(titleBaseline+titleInk.bottom,if(index==3)78f else 0f)
+        val bodyBaseline=headerBottom+16f-bodyInk.top
+        val lineStep=bodyInk.height()+6f
         val left=18f
         val maxWidth=780f-left
         var row=0
         for(paragraph in text.lines()){
             var remaining=paragraph
-            while(remaining.isNotEmpty() && row<5){
+            while(remaining.isNotEmpty() && row<5 && bodyBaseline+row*lineStep+bodyInk.bottom<=396f){
                 val fit=paint.breakText(remaining,true,maxWidth,null).coerceAtLeast(1)
                 val end=if(fit<remaining.length)remaining.lastIndexOf(' ',fit).takeIf{it>0} ?: fit else fit
-                canvas.drawText(remaining.substring(0,end),left,108f+row*66f,paint)
+                canvas.drawText(remaining.substring(0,end),left,bodyBaseline+row*lineStep,paint)
                 remaining=remaining.substring(end).trimStart();row++
             }
         }

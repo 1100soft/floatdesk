@@ -59,9 +59,12 @@ impl DesktopMask {
         Self { gaps }
     }
     pub fn apply(&self, frame: &mut CapturedFrame) {
-        for &(y, left, right) in &self.gaps {
-            let start = y * frame.stride as usize + left * 4;
-            let end = y * frame.stride as usize + right * 4;
+        self.apply_at(frame, 0, 0);
+    }
+    pub fn apply_at(&self, frame: &mut CapturedFrame, x: usize, y: usize) {
+        for &(row, left, right) in &self.gaps {
+            let start = (row + y) * frame.stride as usize + (left + x) * 4;
+            let end = (row + y) * frame.stride as usize + (right + x) * 4;
             frame.bgra[start..end].fill(0);
         }
     }
@@ -86,6 +89,29 @@ mod tests {
             bgra: vec![127; ((w * 4 + 8) * h) as usize],
             monotonic_ns: 0,
             damage_generation: 0,
+        }
+    }
+    #[test]
+    fn atlas_mask_respects_offset_stride_and_neighboring_tiles() {
+        let mut f = frame(12, 6);
+        DesktopMask::new(
+            rect(0, 0, 12, 4),
+            6,
+            2,
+            &[rect(0, 0, 4, 4), rect(8, 0, 4, 4)],
+        )
+        .apply_at(&mut f, 3, 2);
+        for y in 0..6 {
+            for x in 0..12 {
+                assert_eq!(
+                    f.bgra[y * f.stride as usize + x * 4],
+                    if (2..4).contains(&y) && (5..7).contains(&x) {
+                        0
+                    } else {
+                        127
+                    }
+                );
+            }
         }
     }
     #[test]

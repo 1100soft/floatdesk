@@ -1,4 +1,5 @@
 # Changes since the LAN proof of concept
+- Fix HUD header/body overlap using glyph bounds. Tight-pack dynamic video samples and batch XRender composites into one SHM readback, preserving sample density while reducing low-coverage encoding work; keep cursor and gap clipping within packed tiles.
 - Consolidate diagnostics into one transparent spherical HUD with larger text, shared pose and square unclipped text regions. Preserve observed mixed gaze availability through scene recovery so Focus can resume from fine-eye rays without another pinch.
 - Place HUD clusters immediately outside Focus’s shared target bounds. Replace the experimental fixed-budget dense tile with bounded native-density HEVC tiles and normal-density visible periphery; honor all coverage values through 100%. Reapply desktop-only gaze cursor suppression after native hover changes.
 

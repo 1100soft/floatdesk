@@ -118,7 +118,6 @@ pub struct X11Capture {
     seg: u32,
     addr: *mut libc::c_void,
     mapping: usize,
-    capacity: (u16, u16),
     stride: u32,
     damage: u32,
     damage_ok: bool,
@@ -236,7 +235,6 @@ impl X11Capture {
             seg,
             addr,
             mapping,
-            capacity: (width as u16, height as u16),
             stride,
             damage: if damage_ok { damage } else { 0 },
             damage_ok,
@@ -252,44 +250,130 @@ impl X11Capture {
         if result.render.is_none() {
             result.render = Some(RenderTarget::create(&result.link, rect, width, height)?)
         }
+        // The viewed atlas is request-driven; it never waits for Damage notifications.
+        if result.damage_ok {
+            result
+                .link
+                .conn
+                .damage_destroy(result.damage)
+                .map_err(Error::x11)?
+                .check()
+                .map_err(Error::x11)?;
+        }
+        result.damage = 0;
+        result.damage_ok = false;
+        result.drain_damage()?;
         Ok(result)
     }
-    pub fn retarget_resampled(&mut self, rect: MonitorRect, width: u16, height: u16) -> Result<()> {
-        if width == 0 || height == 0 || width > self.capacity.0 || height > self.capacity.1 {
-            return Err(Error::Msg("Atlas capture exceeds allocation".into()));
-        }
+    /// Queue all GPU tile composites before one SHM reply; that reply is the error/barrier point.
+    pub fn atlas(&self, tiles: &[(MonitorRect, u16, u16, u16, u16)]) -> Result<CapturedFrame> {
         let target = self
             .render
-            .as_mut()
-            .ok_or_else(|| Error::Msg("Missing atlas render workspace".into()))?;
+            .as_ref()
+            .ok_or_else(|| Error::Msg("Missing atlas workspace".into()))?;
+        let mut checked = Vec::new();
+        checked.push(
+            self.link
+                .conn
+                .render_fill_rectangles(
+                    render::PictOp::SRC,
+                    target.destination,
+                    render::Color {
+                        red: 0,
+                        green: 0,
+                        blue: 0,
+                        alpha: 65535,
+                    },
+                    &[x11rb::protocol::xproto::Rectangle {
+                        x: 0,
+                        y: 0,
+                        width: self.width as u16,
+                        height: self.height as u16,
+                    }],
+                )
+                .map_err(Error::x11)?,
+        );
         let fixed = |v: f64| (v * 65536.0).round() as i32;
-        self.link
+        for &(r, x, y, w, h) in tiles {
+            if w == 0
+                || h == 0
+                || x as u32 + w as u32 > self.width
+                || y as u32 + h as u32 > self.height
+            {
+                return Err(Error::Msg("Atlas tile exceeds allocation".into()));
+            }
+            checked.push(
+                self.link
+                    .conn
+                    .render_set_picture_transform(
+                        target.source,
+                        render::Transform {
+                            matrix11: fixed(r.width as f64 / w as f64),
+                            matrix12: 0,
+                            matrix13: fixed(r.x as f64),
+                            matrix21: 0,
+                            matrix22: fixed(r.height as f64 / h as f64),
+                            matrix23: fixed(r.y as f64),
+                            matrix31: 0,
+                            matrix32: 0,
+                            matrix33: 65536,
+                        },
+                    )
+                    .map_err(Error::x11)?,
+            );
+            checked.push(
+                self.link
+                    .conn
+                    .render_composite(
+                        render::PictOp::SRC,
+                        target.source,
+                        0u32,
+                        target.destination,
+                        0,
+                        0,
+                        0,
+                        0,
+                        x as i16,
+                        y as i16,
+                        w,
+                        h,
+                    )
+                    .map_err(Error::x11)?,
+            );
+        }
+        let reply = self
+            .link
             .conn
-            .render_set_picture_transform(
-                target.source,
-                render::Transform {
-                    matrix11: fixed(rect.width as f64 / width as f64),
-                    matrix12: 0,
-                    matrix13: fixed(rect.x as f64),
-                    matrix21: 0,
-                    matrix22: fixed(rect.height as f64 / height as f64),
-                    matrix23: fixed(rect.y as f64),
-                    matrix31: 0,
-                    matrix32: 0,
-                    matrix33: 65536,
-                },
+            .shm_get_image(
+                target.pixmap,
+                0,
+                0,
+                self.width as u16,
+                self.height as u16,
+                u32::MAX,
+                u8::from(ImageFormat::Z_PIXMAP),
+                self.seg,
+                0,
             )
             .map_err(Error::x11)?
-            .check()
+            .reply()
             .map_err(Error::x11)?;
-        target.width = width;
-        target.height = height;
-        self.rect = rect;
-        self.width = width.into();
-        self.height = height.into();
-        self.stride = self.link.pixel_format()?.stride(self.width)?;
-        self.note_cursor();
-        Ok(())
+        for cookie in checked {
+            cookie.check().map_err(Error::x11)?
+        }
+        let need = self.stride as usize * self.height as usize;
+        if need > self.mapping || (reply.size != 0 && reply.size as usize > need) {
+            return Err(Error::Msg("Atlas SHM reply exceeds allocation".into()));
+        }
+        let pixels = unsafe { std::slice::from_raw_parts(self.addr as *const u8, need) };
+        Ok(CapturedFrame {
+            width: self.width,
+            height: self.height,
+            stride: self.stride,
+            bgra: pixels.to_vec(),
+            monotonic_ns: crate::core::monotonic_ns(),
+            damage_generation: self.generation,
+        })
     }
 
     /// Reuse the bounded SHM/readback allocation when the viewed crop changes.

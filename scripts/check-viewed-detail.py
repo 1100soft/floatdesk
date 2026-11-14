@@ -80,18 +80,29 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-view-x11-') as temp:
      meta,_=request(stream,[.2,.2,.6,.6],quality=0,bitrateMbps=14,fraction=1.0,center=[100,-100])
      assert all(abs(a-b)<.002 for a,b in zip(meta['inner'],meta['rect'])), '100% dense crop was capped'
     # Packed HEVC preserves native density for every requested coverage, including 100%.
+    # Synthetic quadrant windows test source transforms and atlas offsets, not just solid colors.
+    import ctypes
+    lib=ctypes.CDLL('libX11.so.6');lib.XOpenDisplay.argtypes=[ctypes.c_char_p];lib.XOpenDisplay.restype=ctypes.c_void_p
+    xd=lib.XOpenDisplay(env['DISPLAY'].encode());assert xd
+    lib.XDefaultRootWindow.argtypes=[ctypes.c_void_p];lib.XDefaultRootWindow.restype=ctypes.c_ulong
+    xr=lib.XDefaultRootWindow(xd)
+    lib.XCreateSimpleWindow.argtypes=[ctypes.c_void_p,ctypes.c_ulong,ctypes.c_int,ctypes.c_int,ctypes.c_uint,ctypes.c_uint,ctypes.c_uint,ctypes.c_ulong,ctypes.c_ulong];lib.XCreateSimpleWindow.restype=ctypes.c_ulong
+    lib.XMapWindow.argtypes=[ctypes.c_void_p,ctypes.c_ulong];lib.XSync.argtypes=[ctypes.c_void_p,ctypes.c_int]
+    for index,color in enumerate([0xff0000,0x00ff00,0x0000ff,0xffff00]):
+     window=lib.XCreateSimpleWindow(xd,xr,(index%2)*width//2,(index//2)*height//2,width//2,height//2,0,0,color)
+     lib.XMapWindow(xd,window)
+    lib.XSync(xd,0)
     packed_rect=json.loads(os.environ.get("FLOATDESK_PACKED_RECT","[0.1,0.1,0.9,0.9]"))
-    packed_units=[];packed_frames=int(os.environ.get("FLOATDESK_PACKED_FRAMES","4"));packed_start=time.monotonic()
+    packed_units=[];packed_headers=[];packed_frames=int(os.environ.get("FLOATDESK_PACKED_FRAMES","4"));packed_start=time.monotonic()
     with socket.create_connection(('127.0.0.1',port),2) as stream:
      stream.settimeout(5)
      for packed_index in range(packed_frames):
-      fraction=(.4,.7,.99,1.0)[packed_index%4]
-      payload=json.dumps(dict(mode='view-tiles-v2',sessionId=session,rect=packed_rect,center=[.5,.5],fraction=fraction)).encode()
+      fraction=float(os.environ["FLOATDESK_PACKED_FRACTION"]) if "FLOATDESK_PACKED_FRACTION" in os.environ else (.4,.7,.99,1.0)[packed_index%4]
+      payload=json.dumps(dict(mode='view-tiles-v2',sessionId=session,rect=packed_rect,center=[.5,.5],fraction=fraction,quality=int(os.environ.get('FLOATDESK_PACKED_QUALITY','0')))).encode()
       stream.sendall(struct.pack('>I',len(payload))+payload)
-      meta=json.loads(exact(stream,struct.unpack('>I',exact(stream,4))[0]));unit=exact(stream,meta['bytes']);packed_units.append(unit)
+      meta=json.loads(exact(stream,struct.unpack('>I',exact(stream,4))[0]));unit=exact(stream,meta['bytes']);packed_units.append(unit);packed_headers.append(meta)
       assert meta['type']=='view-tiles-v2' and meta['codec']=='video/hevc'
-      assert meta['width']<=width and meta['height']<=height
-      assert meta['width']>=round(width*(packed_rect[2]-packed_rect[0])) and meta['height']>=round(height*(packed_rect[3]-packed_rect[1]))
+      assert 2<=meta['width']<=8192 and 2<=meta['height']<=8192 and meta['width']*meta['height']<=16777216
       outer,inner=meta['rect'],meta['inner']
       assert abs((inner[2]-inner[0])/(outer[2]-outer[0])-fraction)<.002
       area=0
@@ -105,20 +116,42 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-view-x11-') as temp:
       assert 1<=len(meta['tiles'])<=5
       if fraction==1:assert len(meta['tiles'])==1
      packed_elapsed=time.monotonic()-packed_start
+     latest_stats=None
+     while True:
+      try:data=control.recv(65535)
+      except socket.timeout:break
+      if data[5]==15:
+       stats=json.loads(data[16:])
+       if stats.get('type')=='resourceStats':latest_stats=stats
+     if latest_stats:print('Packed profile '+json.dumps(latest_stats),flush=True)
      packed_size=(meta['width'],meta['height'])
      # One persistent session must shrink/grow its atlas when zoom crosses a bucket.
      for resized_rect in ([.3,.3,.4,.4],[0,0,1,1]):
       payload=json.dumps(dict(mode='view-tiles-v2',sessionId=session,rect=resized_rect,fraction=1)).encode()
       stream.sendall(struct.pack('>I',len(payload))+payload)
       resized=json.loads(exact(stream,struct.unpack('>I',exact(stream,4))[0]));unit=exact(stream,resized['bytes'])
-      dimensions=json.loads(subprocess.check_output(['ffprobe','-v','error','-f','hevc','-show_entries','stream=width,height','-of','json','pipe:0'],input=unit))['streams'][0]
+      dimensions=json.loads(subprocess.check_output(['ffprobe','-v','error','-threads','2','-f','hevc','-show_entries','stream=width,height','-of','json','pipe:0'],input=unit))['streams'][0]
       assert (dimensions['width'],dimensions['height'])==(resized['width'],resized['height'])
       assert len(resized['tiles'])==1
+     full_area=resized['width']*resized['height']
+     payload=json.dumps(dict(mode='view-tiles-v2',sessionId=session,rect=[0,0,1,1],fraction=.2)).encode()
+     stream.sendall(struct.pack('>I',len(payload))+payload)
+     lowered=json.loads(exact(stream,struct.unpack('>I',exact(stream,4))[0]));exact(stream,lowered['bytes'])
+     assert lowered['width']*lowered['height']<=full_area
+     if width>4096 or height>2160:assert lowered['width']*lowered['height']<full_area,'Lowering 100% to 20% kept the oversized encoder'
     elapsed=packed_elapsed
     print(f'Packed native probe: {packed_frames} frames at {width}x{height}, {packed_frames/elapsed:.1f} responses/s including startup; host '+next(line.strip() for line in Path(f'/proc/{host.pid}/status').read_text().splitlines() if line.startswith('VmHWM:')),flush=True)
-    packed_file=Path(temp)/"packed-decoded.rgb"
-    with packed_file.open("wb") as packed_output:subprocess.run(['ffmpeg','-v','error','-f','hevc','-i','pipe:0','-frames:v',str(packed_frames),'-f','rawvideo','-pix_fmt','rgb24','pipe:1'],input=b''.join(packed_units),stdout=packed_output,check=True)
-    assert packed_file.stat().st_size==packed_size[0]*packed_size[1]*3*packed_frames
+    combined=b''.join(packed_units)
+    decoded_sizes=json.loads(subprocess.check_output(['ffprobe','-v','error','-threads','2','-f','hevc','-show_entries','frame=width,height','-of','json','pipe:0'],input=combined))['frames']
+    assert [(f['width'],f['height']) for f in decoded_sizes]==[(m['width'],m['height']) for m in packed_headers]
+    first=packed_headers[0];pixels=subprocess.check_output(['ffmpeg','-v','error','-threads','2','-f','hevc','-i','pipe:0','-frames:v','1','-f','rawvideo','-pix_fmt','rgb24','pipe:1'],input=packed_units[0])
+    assert len(pixels)==first['width']*first['height']*3
+    for source,dest in first['tiles']:
+     u=source[0]+(source[2]-source[0])*.27;v=source[1]+(source[3]-source[1])*.31
+     pixel_x=int((dest[0]+(dest[2]-dest[0])*.27)*first['width']);pixel_y=int((dest[1]+(dest[3]-dest[1])*.31)*first['height'])
+     at=(pixel_y*first['width']+pixel_x)*3;actual=pixels[at:at+3]
+     expected=[(255,0,0),(0,255,0),(0,0,255),(255,255,0)][(1 if u>=.5 else 0)+(2 if v>=.5 else 0)]
+     assert all(abs(a-b)<45 for a,b in zip(actual,expected)),(source,dest,tuple(actual),expected)
     print('PASS packed HEVC native density, changing 40/70/99/100% coverage, tile bounds/partition and decoded frames')
     send(15,json.dumps(dict(type='encoderSettings',quality=0,bitrateMbps=0)).encode())
     assert control_json('encoderAck')['quality']==0

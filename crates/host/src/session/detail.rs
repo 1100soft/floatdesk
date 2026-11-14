@@ -1,5 +1,6 @@
 //! Experimental native-density HEVC tiles, with a legacy H.264 atlas fallback.
 use super::*;
+mod atlas;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 const WIDTH: u16 = 2048;
@@ -96,7 +97,10 @@ pub(super) fn start(
                     let (outer, outer_uv) = region(desktop, &request)
                         .ok_or_else(|| Error::Msg("Invalid view crop".into()))?;
                     if request["mode"] == "view-tiles-v2" {
-                        if packed.as_ref().is_none_or(|p| !p.fits(desktop, outer)) {
+                        if packed
+                            .as_ref()
+                            .is_none_or(|p| !p.fits(desktop, outer, &request))
+                        {
                             // Release the old SHM/encoder before allocating the next bucket.
                             packed.take();
                             packed = Some(PackedView::new(desktop, outer, &request, fps, bitrate)?)
@@ -378,12 +382,11 @@ mod tests {
 
 struct PackedView {
     source: (u32, u32),
-    density: (f64, f64),
+    fraction: f64,
     width: u16,
     height: u16,
     capture: X11Capture,
     encoder: GstEncoder,
-    pixels: Vec<u8>,
 }
 impl PackedView {
     fn new(
@@ -393,24 +396,10 @@ impl PackedView {
         fps: u32,
         bitrate: u32,
     ) -> Result<Self> {
-        let scale = 1f64
-            .min(8192.0 / desktop.width as f64)
-            .min(8192.0 / desktop.height as f64)
-            .min((16_777_216.0 / (desktop.width as f64 * desktop.height as f64)).sqrt());
-        let width = ((desktop.width as f64 * scale) as u16 / 2 * 2).max(2);
-        let height = ((desktop.height as f64 * scale) as u16 / 2 * 2).max(2);
-        let density = (
-            width as f64 / desktop.width as f64,
-            height as f64 / desktop.height as f64,
-        );
-        // Stable 256-pixel buckets avoid codec recreation on small FOV/crop changes.
-        let bucket = |value: f64, limit: u16| {
-            ((((value - 1e-7).ceil() as u32).div_ceil(256) * 256)
-                .max(64)
-                .min(limit as u32)) as u16
-        };
-        let width = bucket(outer.width as f64 * density.0, width);
-        let height = bucket(outer.height as f64 * density.1, height);
+        let inner = inner_region(desktop, outer, request);
+        let plan = atlas::plan(desktop, outer, inner, None)
+            .ok_or_else(|| Error::Msg("Atlas cannot fit the bounded encoder".into()))?;
+        let (width, height) = (plan.width, plan.height);
         let rate = request["bitrateMbps"]
             .as_f64()
             .filter(|v| v.is_finite() && *v > 0.0)
@@ -419,7 +408,7 @@ impl PackedView {
         let quality = request["quality"].as_u64().unwrap_or(0).min(2) as u32;
         Ok(Self {
             source: (desktop.width, desktop.height),
-            density,
+            fraction: dense_fraction(request),
             width,
             height,
             capture: X11Capture::workspace(desktop, width, height)?,
@@ -432,17 +421,26 @@ impl PackedView {
                 },
                 quality,
             )?,
-            pixels: vec![0; width as usize * height as usize * 4],
         })
     }
-    fn fits(&self, desktop: MonitorRect, outer: MonitorRect) -> bool {
-        let w = (outer.width as f64 * self.density.0 - 1e-7).ceil();
-        let h = (outer.height as f64 * self.density.1 - 1e-7).ceil();
-        // Shrink only after a substantial zoom, retaining allocations through normal head motion.
-        w <= self.width as f64
-            && h <= self.height as f64
-            && !(w * 2.0 < self.width as f64 && h * 2.0 < self.height as f64)
-            && self.source == (desktop.width, desktop.height)
+    fn fits(&self, desktop: MonitorRect, outer: MonitorRect, request: &serde_json::Value) -> bool {
+        if self.source != (desktop.width, desktop.height) {
+            return false;
+        }
+        let inner = inner_region(desktop, outer, request);
+        if atlas::plan(desktop, outer, inner, Some((self.width, self.height))).is_none() {
+            return false;
+        }
+        let Some(best) = atlas::plan(desktop, outer, inner, None) else {
+            return false;
+        };
+        let area = u32::from(self.width) * u32::from(self.height);
+        let best_area = u32::from(best.width) * u32::from(best.height);
+        // Lowering coverage must actually lower encoding work, including after 100%.
+        if dense_fraction(request) != self.fraction && best_area < area {
+            return false;
+        }
+        best_area * 2 >= area
     }
     fn send(
         &mut self,
@@ -456,77 +454,39 @@ impl PackedView {
         sequence: u64,
     ) -> Result<()> {
         let start = Instant::now();
-        self.pixels.fill(0);
-        let fraction = request["fraction"]
-            .as_f64()
-            .filter(|v| v.is_finite())
-            .unwrap_or(0.35)
-            .clamp(0.2, 1.0);
-        let iw = ((outer.width as f64 * fraction).round() as u32).clamp(1, outer.width);
-        let ih = ((outer.height as f64 * fraction).round() as u32).clamp(1, outer.height);
-        let center = request["center"].as_array();
-        let axis = |n: usize, lo: f32, hi: f32| {
-            center
-                .and_then(|a| a.get(n))
-                .and_then(|v| v.as_f64())
-                .filter(|v| v.is_finite())
-                .unwrap_or((lo + hi) as f64 * 0.5)
-                .clamp(lo as f64, hi as f64)
-        };
-        let ix = (desktop.x as f64 + axis(0, outer_uv[0], outer_uv[2]) * desktop.width as f64
-            - iw as f64 * 0.5)
-            .round() as i32;
-        let iy = (desktop.y as f64 + axis(1, outer_uv[1], outer_uv[3]) * desktop.height as f64
-            - ih as f64 * 0.5)
-            .round() as i32;
-        let inner = MonitorRect {
-            index: 0,
-            x: ix.clamp(outer.x, outer.x + (outer.width - iw) as i32),
-            y: iy.clamp(outer.y, outer.y + (outer.height - ih) as i32),
-            width: iw,
-            height: ih,
-        };
-        let (sx, sy) = self.density;
-        let baseline = 1f64
-            .min(4096.0 / desktop.width as f64)
-            .min(2160.0 / desktop.height as f64)
-            .min(sx)
-            .min(sy);
+        let inner = inner_region(desktop, outer, request);
+        let plan = atlas::plan(desktop, outer, inner, Some((self.width, self.height)))
+            .ok_or_else(|| Error::Msg("Atlas plan exceeds encoder".into()))?;
+        self.fraction = dense_fraction(request);
+        let regions = plan
+            .tiles
+            .iter()
+            .map(|t| (t.source, t.x, t.y, t.width, t.height))
+            .collect::<Vec<_>>();
+        let mut image = self.capture.atlas(&regions)?;
+        image.damage_generation = sequence;
         let mut metadata = Vec::new();
-        for (i, r) in packed_regions(outer, inner).into_iter().enumerate() {
-            let x = (((r.x - outer.x) as f64 * sx).floor() as u16).min(self.width - 1);
-            let y = (((r.y - outer.y) as f64 * sy).floor() as u16).min(self.height - 1);
-            let right =
-                (((r.x - outer.x + r.width as i32) as f64 * sx).floor() as u16).min(self.width);
-            let bottom =
-                (((r.y - outer.y + r.height as i32) as f64 * sy).floor() as u16).min(self.height);
-            let w = if i == 0 {
-                right - x
-            } else {
-                ((r.width as f64 * baseline).round() as u16).min(right - x)
-            }
-            .max(1);
-            let h = if i == 0 {
-                bottom - y
-            } else {
-                ((r.height as f64 * baseline).round() as u16).min(bottom - y)
-            }
-            .max(1);
-            self.capture.retarget_resampled(r, w, h)?;
-            let mut image = self
-                .capture
-                .poll(Duration::ZERO, true)?
-                .ok_or_else(|| Error::Msg("Atlas capture unavailable".into()))?;
-            crate::media::desktop_mask::DesktopMask::new(r, w.into(), h.into(), screens)
-                .apply(&mut image);
+        for tile in &plan.tiles {
+            let r = tile.source;
+            crate::media::desktop_mask::DesktopMask::new(
+                r,
+                tile.width.into(),
+                tile.height.into(),
+                screens,
+            )
+            .apply_at(&mut image, tile.x.into(), tile.y.into());
             if let Ok(cursor) = shared.cursor.lock() {
-                paint_cursor_scaled(&mut image, r, &cursor)
-            }
-            for row in 0..h as usize {
-                let from = row * image.stride as usize;
-                let to = ((y as usize + row) * self.width as usize + x as usize) * 4;
-                self.pixels[to..to + w as usize * 4]
-                    .copy_from_slice(&image.bgra[from..from + w as usize * 4]);
+                paint_cursor_scaled_at(
+                    &mut image,
+                    r,
+                    &cursor,
+                    (
+                        tile.x.into(),
+                        tile.y.into(),
+                        tile.width.into(),
+                        tile.height.into(),
+                    ),
+                )
             }
             let source = [
                 (r.x - desktop.x) as f32 / desktop.width as f32,
@@ -535,27 +495,16 @@ impl PackedView {
                 (r.y - desktop.y + r.height as i32) as f32 / desktop.height as f32,
             ];
             let dest = [
-                x as f32 / self.width as f32,
-                y as f32 / self.height as f32,
-                (x + w) as f32 / self.width as f32,
-                (y + h) as f32 / self.height as f32,
+                tile.x as f32 / self.width as f32,
+                tile.y as f32 / self.height as f32,
+                (tile.x + tile.width) as f32 / self.width as f32,
+                (tile.y + tile.height) as f32 / self.height as f32,
             ];
             metadata.push([source, dest]);
         }
         let capture_ns = start.elapsed().as_nanos() as u64;
         let encode = Instant::now();
-        // Move ownership into the submission briefly; restore and reuse the same bounded allocation.
-        let image = crate::core::CapturedFrame {
-            width: self.width.into(),
-            height: self.height.into(),
-            stride: self.width as u32 * 4,
-            bgra: std::mem::take(&mut self.pixels),
-            monotonic_ns: monotonic_ns(),
-            damage_generation: sequence,
-        };
-        let submitted = self.encoder.submit(&image);
-        self.pixels = image.bgra;
-        submitted?;
+        self.encoder.submit(&image)?;
         let frame = self
             .encoder
             .pull_wait(500_000_000)?
@@ -582,6 +531,44 @@ impl PackedView {
             .bytes
             .fetch_add(frame.bytes.len() as u64, Ordering::Relaxed);
         Ok(())
+    }
+}
+fn dense_fraction(request: &serde_json::Value) -> f64 {
+    request["fraction"]
+        .as_f64()
+        .filter(|v| v.is_finite())
+        .unwrap_or(0.35)
+        .clamp(0.2, 1.0)
+}
+fn inner_region(
+    desktop: MonitorRect,
+    outer: MonitorRect,
+    request: &serde_json::Value,
+) -> MonitorRect {
+    let fraction = dense_fraction(request);
+    let iw = ((outer.width as f64 * fraction).round() as u32).clamp(1, outer.width);
+    let ih = ((outer.height as f64 * fraction).round() as u32).clamp(1, outer.height);
+    let center = request["center"].as_array();
+    let axis =
+        |n: usize, origin: i32, extent: u32, total_origin: i32, total_extent: u32, size: u32| {
+            let low = (origin as f64 - total_origin as f64) / total_extent as f64;
+            let high = (origin as f64 - total_origin as f64 + extent as f64) / total_extent as f64;
+            let normalized = center
+                .and_then(|a| a.get(n))
+                .and_then(|v| v.as_f64())
+                .filter(|v| v.is_finite())
+                .unwrap_or((low + high) * 0.5)
+                .clamp(low, high);
+            ((total_origin as f64 + normalized * total_extent as f64 - size as f64 * 0.5).round()
+                as i32)
+                .clamp(origin, origin + (extent - size) as i32)
+        };
+    MonitorRect {
+        index: 0,
+        x: axis(0, outer.x, outer.width, desktop.x, desktop.width, iw),
+        y: axis(1, outer.y, outer.height, desktop.y, desktop.height, ih),
+        width: iw,
+        height: ih,
     }
 }
 fn packed_regions(outer: MonitorRect, inner: MonitorRect) -> Vec<MonitorRect> {

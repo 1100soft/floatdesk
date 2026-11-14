@@ -271,15 +271,12 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         val view=viewCurrent?.takeIf{viewLatched && (diagnostics.enabled || handoff)}
         if(view==null && !hasFrame)return
         GLES20.glViewport(0,0,w[0],h[0]); GLES20.glUseProgram(program)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(program,"viewGutter"),view?.gutterPixels?.toFloat() ?: 0f)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"viewMode"),if(view?.tiles?.isNotEmpty()==true)2 else if(view!=null)1 else 0)
         if(view!=null){
             GLES20.glUniform4f(GLES20.glGetUniformLocation(program,"viewOuter"),view.outer.left,view.outer.top,view.outer.right,view.outer.bottom)
             GLES20.glUniform4f(GLES20.glGetUniformLocation(program,"viewInner"),view.inner.left,view.inner.top,view.inner.right,view.inner.bottom)
-            GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"viewTileCount"),view.tiles.size/8)
-            for(i in 0 until view.tiles.size/8){
-                GLES20.glUniform4fv(GLES20.glGetUniformLocation(program,"viewSources[$i]"),1,view.tiles,i*8)
-                GLES20.glUniform4fv(GLES20.glGetUniformLocation(program,"viewDestinations[$i]"),1,view.tiles,i*8+4)
-            }
+
         }
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0); GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,if(view!=null)viewTextureId else textureId)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"video"),0)
@@ -335,12 +332,27 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         GLES20.glUniform1f(GLES20.glGetUniformLocation(program,"contentScale"),1f-mapping.spacing.coerceIn(0f,.15f))
         val position=GLES20.glGetAttribLocation(program,"position")
         GLES20.glEnableVertexAttribArray(position); GLES20.glVertexAttribPointer(position,2,GLES20.GL_FLOAT,false,0,vertices)
-        // Submit bounded uniform batches, rather than imposing an output-count limit.
-        for(start in 0 until mapping.rects.size/4 step 6) {
-            val count=minOf(6,mapping.rects.size/4-start)
-            GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"screenCount"),count)
-            GLES20.glUniform4fv(GLES20.glGetUniformLocation(program,"screenRects[0]"),count,mapping.rects,start*4)
-            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP,0,4)
+        // Draw one scissored region at a time: each fragment needs one lookup, regardless
+        // of region count. Lower-priority coverage goes first so native detail wins.
+        val tileCount=view?.tiles?.size?.div(8) ?: 0
+        for(tile in (if(tileCount>0)tileCount-1 else 0) downTo 0){
+            GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"viewTileCount"),if(tileCount>0)1 else 0)
+            if(view!=null && tileCount>0){
+                GLES20.glUniform4fv(GLES20.glGetUniformLocation(program,"viewSources[0]"),1,view.tiles,tile*8)
+                GLES20.glUniform4fv(GLES20.glGetUniformLocation(program,"viewDestinations[0]"),1,view.tiles,tile*8+4)
+                val n=tile*8
+                val visible=dev.floatdesk.client.FocusRect(view.tiles[n],view.tiles[n+1],view.tiles[n+2],view.tiles[n+3]).intersect(view.outer) ?: continue
+                val bounds=mapping.displayBounds(visible) ?: continue
+                val left=kotlin.math.floor(bounds.left*w[0]).toInt().coerceIn(0,w[0]);val right=kotlin.math.ceil(bounds.right*w[0]).toInt().coerceIn(left,w[0])
+                val bottom=kotlin.math.floor((1f-bounds.bottom)*h[0]).toInt().coerceIn(0,h[0]);val top=kotlin.math.ceil((1f-bounds.top)*h[0]).toInt().coerceIn(bottom,h[0])
+                GLES20.glEnable(GLES20.GL_SCISSOR_TEST);GLES20.glScissor(left,bottom,right-left,top-bottom)
+            }
+            for(start in 0 until mapping.rects.size/4 step 6) {
+                val count=minOf(6,mapping.rects.size/4-start)
+                GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"screenCount"),count)
+                GLES20.glUniform4fv(GLES20.glGetUniformLocation(program,"screenRects[0]"),count,mapping.rects,start*4)
+                GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP,0,4)
+            }
         }
         GLES20.glDisable(GLES20.GL_SCISSOR_TEST)
         drawInk(w[0],h[0])
@@ -486,8 +498,9 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             }
             uniform int viewMode;
             uniform int viewTileCount;
-            uniform vec4 viewSources[32];
-            uniform vec4 viewDestinations[32];
+            uniform float viewGutter;
+            uniform vec4 viewSources[5];
+            uniform vec4 viewDestinations[5];
             uniform vec4 viewOuter;
             uniform vec4 viewInner;
             varying vec2 uv;
@@ -513,12 +526,12 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                             if(viewMode==2){
                                 if(source.x<viewOuter.x || source.x>viewOuter.z || source.y<viewOuter.y || source.y>viewOuter.w)discard;
                                 bool matched=false;
-                                for(int t=0;t<32;t++){
+                                for(int t=0;t<5;t++){
                                     if(t<viewTileCount){
                                         vec4 a=viewSources[t];vec4 b=viewDestinations[t];
                                         if(source.x>=a.x && source.x<=a.z && source.y>=a.y && source.y<=a.w){
                                             vec2 uvTile=b.xy+(source-a.xy)/(a.zw-a.xy)*(b.zw-b.xy);
-                                            gl_FragColor=vec4(filteredVideo(uvTile,b),1.0);matched=true;break;
+                                            gl_FragColor=vec4(filteredVideo(uvTile,b+vec4(-videoTexel*viewGutter,videoTexel*viewGutter)),1.0);matched=true;break;
                                         }
                                     }
                                 }

@@ -225,6 +225,7 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-view-x11-') as temp:
       stream.sendall(struct.pack('>I',len(payload))+payload)
       meta=json.loads(exact(stream,struct.unpack('>I',exact(stream,4))[0]));unit=exact(stream,meta['bytes'])
       assert meta['regionSampling'] and meta['type']=='view-tiles-v2'
+      assert meta['gutterPixels']==4
       assert abs(meta['peripheryScale']-.675)<.002,meta
       assert meta['nativeAreaPixels']==1048576
       sampled=0
@@ -254,8 +255,8 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-view-x11-') as temp:
       stream.sendall(struct.pack('>I',len(payload))+payload)
       meta=json.loads(exact(stream,struct.unpack('>I',exact(stream,4))[0]));exact(stream,meta['bytes'])
       densities.append(meta['peripheryScale']);auto_areas.append(meta['nativeAreaPixels']);time.sleep(.04)
-     assert min(auto_areas)<=65536,'Native area did not reach its minimum under sustained pressure'
-     assert min(densities)<.67,'Peripheral density never adapted after native area reached its floor'
+     assert min(auto_areas)>=1048576,'Auto sacrificed its useful native-detail floor'
+     assert min(densities)>=.674,'Auto degraded peripheral density to chase its FPS target'
      print(f'PASS regional Auto under sustained pressure: native {min(auto_areas)} pixels, peripheral {min(densities):.3f}',flush=True)
     first=native_metas[0]
     decoded_region=subprocess.check_output(['ffmpeg','-v','error','-threads','2','-f','h264' if first['codec']=='video/avc' else 'hevc','-i','pipe:0','-frames:v','2','-f','rawvideo','-pix_fmt','rgb24','pipe:1'],input=b''.join(native_units))
@@ -265,6 +266,19 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-view-x11-') as temp:
      at=(py*first['width']+px)*3;actual=decoded_region[at:at+3]
      expected=[(255,0,0),(0,255,0),(0,0,255),(255,255,0)][(1 if u>=.5 else 0)+(2 if v>=.5 else 0)]
      assert len(actual)==3 and all(abs(a-b)<45 for a,b in zip(actual,expected)),(src,dst,tuple(actual),expected)
+    checked_gutters=0
+    for src,dst in first['tiles']:
+     gutter_x=round(dst[0]*first['width']);y=round((dst[1]+dst[3])*.5*first['height'])
+     dw=round((dst[2]-dst[0])*first['width']);dh=round((dst[3]-dst[1])*first['height'])
+     assert gutter_x>=4 and round(dst[1]*first['height'])>=4 and round(dst[2]*first['width'])+4<=first['width'] and round(dst[3]*first['height'])+4<=first['height']
+     u=src[0]-2/dw*(src[2]-src[0]);v=(src[1]+src[3])*.5
+     if not (0<u<1 and 0<v<1) or abs(u-.5)<.02 or abs(v-.5)<.02:continue
+     at=(y*first['width']+gutter_x-2)*3;actual=decoded_region[at:at+3]
+     expected=[(255,0,0),(0,255,0),(0,0,255),(255,255,0)][(1 if u>=.5 else 0)+(2 if v>=.5 else 0)]
+     assert all(abs(a-b)<45 for a,b in zip(actual,expected)),('Incorrect capture gutter',src,dst,tuple(actual),expected)
+     checked_gutters+=1
+    assert checked_gutters>0
+    print(f'PASS {checked_gutters} decoded capture gutters preserve neighboring source content',flush=True)
     print('PASS decoded native/peripheral region colors and coordinate mapping',flush=True)
     send(15,json.dumps(dict(type='encoderSettings',quality=0,bitrateMbps=0)).encode())
     assert control_json('encoderAck')['quality']==0

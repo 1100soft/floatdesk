@@ -32,6 +32,7 @@ public final class BudgetStreamSmoke {
      if(!request.optBoolean("frameBudget"))throw new AssertionError("Client failed to negotiate normal frame budget");
      var header=new org.json.JSONObject().put("frame",++frame);boolean nativeFrame=phase.get()==1;
      if(nativeFrame){
+      header.put("extensions"," ".repeat(6000));
       header.put("type","view-tiles-v2").put("codec","video/avc").put("width",2048).put("height",1536).put("bytes",ViewFrameFixture.DATA.length)
        .put("rect",new org.json.JSONArray("[0,0,1,1]")).put("inner",new org.json.JSONArray("[0,0,1,1]"))
        .put("tiles",new org.json.JSONArray("[[[0,0,1,1],[0,0,1,1]]]")).put("desktop",new org.json.JSONArray("[0,0,5120,3200]"));

@@ -14,13 +14,16 @@ import java.nio.file.Path;
 /** Hardware HEVC and shader reconstruction of differently sampled nonoverlapping tiles. */
 public final class PackedViewSmoke {
     static MediaCodec decode(VideoCompositor compositor,int width,int height,String file,float[] tiles,long pts)throws Exception{
+        return decode(compositor,width,height,file,tiles,pts,0);
+    }
+    static MediaCodec decode(VideoCompositor compositor,int width,int height,String file,float[] tiles,long pts,int gutter)throws Exception{
         byte[] bytes=Files.readAllBytes(Path.of(file));var csd=new java.io.ByteArrayOutputStream();
         for(byte[] nal:H264Kt.splitAnnexB(bytes)){int type=(nal[0]>>>1)&63;if(type>=32&&type<=34){csd.write(new byte[]{0,0,0,1});csd.write(nal);}}
         var format=MediaFormat.createVideoFormat("video/hevc",width,height);format.setByteBuffer("csd-0",ByteBuffer.wrap(csd.toByteArray()));format.setInteger(MediaFormat.KEY_LOW_LATENCY,1);
         var codec=MediaCodec.createDecoderByType("video/hevc");
         try{
             System.out.println("packed: configuring "+width+"x"+height);codec.configure(format,compositor.getViewInput(),null,0);codec.start();System.out.println("packed: codec ready");
-            compositor.viewFrame(pts,new ViewFrame(new FocusRect(0,0,1,1),new FocusRect(.25f,.25f,.75f,.75f),SystemClock.uptimeMillis(),.5f,.5f,width,height,tiles));
+            compositor.viewFrame(pts,new ViewFrame(new FocusRect(0,0,1,1),new FocusRect(.25f,.25f,.75f,.75f),SystemClock.uptimeMillis(),.5f,.5f,width,height,tiles,gutter));
             int input=codec.dequeueInputBuffer(500000);if(input<0)throw new AssertionError("HEVC input unavailable");codec.getInputBuffer(input).put(bytes);codec.queueInputBuffer(input,0,bytes.length,pts,MediaCodec.BUFFER_FLAG_KEY_FRAME);
             var info=new MediaCodec.BufferInfo();long deadline=SystemClock.uptimeMillis()+2500;
             while(SystemClock.uptimeMillis()<deadline){int output=codec.dequeueOutputBuffer(info,10000);if(output>=0){codec.releaseOutputBuffer(output,true);System.out.println("packed: frame released");return codec;}}

@@ -15,7 +15,7 @@ import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicReference
 
 internal data class DetailRequest @JvmOverloads constructor(val host:InetSocketAddress,val sessionId:Long,val rect:FocusRect,val desktop:List<Int>,val center:Pair<Float,Float> = rect.centerU to rect.centerV,val quality:Int=0,val bitrateMbps:Float=0f,val fraction:Float=.35f,val nativeAreaPixels:Long=0,val targetFps:Int=30)
-internal data class ViewFrame @JvmOverloads constructor(val outer:FocusRect,val inner:FocusRect,val capturedAt:Long,val focusU:Float=inner.centerU,val focusV:Float=inner.centerV,val atlasWidth:Int=2048,val atlasHeight:Int=1536,val tiles:FloatArray=floatArrayOf())
+internal data class ViewFrame @JvmOverloads constructor(val outer:FocusRect,val inner:FocusRect,val capturedAt:Long,val focusU:Float=inner.centerU,val focusV:Float=inner.centerV,val atlasWidth:Int=2048,val atlasHeight:Int=1536,val tiles:FloatArray=floatArrayOf(),val gutterPixels:Int=0)
 internal data class ViewDestination(val surface:Surface,val frame:(Long,ViewFrame)->Unit,val clear:()->Unit)
 
 /** One encoded access unit in flight. Every decoded image is paired with its own crop by PTS. */
@@ -48,7 +48,7 @@ internal class ViewedDetail(private val destination:()->ViewDestination?,private
                             .put("regionSampling",usePacked).put("areaBudget",usePacked).put("nativeAreaPixels",next.nativeAreaPixels).put("targetFps",next.targetFps).put("feedbackMs",feedbackMs).put("frameBudget",usePacked).put("quality",next.quality).put("bitrateMbps",next.bitrateMbps).put("fraction",next.fraction)
                             .put("center",org.json.JSONArray(listOf(next.center.first,next.center.second))).toString().toByteArray(Charsets.UTF_8)
                         writer.writeInt(json.size);writer.write(json);writer.flush()
-                        val size=input.readInt();require(size in 1..4096);val header=ByteArray(size);input.readFully(header)
+                        val size=input.readInt();require(size in 1..16384);val header=ByteArray(size);input.readFully(header)
                         val meta=JSONObject(String(header,Charsets.UTF_8))
                         val sequence=meta.getLong("frame");require(sequence>previous);previous=sequence
                         if(meta.getString("type")=="view-baseline-v1"){
@@ -96,7 +96,7 @@ internal class ViewedDetail(private val destination:()->ViewDestination?,private
                         val pts=System.nanoTime()/1000
                         val age=SystemClock.elapsedRealtime()-start;feedbackMs=age
                         if(age>250)late++
-                        output.frame(pts,ViewFrame(outer,inner,SystemClock.uptimeMillis()-age,next.center.first,next.center.second,width,height,tiles))
+                        output.frame(pts,ViewFrame(outer,inner,SystemClock.uptimeMillis()-age,next.center.first,next.center.second,width,height,tiles,meta.optInt("gutterPixels",0).coerceIn(0,8)))
                         active.queueInputBuffer(index,0,count,pts,if(if(hevc)splitAnnexB(bytes).any{((it[0].toInt() ushr 1) and 63) in 16..21} else isKeyframe(bytes))MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
                         drain(active);received++;framesHere++
                         val peripheralText=if(meta.optBoolean("regionSampling"))" · peripheral %.1f%%".format(java.util.Locale.ROOT,meta.optDouble("peripheryScale",0.0)*100) else ""

@@ -9,6 +9,7 @@ pub(super) struct Governor {
     warm: u32,
     maximum: u64,
     peripheral_factor: f64,
+    minimum: u64,
 }
 impl Governor {
     pub fn new() -> Self {
@@ -22,6 +23,7 @@ impl Governor {
             warm: 3,
             maximum: 4_194_304,
             peripheral_factor: 1.,
+            minimum: 65_536,
         }
     }
     pub fn configure(&mut self, requested: u64, target: u32, normal_pixels: u64) {
@@ -38,6 +40,19 @@ impl Governor {
             self.samples = 0;
             self.last = 0;
             self.warm = 3;
+            self.peripheral_factor = 1.;
+        }
+    }
+    pub fn protect_quality(&mut self, enabled: bool) {
+        self.minimum = if enabled {
+            1_048_576.min(self.maximum)
+        } else {
+            65_536
+        };
+        if self.automatic() {
+            self.area = self.area.max(self.minimum);
+        }
+        if enabled {
             self.peripheral_factor = 1.;
         }
     }
@@ -93,18 +108,18 @@ impl Governor {
             self.area
         };
         // Quantized squares and a one-second control period bound codec resizing.
-        let side = ((next.clamp(65_536, self.maximum) as f64).sqrt() / 64.)
+        let side = ((next.clamp(self.minimum, self.maximum) as f64).sqrt() / 64.)
             .round()
             .max(4.) as u64
             * 64;
-        if self.ema > budget * 1.08 && self.area <= 65_536 {
+        if self.minimum == 65_536 && self.ema > budget * 1.08 && self.area <= 65_536 {
             self.peripheral_factor = (self.peripheral_factor
                 * (budget * 0.8 / self.ema).sqrt().clamp(0.85, 0.97))
             .max(0.25);
         } else if self.ema < budget * 0.75 && self.peripheral_factor < 1. {
             self.peripheral_factor = (self.peripheral_factor * 1.08).min(1.);
         }
-        self.area = (side * side).clamp(65_536, self.maximum);
+        self.area = (side * side).clamp(self.minimum, self.maximum);
         self.last = now_ms;
         self.samples = 0;
     }
@@ -131,6 +146,20 @@ mod tests {
             g.observe(2., 3., i * 20, true)
         }
         assert_eq!(g.area, prior);
+    }
+    #[test]
+    fn regional_auto_preserves_useful_detail_and_peripheral_density_under_pressure() {
+        let mut g = Governor::new();
+        g.configure(0, 30, 4096 * 2160);
+        g.protect_quality(true);
+        for i in 0..300 {
+            g.observe(100., 200., i * 100, false)
+        }
+        assert_eq!(g.area, 1_048_576);
+        assert_eq!(g.peripheral_factor(), 1.);
+        g.configure(65_536, 30, 4096 * 2160);
+        g.protect_quality(true);
+        assert_eq!(g.area, 65_536);
     }
     #[test]
     fn peripheral_density_only_changes_after_native_area_reaches_its_floor() {

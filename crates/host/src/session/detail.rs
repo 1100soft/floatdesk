@@ -120,6 +120,7 @@ pub(super) fn start(
                                 target,
                                 if regional { 4096 * 2160 } else { normal },
                             );
+                            governor.protect_quality(regional);
                             request["peripheryScale"] =
                                 (regions::PERIPHERAL_SCALE * governor.peripheral_factor()).into();
                             request["resolvedAreaPixels"] = governor.area.into();
@@ -699,7 +700,12 @@ impl PackedView {
             .iter()
             .map(|t| (t.source, t.x, t.y, t.width, t.height))
             .collect::<Vec<_>>();
-        let mut image = self.capture.atlas(&regions)?;
+        let gutter = if request["regionSampling"].as_bool().unwrap_or(false) {
+            regions::GUTTER
+        } else {
+            0
+        };
+        let mut image = self.capture.atlas_padded(&regions, gutter)?;
         image.damage_generation = sequence;
         let mut metadata = Vec::new();
         for tile in &plan.tiles {
@@ -787,7 +793,7 @@ impl PackedView {
                 (b - desktop.y) as f32 / desktop.height as f32,
             ]
         };
-        let header=serde_json::json!({"type":"view-tiles-v2","codec":if self.avc{"video/avc"}else{"video/hevc"},"frame":sequence,"rect":outer_uv,"inner":inner_uv,"tiles":metadata,"nativeAreaPixels":if request["regionSampling"].as_bool().unwrap_or(false){high.iter().map(|t|u64::from(t.source.width)*u64::from(t.source.height)).sum::<u64>()}else{u64::from(plan.tiles[0].source.width)*u64::from(plan.tiles[0].source.height)},"peripheryScale":plan.tiles.iter().filter(|t|t.width as u32!=t.source.width || t.height as u32!=t.source.height).map(|t|(t.width as f64/t.source.width as f64).min(t.height as f64/t.source.height as f64)).reduce(f64::min),"sampledPixels":plan.tiles.iter().map(|t|u64::from(t.width)*u64::from(t.height)).sum::<u64>(),"regionSampling":request["regionSampling"],"autoArea":request["autoArea"],"targetFps":request["targetFps"],"width":self.width,"height":self.height,"bytes":frame.bytes.len(),"desktop":[desktop.x,desktop.y,desktop.width,desktop.height]}).to_string();
+        let header=serde_json::json!({"type":"view-tiles-v2","codec":if self.avc{"video/avc"}else{"video/hevc"},"frame":sequence,"rect":outer_uv,"inner":inner_uv,"tiles":metadata,"nativeAreaPixels":if request["regionSampling"].as_bool().unwrap_or(false){high.iter().map(|t|u64::from(t.source.width)*u64::from(t.source.height)).sum::<u64>()}else{u64::from(plan.tiles[0].source.width)*u64::from(plan.tiles[0].source.height)},"peripheryScale":plan.tiles.iter().filter(|t|t.width as u32!=t.source.width || t.height as u32!=t.source.height).map(|t|(t.width as f64/t.source.width as f64).min(t.height as f64/t.source.height as f64)).reduce(f64::min),"sampledPixels":plan.tiles.iter().map(|t|u64::from(t.width)*u64::from(t.height)).sum::<u64>(),"gutterPixels":gutter,"regionSampling":request["regionSampling"],"autoArea":request["autoArea"],"targetFps":request["targetFps"],"width":self.width,"height":self.height,"bytes":frame.bytes.len(),"desktop":[desktop.x,desktop.y,desktop.width,desktop.height]}).to_string();
         socket.write_all(&(header.len() as u32).to_be_bytes())?;
         socket.write_all(header.as_bytes())?;
         socket.write_all(&frame.bytes)?;

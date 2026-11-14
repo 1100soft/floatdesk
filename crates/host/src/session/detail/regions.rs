@@ -2,6 +2,7 @@
 use super::atlas::{Plan, Tile};
 use crate::core::MonitorRect;
 pub(super) const MAX_TILES: usize = 32;
+pub(super) const GUTTER: u16 = 4;
 pub(super) const PERIPHERAL_SCALE: f64 = 2160. / 3200.;
 fn intersect(a: MonitorRect, b: MonitorRect) -> Option<MonitorRect> {
     let x = a.x.max(b.x);
@@ -95,22 +96,27 @@ fn pack(tiles: &[Tile], width: u16, height: u16) -> Option<Plan> {
         let t = &mut placed[i];
         let s = *free
             .iter()
-            .filter(|s| s.w >= t.width && s.h >= t.height)
+            .filter(|s| {
+                s.w >= t.width.div_ceil(2) * 2 + 2 * GUTTER
+                    && s.h >= t.height.div_ceil(2) * 2 + 2 * GUTTER
+            })
             .min_by_key(|s| {
                 (
-                    (s.w - t.width).min(s.h - t.height),
-                    (s.w - t.width).max(s.h - t.height),
+                    (s.w - t.width.div_ceil(2) * 2 - 2 * GUTTER)
+                        .min(s.h - t.height.div_ceil(2) * 2 - 2 * GUTTER),
+                    (s.w - t.width.div_ceil(2) * 2 - 2 * GUTTER)
+                        .max(s.h - t.height.div_ceil(2) * 2 - 2 * GUTTER),
                 )
             })?;
-        t.x = s.x;
-        t.y = s.y;
-        used_w = used_w.max(t.x + t.width);
-        used_h = used_h.max(t.y + t.height);
+        t.x = s.x + GUTTER;
+        t.y = s.y + GUTTER;
+        used_w = used_w.max(t.x + t.width.div_ceil(2) * 2 + GUTTER);
+        used_h = used_h.max(t.y + t.height.div_ceil(2) * 2 + GUTTER);
         let used = Space {
-            x: t.x,
-            y: t.y,
-            w: t.width,
-            h: t.height,
+            x: t.x - GUTTER,
+            y: t.y - GUTTER,
+            w: t.width.div_ceil(2) * 2 + 2 * GUTTER,
+            h: t.height.div_ceil(2) * 2 + 2 * GUTTER,
         };
         let mut next = Vec::new();
         for s in free {

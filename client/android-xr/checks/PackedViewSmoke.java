@@ -17,10 +17,11 @@ public final class PackedViewSmoke {
         return decode(compositor,width,height,file,tiles,pts,0);
     }
     static MediaCodec decode(VideoCompositor compositor,int width,int height,String file,float[] tiles,long pts,int gutter)throws Exception{
+        boolean avc=file.endsWith(".h264");
         byte[] bytes=Files.readAllBytes(Path.of(file));var csd=new java.io.ByteArrayOutputStream();
-        for(byte[] nal:H264Kt.splitAnnexB(bytes)){int type=(nal[0]>>>1)&63;if(type>=32&&type<=34){csd.write(new byte[]{0,0,0,1});csd.write(nal);}}
-        var format=MediaFormat.createVideoFormat("video/hevc",width,height);format.setByteBuffer("csd-0",ByteBuffer.wrap(csd.toByteArray()));format.setInteger(MediaFormat.KEY_LOW_LATENCY,1);
-        var codec=MediaCodec.createDecoderByType("video/hevc");
+        for(byte[] nal:H264Kt.splitAnnexB(bytes)){int type=avc?(nal[0]&31):(nal[0]>>>1)&63;if(avc?(type==7||type==8):(type>=32&&type<=34)){csd.write(new byte[]{0,0,0,1});csd.write(nal);}}
+        var format=MediaFormat.createVideoFormat(avc?"video/avc":"video/hevc",width,height);format.setByteBuffer("csd-0",ByteBuffer.wrap(csd.toByteArray()));format.setInteger(MediaFormat.KEY_LOW_LATENCY,1);
+        var codec=MediaCodec.createDecoderByType(avc?"video/avc":"video/hevc");
         try{
             System.out.println("packed: configuring "+width+"x"+height);codec.configure(format,compositor.getViewInput(),null,0);codec.start();System.out.println("packed: codec ready");
             compositor.viewFrame(pts,new ViewFrame(new FocusRect(0,0,1,1),new FocusRect(.25f,.25f,.75f,.75f),SystemClock.uptimeMillis(),.5f,.5f,width,height,tiles,gutter));
@@ -64,6 +65,9 @@ public final class PackedViewSmoke {
             System.out.println("PASS peripheral region beyond the old five-tile shader limit");
             codec.stop();codec.release();codec=null;
             codec=decode(compositor,5120,3200,"/data/local/tmp/floatdesk-native.hevc",new float[]{0,0,1,1,0,0,1,1},2000000);await(reader,true);
+            codec.stop();codec.release();codec=null;
+            codec=decode(compositor,3520,3200,"/data/local/tmp/floatdesk-tall.h264",new float[]{0,0,1,1,0,0,1,1},3000000);await(reader,true);
+            System.out.println("PASS hardware AVC 3520x3200 decode beyond the former 2160-row limit");
             System.out.println("PASS hardware HEVC five-tile reconstruction, native 5120x3200 cache resizing and 100% coverage; process PSS="+android.os.Debug.getPss()/1024+"MiB");
         }catch(Throwable error){error.printStackTrace();throw error;}finally{if(codec!=null){codec.stop();codec.release();}compositor.close();reader.close();}
     }

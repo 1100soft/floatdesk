@@ -58,10 +58,12 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-compositor-') as temp:
     gutter_file.write_bytes(subprocess.check_output(['ffmpeg','-v','error','-f','rawvideo','-pixel_format','bgra','-video_size','256x128','-i','pipe:0','-frames:v','1','-c:v','libx265','-pix_fmt','yuv420p','-threads','2','-x265-params','pools=2:frame-threads=1:log-level=error:bframes=0:qp=10','-preset','ultrafast','-f','hevc','pipe:1'],input=gutter_pixels))
     native_file=folder/'native.hevc'
     subprocess.run(['gst-launch-1.0','-q','videotestsrc','num-buffers=1','pattern=white','!','video/x-raw,width=5120,height=3200,framerate=1/1','!','videoconvert','!','video/x-raw,format=NV12','!','vah265enc','bitrate=50000','target-usage=6','!','h265parse','!','video/x-h265,stream-format=byte-stream,alignment=au','!','filesink','location='+str(native_file)],check=True)
+    tall_file=folder/'tall.h264'
+    subprocess.run(['gst-launch-1.0','-q','videotestsrc','num-buffers=1','pattern=white','!','video/x-raw,width=3520,height=3200,framerate=1/1','!','videoconvert','!','video/x-raw,format=NV12','!','vah264enc','bitrate=50000','target-usage=6','!','h264parse','!','video/x-h264,stream-format=byte-stream,alignment=au','!','filesink','location='+str(tall_file)],check=True)
     screen_fixture=folder/'ScreenFrameFixture.java'
     screen_fixture.write_text('final class ScreenFrameFixture {'+''.join('static final byte[] '+name+'=java.util.Base64.getDecoder().decode("'+base64.b64encode(data).decode()+'");' for name,data in zip(('ALL','THIRD'),frames))+'}')
     fixture=folder/'ViewFrameFixture.java';fixture.write_text('final class ViewFrameFixture {static final byte[] DATA=java.util.Base64.getDecoder().decode("'+base64.b64encode(encoded).decode()+'");}')
-    subprocess.run([str(javac),'--release','17','-cp',f'{platform}:{classes}:{stdlib}','-d',str(folder/'classes'),str(root/'checks/VideoCompositorSmoke.java'),str(root/'checks/DecoderIdleSmoke.java'),str(root/'checks/ViewStreamSmoke.java'),str(root/'checks/OutputResolutionSmoke.java'),str(root/'checks/SharpenSmoke.java'),str(root/'checks/ScreenAtlasSmoke.java'),str(root/'checks/PackedViewSmoke.java'),str(root/'checks/GutterSmoke.java'),str(root/'checks/BudgetStreamSmoke.java'),str(screen_fixture),str(fixture)],check=True)
+    subprocess.run([str(javac),'--release','17','-cp',f'{platform}:{classes}:{stdlib}','-d',str(folder/'classes'),str(root/'checks/VideoCompositorSmoke.java'),str(root/'checks/DecoderIdleSmoke.java'),str(root/'checks/ViewStreamSmoke.java'),str(root/'checks/OutputResolutionSmoke.java'),str(root/'checks/SharpenSmoke.java'),str(root/'checks/ScreenAtlasSmoke.java'),str(root/'checks/PackedViewSmoke.java'),str(root/'checks/GutterSmoke.java'),str(root/'checks/CodecCapacitySmoke.java'),str(root/'checks/BudgetStreamSmoke.java'),str(screen_fixture),str(fixture)],check=True)
     subprocess.run([str(d8),'--lib',str(platform),'--classpath',str(stdlib),'--output',str(folder/'dex'),*[str(file) for file in (folder/'classes').glob('*.class')]],check=True)
     remote='/data/local/tmp/floatdesk-compositor-smoke.dex'
     subprocess.run([adb,'push',str(folder/'dex/classes.dex'),remote],check=True)
@@ -69,9 +71,10 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-compositor-') as temp:
     subprocess.run([adb,'push',str(packed_file),'/data/local/tmp/floatdesk-packed.hevc'],check=True)
     subprocess.run([adb,'push',str(native_file),'/data/local/tmp/floatdesk-native.hevc'],check=True)
     subprocess.run([adb,'push',str(gutter_file),'/data/local/tmp/floatdesk-gutter.hevc'],check=True)
+    subprocess.run([adb,'push',str(tall_file),'/data/local/tmp/floatdesk-tall.h264'],check=True)
     try:
         for main in os.environ.get('FLOATDESK_DEVICE_CHECKS','VideoCompositorSmoke,DecoderIdleSmoke,ViewStreamSmoke,OutputResolutionSmoke,SharpenSmoke,ScreenAtlasSmoke,PackedViewSmoke,GutterSmoke,BudgetStreamSmoke').split(','):
             print('Running '+main,flush=True)
             subprocess.run([adb,'shell',f'CLASSPATH={shlex.quote(remote+":"+installed)} app_process /system/bin {main}'],check=True,timeout=45)
     finally:
-        subprocess.run([adb,'shell','rm',remote,'/data/local/tmp/floatdesk-detail-pattern.h264','/data/local/tmp/floatdesk-packed.hevc','/data/local/tmp/floatdesk-native.hevc','/data/local/tmp/floatdesk-gutter.hevc'],check=True)
+        subprocess.run([adb,'shell','rm',remote,'/data/local/tmp/floatdesk-detail-pattern.h264','/data/local/tmp/floatdesk-packed.hevc','/data/local/tmp/floatdesk-native.hevc','/data/local/tmp/floatdesk-gutter.hevc','/data/local/tmp/floatdesk-tall.h264'],check=True)

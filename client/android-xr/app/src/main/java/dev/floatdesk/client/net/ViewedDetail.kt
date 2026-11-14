@@ -26,6 +26,12 @@ internal class ViewedDetail(private val destination:()->ViewDestination?,private
     @Volatile private var packed=true
     private var attempts=0L;private var received=0L;private var late=0L;private var errors=0L
     private fun report(message:String){status("REQ $attempts / RX $received / late $late / errors $errors · $message")}
+    private val avcMaxHeight=runCatching{
+        if(android.media.MediaCodecList(android.media.MediaCodecList.ALL_CODECS).codecInfos.any{info->
+            !info.isEncoder && info.isHardwareAccelerated && "video/avc" in info.supportedTypes &&
+                runCatching{info.getCapabilitiesForType("video/avc").videoCapabilities.isSizeSupported(4096,4096)}.getOrDefault(false)
+        })4096 else 2160
+    }.getOrDefault(2160)
     private val worker=Thread({
         while(running){
             val first=request.get();val output=destination()
@@ -45,7 +51,7 @@ internal class ViewedDetail(private val destination:()->ViewDestination?,private
                         val start=SystemClock.elapsedRealtime();attempts++
                         val json=JSONObject().put("mode",if(usePacked)"view-tiles-v2" else "view-h264-v1").put("sessionId",next.sessionId)
                             .put("rect",org.json.JSONArray(listOf(next.rect.left,next.rect.top,next.rect.right,next.rect.bottom)))
-                            .put("regionSampling",usePacked).put("areaBudget",usePacked).put("nativeAreaPixels",next.nativeAreaPixels).put("targetFps",next.targetFps).put("feedbackMs",feedbackMs).put("frameBudget",usePacked).put("quality",next.quality).put("bitrateMbps",next.bitrateMbps).put("fraction",next.fraction)
+                            .put("avcMaxHeight",avcMaxHeight).put("regionSampling",usePacked).put("areaBudget",usePacked).put("nativeAreaPixels",next.nativeAreaPixels).put("targetFps",next.targetFps).put("feedbackMs",feedbackMs).put("frameBudget",usePacked).put("quality",next.quality).put("bitrateMbps",next.bitrateMbps).put("fraction",next.fraction)
                             .put("center",org.json.JSONArray(listOf(next.center.first,next.center.second))).toString().toByteArray(Charsets.UTF_8)
                         writer.writeInt(json.size);writer.write(json);writer.flush()
                         val size=input.readInt();require(size in 1..16384);val header=ByteArray(size);input.readFully(header)
@@ -99,7 +105,7 @@ internal class ViewedDetail(private val destination:()->ViewDestination?,private
                         output.frame(pts,ViewFrame(outer,inner,SystemClock.uptimeMillis()-age,next.center.first,next.center.second,width,height,tiles,meta.optInt("gutterPixels",0).coerceIn(0,8)))
                         active.queueInputBuffer(index,0,count,pts,if(if(hevc)splitAnnexB(bytes).any{((it[0].toInt() ushr 1) and 63) in 16..21} else isKeyframe(bytes))MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
                         drain(active);received++;framesHere++
-                        val peripheralText=if(meta.optBoolean("regionSampling"))" · peripheral %.1f%%".format(java.util.Locale.ROOT,meta.optDouble("peripheryScale",0.0)*100) else ""
+                        val peripheralText=if(meta.optBoolean("regionSampling") && meta.isNull("peripheryScale"))" · full native" else if(meta.optBoolean("regionSampling"))" · peripheral %.1f%%".format(java.util.Locale.ROOT,meta.optDouble("peripheryScale",0.0)*100) else ""
                         val areaText=if(meta.has("nativeAreaPixels"))" · ${if(meta.optBoolean("autoArea"))"Auto" else "Fixed"} %.2fMP / ${meta.optInt("targetFps",next.targetFps)}fps".format(java.util.Locale.ROOT,meta.optLong("nativeAreaPixels")/1e6) else ""
                         if(received%10L==1L)report("${age}ms · ${if(hevc)"HEVC native tiles" else if(tiled)"H264 native tiles" else "legacy H264"} ${width}x${height} · ${count/1024}KiB$peripheralText$areaText")
                     }

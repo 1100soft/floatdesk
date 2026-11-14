@@ -1,10 +1,9 @@
-//! Layout-independent density; pack only visible screen pixels, once each.
+//! One contiguous visible rectangle plus at most one source-native gaze patch.
 use super::atlas::{Plan, Tile};
 use crate::core::MonitorRect;
-pub(super) const MAX_TILES: usize = 32;
 pub(super) const GUTTER: u16 = 4;
 pub(super) const PERIPHERAL_SCALE: f64 = 2160. / 3200.;
-fn intersect(a: MonitorRect, b: MonitorRect) -> Option<MonitorRect> {
+fn intersection(a: MonitorRect, b: MonitorRect) -> Option<MonitorRect> {
     let x = a.x.max(b.x);
     let y = a.y.max(b.y);
     let r = (a.x as i64 + a.width as i64).min(b.x as i64 + b.width as i64);
@@ -17,303 +16,247 @@ fn intersect(a: MonitorRect, b: MonitorRect) -> Option<MonitorRect> {
         height: (bottom - y as i64).max(0) as u32,
     })
 }
-fn pieces(
+fn tile(source: MonitorRect, scale: f64) -> Option<Tile> {
+    let w = (source.width as f64 * scale).ceil().max(1.) as u32;
+    let h = (source.height as f64 * scale).ceil().max(1.) as u32;
+    (w + 2 * u32::from(GUTTER) <= 8192 && h + 2 * u32::from(GUTTER) <= 8192).then_some(Tile {
+        source,
+        x: GUTTER,
+        y: GUTTER,
+        width: w as u16,
+        height: h as u16,
+    })
+}
+fn allocation(w: u16, h: u16, bound: Option<(u16, u16)>) -> Option<(u16, u16)> {
+    let align = |n: u16| ((u32::from(n).div_ceil(64) * 64).max(2)) as u16;
+    let valid = |w: u16, h: u16| {
+        w <= 8192
+            && h <= 8192
+            && u32::from(w) * u32::from(h) <= 16_777_216
+            && bound.is_none_or(|(bw, bh)| w <= bw && h <= bh)
+    };
+    if !valid(w, h) {
+        return None;
+    }
+    let (aw, ah) = (align(w), align(h));
+    Some(if valid(aw, ah) {
+        (aw, ah)
+    } else {
+        (w.div_ceil(2) * 2, h.div_ceil(2) * 2)
+    })
+}
+fn candidates(
     outer: MonitorRect,
-    inner: MonitorRect,
-    screens: &[MonitorRect],
+    inner: Option<MonitorRect>,
     scale: f64,
-    chunk: (u16, u16),
-) -> Vec<Tile> {
+    bound: Option<(u16, u16)>,
+) -> Vec<Plan> {
+    let reserve = |t: &Tile| {
+        (
+            t.width.div_ceil(2) * 2 + 2 * GUTTER,
+            t.height.div_ceil(2) * 2 + 2 * GUTTER,
+        )
+    };
     let mut out = Vec::new();
-    for high in [true, false] {
-        let regions = if high {
-            vec![inner]
-        } else {
-            super::packed_regions(outer, inner)
-                .into_iter()
-                .skip(1)
-                .collect()
-        };
-        for r in regions {
-            for screen in screens {
-                if let Some(r) = intersect(r, *screen) {
-                    let density = if high { 1. } else { scale };
-                    // Bounded chunks allow wide/tall source regions to fit an ordinary AVC atlas.
-                    let step_x = (f64::from(chunk.0) / density).floor().max(1.) as u32;
-                    let step_y = (f64::from(chunk.1) / density).floor().max(1.) as u32;
-                    for dy in (0..r.height).step_by(step_y as usize) {
-                        for dx in (0..r.width).step_by(step_x as usize) {
-                            let source = MonitorRect {
-                                index: 0,
-                                x: r.x + dx as i32,
-                                y: r.y + dy as i32,
-                                width: step_x.min(r.width - dx),
-                                height: step_y.min(r.height - dy),
-                            };
-                            out.push(Tile {
-                                source,
-                                x: 0,
-                                y: 0,
-                                width: (source.width as f64 * density).ceil().max(1.) as u16,
-                                height: (source.height as f64 * density).ceil().max(1.) as u16,
-                            });
-                        }
-                    }
-                }
+    if let Some(full) = tile(outer, 1.) {
+        let (w, h) = reserve(&full);
+        if let Some((width, height)) = allocation(w, h, bound) {
+            out.push(Plan {
+                width,
+                height,
+                tiles: vec![full],
+            })
+        }
+    }
+    let Some(low) = tile(outer, scale) else {
+        return out;
+    };
+    if let Some(high) = inner.and_then(|r| tile(r, 1.)) {
+        let (lw, lh) = reserve(&low);
+        let (hw, hh) = reserve(&high);
+        for vertical in [false, true] {
+            let mut low = low;
+            let (w, h) = if vertical {
+                low.y += hh;
+                (lw.max(hw), lh.saturating_add(hh))
+            } else {
+                low.x += hw;
+                (lw.saturating_add(hw), lh.max(hh))
+            };
+            if let Some((width, height)) = allocation(w, h, bound) {
+                out.push(Plan {
+                    width,
+                    height,
+                    tiles: vec![high, low],
+                })
             }
+        }
+    } else {
+        let (w, h) = reserve(&low);
+        if let Some((width, height)) = allocation(w, h, bound) {
+            out.push(Plan {
+                width,
+                height,
+                tiles: vec![low],
+            })
         }
     }
     out
 }
-fn pack(tiles: &[Tile], width: u16, height: u16) -> Option<Plan> {
-    #[derive(Clone, Copy, PartialEq)]
-    struct Space {
-        x: u16,
-        y: u16,
-        w: u16,
-        h: u16,
+fn cost(p: &Plan, avc_height: u16) -> u64 {
+    // VA AVC is preferred at comparable allocation sizes; HEVC has a measurable
+    // conversion/encode overhead on the current host. Full native removes a capture,
+    // a mapping and the duplicate low-density area under the gaze patch.
+    let pixels = u64::from(p.width) * u64::from(p.height);
+    pixels
+        * if p.width <= 4096 && p.height <= avc_height {
+            100
+        } else {
+            150
+        }
+}
+pub(super) fn plan_with_avc(
+    outer: MonitorRect,
+    inner: MonitorRect,
+    screens: &[MonitorRect],
+    scale: f64,
+    bound: Option<(u16, u16)>,
+    avc_height: u16,
+) -> Option<Plan> {
+    let visible = screens
+        .iter()
+        .filter_map(|s| intersection(outer, *s))
+        .collect::<Vec<_>>();
+    if visible.is_empty() {
+        return None;
     }
-    let contains = |a: Space, b: Space| {
-        a.x <= b.x && a.y <= b.y && a.x + a.w >= b.x + b.w && a.y + a.h >= b.y + b.h
+    let x = visible.iter().map(|r| r.x).min()?;
+    let y = visible.iter().map(|r| r.y).min()?;
+    let right = visible.iter().map(|r| r.x + r.width as i32).max()?;
+    let bottom = visible.iter().map(|r| r.y + r.height as i32).max()?;
+    let crop = MonitorRect {
+        index: 0,
+        x,
+        y,
+        width: (right - x) as u32,
+        height: (bottom - y) as u32,
     };
-    let mut order = (0..tiles.len()).collect::<Vec<_>>();
-    order.sort_by_key(|&i| {
-        std::cmp::Reverse((
-            tiles[i].width.max(tiles[i].height),
-            u32::from(tiles[i].width) * u32::from(tiles[i].height),
-        ))
-    });
-    let mut free = vec![Space {
-        x: 0,
-        y: 0,
-        w: width,
-        h: height,
-    }];
-    let mut placed = tiles.to_vec();
-    let mut used_w = 0;
-    let mut used_h = 0;
-    for i in order {
-        let t = &mut placed[i];
-        let s = *free
-            .iter()
-            .filter(|s| {
-                s.w >= t.width.div_ceil(2) * 2 + 2 * GUTTER
-                    && s.h >= t.height.div_ceil(2) * 2 + 2 * GUTTER
-            })
-            .min_by_key(|s| {
-                (
-                    (s.w - t.width.div_ceil(2) * 2 - 2 * GUTTER)
-                        .min(s.h - t.height.div_ceil(2) * 2 - 2 * GUTTER),
-                    (s.w - t.width.div_ceil(2) * 2 - 2 * GUTTER)
-                        .max(s.h - t.height.div_ceil(2) * 2 - 2 * GUTTER),
-                )
-            })?;
-        t.x = s.x + GUTTER;
-        t.y = s.y + GUTTER;
-        used_w = used_w.max(t.x + t.width.div_ceil(2) * 2 + GUTTER);
-        used_h = used_h.max(t.y + t.height.div_ceil(2) * 2 + GUTTER);
-        let used = Space {
-            x: t.x - GUTTER,
-            y: t.y - GUTTER,
-            w: t.width.div_ceil(2) * 2 + 2 * GUTTER,
-            h: t.height.div_ceil(2) * 2 + 2 * GUTTER,
-        };
-        let mut next = Vec::new();
-        for s in free {
-            if used.x >= s.x + s.w
-                || used.x + used.w <= s.x
-                || used.y >= s.y + s.h
-                || used.y + used.h <= s.y
-            {
-                next.push(s);
-                continue;
-            }
-            if used.x > s.x {
-                next.push(Space {
-                    w: used.x - s.x,
-                    ..s
-                })
-            }
-            if used.x + used.w < s.x + s.w {
-                next.push(Space {
-                    x: used.x + used.w,
-                    w: s.x + s.w - used.x - used.w,
-                    ..s
-                })
-            }
-            if used.y > s.y {
-                next.push(Space {
-                    h: used.y - s.y,
-                    ..s
-                })
-            }
-            if used.y + used.h < s.y + s.h {
-                next.push(Space {
-                    y: used.y + used.h,
-                    h: s.y + s.h - used.y - used.h,
-                    ..s
-                })
-            }
-        }
-        free = next
-            .iter()
-            .enumerate()
-            .filter(|(i, a)| {
-                !next
-                    .iter()
-                    .enumerate()
-                    .any(|(j, b)| i != &j && contains(*b, **a) && (*a != b || j < *i))
-            })
-            .map(|(_, s)| *s)
-            .collect();
-    }
-    let bucket = |n: u16| ((u32::from(n).div_ceil(128) * 128).max(2)) as u16;
-    Some(Plan {
-        width: bucket(used_w).min(width),
-        height: bucket(used_h).min(height),
-        tiles: placed,
-    })
-}
-
-fn chunked_plan(
-    outer: MonitorRect,
-    inner: MonitorRect,
-    screens: &[MonitorRect],
-    scale: f64,
-    bound: Option<(u16, u16)>,
-    chunk: (u16, u16),
-) -> Option<Plan> {
-    let tiles = pieces(outer, inner, screens, scale, chunk);
-    if tiles.is_empty() {
-        return None;
-    }
-    if tiles.len() > MAX_TILES {
-        return None;
-    }
-    if let Some((w, h)) = bound {
-        return pack(&tiles, w, h)
-            .filter(|p| u32::from(p.width) * u32::from(p.height) <= 16_777_216);
-    }
-    let mut candidates = Vec::new();
-    for (widths, avc) in [
-        (
-            &[
-                1024u16, 1536, 2048, 2560, 3072, 3328, 3456, 3584, 3712, 3840, 3968, 4096,
-            ][..],
-            true,
-        ),
-        (&[2048u16, 3072, 4096, 5120, 6144, 8192][..], false),
-    ] {
-        for &w in widths {
-            let h = if avc {
-                2160
-            } else {
-                (16_777_216u32 / u32::from(w)).min(8192) as u16 / 2 * 2
-            };
-            if let Some(p) = pack(&tiles, w, h) {
-                candidates.push(p)
-            }
-        }
-    }
-    candidates.into_iter().min_by_key(|p| {
-        (
-            (p.width > 4096 || p.height > 2160) as u8,
-            u32::from(p.width) * u32::from(p.height),
-        )
-    })
-}
-fn preferred_plan(
-    outer: MonitorRect,
-    inner: MonitorRect,
-    screens: &[MonitorRect],
-    scale: f64,
-    bound: Option<(u16, u16)>,
-) -> Option<Plan> {
-    [(1024, 1024), (512, 1024), (1024, 512), (768, 768)]
-        .into_iter()
-        .filter_map(|chunk| chunked_plan(outer, inner, screens, scale, bound, chunk))
-        .min_by_key(|p| {
-            (
-                (p.width > 4096 || p.height > 2160) as u8,
-                u32::from(p.width) * u32::from(p.height),
-            )
-        })
-}
-/// Only an actual codec-capacity overflow changes sampling; unrelated desktop bounds never do.
-pub(super) fn plan(
-    outer: MonitorRect,
-    inner: MonitorRect,
-    screens: &[MonitorRect],
-    scale: f64,
-    bound: Option<(u16, u16)>,
-) -> Option<Plan> {
-    let mut native = inner;
+    let inner = intersection(crop, inner);
+    let mut density = scale;
     for _ in 0..12 {
-        let mut density = scale;
-        for _ in 0..10 {
-            if let Some(p) = preferred_plan(outer, native, screens, density, bound) {
-                return Some(p);
-            }
-            // An existing allocation that no longer fits must grow, not silently lose quality.
-            if bound.is_some() {
-                return None;
-            }
-            density *= 0.85;
+        let plans = candidates(crop, inner, density, bound);
+        if let Some(best) = plans.into_iter().min_by_key(|p| cost(p, avc_height)) {
+            return Some(best);
         }
-        let w = (native.width as f64 * 0.85).floor().max(1.) as u32;
-        let h = (native.height as f64 * 0.85).floor().max(1.) as u32;
-        native = MonitorRect {
-            index: 0,
-            x: native.x + (native.width - w) as i32 / 2,
-            y: native.y + (native.height - h) as i32 / 2,
-            width: w,
-            height: h,
-        };
+        if bound.is_some() {
+            return None;
+        }
+        density *= 0.85;
     }
     None
 }
-
+#[cfg(test)]
+fn plan(
+    outer: MonitorRect,
+    inner: MonitorRect,
+    screens: &[MonitorRect],
+    scale: f64,
+    bound: Option<(u16, u16)>,
+) -> Option<Plan> {
+    plan_with_avc(outer, inner, screens, scale, bound, 2160)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn rect(x: i32, y: i32, w: u32, h: u32) -> MonitorRect {
+    fn r(x: i32, y: i32, width: u32, height: u32) -> MonitorRect {
         MonitorRect {
             index: 0,
             x,
             y,
-            width: w,
-            height: h,
+            width,
+            height,
         }
     }
     #[test]
-    fn representative_full_view_stays_on_avc() {
-        let outer = rect(0, 0, 5120, 3200);
-        let inner = rect(3072, 1088, 1024, 1024);
-        let p = plan(outer, inner, &[outer], PERIPHERAL_SCALE, None).unwrap();
-        println!(
-            "full-view atlas {}x{}, {} tiles",
-            p.width,
-            p.height,
-            p.tiles.len()
-        );
-        assert!(p.width <= 4096 && p.height <= 2160);
+    fn taller_negotiated_avc_avoids_hevc_for_contiguous_pair() {
+        let outer = r(0, 0, 5120, 3200);
+        let inner = r(3000, 1000, 1024, 1024);
+        let p = plan_with_avc(outer, inner, &[outer], PERIPHERAL_SCALE, None, 4096).unwrap();
+        assert!(p.width <= 4096 && p.height <= 4096);
+        assert_eq!(p.tiles.len(), 2);
     }
     #[test]
-    fn unrelated_desktop_height_does_not_change_samples() {
-        let outer = rect(0, 0, 2560, 1600);
-        let inner = rect(500, 300, 1024, 1024);
+    fn full_native_wins_when_it_costs_less_than_two_layers() {
+        let outer = r(0, 0, 1200, 900);
+        let inner = r(100, 50, 1024, 800);
+        let p = plan(outer, inner, &[outer], PERIPHERAL_SCALE, None).unwrap();
+        assert_eq!(p.tiles.len(), 1);
+        assert_eq!(p.tiles[0].source, outer);
+        assert_eq!(p.tiles[0].width, 1200);
+    }
+    #[test]
+    fn wide_view_uses_only_one_contiguous_periphery_and_one_native_patch() {
+        let outer = r(0, 0, 5120, 3200);
+        let inner = r(3000, 1000, 1024, 1024);
+        let p = plan(outer, inner, &[outer], PERIPHERAL_SCALE, None).unwrap();
+        assert_eq!(p.tiles.len(), 2);
+        assert_eq!(p.tiles[0].source, inner);
+        assert_eq!(p.tiles[1].source, outer);
+        assert_eq!((p.tiles[1].width, p.tiles[1].height), (3456, 2160));
+        assert_eq!((p.tiles[0].width, p.tiles[0].height), (1024, 1024));
+    }
+    #[test]
+    fn gaze_motion_does_not_rearrange_the_peripheral_image() {
+        let outer = r(-100, 50, 5120, 3200);
         let a = plan(
             outer,
-            inner,
-            &[outer, rect(0, 1600, 2560, 1600)],
+            r(500, 500, 1024, 1024),
+            &[outer],
             PERIPHERAL_SCALE,
             None,
         )
         .unwrap();
         let b = plan(
             outer,
+            r(3000, 1800, 1024, 1024),
+            &[outer],
+            PERIPHERAL_SCALE,
+            None,
+        )
+        .unwrap();
+        assert_eq!((a.width, a.height), (b.width, b.height));
+        assert_eq!(a.tiles[1].source, b.tiles[1].source);
+        assert_eq!(
+            (
+                a.tiles[1].x,
+                a.tiles[1].y,
+                a.tiles[1].width,
+                a.tiles[1].height
+            ),
+            (
+                b.tiles[1].x,
+                b.tiles[1].y,
+                b.tiles[1].width,
+                b.tiles[1].height
+            )
+        );
+    }
+    #[test]
+    fn off_view_screen_changes_do_not_affect_density() {
+        let crop = r(0, 0, 2560, 1600);
+        let inner = r(500, 300, 1024, 1024);
+        let a = plan(
+            crop,
             inner,
-            &[outer, rect(0, 1600, 2560, 1600), rect(0, 3200, 2560, 1600)],
+            &[crop, r(0, 1600, 2560, 1600)],
+            PERIPHERAL_SCALE,
+            None,
+        )
+        .unwrap();
+        let b = plan(
+            crop,
+            inner,
+            &[crop, r(0, 1600, 2560, 1600), r(0, 3200, 2560, 1600)],
             PERIPHERAL_SCALE,
             None,
         )
@@ -323,42 +266,5 @@ mod tests {
             assert_eq!(a.source, b.source);
             assert_eq!((a.width, a.height), (b.width, b.height))
         }
-    }
-    #[test]
-    fn skips_holes_and_duplicate_detail_with_exact_coverage() {
-        let screens = [rect(-100, 50, 1600, 1000), rect(1500, 550, 1600, 1000)];
-        let outer = rect(-100, 50, 3200, 1500);
-        let inner = rect(1000, 300, 1000, 900);
-        let p = plan(outer, inner, &screens, PERIPHERAL_SCALE, None).unwrap();
-        assert!(p.tiles.len() <= MAX_TILES);
-        let mut total = 0u64;
-        for (i, t) in p.tiles.iter().enumerate() {
-            total += u64::from(t.source.width) * u64::from(t.source.height);
-            assert!(screens
-                .iter()
-                .any(|s| intersect(t.source, *s) == Some(t.source)));
-            let high = intersect(t.source, inner) == Some(t.source);
-            let scale = if high { 1. } else { PERIPHERAL_SCALE };
-            assert_eq!(t.width, (t.source.width as f64 * scale).ceil() as u16);
-            assert_eq!(t.height, (t.source.height as f64 * scale).ceil() as u16);
-            for b in p.tiles.iter().skip(i + 1) {
-                assert!(intersect(t.source, b.source).is_none());
-                assert!(
-                    t.x + t.width <= b.x
-                        || b.x + b.width <= t.x
-                        || t.y + t.height <= b.y
-                        || b.y + b.height <= t.y
-                );
-            }
-        }
-        assert_eq!(total, 3_200_000);
-        assert!(plan(
-            outer,
-            inner,
-            &screens,
-            PERIPHERAL_SCALE,
-            Some((p.width, p.height))
-        )
-        .is_some());
     }
 }

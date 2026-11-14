@@ -221,22 +221,25 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-view-x11-') as temp:
      stream.settimeout(5);native_units=[];native_metas=[];timings=[]
      for i in range(40):
       began=time.monotonic()
-      payload=json.dumps(dict(mode='view-tiles-v2',areaBudget=True,regionSampling=True,frameBudget=True,sessionId=session,rect=[0,0,1,1],center=[.7,.5],nativeAreaPixels=1048576,targetFps=30,feedbackMs=0)).encode()
+      payload=json.dumps(dict(mode='view-tiles-v2',areaBudget=True,regionSampling=True,avcMaxHeight=4096,frameBudget=True,sessionId=session,rect=[0,0,1,1],center=[.7,.5],nativeAreaPixels=1048576,targetFps=30,feedbackMs=0)).encode()
       stream.sendall(struct.pack('>I',len(payload))+payload)
       meta=json.loads(exact(stream,struct.unpack('>I',exact(stream,4))[0]));unit=exact(stream,meta['bytes'])
       assert meta['regionSampling'] and meta['type']=='view-tiles-v2'
       assert meta['gutterPixels']==4
-      assert abs(meta['peripheryScale']-.675)<.002,meta
-      assert meta['nativeAreaPixels']==1048576
+      assert len(meta['tiles']) in (1,2)
+      if len(meta['tiles'])==2:
+       assert abs(meta['peripheryScale']-.675)<.002,meta
+       assert meta['nativeAreaPixels']==1048576
+      else:assert meta['nativeAreaPixels']==width*height
       sampled=0
       for j,(src,dst) in enumerate(meta['tiles']):
        sw=round((src[2]-src[0])*width);sh=round((src[3]-src[1])*height)
        dw=round((dst[2]-dst[0])*meta['width']);dh=round((dst[3]-dst[1])*meta['height'])
        assert (sw==dw and sh==dh) or (abs(dw-sw*.675)<=1.1 and abs(dh-sh*.675)<=1.1)
        sampled+=sw*sh
-       for other,_ in meta['tiles'][j+1:]:
-        assert min(src[2],other[2])-max(src[0],other[0])<1e-6 or min(src[3],other[3])-max(src[1],other[1])<1e-6
-      assert abs(sampled-width*height)<width*2,'Duplicate or missing source regions'
+      # One whole low-resolution crop deliberately overlaps the native patch.
+      expected=width*height+(meta['nativeAreaPixels'] if len(meta['tiles'])==2 else 0)
+      assert abs(sampled-expected)<width*2,'Unexpected capture coverage'
       timings.append(time.monotonic()-began)
       if i<2:native_units.append(unit);native_metas.append(meta)
      regional_stats=None
@@ -247,14 +250,14 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-view-x11-') as temp:
        value=json.loads(data[16:])
        if value.get('type')=='resourceStats':regional_stats=value
      if regional_stats:print('Region profile '+json.dumps(regional_stats),flush=True)
-     print(f"PASS layout-independent regions: {meta['codec']} {meta['width']}x{meta['height']}, {len(meta['tiles'])} tiles, {meta['sampledPixels']/1e6:.2f}MP sampled; {1/(sum(timings[5:])/len(timings[5:])):.1f} responses/s, density {meta['peripheryScale']:.3f}",flush=True)
+     print(f"PASS layout-independent regions: {meta['codec']} {meta['width']}x{meta['height']}, {len(meta['tiles'])} tiles, {meta['sampledPixels']/1e6:.2f}MP sampled; {1/(sum(timings[5:])/len(timings[5:])):.1f} responses/s, density {meta['peripheryScale'] if meta['peripheryScale'] is not None else 'full native'}",flush=True)
     with socket.create_connection(('127.0.0.1',port),2) as stream:
      stream.settimeout(5);densities=[];auto_areas=[]
      for _ in range(120):
-      payload=json.dumps(dict(mode='view-tiles-v2',areaBudget=True,regionSampling=True,frameBudget=True,sessionId=session,rect=[0,0,1,1],center=[.7,.5],nativeAreaPixels=0,targetFps=30,feedbackMs=250)).encode()
+      payload=json.dumps(dict(mode='view-tiles-v2',areaBudget=True,regionSampling=True,avcMaxHeight=4096,frameBudget=True,sessionId=session,rect=[0,0,1,1],center=[.7,.5],nativeAreaPixels=0,targetFps=30,feedbackMs=250)).encode()
       stream.sendall(struct.pack('>I',len(payload))+payload)
       meta=json.loads(exact(stream,struct.unpack('>I',exact(stream,4))[0]));exact(stream,meta['bytes'])
-      densities.append(meta['peripheryScale']);auto_areas.append(meta['nativeAreaPixels']);time.sleep(.04)
+      densities.append(meta['peripheryScale'] if meta['peripheryScale'] is not None else 1.);auto_areas.append(meta['nativeAreaPixels']);time.sleep(.04)
      assert min(auto_areas)>=1048576,'Auto sacrificed its useful native-detail floor'
      assert min(densities)>=.674,'Auto degraded peripheral density to chase its FPS target'
      print(f'PASS regional Auto under sustained pressure: native {min(auto_areas)} pixels, peripheral {min(densities):.3f}',flush=True)
@@ -268,10 +271,10 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-view-x11-') as temp:
      assert len(actual)==3 and all(abs(a-b)<45 for a,b in zip(actual,expected)),(src,dst,tuple(actual),expected)
     checked_gutters=0
     for src,dst in first['tiles']:
-     gutter_x=round(dst[0]*first['width']);y=round((dst[1]+dst[3])*.5*first['height'])
+     gutter_x=round(dst[0]*first['width']);y=round((dst[1]+(dst[3]-dst[1])*.31)*first['height'])
      dw=round((dst[2]-dst[0])*first['width']);dh=round((dst[3]-dst[1])*first['height'])
      assert gutter_x>=4 and round(dst[1]*first['height'])>=4 and round(dst[2]*first['width'])+4<=first['width'] and round(dst[3]*first['height'])+4<=first['height']
-     u=src[0]-2/dw*(src[2]-src[0]);v=(src[1]+src[3])*.5
+     u=src[0]-2/dw*(src[2]-src[0]);v=src[1]+(src[3]-src[1])*.31
      if not (0<u<1 and 0<v<1) or abs(u-.5)<.02 or abs(v-.5)<.02:continue
      at=(y*first['width']+gutter_x-2)*3;actual=decoded_region[at:at+3]
      expected=[(255,0,0),(0,255,0),(0,0,255),(255,255,0)][(1 if u>=.5 else 0)+(2 if v>=.5 else 0)]

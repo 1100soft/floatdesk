@@ -474,7 +474,7 @@ fn view_plan(
 ) -> Option<atlas::Plan> {
     let inner = inner_region(desktop, outer, request);
     if request["regionSampling"].as_bool().unwrap_or(false) {
-        return regions::plan(
+        return regions::plan_with_avc(
             outer,
             inner,
             screens,
@@ -482,6 +482,7 @@ fn view_plan(
                 .as_f64()
                 .unwrap_or(regions::PERIPHERAL_SCALE),
             bound,
+            avc_height(request),
         );
     }
     if request["areaBudget"].as_bool().unwrap_or(false) {
@@ -503,6 +504,16 @@ fn view_plan(
         atlas::efficient(desktop, outer, inner, false)
     } else {
         atlas::plan(desktop, outer, inner, None)
+    }
+}
+fn avc_height(request: &serde_json::Value) -> u16 {
+    if request["regionSampling"].as_bool().unwrap_or(false) {
+        request["avcMaxHeight"]
+            .as_u64()
+            .unwrap_or(2160)
+            .clamp(2160, 4096) as u16
+    } else {
+        2160
     }
 }
 struct PackedView {
@@ -547,7 +558,7 @@ impl PackedView {
             budget,
             area_mode,
             avc: if area_mode {
-                width <= 4096 && height <= 2160
+                width <= 4096 && height <= avc_height(request)
             } else {
                 budget
             },
@@ -567,7 +578,9 @@ impl PackedView {
                     fps: fps.clamp(1, 60),
                     bitrate_bps: rate,
                 };
-                if (area_mode && width <= 4096 && height <= 2160) || (!area_mode && budget) {
+                if (area_mode && width <= 4096 && height <= avc_height(request))
+                    || (!area_mode && budget)
+                {
                     GstEncoder::open_quality(encoder_name, config, quality)?
                 } else {
                     GstEncoder::open_hevc(config, quality)?
@@ -621,7 +634,7 @@ impl PackedView {
                 if let Some(best) = view_plan(desktop, outer, request, None, screens) {
                     if u64::from(best.width) * u64::from(best.height) * 10
                         < u64::from(self.width) * u64::from(self.height) * 9
-                        || self.avc != (best.width <= 4096 && best.height <= 2160)
+                        || self.avc != (best.width <= 4096 && best.height <= avc_height(request))
                     {
                         return false;
                     }
@@ -644,7 +657,8 @@ impl PackedView {
         let Some(best) = view_plan(desktop, outer, request, None, screens) else {
             return false;
         };
-        if self.area_mode && self.avc != (best.width <= 4096 && best.height <= 2160) {
+        if self.area_mode && self.avc != (best.width <= 4096 && best.height <= avc_height(request))
+        {
             return false;
         }
         let area = u32::from(self.width) * u32::from(self.height);
@@ -710,7 +724,7 @@ impl PackedView {
         let mut metadata = Vec::new();
         for tile in &plan.tiles {
             let r = tile.source;
-            if !request["regionSampling"].as_bool().unwrap_or(false) {
+            {
                 crate::media::desktop_mask::DesktopMask::new(
                     r,
                     tile.width.into(),

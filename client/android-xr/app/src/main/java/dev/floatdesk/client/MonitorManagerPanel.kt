@@ -162,7 +162,7 @@ private fun StreamingSettings(value:dev.floatdesk.client.workspace.WorkspaceFile
     var dense by remember(value.denseFraction){mutableStateOf(value.denseFraction)}
     Text(String.format(Locale.ROOT,"Sharpening %.2f",sharp),color=Color.White)
     androidx.compose.material3.Slider(value=sharp,onValueChange={sharp=(it*20).roundToInt()/20f},onValueChangeFinished={onApply(value.copy(sharpening=sharp))},valueRange=0f..1.5f,steps=29)
-    Text(String.format(Locale.ROOT,"Dense region %.0f%% of view",dense*100),color=Color.White)
+    Text(String.format(Locale.ROOT,"Dense region maximum %.0f%% of view",dense*100),color=Color.White)
     androidx.compose.material3.Slider(value=dense,onValueChange={dense=(it*100).roundToInt()/100f},onValueChangeFinished={onApply(value.copy(denseFraction=dense))},valueRange=.2f.. .65f,steps=44)
     Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)){
         androidx.compose.material3.Switch(checked=value.showResources,onCheckedChange={onApply(value.copy(showResources=it))});Text("Live resources",color=Color.White)

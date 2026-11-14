@@ -82,3 +82,11 @@ internal fun qualityOutputSize(width:Int,height:Int,maxDimension:Int=8192):Pair<
     val scale=minOf(1.0,limit/width,limit/height,kotlin.math.sqrt(16_777_216.0/(width.toDouble()*height)))
     return maxOf(2,(width*scale).toInt()/2*2) to maxOf(2,(height*scale).toInt()/2*2)
 }
+
+/** Treat the requested dense fraction as an upper bound, preserving final-output pixel density. */
+internal fun qualityDenseFraction(requested:Float,rect:FocusRect,outputWidth:Int,outputHeight:Int):Float {
+    val width=(rect.right-rect.left)*outputWidth
+    val height=(rect.bottom-rect.top)*outputHeight
+    if(width<=0f || height<=0f)return requested.coerceIn(.2f,.65f)
+    return minOf(requested,2048f/width,1024f/height).coerceIn(.2f,.65f)
+}

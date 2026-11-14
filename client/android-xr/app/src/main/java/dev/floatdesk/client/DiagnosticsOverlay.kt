@@ -32,7 +32,7 @@ internal class DiagnosticsOverlay(private val session:Session):AutoCloseable {
             it.setSurfacePixelDimensions(IntSize2d(1280,480));it.mediaBlendingMode=SurfaceEntity.MediaBlendingMode.TRANSPARENT;entity=it
         }
         // Keep angular size constant as the HUD moves in front of nearby desktop geometry.
-        val distance=minOf(.18f,clearance*.2f).coerceAtLeast(.055f)
+        val distance=(clearance*.6f).coerceIn(.35f,.5f)
         val halfAngle=verticalHalfAngle.takeIf{it.isFinite() && it>0f} ?: .6f
         val upper=kotlin.math.tan(halfAngle*.9f)
         val lower=kotlin.math.tan(halfAngle*.25f)
@@ -65,10 +65,17 @@ internal object DiagnosticsCanvas {
             lines.add("VIEW ${if(snapshot.frame!=null)"ACTIVE" else "BASELINE"} · age ${snapshot.frame?.let{"${now-it.capturedAt}ms"} ?: "n/a"}")
             lines.add(state.reason);lines.add(state.transport)
             lines.add(java.lang.String.format(java.util.Locale.ROOT,"Dense sampling gain X%.2fx Y%.2fx",state.gainX,state.gainY))
-            lines.add("Map: amber visible crop · green decoded dense area")
+            lines.add(snapshot.sampling.substringBefore(" · effective "))
+            if(snapshot.sampling.contains(" · effective "))lines.add("Effective sampling gain " + snapshot.sampling.substringAfter(" · effective "))
         }
         paint.style=Paint.Style.FILL;paint.color=Color.CYAN
-        lines.forEachIndexed { i,line->canvas.drawText(line,if(debug)278f else 16f,32f+i*43f,paint) }
+        lines.forEachIndexed { i,line->
+            val x=if(debug)278f else 16f
+            paint.textSize=22f
+            val measured=paint.measureText(line)
+            if(measured>1264-x)paint.textSize*=((1264-x)/measured)
+            canvas.drawText(line,x,32f+i*43f,paint)
+        }
         if(debug){
             val map=RectF(14f,80f,254f,320f)
             fun rect(r:FocusRect)=RectF(map.left+r.left*map.width(),map.top+r.top*map.height(),map.left+r.right*map.width(),map.top+r.bottom*map.height())

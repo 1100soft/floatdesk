@@ -168,3 +168,5 @@ Quality-gaze checks cover analytic flat/spherical targeting past desktop edges, 
 `SharpenSmoke` checks GPU luminance sharpening, zero-strength restoration, bounded flat regions and diagnostics leaving normal desktop pixels untouched on the headset. The compositor smoke check also round-trips quality/bitrate/sharpening/density/resource settings. `check-viewed-detail.py` verifies live encoder-setting acknowledgements, one-Hz telemetry and quality/density changes on a private Xvfb desktop. Warp checks preserve head-driven geometry behavior and a stable reference.
 
 The hardware view-stream check also repeats SurfaceTexture latches, waits beyond the former 300 ms timeout, rejects unmapped images, and requires a fresh baseline after handoff. The sharpening check verifies diagnostic canvas transparency outside glyphs/outlines.
+
+Dynamic view regressions now verify the cached atlas survives missing mappings and EGL output rebinding, holds through handoff, and gives way to a fresh baseline. Density tests cover auto-narrowing a full-view 50% crop to 32% for a 5120×3200 output while retaining requested fractions for closer views.

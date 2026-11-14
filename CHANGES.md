@@ -1,5 +1,7 @@
 # Changes since the LAN proof of concept
 
+- Retain a bounded GPU atlas across rejected dynamic frames and stream handoffs to avoid blanking. Move diagnostic text outside the previous near-eye clipping range. Auto-narrow dense crops to preserve final-output detail and report effective sampling gain.
+
 - Put transparent bright diagnostics in the upper view periphery, adapting depth to stay ahead of desktop geometry. Prevent dynamic-stream flashes of the paused baseline on duplicate callbacks or frame-age expiry; require fresh decoded baseline frames during handoff.
 
 - Restore head-driven spherical curvature while retaining gaze-targeted streaming. Move diagnostics to a separate noninteractive view-following overlay, remove desktop diagnostic tint/borders/text, and clarify core-summed CPU and target video bitrate labels.

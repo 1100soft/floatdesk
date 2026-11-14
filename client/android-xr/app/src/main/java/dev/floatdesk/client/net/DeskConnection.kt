@@ -12,6 +12,8 @@ import androidx.compose.runtime.mutableStateOf
 import dev.floatdesk.client.ViewProjection
 import dev.floatdesk.client.FocusTarget
 import dev.floatdesk.client.FocusResult
+import dev.floatdesk.client.qualityOutputSize
+import dev.floatdesk.client.qualityDenseFraction
 import dev.floatdesk.client.FocusRect
 import dev.floatdesk.client.media.MonitorDecoder
 import dev.floatdesk.client.media.VideoAim
@@ -63,18 +65,20 @@ internal class DeskConnection(
         val remote=pendingRemote
         val bounds=workspaceInfo.value?.bounds()?.toList()
         val format=currentMonitors.singleOrNull()
-        val request=if(detailDiagnostics.get().enabled && rect!=null && renderingActive && remote!=null && bounds!=null && format!=null)DetailRequest(remote,detailSession,rect,bounds,center ?: (rect.centerU to rect.centerV),videoQuality,videoMbps,denseFraction) else null
+        val target=bounds?.let{qualityOutputSize(it[2],it[3],qualityOutputLimit())}
+        val fraction=if(rect!=null && target!=null)qualityDenseFraction(denseFraction,rect,target.first,target.second) else denseFraction
+        val request=if(detailDiagnostics.get().enabled && rect!=null && renderingActive && remote!=null && bounds!=null && format!=null)DetailRequest(remote,detailSession,rect,bounds,center ?: (rect.centerU to rect.centerV),videoQuality,videoMbps,fraction) else null
         val reason=when {
             !detailDiagnostics.get().enabled->"Normal full-desktop streaming"
             rect==null->blockedReason
             format==null->"Waiting for one combined desktop stream"
             !renderingActive->"Paused: app hidden"
             remote==null || bounds==null->"Waiting for host/layout"
-            else->"$targeting · dense region follows gaze"
+            else->"$targeting · dense %.0f%% / max %.0f%%".format(java.util.Locale.ROOT,fraction*100,denseFraction*100)
         }
         val state=detailDiagnostics.updateAndGet{it.copy(candidate=rect,reason=reason,
-            gainX=if(rect!=null && format!=null)2048f/((rect.right-rect.left)*denseFraction*format.width) else 0f,
-            gainY=if(rect!=null && format!=null)1024f/((rect.bottom-rect.top)*denseFraction*format.height) else 0f)}
+            gainX=if(rect!=null && format!=null)2048f/((rect.right-rect.left)*fraction*format.width) else 0f,
+            gainY=if(rect!=null && format!=null)1024f/((rect.bottom-rect.top)*fraction*format.height) else 0f)}
         decoders[0]?.detailDebug(state)
         if(request!=null && detailWorker==null)detailWorker=ViewedDetail({decoders[0]?.viewDestination()},{message->
             val updated=detailDiagnostics.updateAndGet{it.copy(transport=message)};decoders[0]?.detailDebug(updated)

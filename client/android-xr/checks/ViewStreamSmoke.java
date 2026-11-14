@@ -62,11 +62,11 @@ public final class ViewStreamSmoke {
             SystemClock.sleep(40);compositor.output(reader.getSurface(),true);await(reader,2);
             // A slow next frame must hold the latest picture, never resurrect the paused baseline.
             SystemClock.sleep(350);compositor.output(reader.getSurface(),true);await(reader,2);
-            submit(codec,compositor,2000000,false);await(reader,3);
+            submit(codec,compositor,2000000,false);await(reader,2);
             submit(codec,compositor,3000000,true);await(reader,0);
-            compositor.clearView();await(reader,3);
+            compositor.clearView();compositor.output(reader.getSurface(),true);await(reader,2);
             Canvas fresh=compositor.getInput().lockCanvas(null);fresh.drawColor(Color.GREEN);compositor.getInput().unlockCanvasAndPost(fresh);await(reader,1);
-            System.out.println("PASS: actual H264 atlas center/periphery sampling, out-of-view alpha, exact PTS association duplicate callback retention, no stale timeout fallback and fresh-only baseline restoration");
+            System.out.println("PASS: actual H264 atlas center/periphery sampling, out-of-view alpha, exact PTS association duplicate callback retention, no stale timeout fallback and cached-image recovery across unknown mappings and fresh baseline handoff");
         } catch(Throwable failure){failure.printStackTrace();throw failure;} finally {if(codec!=null){codec.stop();codec.release();}compositor.close();reader.close();}
     }
 }

@@ -118,6 +118,7 @@ pub struct X11Capture {
     seg: u32,
     addr: *mut libc::c_void,
     mapping: usize,
+    capacity: (u16, u16),
     stride: u32,
     damage: u32,
     damage_ok: bool,
@@ -235,6 +236,7 @@ impl X11Capture {
             seg,
             addr,
             mapping,
+            capacity: (width as u16, height as u16),
             stride,
             damage: if damage_ok { damage } else { 0 },
             damage_ok,
@@ -242,6 +244,52 @@ impl X11Capture {
             generation: 1,
             last: None,
         })
+    }
+
+    /// One bounded SHM allocation and target pixmap for all packed-atlas regions.
+    pub fn workspace(rect: MonitorRect, width: u16, height: u16) -> Result<Self> {
+        let mut result = Self::open_detail(rect, width, height)?;
+        if result.render.is_none() {
+            result.render = Some(RenderTarget::create(&result.link, rect, width, height)?)
+        }
+        Ok(result)
+    }
+    pub fn retarget_resampled(&mut self, rect: MonitorRect, width: u16, height: u16) -> Result<()> {
+        if width == 0 || height == 0 || width > self.capacity.0 || height > self.capacity.1 {
+            return Err(Error::Msg("Atlas capture exceeds allocation".into()));
+        }
+        let target = self
+            .render
+            .as_mut()
+            .ok_or_else(|| Error::Msg("Missing atlas render workspace".into()))?;
+        let fixed = |v: f64| (v * 65536.0).round() as i32;
+        self.link
+            .conn
+            .render_set_picture_transform(
+                target.source,
+                render::Transform {
+                    matrix11: fixed(rect.width as f64 / width as f64),
+                    matrix12: 0,
+                    matrix13: fixed(rect.x as f64),
+                    matrix21: 0,
+                    matrix22: fixed(rect.height as f64 / height as f64),
+                    matrix23: fixed(rect.y as f64),
+                    matrix31: 0,
+                    matrix32: 0,
+                    matrix33: 65536,
+                },
+            )
+            .map_err(Error::x11)?
+            .check()
+            .map_err(Error::x11)?;
+        target.width = width;
+        target.height = height;
+        self.rect = rect;
+        self.width = width.into();
+        self.height = height.into();
+        self.stride = self.link.pixel_format()?.stride(self.width)?;
+        self.note_cursor();
+        Ok(())
     }
 
     /// Reuse the bounded SHM/readback allocation when the viewed crop changes.

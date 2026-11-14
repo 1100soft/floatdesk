@@ -148,6 +148,22 @@ impl GstEncoder {
     ) -> Result<Self> {
         Self::open_scaled_quality(preference, config, input_size, 0)
     }
+    pub fn open_hevc(config: EncoderConfig, quality: u32) -> Result<Self> {
+        if !inspect("vah265enc") {
+            return Err(Error::Encoder("Hardware HEVC unavailable".into()));
+        }
+        Self::start(
+            Profile {
+                element: "vah265enc",
+                format: "NV12",
+                kilobits: true,
+                props: VA,
+            },
+            config,
+            (config.width, config.height),
+            quality,
+        )
+    }
     pub fn open_quality(preference: &str, config: EncoderConfig, quality: u32) -> Result<Self> {
         Self::open_scaled_quality(preference, config, (config.width, config.height), quality)
     }
@@ -216,12 +232,15 @@ impl GstEncoder {
                 profile.format, config.width, config.height
             )
         };
+        let hevc = profile.element == "vah265enc";
+        let parser = if hevc { "h265parse" } else { "h264parse" };
+        let media = if hevc { "video/x-h265" } else { "video/x-h264" };
         let description = format!(
             "{LIVE_SOURCE} max-bytes={max_bytes} \
              ! {conversion} \
              ! {} name=enc \
-             ! h264parse config-interval=-1 \
-             ! video/x-h264,stream-format=byte-stream,alignment=au \
+             ! {parser} config-interval=-1 \
+             ! {media},stream-format=byte-stream,alignment=au \
              ! appsink name=sink emit-signals=false sync=false max-buffers=2 leaky-type=none",
             profile.element
         );
@@ -238,7 +257,7 @@ impl GstEncoder {
         }
         if quality > 0 {
             match profile.element {
-                "vah264enc" | "vaapih264enc" => pipeline.set_arg(
+                "vah264enc" | "vaapih264enc" | "vah265enc" => pipeline.set_arg(
                     Element::Encoder,
                     "target-usage",
                     if quality == 1 { "4" } else { "1" },

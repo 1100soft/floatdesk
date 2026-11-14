@@ -7,7 +7,7 @@ source=(root/'MonitorMesh.kt').read_text().split('\n',1)[1]+'\n'+(root/'VideoGeo
 w=(root/'workspace/Workspace.kt').read_text()
 source+='\n'+(root/'PinchPolicy.kt').read_text().split('\n',1)[1]
 source+='\n'+w[w.index('internal data class Pose'):w.index('internal class WorkspaceStore')]
-source+='\n'+(root/'workspace/WorkspacePlacement.kt').read_text().split('\n',1)[1]
+source+='\n'+'\n'.join(line for line in (root/'workspace/WorkspacePlacement.kt').read_text().splitlines() if not line.startswith(('package ','import ')))
 code=source+'''
 fun main() {
  check(ViewLayers.DiagnosticsDistanceM<ViewLayers.ControlsDistanceM && ViewLayers.ControlsDistanceM<ViewLayers.DesktopDistanceM)

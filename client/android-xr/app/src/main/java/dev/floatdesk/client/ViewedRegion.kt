@@ -83,25 +83,24 @@ internal fun qualityOutputSize(width:Int,height:Int,maxDimension:Int=8192):Pair<
     return maxOf(2,(width*scale).toInt()/2*2) to maxOf(2,(height*scale).toInt()/2*2)
 }
 
-/** Treat the requested dense fraction as an upper bound, preserving final-output pixel density. */
+/** Honor coverage independently of the atlas pixel budget. */
 internal fun qualityDenseFraction(requested:Float,rect:FocusRect,outputWidth:Int,outputHeight:Int):Float {
-    if(requested>=.999f)return 1f // Explicit full-view coverage must not follow gaze.
-    val width=(rect.right-rect.left)*outputWidth
-    val height=(rect.bottom-rect.top)*outputHeight
-    if(width<=0f || height<=0f)return requested.coerceIn(.2f,1f)
-    return minOf(requested,2048f/width,1024f/height).coerceIn(.2f,1f)
+    return requested.coerceIn(.2f,1f)
 }
 
-/** Independent corner panels leave the central half of the view physically empty. */
+/** Panels border the maximum Focus rectangle, rather than the outer headset field of view. */
 internal data class HudPanelBox(val width:Float,val height:Float,val x:Float,val y:Float)
 internal fun peripheralHudPanels(horizontal:Float,vertical:Float,distance:Float):List<HudPanelBox> {
     val h=horizontal.takeIf{it.isFinite() && it>.1f} ?: .6f
     val v=vertical.takeIf{it.isFinite() && it>.1f} ?: .5f
-    val halfX=kotlin.math.tan(h*.86f)*distance
-    val halfY=kotlin.math.tan(v*.82f)*distance
-    val height=minOf(halfY*.44f,halfX*.44f)
+    val focused=focusViewHalfAngles(h,v)
+    val innerX=kotlin.math.tan(focused.first)*distance
+    val innerY=kotlin.math.tan(focused.second)*distance
+    val margin=kotlin.math.tan(Math.toRadians(.6).toFloat())*distance
+    val available=(kotlin.math.tan(v*.95f)*distance-innerY-margin).coerceAtLeast(distance*.01f)
+    val height=minOf(innerX*.46f,available)
     val width=height*2f
     return listOf(-1f to 1f,1f to 1f,-1f to -1f,1f to -1f).map{(x,y)->
-        HudPanelBox(width,height,x*(halfX-width*.5f),y*(halfY-height*.5f))
+        HudPanelBox(width,height,x*(width*.5f+margin*.5f),y*(innerY+margin+height*.5f))
     }
 }

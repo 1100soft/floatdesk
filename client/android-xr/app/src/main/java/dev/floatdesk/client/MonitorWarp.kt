@@ -45,6 +45,7 @@ internal class MonitorWarp : AutoCloseable {
     private var curvedInput: CurvedMonitorInput? = null
     private var inputPointer:SpatialPointerComponent?=null
     private var ownsInputPointer=false
+    private var pointerRefreshAt=0L
     private var inputListener: ((InputEvent) -> Unit)? = null
     private var mask: Texture? = null
     private var ownerEnabled=true
@@ -140,6 +141,16 @@ internal class MonitorWarp : AutoCloseable {
                 // Keep the native monitor hit and its matrix together instead of using the front hit.
                 val info = event.hitInfoList.firstOrNull { it.inputEntity === expected } ?: event.hitInfoList.firstOrNull()
                 val gazeSource=event.source==InputEvent.Source.GAZE_AND_GESTURE
+                // Native gaze can recreate its icon after shape/aiming-mode changes. Reapply
+                // the desktop-only policy to the entity actually receiving this hover.
+                if(gazeSource && info?.inputEntity===expected && expected!=null &&
+                    event.action!=InputEvent.Action.HOVER_EXIT && event.action!=InputEvent.Action.CANCEL){
+                    val now=android.os.SystemClock.uptimeMillis()
+                    if(event.action==InputEvent.Action.HOVER_ENTER || now-pointerRefreshAt>=1000){
+                        expected.getComponentsOfType(SpatialPointerComponent::class.java).forEach{it.spatialPointerIcon=SpatialPointerIcon.NONE}
+                        pointerRefreshAt=now
+                    }
+                }
                 val side = if(gazeSource)"GAZE" else event.pointerType.toString()
                 if(gazeSource && event.action==InputEvent.Action.CANCEL){
                     onHover?.invoke(side,null,null,flatWidth,flatHeight);sequences.remove(side);return@listener

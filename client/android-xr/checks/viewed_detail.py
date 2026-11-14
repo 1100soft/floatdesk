@@ -8,14 +8,14 @@ focus=body('FocusInteraction.kt').split('internal class FocusGestures')[0]
 code='import kotlin.math.*\n'+body('MonitorMesh.kt')+focus+body('PointerControl.kt')+body('GazeStabilizer.kt')+body('ViewedRegion.kt')+body('media/ScreenPresentation.kt')+r'''
 fun main(){
  for(h in listOf(.25f,.4f,.7f))for(v in listOf(.2f,.4f,.6f))for(d in listOf(.35f,.55f)){
-  val halfX=tan(h*.86f)*d;val halfY=tan(v*.82f)*d
+  val focused=focusViewHalfAngles(h,v);val innerY=tan(focused.second)*d
   val boxes=peripheralHudPanels(h,v,d)
   check(boxes.size==4)
   check(boxes[0].x+boxes[0].width*.5f<boxes[1].x-boxes[1].width*.5f)
   for(box in boxes){
    check(box.width>0 && box.height>0 && abs(box.width/box.height-2f)<.0001f)
    check(atan((abs(box.x)+box.width*.5f)/d)<h && atan((abs(box.y)+box.height*.5f)/d)<v)
-   check(abs(box.y)-box.height*.5f>halfY*.5f) // Center has no panel or text, even transparently.
+   check(abs(box.y)-box.height*.5f>innerY) // Center has no panel or text, even transparently.
   }
  }
 
@@ -55,9 +55,9 @@ fun main(){
  held.update(1.05f to .4f,10);val before=held.center!!;check(held.update(null,1000)==before && before.first>1f)
  check(qualityOutputSize(5120,3200)==(5120 to 3200))
  val nativeFraction=qualityDenseFraction(.5f,FocusRect(0f,0f,1f,1f),5120,3200)
- check(abs(nativeFraction-.32f)<.00001f)
+ check(nativeFraction==.5f)
  check(qualityDenseFraction(1f,FocusRect(0f,0f,1f,1f),5120,3200)==1f)
- check(1024f/(3200*nativeFraction)>=.9999f && 2048f/(5120*nativeFraction)>=.9999f)
+ for(f in listOf(.4f,.6f,.99f,1f))check(qualityDenseFraction(f,FocusRect(0f,0f,1f,1f),5120,3200)==f)
  check(qualityDenseFraction(.5f,FocusRect(.2f,.2f,.6f,.6f),5120,3200)==.5f)
  check(qualityDenseFraction(1f,FocusRect(.4f,.4f,.6f,.6f),5120,3200)==1f)
  check(qualityDenseFraction(.9f,FocusRect(.4f,.4f,.6f,.6f),5120,3200)==.9f)

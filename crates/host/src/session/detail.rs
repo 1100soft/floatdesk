@@ -1,4 +1,4 @@
-//! Experimental view-only H.264 atlas: dense center above lower-density visible periphery.
+//! Experimental native-density HEVC tiles, with a legacy H.264 atlas fallback.
 use super::*;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -46,6 +46,7 @@ pub(super) fn start(
             let _ = socket.set_write_timeout(Some(Duration::from_millis(600)));
             let _ = socket.set_nodelay(true);
             let result = (|| -> Result<()> {
+                let mut packed: Option<PackedView> = None;
                 let mut high: Option<X11Capture> = None;
                 let mut low: Option<X11Capture> = None;
                 let mut encoder: Option<GstEncoder> = None;
@@ -71,7 +72,10 @@ pub(super) fn start(
                         .is_some_and(|c| c.control.ip() == peer.ip());
                     if !allowed
                         || request["sessionId"].as_u64() != Some(shared.session_id)
-                        || request["mode"] != "view-h264-v1"
+                        || !matches!(
+                            request["mode"].as_str(),
+                            Some("view-h264-v1" | "view-tiles-v2")
+                        )
                     {
                         return Err(Error::Msg("Expired or unsupported view session".into()));
                     }
@@ -91,6 +95,25 @@ pub(super) fn start(
                     let desktop = desktop_rect(&sources)?;
                     let (outer, outer_uv) = region(desktop, &request)
                         .ok_or_else(|| Error::Msg("Invalid view crop".into()))?;
+                    if request["mode"] == "view-tiles-v2" {
+                        if packed.as_ref().is_none_or(|p| !p.fits(desktop, outer)) {
+                            // Release the old SHM/encoder before allocating the next bucket.
+                            packed.take();
+                            packed = Some(PackedView::new(desktop, outer, &request, fps, bitrate)?)
+                        }
+                        sequence += 1;
+                        packed.as_mut().unwrap().send(
+                            &shared,
+                            &mut socket,
+                            desktop,
+                            &screens,
+                            outer,
+                            outer_uv,
+                            &request,
+                            sequence,
+                        )?;
+                        continue;
+                    }
                     let center = request["center"]
                         .as_array()
                         .filter(|a| a.len() == 2)
@@ -274,6 +297,60 @@ fn region(desktop: MonitorRect, request: &serde_json::Value) -> Option<(MonitorR
 mod tests {
     use super::*;
     #[test]
+    fn packed_tiles_partition_without_overlap_even_at_edges() {
+        let outer = MonitorRect {
+            index: 0,
+            x: -100,
+            y: 50,
+            width: 1000,
+            height: 600,
+        };
+        for inner in [
+            outer,
+            MonitorRect {
+                index: 0,
+                x: -100,
+                y: 50,
+                width: 400,
+                height: 240,
+            },
+            MonitorRect {
+                index: 0,
+                x: 200,
+                y: 230,
+                width: 400,
+                height: 240,
+            },
+            MonitorRect {
+                index: 0,
+                x: 500,
+                y: 410,
+                width: 400,
+                height: 240,
+            },
+        ] {
+            let regions = packed_regions(outer, inner);
+            assert_eq!(regions[0], inner);
+            assert_eq!(
+                regions
+                    .iter()
+                    .map(|r| r.width as u64 * r.height as u64)
+                    .sum::<u64>(),
+                outer.width as u64 * outer.height as u64
+            );
+            for (i, a) in regions.iter().enumerate() {
+                for b in regions.iter().skip(i + 1) {
+                    assert!(
+                        a.x + a.width as i32 <= b.x
+                            || b.x + b.width as i32 <= a.x
+                            || a.y + a.height as i32 <= b.y
+                            || b.y + b.height as i32 <= a.y
+                    );
+                }
+            }
+        }
+    }
+    #[test]
     fn crops_are_bounded_and_match_exact_pixels() {
         let desktop = MonitorRect {
             index: 0,
@@ -297,4 +374,242 @@ mod tests {
             assert!(region(desktop, &serde_json::json!({"rect":rect})).is_none());
         }
     }
+}
+
+struct PackedView {
+    source: (u32, u32),
+    density: (f64, f64),
+    width: u16,
+    height: u16,
+    capture: X11Capture,
+    encoder: GstEncoder,
+    pixels: Vec<u8>,
+}
+impl PackedView {
+    fn new(
+        desktop: MonitorRect,
+        outer: MonitorRect,
+        request: &serde_json::Value,
+        fps: u32,
+        bitrate: u32,
+    ) -> Result<Self> {
+        let scale = 1f64
+            .min(8192.0 / desktop.width as f64)
+            .min(8192.0 / desktop.height as f64)
+            .min((16_777_216.0 / (desktop.width as f64 * desktop.height as f64)).sqrt());
+        let width = ((desktop.width as f64 * scale) as u16 / 2 * 2).max(2);
+        let height = ((desktop.height as f64 * scale) as u16 / 2 * 2).max(2);
+        let density = (
+            width as f64 / desktop.width as f64,
+            height as f64 / desktop.height as f64,
+        );
+        // Stable 256-pixel buckets avoid codec recreation on small FOV/crop changes.
+        let bucket = |value: f64, limit: u16| {
+            ((((value - 1e-7).ceil() as u32).div_ceil(256) * 256)
+                .max(64)
+                .min(limit as u32)) as u16
+        };
+        let width = bucket(outer.width as f64 * density.0, width);
+        let height = bucket(outer.height as f64 * density.1, height);
+        let rate = request["bitrateMbps"]
+            .as_f64()
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .map(|v| (v.clamp(1.0, 200.0) * 1e6) as u32)
+            .unwrap_or(bitrate);
+        let quality = request["quality"].as_u64().unwrap_or(0).min(2) as u32;
+        Ok(Self {
+            source: (desktop.width, desktop.height),
+            density,
+            width,
+            height,
+            capture: X11Capture::workspace(desktop, width, height)?,
+            encoder: GstEncoder::open_hevc(
+                crate::core::EncoderConfig {
+                    width: width.into(),
+                    height: height.into(),
+                    fps: fps.clamp(1, 60),
+                    bitrate_bps: rate,
+                },
+                quality,
+            )?,
+            pixels: vec![0; width as usize * height as usize * 4],
+        })
+    }
+    fn fits(&self, desktop: MonitorRect, outer: MonitorRect) -> bool {
+        let w = (outer.width as f64 * self.density.0 - 1e-7).ceil();
+        let h = (outer.height as f64 * self.density.1 - 1e-7).ceil();
+        // Shrink only after a substantial zoom, retaining allocations through normal head motion.
+        w <= self.width as f64
+            && h <= self.height as f64
+            && !(w * 2.0 < self.width as f64 && h * 2.0 < self.height as f64)
+            && self.source == (desktop.width, desktop.height)
+    }
+    fn send(
+        &mut self,
+        shared: &Shared,
+        socket: &mut std::net::TcpStream,
+        desktop: MonitorRect,
+        screens: &[MonitorRect],
+        outer: MonitorRect,
+        outer_uv: [f32; 4],
+        request: &serde_json::Value,
+        sequence: u64,
+    ) -> Result<()> {
+        let start = Instant::now();
+        self.pixels.fill(0);
+        let fraction = request["fraction"]
+            .as_f64()
+            .filter(|v| v.is_finite())
+            .unwrap_or(0.35)
+            .clamp(0.2, 1.0);
+        let iw = ((outer.width as f64 * fraction).round() as u32).clamp(1, outer.width);
+        let ih = ((outer.height as f64 * fraction).round() as u32).clamp(1, outer.height);
+        let center = request["center"].as_array();
+        let axis = |n: usize, lo: f32, hi: f32| {
+            center
+                .and_then(|a| a.get(n))
+                .and_then(|v| v.as_f64())
+                .filter(|v| v.is_finite())
+                .unwrap_or((lo + hi) as f64 * 0.5)
+                .clamp(lo as f64, hi as f64)
+        };
+        let ix = (desktop.x as f64 + axis(0, outer_uv[0], outer_uv[2]) * desktop.width as f64
+            - iw as f64 * 0.5)
+            .round() as i32;
+        let iy = (desktop.y as f64 + axis(1, outer_uv[1], outer_uv[3]) * desktop.height as f64
+            - ih as f64 * 0.5)
+            .round() as i32;
+        let inner = MonitorRect {
+            index: 0,
+            x: ix.clamp(outer.x, outer.x + (outer.width - iw) as i32),
+            y: iy.clamp(outer.y, outer.y + (outer.height - ih) as i32),
+            width: iw,
+            height: ih,
+        };
+        let (sx, sy) = self.density;
+        let baseline = 1f64
+            .min(4096.0 / desktop.width as f64)
+            .min(2160.0 / desktop.height as f64)
+            .min(sx)
+            .min(sy);
+        let mut metadata = Vec::new();
+        for (i, r) in packed_regions(outer, inner).into_iter().enumerate() {
+            let x = (((r.x - outer.x) as f64 * sx).floor() as u16).min(self.width - 1);
+            let y = (((r.y - outer.y) as f64 * sy).floor() as u16).min(self.height - 1);
+            let right =
+                (((r.x - outer.x + r.width as i32) as f64 * sx).floor() as u16).min(self.width);
+            let bottom =
+                (((r.y - outer.y + r.height as i32) as f64 * sy).floor() as u16).min(self.height);
+            let w = if i == 0 {
+                right - x
+            } else {
+                ((r.width as f64 * baseline).round() as u16).min(right - x)
+            }
+            .max(1);
+            let h = if i == 0 {
+                bottom - y
+            } else {
+                ((r.height as f64 * baseline).round() as u16).min(bottom - y)
+            }
+            .max(1);
+            self.capture.retarget_resampled(r, w, h)?;
+            let mut image = self
+                .capture
+                .poll(Duration::ZERO, true)?
+                .ok_or_else(|| Error::Msg("Atlas capture unavailable".into()))?;
+            crate::media::desktop_mask::DesktopMask::new(r, w.into(), h.into(), screens)
+                .apply(&mut image);
+            if let Ok(cursor) = shared.cursor.lock() {
+                paint_cursor_scaled(&mut image, r, &cursor)
+            }
+            for row in 0..h as usize {
+                let from = row * image.stride as usize;
+                let to = ((y as usize + row) * self.width as usize + x as usize) * 4;
+                self.pixels[to..to + w as usize * 4]
+                    .copy_from_slice(&image.bgra[from..from + w as usize * 4]);
+            }
+            let source = [
+                (r.x - desktop.x) as f32 / desktop.width as f32,
+                (r.y - desktop.y) as f32 / desktop.height as f32,
+                (r.x - desktop.x + r.width as i32) as f32 / desktop.width as f32,
+                (r.y - desktop.y + r.height as i32) as f32 / desktop.height as f32,
+            ];
+            let dest = [
+                x as f32 / self.width as f32,
+                y as f32 / self.height as f32,
+                (x + w) as f32 / self.width as f32,
+                (y + h) as f32 / self.height as f32,
+            ];
+            metadata.push([source, dest]);
+        }
+        let capture_ns = start.elapsed().as_nanos() as u64;
+        let encode = Instant::now();
+        // Move ownership into the submission briefly; restore and reuse the same bounded allocation.
+        let image = crate::core::CapturedFrame {
+            width: self.width.into(),
+            height: self.height.into(),
+            stride: self.width as u32 * 4,
+            bgra: std::mem::take(&mut self.pixels),
+            monotonic_ns: monotonic_ns(),
+            damage_generation: sequence,
+        };
+        let submitted = self.encoder.submit(&image);
+        self.pixels = image.bgra;
+        submitted?;
+        let frame = self
+            .encoder
+            .pull_wait(500_000_000)?
+            .ok_or_else(|| Error::Msg("HEVC view encode timeout".into()))?;
+        if frame.bytes.len() > MAX_FRAME {
+            return Err(Error::Msg("Packed view frame exceeds bound".into()));
+        }
+        shared
+            .view_capture_ns
+            .fetch_add(capture_ns, Ordering::Relaxed);
+        shared
+            .view_encode_ns
+            .fetch_add(encode.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        shared.view_samples.fetch_add(1, Ordering::Relaxed);
+        shared
+            .view_until_ns
+            .store(monotonic_ns() + 1_000_000_000, Ordering::Relaxed);
+        let header=serde_json::json!({"type":"view-tiles-v2","codec":"video/hevc","frame":sequence,"rect":outer_uv,"inner":metadata[0][0],"tiles":metadata,"width":self.width,"height":self.height,"bytes":frame.bytes.len(),"desktop":[desktop.x,desktop.y,desktop.width,desktop.height]}).to_string();
+        socket.write_all(&(header.len() as u32).to_be_bytes())?;
+        socket.write_all(header.as_bytes())?;
+        socket.write_all(&frame.bytes)?;
+        shared.encoded_frames.fetch_add(1, Ordering::Relaxed);
+        shared
+            .bytes
+            .fetch_add(frame.bytes.len() as u64, Ordering::Relaxed);
+        Ok(())
+    }
+}
+fn packed_regions(outer: MonitorRect, inner: MonitorRect) -> Vec<MonitorRect> {
+    let r = |x, y, width, height| MonitorRect {
+        index: 0,
+        x,
+        y,
+        width,
+        height,
+    };
+    [
+        inner,
+        r(outer.x, outer.y, (inner.x - outer.x) as u32, outer.height),
+        r(
+            inner.x + inner.width as i32,
+            outer.y,
+            (outer.x + outer.width as i32 - inner.x - inner.width as i32) as u32,
+            outer.height,
+        ),
+        r(inner.x, outer.y, inner.width, (inner.y - outer.y) as u32),
+        r(
+            inner.x,
+            inner.y + inner.height as i32,
+            inner.width,
+            (outer.y + outer.height as i32 - inner.y - inner.height as i32) as u32,
+        ),
+    ]
+    .into_iter()
+    .filter(|r| r.width > 0 && r.height > 0)
+    .collect()
 }

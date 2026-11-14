@@ -2,6 +2,13 @@ package dev.floatdesk.client
 
 import kotlin.math.sqrt
 
+/** Shared inner bounds for Focus and its surrounding HUD. */
+internal fun focusViewHalfAngles(horizontal:Float,vertical:Float):Pair<Float,Float> {
+    fun inset(value:Float,fallback:Double)=((value.takeIf{it.isFinite() && it>.05f} ?: Math.toRadians(fallback).toFloat())*.85f).coerceAtMost(1.2f)
+    return minOf(inset(horizontal,35.0),Math.toRadians(18.0).toFloat()) to
+        minOf(inset(vertical,30.0),Math.toRadians(12.0).toFloat())
+}
+
 /** Desk poses and image dimensions share units; do not send an already-local eye through another scene space. */
 internal fun viewerInMonitor(viewer: FloatArray, position: FloatArray, rotation: FloatArray): FloatArray {
     val x=viewer[0]-position[0]; val y=viewer[1]-position[1]; val z=viewer[2]-position[2]

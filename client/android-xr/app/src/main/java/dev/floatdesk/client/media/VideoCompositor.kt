@@ -57,6 +57,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     private var retainedTexture=0
     private var retainedFramebuffer=0
     private var copyProgram=0
+    private var retainedSize=0 to 0
     @Volatile private var handoff=false
     @Volatile private var outputPixels=0 to 0
     private var rejectedViews=0L
@@ -151,15 +152,15 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         viewFrames.headMap(pts,true).clear()
         if(next!=null){
             viewTexture.getTransformMatrix(viewTransform)
-            retainAtlas()
+            retainAtlas(next)
             viewCurrent=next;viewLatched=true;handoff=false
             detailUploads++;viewPresented?.invoke()
         } else rejectedViews++ // Keep the last independently cached pixels AND their mapping.
         draw()
     }
 
-    /** One fixed 12 MiB GPU atlas keeps valid pixels independent of decoder/SurfaceTexture lifetime. */
-    private fun retainAtlas(){
+    /** One bounded (at most 64 MiB) GPU atlas keeps valid pixels independent of decoder/SurfaceTexture lifetime. */
+    private fun retainAtlas(next:dev.floatdesk.client.net.ViewFrame){
         if(retainedTexture==0){
             val id=IntArray(1);GLES20.glGenTextures(1,id,0);retainedTexture=id[0]
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D,retainedTexture)
@@ -167,14 +168,18 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_MAG_FILTER,GLES20.GL_LINEAR)
             GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_WRAP_S,GLES20.GL_CLAMP_TO_EDGE)
             GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_WRAP_T,GLES20.GL_CLAMP_TO_EDGE)
-            GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D,0,GLES20.GL_RGBA,2048,1536,0,GLES20.GL_RGBA,GLES20.GL_UNSIGNED_BYTE,null)
             GLES20.glGenFramebuffers(1,id,0);retainedFramebuffer=id[0]
+        }
+        if(retainedSize!=(next.atlasWidth to next.atlasHeight)){
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D,retainedTexture)
+            GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D,0,GLES20.GL_RGBA,next.atlasWidth,next.atlasHeight,0,GLES20.GL_RGBA,GLES20.GL_UNSIGNED_BYTE,null)
+            retainedSize=next.atlasWidth to next.atlasHeight
         }
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER,retainedFramebuffer)
         try {
             GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER,GLES20.GL_COLOR_ATTACHMENT0,GLES20.GL_TEXTURE_2D,retainedTexture,0)
             check(GLES20.glCheckFramebufferStatus(GLES20.GL_FRAMEBUFFER)==GLES20.GL_FRAMEBUFFER_COMPLETE)
-            GLES20.glViewport(0,0,2048,1536);GLES20.glDisable(GLES20.GL_SCISSOR_TEST);GLES20.glDisable(GLES20.GL_BLEND)
+            GLES20.glViewport(0,0,next.atlasWidth,next.atlasHeight);GLES20.glDisable(GLES20.GL_SCISSOR_TEST);GLES20.glDisable(GLES20.GL_BLEND)
             GLES20.glUseProgram(copyProgram);GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,viewTextureId)
             GLES20.glUniform1i(GLES20.glGetUniformLocation(copyProgram,"video"),0)
@@ -222,7 +227,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     fun diagnosticSnapshot():dev.floatdesk.client.net.DiagnosticSnapshot = dev.floatdesk.client.net.DiagnosticSnapshot(
         diagnostics,viewCurrent?.takeIf{viewLatched},presentationStats,
         "Output ${outputPixels.first}x${outputPixels.second} · base ${baseWidth}x${baseHeight} · rejected $rejectedViews" +
-        (viewCurrent?.let { f -> java.lang.String.format(java.util.Locale.ROOT," · effective X%.2f Y%.2f",minOf(2048f/((f.inner.right-f.inner.left)*baseWidth),outputPixels.first.toFloat()/baseWidth),minOf(1024f/((f.inner.bottom-f.inner.top)*baseHeight),outputPixels.second.toFloat()/baseHeight)) } ?: ""))
+        (viewCurrent?.let { f -> java.lang.String.format(java.util.Locale.ROOT," · effective X%.2f Y%.2f",minOf((if(f.tiles.isNotEmpty())f.atlasWidth*(f.tiles[6]-f.tiles[4]) else 2048f)/((f.inner.right-f.inner.left)*baseWidth),outputPixels.first.toFloat()/baseWidth),minOf((if(f.tiles.isNotEmpty())f.atlasHeight*(f.tiles[7]-f.tiles[5]) else 1024f)/((f.inner.bottom-f.inner.top)*baseHeight),outputPixels.second.toFloat()/baseHeight)) } ?: ""))
 
 
     fun overlay(value: VideoAim) {
@@ -265,10 +270,15 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         val view=viewCurrent?.takeIf{viewLatched && (diagnostics.enabled || handoff)}
         if(view==null && !hasFrame)return
         GLES20.glViewport(0,0,w[0],h[0]); GLES20.glUseProgram(program)
-        GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"viewMode"),if(view!=null)1 else 0)
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"viewMode"),if(view?.tiles?.isNotEmpty()==true)2 else if(view!=null)1 else 0)
         if(view!=null){
             GLES20.glUniform4f(GLES20.glGetUniformLocation(program,"viewOuter"),view.outer.left,view.outer.top,view.outer.right,view.outer.bottom)
             GLES20.glUniform4f(GLES20.glGetUniformLocation(program,"viewInner"),view.inner.left,view.inner.top,view.inner.right,view.inner.bottom)
+            GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"viewTileCount"),view.tiles.size/8)
+            for(i in 0 until view.tiles.size/8){
+                GLES20.glUniform4fv(GLES20.glGetUniformLocation(program,"viewSources[$i]"),1,view.tiles,i*8)
+                GLES20.glUniform4fv(GLES20.glGetUniformLocation(program,"viewDestinations[$i]"),1,view.tiles,i*8+4)
+            }
         }
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0); GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,if(view!=null)viewTextureId else textureId)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"video"),0)
@@ -289,7 +299,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         }
         GLES20.glUniform1f(GLES20.glGetUniformLocation(program,"sharpenStrength"),sharpening)
-        GLES20.glUniform2f(GLES20.glGetUniformLocation(program,"videoTexel"),if(view!=null)1f/2048 else 1f/baseWidth,if(view!=null)1f/1536 else 1f/baseHeight)
+        GLES20.glUniform2f(GLES20.glGetUniformLocation(program,"videoTexel"),if(view!=null)1f/view.atlasWidth else 1f/baseWidth,if(view!=null)1f/view.atlasHeight else 1f/baseHeight)
         val projection=viewProjection
         GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"projectionEnabled"),if(projection==null) 0 else 1)
         if(projection!=null) {
@@ -474,6 +484,9 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                 return clamp(base+vec3(adjusted-y),0.0,1.0);
             }
             uniform int viewMode;
+            uniform int viewTileCount;
+            uniform vec4 viewSources[5];
+            uniform vec4 viewDestinations[5];
             uniform vec4 viewOuter;
             uniform vec4 viewInner;
             varying vec2 uv;
@@ -495,6 +508,21 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                                 float weight=edge.x*edge.x*edge.y*edge.y;
                                 vec2 limit=0.04*(rect.zw-rect.xy)*contentScale;
                                 source=center+(point+clamp(mapped-point,-limit,limit)*weight-center)/contentScale;
+                            }
+                            if(viewMode==2){
+                                if(source.x<viewOuter.x || source.x>viewOuter.z || source.y<viewOuter.y || source.y>viewOuter.w)discard;
+                                bool matched=false;
+                                for(int t=0;t<5;t++){
+                                    if(t<viewTileCount){
+                                        vec4 a=viewSources[t];vec4 b=viewDestinations[t];
+                                        if(source.x>=a.x && source.x<=a.z && source.y>=a.y && source.y<=a.w){
+                                            vec2 uvTile=b.xy+(source-a.xy)/(a.zw-a.xy)*(b.zw-b.xy);
+                                            gl_FragColor=vec4(filteredVideo(uvTile,b),1.0);matched=true;break;
+                                        }
+                                    }
+                                }
+                                if(!matched)discard;
+                                found=true;break;
                             }
                             vec2 sampleSource=source;
                             if(viewMode==1){

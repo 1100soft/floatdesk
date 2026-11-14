@@ -34,3 +34,51 @@ internal fun viewedRegion(width:Float,height:Float,mesh:MonitorMesh?,horizontal:
     }
     return if(right>left && bottom>top)FocusRect(left.coerceIn(0f,1f),top.coerceIn(0f,1f),right.coerceIn(0f,1f),bottom.coerceIn(0f,1f)) else null
 }
+
+/** Quality targeting extends beyond the desktop; bounded mouse/input hit testing is unchanged. */
+internal fun extendedQualityTarget(origin:FloatArray,direction:FloatArray,width:Float,height:Float,mesh:MonitorMesh?):Pair<Float,Float>? {
+    if(!origin.all{it.isFinite()} || !direction.all{it.isFinite()})return null
+    if(mesh==null){
+        if(kotlin.math.abs(direction[2])<1e-7f)return null
+        val t=-origin[2]/direction[2];if(t<=0)return null
+        return (origin[0]+t*direction[0])/width+.5f to .5f-(origin[1]+t*direction[1])/height
+    }
+    val offset=FloatArray(3){origin[it]-mesh.eye[it]}
+    fun dot(a:FloatArray,b:FloatArray)=(0..2).sumOf{(a[it]*b[it]).toDouble()}.toFloat()
+    val a=dot(direction,direction);if(a<1e-12f)return null
+    val b=dot(offset,direction);val c=dot(offset,offset)-mesh.radius*mesh.radius
+    val discriminant=b*b-a*c;if(discriminant<0)return null
+    val root=kotlin.math.sqrt(discriminant)
+    val near=(-b-root)/a;val far=(-b+root)/a
+    val t=if(near>0)near else far;if(t<=0)return null
+    val radial=FloatArray(3){(offset[it]+t*direction[it])/mesh.radius}
+    val x=dot(radial,mesh.frameTangentX);val y=dot(radial,mesh.frameTangentY)
+    val sine=kotlin.math.sqrt(x*x+y*y);val forward=-dot(radial,mesh.frameNormal)
+    if(sine<1e-6f && forward<0)return null // The antipode has no unique source direction.
+    val angle=kotlin.math.atan2(sine,forward)
+    val span=Math.PI.toFloat()-.01f-1.5f
+    val sourceAngle=if(angle<=1.5f)angle else 1.5f-span*kotlin.math.ln((1f-(angle-1.5f)/span).coerceAtLeast(1e-6f))
+    val gain=if(sine<1e-6f)1f/mesh.radiansPerMeter else sourceAngle/sine/mesh.radiansPerMeter
+    val focus=mesh.focus ?: mesh.center
+    val u=(focus[0]+x*gain)/width+.5f;val v=.5f-(focus[1]+y*gain)/height
+    return if(u.isFinite() && v.isFinite())u to v else null
+}
+
+/** Independent quality filter; never falls back to the desktop center after a valid gaze. */
+internal class QualityGazeTracker {
+    private val filter=GazeStabilizer()
+    var center:Pair<Float,Float>?=null
+        private set
+    fun update(raw:Pair<Float,Float>?,now:Long):Pair<Float,Float>? {
+        filter.update(raw?.let{PointerTarget(0,it.first,it.second,floatArrayOf())},now)?.let{center=it.u to it.v}
+        return center
+    }
+}
+
+/** Preserve source texels in the final XR buffer, bounded to 16 MP and 8192 pixels/axis. */
+internal fun qualityOutputSize(width:Int,height:Int,maxDimension:Int=8192):Pair<Int,Int> {
+    if(width<=0 || height<=0)return 2 to 2
+    val limit=maxDimension.coerceIn(2,8192).toDouble()
+    val scale=minOf(1.0,limit/width,limit/height,kotlin.math.sqrt(16_777_216.0/(width.toDouble()*height)))
+    return maxOf(2,(width*scale).toInt()/2*2) to maxOf(2,(height*scale).toInt()/2*2)
+}

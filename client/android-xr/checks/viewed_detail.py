@@ -5,7 +5,7 @@ import subprocess,sys,tempfile
 root=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
 def body(name):return '\n'.join(l for l in (root/name).read_text().splitlines() if not l.startswith(('package ','import ')))
 focus=body('FocusInteraction.kt').split('internal class FocusGestures')[0]
-code='import kotlin.math.*\n'+body('MonitorMesh.kt')+focus+body('ViewedRegion.kt')+body('media/ScreenPresentation.kt')+r'''
+code='import kotlin.math.*\n'+body('MonitorMesh.kt')+focus+body('PointerControl.kt')+body('GazeStabilizer.kt')+body('ViewedRegion.kt')+body('media/ScreenPresentation.kt')+r'''
 fun main(){
  val half=.35f
  val center=viewedRegion(8f,4f,null,half,half){p->floatArrayOf(p[0],p[1],-2f)}!!
@@ -26,9 +26,27 @@ fun main(){
  }!!
  check(corner.right-corner.left<.2f && corner.bottom-corner.top<.3f)
  check(corner.contains(.9f,.5f-10f/30f))
+ val flatOutside=extendedQualityTarget(floatArrayOf(0f,0f,1f),floatArrayOf(1.2f,0f,-1f),2f,2f,null)!!
+ check(abs(flatOutside.first-1.1f)<.0001f)
+ fun gazeRay(mesh:MonitorMesh,u:Float,v:Float):FloatArray {
+  val focus=mesh.focus ?: mesh.center;val x=((u-.5f)*mesh.width-focus[0])*mesh.radiansPerMeter;val y=((.5f-v)*mesh.height-focus[1])*mesh.radiansPerMeter
+  val a=sqrt(x*x+y*y);val span=Math.PI.toFloat()-.01f-1.5f;val angle=if(a<=1.5f)a else 1.5f+span*(1-exp(-(a-1.5f)/span))
+  val sinc=if(a<1e-6f)1f else sin(angle)/a
+  return FloatArray(3){-cos(angle)*mesh.frameNormal[it]+sinc*(x*mesh.frameTangentX[it]+y*mesh.frameTangentY[it])}
+ }
+ val edgeMesh=MonitorMesh(2f,1.2f,floatArrayOf(.1f,0f,1f),focus=floatArrayOf(.3f,.1f))
+ for(u in listOf(.95f,1f,1.05f,1.2f,-.2f)){
+  val direction=gazeRay(edgeMesh,u,.4f);val target=extendedQualityTarget(edgeMesh.eye,direction,edgeMesh.width,edgeMesh.height,edgeMesh)!!
+  check(abs(target.first-u)<.001f && abs(target.second-.4f)<.001f)
+ }
+ val held=QualityGazeTracker();check(held.update(null,0)==null)
+ held.update(1.05f to .4f,10);val before=held.center!!;check(held.update(null,1000)==before && before.first>1f)
+ check(qualityOutputSize(5120,3200)==(5120 to 3200))
+ val capped=qualityOutputSize(32000,18000);check(capped.first<=8192 && capped.second<=8192 && capped.first.toLong()*capped.second<=16777216)
  val spaced=ScreenPresentation(floatArrayOf(0f,0f,.4f,1f,.6f,0f,1f,1f),.1f)
  check(spaced.desktopBounds(FocusRect(.45f,0f,.55f,1f))==null)
  val source=spaced.desktopBounds(FocusRect(.02f,.05f,.38f,.95f))!!
+ check(spaced.extendedDesktopPoint(1.05f,.5f)!!.first>1f)
  check(abs(source.left)<.0001f && abs(source.right-.4f)<.0001f && abs(source.top)<.0001f && abs(source.bottom-1f)<.0001f)
  println("PASS viewed crop follows head framing, flat/curved coverage, behind-view rejection and gap/spacing inversion")
 }

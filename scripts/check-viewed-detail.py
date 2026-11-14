@@ -31,8 +31,8 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-view-x11-') as temp:
      while len(out)<n:
       block=stream.recv(n-len(out));assert block,'View connection closed';out+=block
      return out
-    def request(stream,rect,session_id=session):
-     payload=json.dumps(dict(mode='view-h264-v1',sessionId=session_id,rect=rect)).encode();stream.sendall(struct.pack('>I',len(payload))+payload)
+    def request(stream,rect,session_id=session,center=None):
+     payload=json.dumps(dict(mode='view-h264-v1',sessionId=session_id,rect=rect,center=center)).encode();stream.sendall(struct.pack('>I',len(payload))+payload)
      meta=json.loads(exact(stream,struct.unpack('>I',exact(stream,4))[0]));unit=exact(stream,meta['bytes'])
      assert meta['type']=='view-h264-v1' and meta['width']==2048 and meta['height']==1536 and len(unit)<8*1024*1024
      outer,inner=meta['rect'],meta['inner'];assert outer[0]<=inner[0]<inner[2]<=outer[2] and outer[1]<=inner[1]<inner[3]<=outer[3]
@@ -48,7 +48,10 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-view-x11-') as temp:
      for index in range(8):
       subprocess.run(['xsetroot','-solid','red' if index%2==0 else 'blue'],env=env,check=True)
       send(4,b'\xff')
-      meta,unit=request(stream,[.1,.1,.5,.6] if index%2==0 else [.5,.2,.9,.7]);units.append(unit);regions.append(meta['rect'])
+      meta,unit=request(stream,[.1,.1,.5,.6] if index%2==0 else [.5,.2,.9,.7],center=[1.5,-.5] if index==1 else [-1e100,1e100] if index==2 else None);
+      if index==1:assert meta['inner'][2]==meta['rect'][2] and meta['inner'][1]==meta['rect'][1], 'Off-edge gaze recentered'
+      if index==2:assert meta['inner'][0]==meta['rect'][0] and meta['inner'][3]==meta['rect'][3], 'Extended gaze overflowed'
+      units.append(unit);regions.append(meta['rect'])
       assert meta['frame']==index+1 and meta['desktop']==[0,0,1920,1200]
       count=packets()
       if index>=3:assert count==0,'Full-desktop RTP continued during view-only streaming'

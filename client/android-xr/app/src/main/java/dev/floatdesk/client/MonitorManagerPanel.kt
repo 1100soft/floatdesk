@@ -29,7 +29,7 @@ import androidx.compose.ui.unit.sp
 import dev.floatdesk.client.net.DeskConnection
 
 @Composable
-internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpacing:(Float)->Unit,onSpacingFinished:()->Unit,onClose:()->Unit,pinches:PinchThresholds,onPinches:(PinchThresholds)->Unit,viewedDetail:Boolean,onViewedDetail:(Boolean)->Unit) {
+internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpacing:(Float)->Unit,onSpacingFinished:()->Unit,onClose:()->Unit,pinches:PinchThresholds,onPinches:(PinchThresholds)->Unit,viewedDetail:Boolean,onViewedDetail:(Boolean)->Unit,viewDebug:Boolean,onViewDebug:(Boolean)->Unit) {
     val monitors by connection.monitors
     val state by connection.displayState
     val busy by connection.displayBusy
@@ -60,7 +60,7 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
         monitors.firstOrNull()?.let {stream->
             val sourceWidth=if(sizes.isEmpty()) stream.width else sizes.indices.maxOf {positions[it].first+sizes[it].first}-positions.minOf {it.first}
             val percent=(100f*stream.width/sourceWidth.coerceAtLeast(1)).roundToInt()
-            Text("Stream ${stream.width} × ${stream.height} · $percent% scale",color=Color.White,fontSize=13.sp)
+            Text("${if(viewedDetail) "Normal fallback" else "Stream"} ${stream.width} × ${stream.height} · $percent% scale",color=Color.White,fontSize=13.sp)
         }
         if(!state.ok) Text(state.message,color=Color(0xFFFFB4AB),fontSize=13.sp)
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(8.dp)) {
@@ -68,6 +68,10 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
             Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                 androidx.compose.material3.Switch(checked=viewedDetail,onCheckedChange=onViewedDetail)
                 Text("Experimental viewed-area quality",color=Color.White)
+            }
+            if(viewedDetail)Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                androidx.compose.material3.Switch(checked=viewDebug,onCheckedChange=onViewDebug)
+                Text("Show quality diagnostics",color=Color.White)
             }
             if(viewedDetail)Text(connection.detailStatus.value,color=Color(0xFFB8D9EA),fontSize=13.sp)
             PinchSettings(pinches,onPinches)

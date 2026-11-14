@@ -23,6 +23,8 @@ internal data class VideoAim @JvmOverloads constructor(
 
 /** One GPU pass keeps aiming decorations and live video in the same compositor layer. */
 internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
+    private val baseWidth=width
+    private val baseHeight=height
     private val thread=HandlerThread("floatdesk-video-gl").also { it.start() }
     private val handler=Handler(thread.looper)
     private val ready=CountDownLatch(1)
@@ -48,7 +50,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     private var hudProgram=0
     private var hudAt=0L
     private var hudActive=false
-    private val debugTick=object:Runnable {override fun run(){if(closed || !diagnostics.enabled)return;guard{draw()};handler.postDelayed(this,250)}}
+    private val debugTick=object:Runnable {override fun run(){if(closed || (!diagnostics.enabled || !diagnostics.showOverlay))return;guard{draw()};handler.postDelayed(this,250)}}
     private var hudBitmap:android.graphics.Bitmap?=null
     private var viewTextureId=0
     private lateinit var viewTexture:SurfaceTexture
@@ -56,6 +58,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         private set
     private val viewTransform=FloatArray(16)
     private val viewFrames=java.util.concurrent.ConcurrentSkipListMap<Long,dev.floatdesk.client.net.ViewFrame>()
+    private val viewExpiry=Runnable{if(!closed)guard{draw()}}
     private var viewCurrent:dev.floatdesk.client.net.ViewFrame?=null
     @Volatile private var viewPresented:(()->Unit)?=null
     fun onViewPresented(callback:()->Unit){viewPresented=callback}
@@ -67,6 +70,8 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     private val projectionPosted=AtomicBoolean(false)
     private var program=0
     private var inkProgram=0
+    @Volatile var outputLimit:Int=4096
+        private set
     private var hasFrame=false
     private var lastDraw=0L
     private val transform=FloatArray(16)
@@ -87,6 +92,9 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                 check(context!=EGL14.EGL_NO_CONTEXT)
                 pbuffer=EGL14.eglCreatePbufferSurface(display,config,intArrayOf(EGL14.EGL_WIDTH,1,EGL14.EGL_HEIGHT,1,EGL14.EGL_NONE),0)
                 check(EGL14.eglMakeCurrent(display,pbuffer,pbuffer,context))
+                val maxTexture=IntArray(1);val maxViewport=IntArray(2)
+                GLES20.glGetIntegerv(GLES20.GL_MAX_TEXTURE_SIZE,maxTexture,0);GLES20.glGetIntegerv(GLES20.GL_MAX_VIEWPORT_DIMS,maxViewport,0)
+                outputLimit=minOf(8192,maxTexture[0],maxViewport[0],maxViewport[1]).coerceAtLeast(2)
                 val ids=IntArray(1); GLES20.glGenTextures(1,ids,0); textureId=ids[0]
                 GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,textureId)
                 GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,GLES20.GL_TEXTURE_MIN_FILTER,GLES20.GL_LINEAR)
@@ -114,6 +122,8 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                     viewCurrent=viewFrames.remove(pts)
                     viewFrames.headMap(pts,true).clear()
                     if(viewCurrent!=null){detailUploads++;viewPresented?.invoke()}
+                    handler.removeCallbacks(viewExpiry)
+                    viewCurrent?.let{handler.postDelayed(viewExpiry,(300-(android.os.SystemClock.uptimeMillis()-it.capturedAt)).coerceAtLeast(0))}
                     draw()
                 }},handler)
                 program=link(VERTEX,FRAGMENT)
@@ -127,10 +137,11 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         failure?.let { close(); throw IllegalStateException("video compositor initialization failed",it) }
     }
 
-    fun output(surface: Surface?) {
+    @JvmOverloads
+    fun output(surface: Surface?,force:Boolean=false) {
         if(closed) return
         handler.post {
-            if(closed || target===surface) return@post
+            if(closed || target===surface && !force) return@post
             guard {
                 check(EGL14.eglMakeCurrent(display,pbuffer,pbuffer,context))
                 if(window!=EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(display,window)
@@ -153,9 +164,9 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
 
     fun detailDebug(value:dev.floatdesk.client.net.DetailDiagnostics) {
         val before=diagnostics;diagnostics=value
-        if(!before.enabled && value.enabled && !closed)handler.postDelayed(debugTick,250)
-        if(!value.enabled)handler.removeCallbacks(debugTick)
-        if(before==value || closed || !diagnosticsPosted.compareAndSet(false,true))return
+        if(!(before.enabled && before.showOverlay) && value.enabled && value.showOverlay && !closed)handler.postDelayed(debugTick,250)
+        if(!value.enabled || !value.showOverlay)handler.removeCallbacks(debugTick)
+        if((!value.showOverlay && !before.showOverlay && before.enabled==value.enabled) || before==value || closed || !diagnosticsPosted.compareAndSet(false,true))return
         handler.post {diagnosticsPosted.set(false);if(!closed)guard{draw()}}
     }
 
@@ -217,7 +228,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         }
         val region=view?.inner
         val debug=diagnostics
-        GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"detailDebug"),if(debug.enabled)1 else 0)
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"detailDebug"),if(debug.enabled && debug.showOverlay)1 else 0)
         val candidate=debug.candidate
         GLES20.glUniform4f(GLES20.glGetUniformLocation(program,"candidateRect"),candidate?.left ?: -1f,candidate?.top ?: -1f,candidate?.right ?: -1f,candidate?.bottom ?: -1f)
         GLES20.glUniform2f(GLES20.glGetUniformLocation(program,"debugPixel"),2f/w[0],2f/h[0])
@@ -245,7 +256,13 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         }
         val mapping=presentation
+        GLES20.glDisable(GLES20.GL_SCISSOR_TEST)
         GLES20.glClearColor(0f,0f,0f,0f);GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        if(view!=null)mapping.displayBounds(view.outer)?.let{bounds->
+            val left=kotlin.math.floor(bounds.left*w[0]).toInt().coerceIn(0,w[0]);val right=kotlin.math.ceil(bounds.right*w[0]).toInt().coerceIn(left,w[0])
+            val bottom=kotlin.math.floor((1f-bounds.bottom)*h[0]).toInt().coerceIn(0,h[0]);val top=kotlin.math.ceil((1f-bounds.top)*h[0]).toInt().coerceIn(bottom,h[0])
+            GLES20.glEnable(GLES20.GL_SCISSOR_TEST);GLES20.glScissor(left,bottom,right-left,top-bottom)
+        }
         GLES20.glUniform1f(GLES20.glGetUniformLocation(program,"contentScale"),1f-mapping.spacing.coerceIn(0f,.15f))
         val position=GLES20.glGetAttribLocation(program,"position")
         GLES20.glEnableVertexAttribArray(position); GLES20.glVertexAttribPointer(position,2,GLES20.GL_FLOAT,false,0,vertices)
@@ -256,6 +273,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             GLES20.glUniform4fv(GLES20.glGetUniformLocation(program,"screenRects[0]"),count,mapping.rects,start*4)
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP,0,4)
         }
+        GLES20.glDisable(GLES20.GL_SCISSOR_TEST)
         drawInk(w[0],h[0])
         drawDiagnostics(w[0],h[0],region,view?.capturedAt ?: 0L)
         check(EGL14.eglSwapBuffers(display,window)) { "video swap failed" }
@@ -266,7 +284,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     private fun drawDiagnostics(width:Int,height:Int,activeRect:dev.floatdesk.client.FocusRect?,stamp:Long) {
         val active=activeRect!=null
         val debug=diagnostics
-        if(!debug.enabled)return
+        if(!debug.enabled || !debug.showOverlay)return
         val now=android.os.SystemClock.uptimeMillis()
         val candidate=debug.candidate ?: dev.floatdesk.client.FocusRect(.15f,.2f,.85f,.8f)
         val pieces=mutableListOf<dev.floatdesk.client.FocusRect>()
@@ -283,10 +301,10 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             val paint=android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply{textSize=26f;typeface=android.graphics.Typeface.MONOSPACE;color=android.graphics.Color.WHITE}
             val age=if(stamp>0)"${now-stamp}ms" else "none"
             val lines=listOf(
-                "VIEW H264  ${if(active)"GPU ACTIVE" else "BASELINE ONLY"}  uploads=$detailUploads age=$age",
+                "VIEW ${width}x${height} ${if(active)"ACTIVE" else "BASELINE"} frames=$detailUploads age=$age",
                 debug.reason,
                 debug.transport,
-                java.lang.String.format(java.util.Locale.ROOT,"center density X %.2fx / Y %.2fx vs full desktop",debug.gainX,debug.gainY),
+                java.lang.String.format(java.util.Locale.ROOT,"gain X%.2fx Y%.2fx · atlas %.2f/%.2f",minOf(debug.gainX,width.toFloat()/baseWidth),minOf(debug.gainY,height.toFloat()/baseHeight),debug.gainX,debug.gainY),
                 java.lang.String.format(java.util.Locale.ROOT,"crop L%.0f%% T%.0f%% W%.0f%% H%.0f%%",candidate.left*100,candidate.top*100,(candidate.right-candidate.left)*100,(candidate.bottom-candidate.top)*100),
                 "AMBER: candidate   GREEN + tint: live GPU detail")
             lines.forEachIndexed{i,line->

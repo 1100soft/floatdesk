@@ -101,6 +101,9 @@ pub(super) fn start(
                             (outer_uv[0] + outer_uv[2]) as f64 / 2.0,
                             (outer_uv[1] + outer_uv[3]) as f64 / 2.0,
                         ));
+                    // Preserve an off-desktop gaze target, but clip capture safely to the visible crop.
+                    let cx = cx.clamp(outer_uv[0] as f64, outer_uv[2] as f64);
+                    let cy = cy.clamp(outer_uv[1] as f64, outer_uv[3] as f64);
                     let iw = ((outer.width as f64 * 0.55).round() as u32).clamp(1, outer.width);
                     let ih = ((outer.height as f64 * 0.55).round() as u32).clamp(1, outer.height);
                     let ix = ((desktop.x as f64 + cx * desktop.width as f64).round() as i32

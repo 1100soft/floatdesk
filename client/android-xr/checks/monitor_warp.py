@@ -126,6 +126,12 @@ suspend fun main() {
     check(input.enabled && input.getAlpha() == .8f)
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,false,false)
     val flatPose=input.getPose();val flatShape=input.shape
+    warp.qualityResolution(5120 to 3200)
+    warp.update(session,root,floatArrayOf(0f,0f,0f),screen,false,false)
+    check(input.pixelDimensions==IntSize2d(5120,3200) && input.getPose()==flatPose && input.shape===flatShape)
+    warp.qualityResolution(null)
+    warp.update(session,root,floatArrayOf(0f,0f,0f),screen,false,false)
+    check(input.pixelDimensions==IntSize2d(screen.pixelWidth,screen.pixelHeight))
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,false,false,viewDirection=floatArrayOf(.8f,0f,-1f))
     check(warp.mesh==null && input.getPose()==flatPose && input.shape===flatShape)
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false)

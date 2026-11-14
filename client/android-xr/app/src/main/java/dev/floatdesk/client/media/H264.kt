@@ -259,6 +259,8 @@ internal class MonitorDecoder(
 
     private val detailDiagnostics=AtomicReference(dev.floatdesk.client.net.DetailDiagnostics())
     fun detailDebug(value:dev.floatdesk.client.net.DetailDiagnostics){detailDiagnostics.set(value);compositor?.detailDebug(value)}
+    fun refreshOutput(){compositor?.output(surface.get(),true)}
+    fun qualityOutputLimit():Int=compositor?.outputLimit ?: 4096
     fun viewDestination():dev.floatdesk.client.net.ViewDestination?=compositor?.let{renderer->dev.floatdesk.client.net.ViewDestination(renderer.viewInput,renderer::viewFrame,renderer::clearView)}
     fun projection(value:ViewProjection?) {projection.set(value);compositor?.projection(value)}
     fun presentation(value:ScreenPresentation) {presentation.set(value);compositor?.presentation(value)}

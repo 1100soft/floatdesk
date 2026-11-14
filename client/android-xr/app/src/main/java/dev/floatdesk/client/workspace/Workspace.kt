@@ -49,6 +49,7 @@ internal data class WorkspaceFile(
     val viewerReference:Pose?=null,
     val focusMode:Boolean=false,
     val experimentalViewedDetail:Boolean=false,
+    val viewDetailDebug:Boolean=true,
     val pinchThresholds:PinchThresholds=PinchThresholds.Default,
 )
 
@@ -139,6 +140,7 @@ private fun encode(workspace: WorkspaceFile): JSONObject {
         .put("eye_aiming", workspace.eyeAiming)
         .put("focus_mode",workspace.focusMode)
         .put("experimental_viewed_detail",workspace.experimentalViewedDetail)
+        .put("view_detail_debug",workspace.viewDetailDebug)
         .put("pinch_thresholds_mm",JSONArray(listOf(workspace.pinchThresholds.leftIndexMm,workspace.pinchThresholds.rightIndexMm,workspace.pinchThresholds.leftMiddleMm,workspace.pinchThresholds.rightMiddleMm)))
         .put("mouse_gestures", workspace.mouseGestures)
         .put("screen_spacing",workspace.screenSpacing.toDouble())
@@ -184,6 +186,7 @@ private fun decode(json: JSONObject): WorkspaceFile {
         sphericalWarp = json.optBoolean("spherical_warp", false),
         focusMode=json.optBoolean("focus_mode",false),
         experimentalViewedDetail=json.optBoolean("experimental_viewed_detail",false),
+        viewDetailDebug=json.optBoolean("view_detail_debug",true),
         pinchThresholds=json.optJSONArray("pinch_thresholds_mm")?.takeIf{it.length()==4}?.let {a->
             PinchThresholds(a.optDouble(0,Double.NaN).toFloat(),a.optDouble(1,Double.NaN).toFloat(),a.optDouble(2,Double.NaN).toFloat(),a.optDouble(3,Double.NaN).toFloat()).takeIf{it.valid()}
         } ?: PinchThresholds.Default,

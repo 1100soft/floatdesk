@@ -27,6 +27,14 @@ import java.nio.IntBuffer
 internal class MonitorWarp : AutoCloseable {
     var mesh: MonitorMesh? = null
         private set
+    private var qualitySize:Pair<Int,Int>?=null
+    private var pixelTarget:SurfaceEntity?=null
+    private var pixelSize:Pair<Int,Int>?=null
+    fun qualityResolution(size:Pair<Int,Int>?):Boolean {if(qualitySize==size)return false;qualitySize=size;return true}
+    private fun applyPixels(target:SurfaceEntity,placement:MonitorPlacement){
+        val size=qualitySize ?: (placement.pixelWidth to placement.pixelHeight)
+        if(pixelTarget!==target || pixelSize!=size){target.setSurfacePixelDimensions(androidx.xr.runtime.math.IntSize2d(size.first,size.second));pixelTarget=target;pixelSize=size}
+    }
     private var input: SurfaceEntity? = null
     private var live: SurfaceEntity? = null
     private var flatWidth = 0f
@@ -195,6 +203,7 @@ internal class MonitorWarp : AutoCloseable {
     fun update(session: Session, root: Entity, eye: FloatArray?, placement: MonitorPlacement,
                enabled: Boolean, held: Boolean, forceUpdate: Boolean = false, viewDirection:FloatArray? = null, freezeProjection:Boolean=held) {
         val original = input ?: return
+        if(enabled==(mesh!=null))live?.let{applyPixels(it,placement)}
         if (live !== original) live?.let {
             it.parent = original.parent
             it.setPose(original.getPose())
@@ -218,8 +227,10 @@ internal class MonitorWarp : AutoCloseable {
                 flatWidth = placement.physicalWidthM; flatHeight = placement.physicalHeightM
                 mesh = null;focus=null;presentationDirty=false
             }
+            applyPixels(original,placement)
             return
         }
+        if (live!==original)live?.let{applyPixels(it,placement)}
         if (viewer == null) return
         val previous = mesh
         val now=android.os.SystemClock.uptimeMillis()
@@ -259,7 +270,7 @@ internal class MonitorWarp : AutoCloseable {
                 shape = shape, pose = original.getPose(), parent = original.parent,
                 superSampling = SurfaceEntity.SuperSampling.NONE).also {
                 it.setScale(original.getScale())
-                it.setSurfacePixelDimensions(androidx.xr.runtime.math.IntSize2d(placement.pixelWidth,placement.pixelHeight))
+                applyPixels(it,placement)
                 it.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE
                 val pointer=SpatialPointerComponent.create(session)
                 check(it.addComponent(pointer))

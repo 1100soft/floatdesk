@@ -23,6 +23,7 @@ public final class ViewStreamSmoke {
                 if(image!=null){
                     int[] high=pixel(image,32,16),low=pixel(image,12,10),outside=pixel(image,1,1);
                     if(mode==0 && high[0]>180 && low[2]>180 && outside[3]<10)return;
+                    if(mode==2 && high[0]>180 && high[1]<40 && low[2]>180 && low[1]<40 && outside[3]<10)return;
                     if(mode==1 && high[1]>180 && high[0]<40 && low[1]>180)return;
                 }
             }
@@ -40,18 +41,22 @@ public final class ViewStreamSmoke {
     }
     public static void main(String[] args) throws Exception {
         var fonts=android.graphics.Typeface.class.getDeclaredMethod("loadPreinstalledSystemFontMap");fonts.setAccessible(true);fonts.invoke(null);
+        System.out.println("view test: fonts ready");
         var reader=ImageReader.newInstance(64,48,PixelFormat.RGBA_8888,4);var compositor=new VideoCompositor(64,48);MediaCodec codec=null;
         try {
+            System.out.println("view test: compositor ready, limit="+compositor.getOutputLimit());
             compositor.output(reader.getSurface());Canvas canvas=compositor.getInput().lockCanvas(null);canvas.drawColor(Color.GREEN);compositor.getInput().unlockCanvasAndPost(canvas);
             compositor.detailDebug(new DetailDiagnostics(true,new FocusRect(.1f,.1f,.9f,.9f),"view test","H264",2f,2f));
             var nals=H264Kt.splitAnnexB(ViewFrameFixture.DATA);byte[] sps=null,pps=null;for(byte[] nal:nals){if(H264Kt.nalType(nal)==7)sps=nal;if(H264Kt.nalType(nal)==8)pps=nal;}
             var format=MediaFormat.createVideoFormat("video/avc",2048,1536);format.setByteBuffer("csd-0",ByteBuffer.wrap(H264Kt.annexBParameterSets(sps,pps)));format.setInteger(MediaFormat.KEY_LOW_LATENCY,1);
-            codec=MediaCodec.createDecoderByType("video/avc");codec.configure(format,compositor.getViewInput(),null,0);codec.start();
-            submit(codec,compositor,1000000,true);await(reader,0);
+            codec=MediaCodec.createDecoderByType("video/avc");codec.configure(format,compositor.getViewInput(),null,0);codec.start();System.out.println("view test: codec started");
+            submit(codec,compositor,1000000,true);System.out.println("view test: first output released");await(reader,0);System.out.println("view test: first frame verified");
+            compositor.detailDebug(new DetailDiagnostics(true,new FocusRect(.1f,.1f,.9f,.9f),"gaze test","H264",2f,2f,false));
+            System.out.println("view test: hiding HUD");await(reader,2);System.out.println("view test: hidden HUD verified"); // Hiding diagnostics must not switch off the high-density stream.
             submit(codec,compositor,2000000,false);await(reader,1);
             submit(codec,compositor,3000000,true);await(reader,0);
             compositor.clearView();await(reader,1);
             System.out.println("PASS: actual H264 atlas center/periphery sampling, out-of-view alpha, exact PTS association and baseline restoration");
-        } finally {if(codec!=null){codec.stop();codec.release();}compositor.close();reader.close();}
+        } catch(Throwable failure){failure.printStackTrace();throw failure;} finally {if(codec!=null){codec.stop();codec.release();}compositor.close();reader.close();}
     }
 }

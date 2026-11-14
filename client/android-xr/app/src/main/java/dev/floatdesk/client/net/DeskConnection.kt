@@ -38,11 +38,13 @@ internal class DeskConnection(
     private var detailWorker:ViewedDetail?=null
     @Volatile private var detailSession=0L
     private val detailDiagnostics=AtomicReference(DetailDiagnostics())
-    fun detailDebug(enabled:Boolean) {
-        if(detailDiagnostics.get().enabled==enabled)return
-        val state=detailDiagnostics.updateAndGet{it.copy(enabled=enabled)};decoders[0]?.detailDebug(state)
+    fun refreshOutput(index:Int){decoders[index]?.refreshOutput()}
+    fun qualityOutputLimit():Int=decoders[0]?.qualityOutputLimit() ?: 4096
+    fun detailDebug(enabled:Boolean,showOverlay:Boolean=true) {
+        if(detailDiagnostics.get().let{it.enabled==enabled && it.showOverlay==showOverlay})return
+        val state=detailDiagnostics.updateAndGet{it.copy(enabled=enabled,showOverlay=showOverlay)};decoders[0]?.detailDebug(state)
     }
-    fun viewedDetail(rect:FocusRect?,blockedReason:String="No desktop in view",center:Pair<Float,Float>?=null) {
+    fun viewedDetail(rect:FocusRect?,blockedReason:String="No desktop in view",center:Pair<Float,Float>?=null,targeting:String="GAZE") {
         val remote=pendingRemote
         val bounds=workspaceInfo.value?.bounds()?.toList()
         val format=currentMonitors.singleOrNull()
@@ -52,7 +54,7 @@ internal class DeskConnection(
             format==null->"Waiting for one combined desktop stream"
             !renderingActive->"Paused: app hidden"
             remote==null || bounds==null->"Waiting for host/layout"
-            else->"VIEW H.264: dense center / low-density periphery"
+            else->"$targeting · dense region follows gaze"
         }
         val state=detailDiagnostics.updateAndGet{it.copy(candidate=rect,reason=reason,
             gainX=if(rect!=null && format!=null)2048f/((rect.right-rect.left)*.55f*format.width) else 0f,

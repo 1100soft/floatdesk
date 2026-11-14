@@ -1,5 +1,7 @@
 # Changes since the LAN proof of concept
 
+- Follow fine gaze for the dense streaming region, retain targets beyond desktop edges and during tracking gaps, and separate debug visibility from streaming. Preserve captured detail in bounded source-native XR output buffers instead of downscaling into the normal-stream buffer.
+
 - Replace the experimental JPEG overlay with a view-only H.264 atlas: dense center, lower-density visible periphery, frame-exact crop mapping and full-desktop encoder suspension. Fix large spherical viewport bounds by clipping rendered triangles to the frustum.
 
 - Visualize experimental viewed-area quality with a live desktop map, candidate/active patch borders, GPU-only tint, sampling gains, transport counters, timing, upload age and explicit gating reasons.

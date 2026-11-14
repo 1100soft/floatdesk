@@ -32,7 +32,7 @@ internal class ViewedDetail(private val destination:()->ViewDestination?,private
             if(first==null || output==null){Thread.sleep(30);continue}
             var codec:MediaCodec?=null
             var dimensions=0 to 0
-            val usePacked=packed;var framesHere=0
+            val usePacked=packed;var framesHere=0;var usingBaseline=false;var baselineStatusAt=0L
             try {
                 val connection=Socket();socket=connection
                 connection.use {stream->
@@ -45,16 +45,28 @@ internal class ViewedDetail(private val destination:()->ViewDestination?,private
                         val start=SystemClock.elapsedRealtime();attempts++
                         val json=JSONObject().put("mode",if(usePacked)"view-tiles-v2" else "view-h264-v1").put("sessionId",next.sessionId)
                             .put("rect",org.json.JSONArray(listOf(next.rect.left,next.rect.top,next.rect.right,next.rect.bottom)))
-                            .put("quality",next.quality).put("bitrateMbps",next.bitrateMbps).put("fraction",next.fraction)
+                            .put("frameBudget",usePacked).put("quality",next.quality).put("bitrateMbps",next.bitrateMbps).put("fraction",next.fraction)
                             .put("center",org.json.JSONArray(listOf(next.center.first,next.center.second))).toString().toByteArray(Charsets.UTF_8)
                         writer.writeInt(json.size);writer.write(json);writer.flush()
                         val size=input.readInt();require(size in 1..4096);val header=ByteArray(size);input.readFully(header)
-                        val meta=JSONObject(String(header,Charsets.UTF_8));val tiled=meta.getString("type")=="view-tiles-v2";require(tiled || meta.getString("type")=="view-h264-v1")
+                        val meta=JSONObject(String(header,Charsets.UTF_8))
                         val sequence=meta.getLong("frame");require(sequence>previous);previous=sequence
+                        if(meta.getString("type")=="view-baseline-v1"){
+                            require(meta.getInt("bytes")==0)
+                            if(!usingBaseline){
+                                runCatching{codec?.stop()};runCatching{codec?.release()};codec=null;dimensions=0 to 0
+                                output.clear();fallback();usingBaseline=true
+                            }
+                            if(SystemClock.elapsedRealtime()-baselineStatusAt>=1000){report(meta.optString("reason","Normal frame budget"));baselineStatusAt=SystemClock.elapsedRealtime()}
+                            Thread.sleep(150);continue
+                        }
+                        usingBaseline=false
+                        val tiled=meta.getString("type")=="view-tiles-v2";require(tiled || meta.getString("type")=="view-h264-v1")
                         val count=meta.getInt("bytes");require(count in 1..8*1024*1024)
                         val width=meta.getInt("width");val height=meta.getInt("height")
                         require(width in 2..8192 && height in 2..8192 && width%2==0 && height%2==0 && width.toLong()*height<=16_777_216)
-                        val mime=if(tiled)"video/hevc" else "video/avc"
+                        val mime=if(tiled)meta.optString("codec","video/hevc") else "video/avc"
+                        require(mime=="video/avc" || mime=="video/hevc");val hevc=mime=="video/hevc"
                         if(!tiled)require(width==2048 && height==1536)
                         val tiles=if(tiled){
                             val array=meta.getJSONArray("tiles");require(array.length() in 1..5)
@@ -69,8 +81,8 @@ internal class ViewedDetail(private val destination:()->ViewDestination?,private
                         if(codec==null || dimensions!=(width to height)){
                             runCatching{codec?.stop()};runCatching{codec?.release()};codec=null
                             dimensions=width to height
-                            val headers=splitAnnexB(bytes).filter{nal->if(tiled)((nal[0].toInt() ushr 1) and 63) in 32..34 else nalType(nal) in 7..8}
-                            require(headers.size>=if(tiled)3 else 2){"View stream has no codec headers"}
+                            val headers=splitAnnexB(bytes).filter{nal->if(hevc)((nal[0].toInt() ushr 1) and 63) in 32..34 else nalType(nal) in 7..8}
+                            require(headers.size>=if(hevc)3 else 2){"View stream has no codec headers"}
                             val csd=java.io.ByteArrayOutputStream();headers.forEach{csd.write(byteArrayOf(0,0,0,1));csd.write(it)}
                             val format=MediaFormat.createVideoFormat(mime,width,height)
                             format.setByteBuffer("csd-0",ByteBuffer.wrap(csd.toByteArray()));format.setInteger(MediaFormat.KEY_LOW_LATENCY,1);format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE,8*1024*1024)
@@ -85,9 +97,9 @@ internal class ViewedDetail(private val destination:()->ViewDestination?,private
                         val age=SystemClock.elapsedRealtime()-start
                         if(age>250)late++
                         output.frame(pts,ViewFrame(outer,inner,SystemClock.uptimeMillis()-age,next.center.first,next.center.second,width,height,tiles))
-                        active.queueInputBuffer(index,0,count,pts,if(if(tiled)splitAnnexB(bytes).any{((it[0].toInt() ushr 1) and 63) in 16..21} else isKeyframe(bytes))MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
+                        active.queueInputBuffer(index,0,count,pts,if(if(hevc)splitAnnexB(bytes).any{((it[0].toInt() ushr 1) and 63) in 16..21} else isKeyframe(bytes))MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
                         drain(active);received++;framesHere++
-                        if(received%10L==1L)report("${age}ms · ${if(tiled)"HEVC native tiles" else "legacy H264"} ${width}x${height} · ${count/1024}KiB")
+                        if(received%10L==1L)report("${age}ms · ${if(hevc)"HEVC native tiles" else if(tiled)"H264 native tiles" else "legacy H264"} ${width}x${height} · ${count/1024}KiB")
                     }
                 }
             } catch(error:Exception){if(usePacked && framesHere==0 && running && request.get()!=null)packed=false;if(running && request.get()!=null){errors++;report("${error.javaClass.simpleName}: ${error.message.orEmpty().take(45)}");fallback();Thread.sleep(400)}}

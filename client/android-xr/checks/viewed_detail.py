@@ -32,6 +32,34 @@ fun main(){
   val x=hudMesh.positions[i];val y=hudMesh.positions[i+1];val z=hudMesh.positions[i+2]-.35f
   check(abs(sqrt(x*x+y*y+z*z)-.35f)<.00001f)
  }
+ // Large spheres must not contain giant chord triangles reaching the HUD radius.
+ for(extent in listOf(30f,100f,500f,2000f)){
+  val large=MonitorMesh(extent,extent*.6f,floatArrayOf(0f,0f,1.2f),focus=floatArrayOf(0f,0f))
+  var minimum=1.2f
+  for(i in large.indices.indices step 3){
+   val center=FloatArray(3){axis->(0..2).sumOf{large.positions[large.indices[i+it]*3+axis].toDouble()}.toFloat()/3f-large.eye[axis]}
+   val length=sqrt(center.sumOf{(it*it).toDouble()}).toFloat()
+   // Every convex point in this triangle lies beyond the vertex-dot lower bound.
+   for(j in 0..2){val vertex=large.indices[i+j]*3
+    val bound=(0..2).sumOf{((large.positions[vertex+it]-large.eye[it])*center[it]/length).toDouble()}.toFloat()
+    minimum=minOf(minimum,bound)
+   }
+  }
+  check(minimum>1f){"Desktop triangles enter foreground: extent=$extent min=$minimum"}
+  for(u in listOf(.49f,.5f,.51f)){
+   val source=floatArrayOf((u-.5f)*extent,0f,0f)
+   val hit=large.project(source,onTriangles=true);val restored=large.unproject(hit)!!
+   check(abs(restored[0]-source[0])<extent*.0001f)
+  }
+ }
+ for(eye in listOf(floatArrayOf(1.2f,0f,.001f),floatArrayOf(0f,0f,-1.2f),floatArrayOf(.001f,0f,-1.2f),floatArrayOf(.000001f,.000001f,-1.2f),floatArrayOf(.2f,.3f,-1.1f))){
+  val side=MonitorMesh(20f,12f,eye,focus=floatArrayOf(0f,0f))
+  check(side.positions.all{it.isFinite()} && side.tangentX.all{it.isFinite()} && side.tangentY.all{it.isFinite()})
+  for(i in side.positions.indices step 3){
+   val length=sqrt((0..2).sumOf{val d=side.positions[i+it]-eye[it];(d*d).toDouble()}).toFloat()
+   check(abs(length-side.radius)<.00001f)
+  }
+ }
  val half=.35f
  val center=viewedRegion(8f,4f,null,half,half){p->floatArrayOf(p[0],p[1],-2f)}!!
  check(center.left>.2f && center.right<.8f && center.top>0f && center.bottom<1f)

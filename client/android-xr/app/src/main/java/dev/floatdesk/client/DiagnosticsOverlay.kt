@@ -138,7 +138,7 @@ internal object DiagnosticsCanvas {
                 "RAM ${metric(local,"PSS").replace("MiB","M")} Gfx ${metric(local,"gfx").replace("MiB","M")}\n"+
                 "Free ${metric(local,"free").replace("MiB","M")}\nImage ${metric(snapshot.presentation,"Image")}\n"+
                 "Draw ${metric(snapshot.presentation,"redraw").replace(".0fps","fps")} GL${metric(snapshot.presentation,"submit")}"
-            2->"${if(snapshot.frame!=null)"VIEW" else "NORMAL"} · ${snapshot.frame?.let{"${now-it.capturedAt}ms"} ?: "n/a"}\n${state.reason}\n"+
+            2->if(state.transport.contains("Normal density:"))"Normal stream\n${if(state.transport.contains("source already native"))"Source-native stream" else "Zoom in for detail"}\n${state.reason.substringBefore(" · ")}\nRX ${metric(state.transport,"RX")} err ${metric(state.transport,"errors")}" else "${if(snapshot.frame!=null)"VIEW" else "NORMAL"} · ${snapshot.frame?.let{"${now-it.capturedAt}ms"} ?: "n/a"}\n${state.reason}\n"+
                 (transport.firstOrNull{it.contains("HEVC") || it.contains("H264")}?.replace("native tiles ","") ?: transport.last())+
                 "\nRX ${metric(state.transport,"RX")} err ${metric(state.transport,"errors")}\n"+transport.last()
             else->snapshot.sampling.replace(" · ","\n").replace("effective ","Gain ").ifEmpty{"Waiting for video"}

@@ -598,7 +598,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 store.viewerUnitsPerMeter=unitsPerMeter
                 val active=workspace.layouts[workspace.activeLayout]
                 if(active!=null){
-                    val fixed=active.map{fixedDesktopDepth(it,reference,unitsPerMeter)}
+                    val fixed=active.map{fixedDesktopDepth(it,reference,unitsPerMeter,workspace.sphericalWarp)}
                     if(fixed.indices.any{fixed[it] !== active[it]})workspace=workspace.copy(layouts=workspace.layouts.toMutableMap().also{it[workspace.activeLayout]=fixed.toMutableList()})
                 }
             }
@@ -1112,7 +1112,7 @@ private fun DeskContent(
                     // the user starts pinching can cancel its input acquisition.
                     connection.presentation().let {warp.presentation(it.rects,it.spacing)}
                     val sourceSize=connection.workspaceInfo.value?.bounds()
-                    if(warp.qualityResolution(if(file.experimentalViewedDetail && sourceSize!=null)qualityOutputSize(sourceSize[2],sourceSize[3],connection.qualityOutputLimit()) else null))outputResizePending=true
+                    if(warp.qualityResolution(if(file.experimentalViewedDetail && connection.hasViewedDetail() && sourceSize!=null)qualityOutputSize(sourceSize[2],sourceSize[3],connection.qualityOutputLimit()) else null))outputResizePending=true
                     val projectionNow=SystemClock.uptimeMillis()
                     if(!hands.engaged || projectionNow-grabProjectionAt>=100) {
                         warp.update(current, root, handTracking.points["VIEWER"] ?: handTracking.points["HEAD"], screen, file.sphericalWarp,

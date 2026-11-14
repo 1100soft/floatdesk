@@ -153,6 +153,50 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-view-x11-') as temp:
      expected=[(255,0,0),(0,255,0),(0,0,255),(255,255,0)][(1 if u>=.5 else 0)+(2 if v>=.5 else 0)]
      assert all(abs(a-b)<45 for a,b in zip(actual,expected)),(source,dest,tuple(actual),expected)
     print('PASS packed HEVC native density, changing 40/70/99/100% coverage, tile bounds/partition and decoded frames')
+    # Budgeted client negotiation: no dynamic capture/encode for wide views, native AVC on zoom.
+    with socket.create_connection(('127.0.0.1',port),2) as stream:
+     stream.settimeout(5)
+     def budgeted(rect,fraction,channel=None):
+      channel=stream if channel is None else channel
+      payload=json.dumps(dict(mode='view-tiles-v2',frameBudget=True,sessionId=session,rect=rect,fraction=fraction)).encode()
+      channel.sendall(struct.pack('>I',len(payload))+payload)
+      meta=json.loads(exact(channel,struct.unpack('>I',exact(channel,4))[0]));data=exact(channel,meta['bytes'])
+      return meta,data
+     for fraction in (.2,1.0):
+      wide,data=budgeted([0,0,1,1],fraction)
+      assert wide['type']=='view-baseline-v1' and not data,'Zoom-out continued native encoding'
+     if width>4096 or height>2160:
+      narrow,data=budgeted([.35,.35,.65,.65],1.0)
+      assert narrow['type']=='view-tiles-v2' and narrow['codec']=='video/avc'
+      assert narrow['width']<=4096 and narrow['height']<=2160
+      decoded=json.loads(subprocess.check_output(['ffprobe','-v','error','-threads','2','-f','h264','-show_entries','stream=width,height','-of','json','pipe:0'],input=data))['streams'][0]
+      assert (decoded['width'],decoded['height'])==(narrow['width'],narrow['height'])
+      wide,_=budgeted([0,0,1,1],1.0);assert wide['type']=='view-baseline-v1'
+     packets();send(4,b'\xff');deadline=time.monotonic()+1;resumed=False
+     while time.monotonic()<deadline:
+      if packets():resumed=True;break
+      time.sleep(.02)
+     assert resumed,'Wide-view handoff failed to resume baseline video'
+     if os.environ.get('FLOATDESK_BASELINE_COMPARE')=='1':
+      send(15,json.dumps(dict(type='encoderSettings',quality=2,bitrateMbps=14)).encode());control_json('encoderAck')
+      def baseline_rate(enabled,channel=None):
+       seen=set();begin=time.monotonic();next_key=begin;next_view=begin
+       while time.monotonic()-begin<3:
+        now=time.monotonic()
+        if now>=next_key:send(4,b'\xff');next_key=now+.016
+        if enabled and now>=next_view:
+         reply,_=budgeted([0,0,1,1],1.0,channel);assert reply['type']=='view-baseline-v1';next_view=now+.15
+        while True:
+         try:packet=video.recv(2048)
+         except BlockingIOError:break
+         if time.monotonic()-begin>=1 and len(packet)>=12 and packet[0]&0xc0==0x80:seen.add(struct.unpack_from('>I',packet,4)[0])
+        time.sleep(.002)
+       return len(seen)/(time.monotonic()-begin-1)
+      packets();normal=baseline_rate(False);packets()
+      with socket.create_connection(('127.0.0.1',port),2) as comparison:
+       comparison.settimeout(5);dynamic=baseline_rate(True,comparison)
+      print(f'Quality-preset baseline comparison: normal={normal:.1f}fps dynamic-wide={dynamic:.1f}fps (unique RTP frames after warmup, private synthetic source)',flush=True)
+    print('PASS budgeted wide-view baseline, zoomed native AVC and immediate baseline resumption')
     send(15,json.dumps(dict(type='encoderSettings',quality=0,bitrateMbps=0)).encode())
     assert control_json('encoderAck')['quality']==0
     decoded=subprocess.check_output(['ffmpeg','-v','error','-f','h264','-i','pipe:0','-frames:v','2','-f','rawvideo','-pix_fmt','rgb24','pipe:1'],input=b''.join(units[:2]))

@@ -111,7 +111,7 @@ internal fun WorkspaceFile.monitorPlaced(
     val current = layouts[activeLayout] ?: return this
     if (index !in current.indices) return this
     val updated = current.toMutableList()
-    updated[index] = store.viewerReference?.let{fixedDesktopDepth(placement,it,store.viewerUnitsPerMeter)} ?: placement
+    updated[index] = store.viewerReference?.let{fixedDesktopDepth(placement,it,store.viewerUnitsPerMeter,sphericalWarp)} ?: placement
     val nextLayouts = layouts.toMutableMap()
     nextLayouts[activeLayout] = updated
     val next = copy(layouts = nextLayouts)

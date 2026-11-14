@@ -81,8 +81,8 @@ internal fun focusDesktopRegion(screen:MonitorPlacement,rect:FloatArray,viewer:P
 }
 
 
-/** Preserve angular location/size while keeping the desktop's focus point at a fixed radius. */
-internal fun fixedDesktopDepth(screen:MonitorPlacement,viewer:Pose,unitsPerMeter:Float):MonitorPlacement {
+/** Preserve angular location/size at a fixed spherical focus radius or flat-plane depth. */
+internal fun fixedDesktopDepth(screen:MonitorPlacement,viewer:Pose,unitsPerMeter:Float,spherical:Boolean=true):MonitorPlacement {
     val units=unitsPerMeter.takeIf{it.isFinite() && it>0f} ?: 1f
     val x=(screen.viewCenterU-.5f)*screen.physicalWidthM
     val y=(.5f-screen.viewCenterV)*screen.physicalHeightM
@@ -90,7 +90,10 @@ internal fun fixedDesktopDepth(screen:MonitorPlacement,viewer:Pose,unitsPerMeter
     val tx=-2f*q[2]*y;val ty=2f*q[2]*x;val tz=2f*(q[0]*y-q[1]*x)
     val offset=floatArrayOf(x+q[3]*tx+q[1]*tz-q[2]*ty,y+q[3]*ty+q[2]*tx-q[0]*tz,q[3]*tz+q[0]*ty-q[1]*tx)
     val d=FloatArray(3){screen.pose.position[it]+offset[it]-viewer.position[it]}
-    val distance=kotlin.math.sqrt(d.sumOf{(it*it).toDouble()}).toFloat()
+    val radial=kotlin.math.sqrt(d.sumOf{(it*it).toDouble()}).toFloat()
+    // A tilted, enlarged plane can enter the HUD even with its focus point far away.
+    val normal=floatArrayOf(2f*(q[0]*q[2]+q[3]*q[1]),2f*(q[1]*q[2]-q[3]*q[0]),1f-2f*(q[0]*q[0]+q[1]*q[1]))
+    val distance=if(spherical)radial else kotlin.math.abs((0..2).sumOf{(d[it]*normal[it]).toDouble()}).toFloat()
     if(!distance.isFinite() || distance<.05f*units)return screen
     val target=ViewLayers.DesktopDistanceM*units
     if(kotlin.math.abs(distance-target)<.002f*units)return screen

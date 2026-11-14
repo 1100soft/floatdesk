@@ -48,6 +48,7 @@ pub(super) fn start(
             let _ = socket.set_nodelay(true);
             let result = (|| -> Result<()> {
                 let mut packed: Option<PackedView> = None;
+                let mut using_baseline = true;
                 let mut high: Option<X11Capture> = None;
                 let mut low: Option<X11Capture> = None;
                 let mut encoder: Option<GstEncoder> = None;
@@ -97,13 +98,52 @@ pub(super) fn start(
                     let (outer, outer_uv) = region(desktop, &request)
                         .ok_or_else(|| Error::Msg("Invalid view crop".into()))?;
                     if request["mode"] == "view-tiles-v2" {
+                        let budget = request["frameBudget"].as_bool().unwrap_or(false);
+                        if budget
+                            && atlas::efficient(
+                                desktop,
+                                outer,
+                                inner_region(desktop, outer, &request),
+                                using_baseline,
+                            )
+                            .is_none()
+                        {
+                            packed.take();
+                            if !using_baseline
+                                || shared.view_until_ns.swap(0, Ordering::Relaxed) > 0
+                            {
+                                shared.keys[0].store(true, Ordering::Relaxed);
+                            }
+                            shared.view_until_ns.store(0, Ordering::Relaxed);
+                            using_baseline = true;
+                            sequence += 1;
+                            let (bw, bh) = stream_size(desktop);
+                            let reason =
+                                if bw as u32 >= desktop.width && bh as u32 >= desktop.height {
+                                    "Normal density: source already native"
+                                } else {
+                                    "Normal density: zoom in for native detail"
+                                };
+                            let header=serde_json::json!({"type":"view-baseline-v1","frame":sequence,"bytes":0,"reason":reason}).to_string();
+                            socket.write_all(&(header.len() as u32).to_be_bytes())?;
+                            socket.write_all(header.as_bytes())?;
+                            continue;
+                        }
+                        using_baseline = false;
                         if packed
                             .as_ref()
                             .is_none_or(|p| !p.fits(desktop, outer, &request))
                         {
                             // Release the old SHM/encoder before allocating the next bucket.
                             packed.take();
-                            packed = Some(PackedView::new(desktop, outer, &request, fps, bitrate)?)
+                            packed = Some(PackedView::new(
+                                desktop,
+                                outer,
+                                &request,
+                                fps,
+                                bitrate,
+                                &encoder_name,
+                            )?)
                         }
                         sequence += 1;
                         packed.as_mut().unwrap().send(
@@ -383,6 +423,7 @@ mod tests {
 struct PackedView {
     source: (u32, u32),
     fraction: f64,
+    budget: bool,
     width: u16,
     height: u16,
     capture: X11Capture,
@@ -395,10 +436,16 @@ impl PackedView {
         request: &serde_json::Value,
         fps: u32,
         bitrate: u32,
+        encoder_name: &str,
     ) -> Result<Self> {
         let inner = inner_region(desktop, outer, request);
-        let plan = atlas::plan(desktop, outer, inner, None)
-            .ok_or_else(|| Error::Msg("Atlas cannot fit the bounded encoder".into()))?;
+        let budget = request["frameBudget"].as_bool().unwrap_or(false);
+        let plan = if budget {
+            atlas::efficient(desktop, outer, inner, false)
+        } else {
+            atlas::plan(desktop, outer, inner, None)
+        }
+        .ok_or_else(|| Error::Msg("Atlas cannot fit the encoder frame budget".into()))?;
         let (width, height) = (plan.width, plan.height);
         let rate = request["bitrateMbps"]
             .as_f64()
@@ -408,30 +455,41 @@ impl PackedView {
         let quality = request["quality"].as_u64().unwrap_or(0).min(2) as u32;
         Ok(Self {
             source: (desktop.width, desktop.height),
+            budget,
             fraction: dense_fraction(request),
             width,
             height,
             capture: X11Capture::workspace(desktop, width, height)?,
-            encoder: GstEncoder::open_hevc(
-                crate::core::EncoderConfig {
+            encoder: {
+                let config = crate::core::EncoderConfig {
                     width: width.into(),
                     height: height.into(),
                     fps: fps.clamp(1, 60),
                     bitrate_bps: rate,
-                },
-                quality,
-            )?,
+                };
+                if budget {
+                    GstEncoder::open_quality(encoder_name, config, quality)?
+                } else {
+                    GstEncoder::open_hevc(config, quality)?
+                }
+            },
         })
     }
     fn fits(&self, desktop: MonitorRect, outer: MonitorRect, request: &serde_json::Value) -> bool {
-        if self.source != (desktop.width, desktop.height) {
+        if self.source != (desktop.width, desktop.height)
+            || self.budget != request["frameBudget"].as_bool().unwrap_or(false)
+        {
             return false;
         }
         let inner = inner_region(desktop, outer, request);
         if atlas::plan(desktop, outer, inner, Some((self.width, self.height))).is_none() {
             return false;
         }
-        let Some(best) = atlas::plan(desktop, outer, inner, None) else {
+        let Some(best) = (if self.budget {
+            atlas::efficient(desktop, outer, inner, false)
+        } else {
+            atlas::plan(desktop, outer, inner, None)
+        }) else {
             return false;
         };
         let area = u32::from(self.width) * u32::from(self.height);
@@ -522,7 +580,7 @@ impl PackedView {
         shared
             .view_until_ns
             .store(monotonic_ns() + 1_000_000_000, Ordering::Relaxed);
-        let header=serde_json::json!({"type":"view-tiles-v2","codec":"video/hevc","frame":sequence,"rect":outer_uv,"inner":metadata[0][0],"tiles":metadata,"width":self.width,"height":self.height,"bytes":frame.bytes.len(),"desktop":[desktop.x,desktop.y,desktop.width,desktop.height]}).to_string();
+        let header=serde_json::json!({"type":"view-tiles-v2","codec":if self.budget{"video/avc"}else{"video/hevc"},"frame":sequence,"rect":outer_uv,"inner":metadata[0][0],"tiles":metadata,"width":self.width,"height":self.height,"bytes":frame.bytes.len(),"desktop":[desktop.x,desktop.y,desktop.width,desktop.height]}).to_string();
         socket.write_all(&(header.len() as u32).to_be_bytes())?;
         socket.write_all(header.as_bytes())?;
         socket.write_all(&frame.bytes)?;

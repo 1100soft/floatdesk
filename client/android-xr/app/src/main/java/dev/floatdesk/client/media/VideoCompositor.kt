@@ -62,6 +62,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     @Volatile private var outputPixels=0 to 0
     private var rejectedViews=0L
     @Volatile private var viewCurrent:dev.floatdesk.client.net.ViewFrame?=null
+    fun hasViewedDetail():Boolean=viewCurrent!=null && diagnostics.enabled
     fun displayedQualityFocus():Pair<Float,Float>?=viewCurrent?.takeIf{diagnostics.enabled && viewLatched}?.let{it.focusU to it.focusV}
     @Volatile private var viewPresented:(()->Unit)?=null
     fun onViewPresented(callback:()->Unit){viewPresented=callback}

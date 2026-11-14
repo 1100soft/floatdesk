@@ -249,6 +249,18 @@ suspend fun main() {
     check(CurvedMonitorInput.last!!.entity.parent==null && warp.displayEntity==null)
     check(input.enabled) // Late collider completion must not disable the restored owner.
     CurvedMonitorInput.afterCreate=null
+    // An off-center focused desktop can put its flat reference plane beside the eye.
+    // Curvature must still track the current eye instead of freezing the previous mesh.
+    warp.attach(session,input.getSurface(),screen,PixelDensity(),onEvent={})
+    val sideScreen=MonitorPlacement(20f,12f,pose=WorkspacePose(floatArrayOf(-1.2f,0f,-.001f)))
+    warp.update(session,root,floatArrayOf(0f,0f,0f),sideScreen,true,false,forceUpdate=true)
+    check(kotlin.math.abs(warp.mesh!!.eye[2]-.001f)<.000001f)
+    warp.update(session,root,floatArrayOf(0f,.2f,-.01f),sideScreen,true,false,forceUpdate=true)
+    check(kotlin.math.abs(warp.mesh!!.eye[1]-.2f)<.000001f && warp.mesh!!.eye[2]<0f)
+    val centeredEye=MonitorPlacement(4f,2.4f,pose=WorkspacePose(floatArrayOf(0f,0f,0f)),viewCenterU=.8f)
+    warp.update(session,root,floatArrayOf(0f,0f,0f),centeredEye,true,false,forceUpdate=true)
+    check(kotlin.math.abs(warp.mesh!!.radius-1.2f)<.00001f && warp.mesh!!.eye.all{it==0f})
+    warp.close()
     println("Passed: native matrix localization and independent left/right sequences, flat Compose surface/input/alpha/parent preserved, separate curved video and interaction ownership, mode-switch surface restoration, curvature freezes while held, video UVs, cleanup")
 }
 '''

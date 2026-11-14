@@ -264,6 +264,7 @@ internal class MonitorDecoder(
     fun refreshOutput(){compositor?.output(surface.get(),true)}
     fun diagnosticSnapshot()=compositor?.diagnosticSnapshot()
     fun displayedQualityFocus():Pair<Float,Float>?=compositor?.displayedQualityFocus()
+    fun hasViewedDetail():Boolean=compositor?.hasViewedDetail()==true
     fun qualityOutputLimit():Int=compositor?.outputLimit ?: 4096
     fun viewDestination():dev.floatdesk.client.net.ViewDestination?=compositor?.let{renderer->dev.floatdesk.client.net.ViewDestination(renderer.viewInput,renderer::viewFrame,renderer::clearView)}
     fun projection(value:ViewProjection?) {projection.set(value);compositor?.projection(value)}

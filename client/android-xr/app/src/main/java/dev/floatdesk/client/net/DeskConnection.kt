@@ -56,6 +56,7 @@ internal class DeskConnection(
     fun refreshOutput(index:Int){decoders[index]?.refreshOutput()}
     fun diagnosticSnapshot()=decoders[0]?.diagnosticSnapshot() ?: DiagnosticSnapshot(detailDiagnostics.get(),null,"Waiting for video")
     fun displayedQualityFocus():Pair<Float,Float>?=decoders[0]?.displayedQualityFocus()
+    fun hasViewedDetail():Boolean=decoders[0]?.hasViewedDetail()==true
     fun qualityOutputLimit():Int=decoders[0]?.qualityOutputLimit() ?: 4096
     fun detailDebug(enabled:Boolean,showOverlay:Boolean=true,showResources:Boolean=false) {
         if(detailDiagnostics.get().let{it.enabled==enabled && it.showOverlay==showOverlay && it.showResources==showResources})return
@@ -74,7 +75,7 @@ internal class DeskConnection(
             format==null->"Waiting for one combined desktop stream"
             !renderingActive->"Paused: app hidden"
             remote==null || bounds==null->"Waiting for host/layout"
-            else->"$targeting · dense %.0f%% / max %.0f%%".format(java.util.Locale.ROOT,fraction*100,denseFraction*100)
+            else->"$targeting · dense %.0f%%".format(java.util.Locale.ROOT,fraction*100)
         }
         val state=detailDiagnostics.updateAndGet{it.copy(candidate=rect,reason=reason,
             gainX=if(rect!=null && format!=null)2048f/((rect.right-rect.left)*fraction*format.width) else 0f,

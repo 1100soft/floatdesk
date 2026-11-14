@@ -240,11 +240,12 @@ internal class MonitorWarp : AutoCloseable {
         val modeChanged=enabled != (mesh!=null)
         if (held && !forceUpdate && !modeChanged) return
         val candidateViewer = eye?.let { viewerInMonitor(it,placement.pose.position,placement.pose.rotation) }
-        val viewer=candidateViewer?.takeIf { it[2]>.10f && kotlin.math.sqrt(it.sumOf { v->(v*v).toDouble() })>.15 }
+        val referenceCenter=projectionCenter(placement)
+        val viewer=candidateViewer?.takeIf { p->p.all{it.isFinite()} && (0..2).sumOf{val d=p[it]-referenceCenter[it];(d*d).toDouble()}>1e-8 }
             ?: mesh?.eye?.takeIf { forceUpdate }
-        val localEye = viewer?.let { Vector3(it[0],it[1],it[2]) }
-        // Freeze the last valid curvature during tracking gaps; never switch shape on a stale pose.
-        if (enabled && (localEye == null || localEye.z <= .10f || localEye.length <= .15f)) return
+        // A sphere is valid beside/behind its reference plane. A planar z threshold
+        // froze it at an old eye position after off-center enlargement or rotation.
+        if (enabled && viewer == null) return
         val usable = enabled
         if (!usable) {
             if (live !== original) { live?.parent = null; live = original }
@@ -295,7 +296,7 @@ internal class MonitorWarp : AutoCloseable {
                 val h=next.project(floatArrayOf(next.width*.5f,0f,0f))
                 val v=next.project(floatArrayOf(0f,next.height*.5f,0f))
                 fun sag(point: FloatArray) = (0..2).sumOf { (point[it]*viewer[it]/next.radius).toDouble() }.toFloat()
-                Log.i("Floatdesk","warp geometry map=geodesic viewer=${viewer.contentToString()} sdkViewer=$sdkEye radius=${next.radius} image=${placement.pixelWidth}x${placement.pixelHeight} extent=${next.width}x${next.height} horizontalSag=${sag(h)} verticalSag=${sag(v)}")
+                Log.i("Floatdesk","warp geometry map=geodesic viewer=${viewer.contentToString()} sdkViewer=$sdkEye radius=${next.radius} radiusActivity=${next.radius*original.getScale(Space.ACTIVITY)} image=${placement.pixelWidth}x${placement.pixelHeight} extent=${next.width}x${next.height} horizontalSag=${sag(h)} verticalSag=${sag(v)}")
             }
             val shape = videoShape(next.width,next.height,next)
             val target = if (live === original) SurfaceEntity.create(session,

@@ -1,5 +1,6 @@
 //! Pack sampled pixels, not the native desktop-shaped empty allocations.
 use crate::core::MonitorRect;
+use crate::platform::x11::monitor_pool::{stream_size, STREAM_MAX_HEIGHT, STREAM_MAX_WIDTH};
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Tile {
@@ -22,11 +23,12 @@ fn size(desktop: MonitorRect) -> (f64, f64, f64) {
         .min((16_777_216.0 / (desktop.width as f64 * desktop.height as f64)).sqrt());
     let x = ((desktop.width as f64 * scale) as u32 / 2 * 2).max(2) as f64 / desktop.width as f64;
     let y = ((desktop.height as f64 * scale) as u32 / 2 * 2).max(2) as f64 / desktop.height as f64;
+    let (bw, bh) = stream_size(desktop);
     (
         x,
         y,
-        1f64.min(4096.0 / desktop.width as f64)
-            .min(2160.0 / desktop.height as f64)
+        (bw as f64 / desktop.width as f64)
+            .min(bh as f64 / desktop.height as f64)
             .min(x)
             .min(y),
     )
@@ -190,9 +192,64 @@ pub(super) fn plan(
     }
     best
 }
+/// Use the ordinary AVC frame budget. Wide views stay on the normal stream;
+/// zoomed views spend that same budget on source-native samples instead.
+pub(super) fn efficient(
+    desktop: MonitorRect,
+    outer: MonitorRect,
+    inner: MonitorRect,
+    entering: bool,
+) -> Option<Plan> {
+    let (width, height) = stream_size(desktop);
+    if width as u32 >= desktop.width && height as u32 >= desktop.height {
+        return None;
+    }
+    let p = plan(
+        desktop,
+        outer,
+        inner,
+        Some((STREAM_MAX_WIDTH, STREAM_MAX_HEIGHT)),
+    )?;
+    let headroom = if entering { 0.9 } else { 1.0 };
+    ((u32::from(p.width) * u32::from(p.height)) as f64
+        <= (u32::from(width) * u32::from(height)) as f64 * headroom)
+        .then_some(p)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn zoomed_out_uses_baseline_and_zoomed_in_fits_the_avc_frame_budget() {
+        let desktop = MonitorRect {
+            index: 0,
+            x: 0,
+            y: 0,
+            width: 5120,
+            height: 3200,
+        };
+        for f in [0.2, 1.0] {
+            let inner = MonitorRect {
+                width: (desktop.width as f64 * f) as u32,
+                height: (desktop.height as f64 * f) as u32,
+                ..desktop
+            };
+            assert!(efficient(desktop, desktop, inner, true).is_none());
+        }
+        let outer = MonitorRect {
+            index: 0,
+            x: 2000,
+            y: 1000,
+            width: 1536,
+            height: 960,
+        };
+        let p = efficient(desktop, outer, outer, true).unwrap();
+        assert!(
+            p.width <= 4096
+                && p.height <= 2160
+                && u32::from(p.width) * u32::from(p.height) <= 3456 * 2160
+        );
+        assert_eq!((p.tiles[0].width, p.tiles[0].height), (1536, 960));
+    }
     #[test]
     fn large_desktops_keep_encoder_and_tile_bounds() {
         for (width, height) in [(32000, 18000), (1280, 16384), (1920, 1200)] {

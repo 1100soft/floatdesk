@@ -29,8 +29,13 @@ internal class MonitorMesh(
 ) {
     val radius = sqrt((0..2).sumOf { val d=eye[it]-center[it];(d*d).toDouble() }).toFloat()
     val normal = FloatArray(3) { (eye[it]-center[it]) / radius }
-    val tangentX = floatArrayOf(1f-normal[0]*normal[0]/(1f+normal[2]), -normal[0]*normal[1]/(1f+normal[2]), -normal[0])
-    val tangentY = floatArrayOf(-normal[0]*normal[1]/(1f+normal[2]), 1f-normal[1]*normal[1]/(1f+normal[2]), -normal[1])
+    private val normalXY=normal[0].toDouble()*normal[0]+normal[1].toDouble()*normal[1]
+    // Equivalent to 1/(1+n.z), but stable when n.z rounds to -1 near the back pole.
+    private val tangentFactor=if(normal[2]<0f && normalXY>0.0)(1.0-normal[2])/normalXY else 1.0/(1.0+normal[2])
+    val tangentX = if(normalXY==0.0 && normal[2]<0f)floatArrayOf(-1f,0f,0f) else floatArrayOf(
+        (1.0-normal[0].toDouble()*normal[0]*tangentFactor).toFloat(),(-normal[0].toDouble()*normal[1]*tangentFactor).toFloat(),-normal[0])
+    val tangentY = if(normalXY==0.0 && normal[2]<0f)floatArrayOf(0f,1f,0f) else floatArrayOf(
+        (-normal[0].toDouble()*normal[1]*tangentFactor).toFloat(),(1.0-normal[1].toDouble()*normal[1]*tangentFactor).toFloat(),-normal[1])
     var projection:ViewProjection?=null
     var frameNormal=normal;private set
     var frameTangentX=tangentX;private set
@@ -38,6 +43,16 @@ internal class MonitorMesh(
     // Preserve the local angular scale; compress only the far periphery before the antipode.
     val radiansPerMeter = if(focus==null) minOf(1f/radius,2.2f/sqrt(width*width+height*height)) else 1f/radius
     val focus=focus?.copyOf()
+    // Concentrate the same bounded grid around the viewed region, rather than
+    // letting a huge uniform cell become a chord through the viewer's near space.
+    private fun sourceGrid(extent:Float,focus:Float,count:Int):FloatArray {
+        if(this.focus==null || extent/radius<=4f)return FloatArray(count+1){it.toFloat()/count}
+        val low=kotlin.math.asinh((-.5*extent-focus)/radius)
+        val high=kotlin.math.asinh((.5*extent-focus)/radius)
+        return FloatArray(count+1){i->when(i){0->0f;count->1f;else->((focus+radius*kotlin.math.sinh(low+(high-low)*i/count))/extent+.5).toFloat().coerceIn(0f,1f)}}
+    }
+    private val horizontalGrid=sourceGrid(width,this.focus?.get(0) ?: 0f,columns)
+    private val verticalGrid=sourceGrid(height,-(this.focus?.get(1) ?: 0f),rows)
     private fun angularDistance(a:Float):Float {
         val start=1.5f
         val span=Math.PI.toFloat()-.01f-start
@@ -52,7 +67,7 @@ internal class MonitorMesh(
 
     init {
         require(width > 0f && height > 0f && width.isFinite() && height.isFinite() &&
-            radius > 0f && radius.isFinite() && eye.size == 3 && eye.all { it.isFinite() } && eye[2] > 0f &&
+            radius > 0f && radius.isFinite() && eye.size == 3 && eye.all { it.isFinite() } &&
             columns > 0 && rows > 0 && columns % 2 == 0 && rows % 2 == 0)
         if(focus==null) {
         val halfX = columns/2; val halfY = rows/2
@@ -94,7 +109,7 @@ internal class MonitorMesh(
             // is valid up to its antipodal cut and needs only the unchanged source UVs.
             for(row in 0..rows) for(col in 0..columns) {
                 val vertex=row*(columns+1)+col
-                texCoords[vertex*2]=col.toFloat()/columns;texCoords[vertex*2+1]=row.toFloat()/rows
+                texCoords[vertex*2]=horizontalGrid[col];texCoords[vertex*2+1]=verticalGrid[row]
             }
         }
         // Spherical exponential map: angular distance from focus is preserved.
@@ -123,8 +138,8 @@ internal class MonitorMesh(
             val tx=transport(tangentX);val ty=transport(tangentY)
             frameNormal=n;frameTangentX=tx;frameTangentY=ty
             for(row in 0..rows) for(col in 0..columns) {
-                val x=((col.toFloat()/columns-.5f)*width-centre[0])*radiansPerMeter
-                val y=((.5f-row.toFloat()/rows)*height-centre[1])*radiansPerMeter
+                val x=((horizontalGrid[col]-.5f)*width-centre[0])*radiansPerMeter
+                val y=((.5f-verticalGrid[row])*height-centre[1])*radiansPerMeter
                 val sourceLength=sqrt(x*x+y*y)
                 val angle=angularDistance(sourceLength)
                 val sinc=if(sourceLength<.00001f) 1f else kotlin.math.sin(angle)/sourceLength
@@ -153,10 +168,15 @@ internal class MonitorMesh(
             val uv=projection!!.inverse(flat[0]/width+.5f,.5f-flat[1]/height)
             return project(floatArrayOf((uv[0]-.5f)*width,(.5f-uv[1])*height,0f),false,onTriangles)
         }
-        val u=(flat[0]/width+.5f)*columns; val v=(.5f-flat[1]/height)*rows
-        val col=kotlin.math.floor(u).toInt().coerceIn(0,columns-1)
-        val row=kotlin.math.floor(v).toInt().coerceIn(0,rows-1)
-        val x=u-col; val y=v-row; val a=row*(columns+1)+col
+        val u=flat[0]/width+.5f;val v=.5f-flat[1]/height
+        fun cell(grid:FloatArray,value:Float):Int {
+            var lo=0;var hi=grid.lastIndex
+            while(hi-lo>1){val mid=(lo+hi)/2;if(grid[mid]<=value)lo=mid else hi=mid}
+            return lo.coerceAtMost(grid.lastIndex-1)
+        }
+        val col=cell(horizontalGrid,u);val row=cell(verticalGrid,v)
+        val x=(u-horizontalGrid[col])/(horizontalGrid[col+1]-horizontalGrid[col])
+        val y=(v-verticalGrid[row])/(verticalGrid[row+1]-verticalGrid[row]);val a=row*(columns+1)+col
         val verts=if(x+y<=1f) intArrayOf(a,a+columns+1,a+1) else intArrayOf(a+1,a+columns+1,a+columns+2)
         val weights=if(x+y<=1f) floatArrayOf(1f-x-y,y,x) else floatArrayOf(1f-y,1f-x,x+y-1f)
         val direction=FloatArray(3) { axis -> (0..2).sumOf { (positions[verts[it]*3+axis]*weights[it]).toDouble() }.toFloat()-eye[axis] }
@@ -328,8 +348,10 @@ internal class ViewProjection(val columns:Int,val rows:Int,val sourceUV:FloatArr
             val tx=transport(mesh.tangentX);val ty=transport(mesh.tangentY)
             val uv=FloatArray(mesh.texCoords.size)
             for(i in 0 until uv.size/2) {
-                val u=mesh.texCoords[i*2];val v=mesh.texCoords[i*2+1]
-                val ray=FloatArray(3){(mesh.positions[i*3+it]-mesh.eye[it])/mesh.radius}
+                // The optional lookup map remains uniform even when sphere triangles adapt to focus.
+                val u=(i%(mesh.columns+1)).toFloat()/mesh.columns;val v=(i/(mesh.columns+1)).toFloat()/mesh.rows
+                val point=mesh.project(floatArrayOf((u-.5f)*mesh.width,(.5f-v)*mesh.height,0f),false)
+                val ray=FloatArray(3){(point[it]-mesh.eye[it])/mesh.radius}
                 val denominator=-dot(ray,normal)
                 var dx=0f;var dy=0f
                 if(denominator>.3f) {

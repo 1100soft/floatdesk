@@ -2,6 +2,7 @@
 use super::*;
 mod area;
 mod atlas;
+mod regions;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 const WIDTH: u16 = 2048;
@@ -113,7 +114,15 @@ pub(super) fn start(
                                 .unwrap_or(30)
                                 .clamp(5, fps.clamp(5, 120) as u64)
                                 as u32;
-                            governor.configure(requested, target, normal);
+                            let regional = request["regionSampling"].as_bool().unwrap_or(false);
+                            governor.configure(
+                                requested,
+                                target,
+                                if regional { 4096 * 2160 } else { normal },
+                            );
+                            governor.protect_quality(regional);
+                            request["peripheryScale"] =
+                                (regions::PERIPHERAL_SCALE * governor.peripheral_factor()).into();
                             request["resolvedAreaPixels"] = governor.area.into();
                             request["peripheryPixels"] = governor.periphery(normal).into();
                             request["autoArea"] = governor.automatic().into();
@@ -153,8 +162,8 @@ pub(super) fn start(
                         }
                         using_baseline = false;
                         if packed
-                            .as_ref()
-                            .is_none_or(|p| !p.fits(desktop, outer, &request))
+                            .as_mut()
+                            .is_none_or(|p| !p.fits(desktop, outer, &request, &screens))
                         {
                             // Release the old SHM/encoder before allocating the next bucket.
                             packed.take();
@@ -168,6 +177,7 @@ pub(super) fn start(
                                 fps,
                                 bitrate,
                                 &encoder_name,
+                                &screens,
                             )?)
                         }
                         sequence += 1;
@@ -460,8 +470,21 @@ fn view_plan(
     outer: MonitorRect,
     request: &serde_json::Value,
     bound: Option<(u16, u16)>,
+    screens: &[MonitorRect],
 ) -> Option<atlas::Plan> {
     let inner = inner_region(desktop, outer, request);
+    if request["regionSampling"].as_bool().unwrap_or(false) {
+        return regions::plan_with_avc(
+            outer,
+            inner,
+            screens,
+            request["peripheryScale"]
+                .as_f64()
+                .unwrap_or(regions::PERIPHERAL_SCALE),
+            bound,
+            avc_height(request),
+        );
+    }
     if request["areaBudget"].as_bool().unwrap_or(false) {
         let p = atlas::area_plan(
             desktop,
@@ -483,6 +506,16 @@ fn view_plan(
         atlas::plan(desktop, outer, inner, None)
     }
 }
+fn avc_height(request: &serde_json::Value) -> u16 {
+    if request["regionSampling"].as_bool().unwrap_or(false) {
+        request["avcMaxHeight"]
+            .as_u64()
+            .unwrap_or(2160)
+            .clamp(2160, 4096) as u16
+    } else {
+        2160
+    }
+}
 struct PackedView {
     source: (u32, u32),
     fraction: f64,
@@ -491,10 +524,12 @@ struct PackedView {
     avc: bool,
     resolved_area: u64,
     periphery: u64,
+    peripheral_scale: f64,
     whole_native: bool,
     width: u16,
     height: u16,
     capture: X11Capture,
+    plan: atlas::Plan,
     encoder: GstEncoder,
 }
 impl PackedView {
@@ -505,10 +540,11 @@ impl PackedView {
         fps: u32,
         bitrate: u32,
         encoder_name: &str,
+        screens: &[MonitorRect],
     ) -> Result<Self> {
         let budget = request["frameBudget"].as_bool().unwrap_or(false);
         let area_mode = request["areaBudget"].as_bool().unwrap_or(false);
-        let plan = view_plan(desktop, outer, request, None)
+        let plan = view_plan(desktop, outer, request, None, screens)
             .ok_or_else(|| Error::Msg("Native area cannot fit encoder".into()))?;
         let (width, height) = (plan.width, plan.height);
         let rate = request["bitrateMbps"]
@@ -522,17 +558,19 @@ impl PackedView {
             budget,
             area_mode,
             avc: if area_mode {
-                width <= 4096 && height <= 2160
+                width <= 4096 && height <= avc_height(request)
             } else {
                 budget
             },
             resolved_area: request["resolvedAreaPixels"].as_u64().unwrap_or(0),
             periphery: request["peripheryPixels"].as_u64().unwrap_or(0),
+            peripheral_scale: request["peripheryScale"].as_f64().unwrap_or(0.),
             whole_native: false,
             fraction: dense_fraction(request),
             width,
             height,
             capture: X11Capture::workspace(desktop, width, height)?,
+            plan,
             encoder: {
                 let config = crate::core::EncoderConfig {
                     width: width.into(),
@@ -540,7 +578,9 @@ impl PackedView {
                     fps: fps.clamp(1, 60),
                     bitrate_bps: rate,
                 };
-                if (area_mode && width <= 4096 && height <= 2160) || (!area_mode && budget) {
+                if (area_mode && width <= 4096 && height <= avc_height(request))
+                    || (!area_mode && budget)
+                {
                     GstEncoder::open_quality(encoder_name, config, quality)?
                 } else {
                     GstEncoder::open_hevc(config, quality)?
@@ -548,27 +588,85 @@ impl PackedView {
             },
         })
     }
-    fn fits(&self, desktop: MonitorRect, outer: MonitorRect, request: &serde_json::Value) -> bool {
+    fn fits(
+        &mut self,
+        desktop: MonitorRect,
+        outer: MonitorRect,
+        request: &serde_json::Value,
+        screens: &[MonitorRect],
+    ) -> bool {
         if self.source != (desktop.width, desktop.height)
             || self.budget != request["frameBudget"].as_bool().unwrap_or(false)
             || self.area_mode != request["areaBudget"].as_bool().unwrap_or(false)
         {
             return false;
         }
-        if view_plan(desktop, outer, request, Some((self.width, self.height))).is_none() {
+        if request["regionSampling"].as_bool().unwrap_or(false) {
+            let candidate = match view_plan(
+                desktop,
+                outer,
+                request,
+                Some((self.width, self.height)),
+                screens,
+            ) {
+                Some(p) => p,
+                None => {
+                    // A hardware-capped plan can legitimately have reduced sampling. Reuse
+                    // the same capped allocation rather than recreating its codec every frame.
+                    let Some(best) = view_plan(desktop, outer, request, None, screens) else {
+                        return false;
+                    };
+                    if (best.width, best.height) != (self.width, self.height) {
+                        return false;
+                    }
+                    self.plan = best;
+                    return true;
+                }
+            };
+            let sampled = candidate
+                .tiles
+                .iter()
+                .map(|t| u64::from(t.width) * u64::from(t.height))
+                .sum::<u64>();
+            let changed = self.resolved_area != request["resolvedAreaPixels"].as_u64().unwrap_or(0)
+                || self.peripheral_scale != request["peripheryScale"].as_f64().unwrap_or(0.);
+            if changed || sampled * 2 < u64::from(self.width) * u64::from(self.height) {
+                if let Some(best) = view_plan(desktop, outer, request, None, screens) {
+                    if u64::from(best.width) * u64::from(best.height) * 10
+                        < u64::from(self.width) * u64::from(self.height) * 9
+                        || self.avc != (best.width <= 4096 && best.height <= avc_height(request))
+                    {
+                        return false;
+                    }
+                }
+            }
+            self.plan = candidate;
+            return true;
+        }
+        if view_plan(
+            desktop,
+            outer,
+            request,
+            Some((self.width, self.height)),
+            screens,
+        )
+        .is_none()
+        {
             return false;
         }
-        let Some(best) = view_plan(desktop, outer, request, None) else {
+        let Some(best) = view_plan(desktop, outer, request, None, screens) else {
             return false;
         };
-        if self.area_mode && self.avc != (best.width <= 4096 && best.height <= 2160) {
+        if self.area_mode && self.avc != (best.width <= 4096 && best.height <= avc_height(request))
+        {
             return false;
         }
         let area = u32::from(self.width) * u32::from(self.height);
         let best_area = u32::from(best.width) * u32::from(best.height);
         if self.area_mode
             && (self.resolved_area != request["resolvedAreaPixels"].as_u64().unwrap_or(0)
-                || self.periphery != request["peripheryPixels"].as_u64().unwrap_or(0))
+                || self.periphery != request["peripheryPixels"].as_u64().unwrap_or(0)
+                || self.peripheral_scale != request["peripheryScale"].as_f64().unwrap_or(0.))
             && best_area * 10 < area * 9
         {
             return false;
@@ -591,29 +689,50 @@ impl PackedView {
         sequence: u64,
     ) -> Result<()> {
         let start = Instant::now();
-        let plan = view_plan(desktop, outer, request, Some((self.width, self.height)))
-            .ok_or_else(|| Error::Msg("Area plan exceeds encoder".into()))?;
+        let plan = if request["regionSampling"].as_bool().unwrap_or(false) {
+            self.plan.clone()
+        } else {
+            view_plan(
+                desktop,
+                outer,
+                request,
+                Some((self.width, self.height)),
+                screens,
+            )
+            .ok_or_else(|| Error::Msg("Area plan exceeds encoder".into()))?
+        };
         self.resolved_area = request["resolvedAreaPixels"].as_u64().unwrap_or(0);
         self.periphery = request["peripheryPixels"].as_u64().unwrap_or(0);
-        self.whole_native = plan.tiles[0].source == outer;
+        self.peripheral_scale = request["peripheryScale"].as_f64().unwrap_or(0.);
+        self.whole_native = plan
+            .tiles
+            .iter()
+            .all(|t| t.width as u32 == t.source.width && t.height as u32 == t.source.height);
         self.fraction = dense_fraction(request);
         let regions = plan
             .tiles
             .iter()
             .map(|t| (t.source, t.x, t.y, t.width, t.height))
             .collect::<Vec<_>>();
-        let mut image = self.capture.atlas(&regions)?;
+        let gutter = if request["regionSampling"].as_bool().unwrap_or(false) {
+            regions::GUTTER
+        } else {
+            0
+        };
+        let mut image = self.capture.atlas_padded(&regions, gutter)?;
         image.damage_generation = sequence;
         let mut metadata = Vec::new();
         for tile in &plan.tiles {
             let r = tile.source;
-            crate::media::desktop_mask::DesktopMask::new(
-                r,
-                tile.width.into(),
-                tile.height.into(),
-                screens,
-            )
-            .apply_at(&mut image, tile.x.into(), tile.y.into());
+            {
+                crate::media::desktop_mask::DesktopMask::new(
+                    r,
+                    tile.width.into(),
+                    tile.height.into(),
+                    screens,
+                )
+                .apply_at(&mut image, tile.x.into(), tile.y.into());
+            }
             if let Ok(cursor) = shared.cursor.lock() {
                 paint_cursor_scaled_at(
                     &mut image,
@@ -647,7 +766,7 @@ impl PackedView {
         let frame = self
             .encoder
             .pull_wait(500_000_000)?
-            .ok_or_else(|| Error::Msg("HEVC view encode timeout".into()))?;
+            .ok_or_else(|| Error::Msg("View encode timeout".into()))?;
         if frame.bytes.len() > MAX_FRAME {
             return Err(Error::Msg("Packed view frame exceeds bound".into()));
         }
@@ -661,7 +780,35 @@ impl PackedView {
         shared
             .view_until_ns
             .store(monotonic_ns() + 1_000_000_000, Ordering::Relaxed);
-        let header=serde_json::json!({"type":"view-tiles-v2","codec":if self.avc{"video/avc"}else{"video/hevc"},"frame":sequence,"rect":outer_uv,"inner":metadata[0][0],"tiles":metadata,"nativeAreaPixels":u64::from(plan.tiles[0].source.width)*u64::from(plan.tiles[0].source.height),"autoArea":request["autoArea"],"targetFps":request["targetFps"],"width":self.width,"height":self.height,"bytes":frame.bytes.len(),"desktop":[desktop.x,desktop.y,desktop.width,desktop.height]}).to_string();
+        let high = plan
+            .tiles
+            .iter()
+            .filter(|t| t.width as u32 == t.source.width && t.height as u32 == t.source.height)
+            .collect::<Vec<_>>();
+        let inner_uv = if high.is_empty() || !request["regionSampling"].as_bool().unwrap_or(false) {
+            metadata[0][0].clone()
+        } else {
+            let x = high.iter().map(|t| t.source.x).min().unwrap();
+            let y = high.iter().map(|t| t.source.y).min().unwrap();
+            let r = high
+                .iter()
+                .map(|t| t.source.x + t.source.width as i32)
+                .max()
+                .unwrap();
+            let b = high
+                .iter()
+                .map(|t| t.source.y + t.source.height as i32)
+                .max()
+                .unwrap();
+            [
+                (x - desktop.x) as f32 / desktop.width as f32,
+                (y - desktop.y) as f32 / desktop.height as f32,
+                (r - desktop.x) as f32 / desktop.width as f32,
+                (b - desktop.y) as f32 / desktop.height as f32,
+            ]
+        };
+        let (background_pixels, native_coverage) = regions::sampling(&plan);
+        let header=serde_json::json!({"type":"view-tiles-v2","codec":if self.avc{"video/avc"}else{"video/hevc"},"frame":sequence,"rect":outer_uv,"inner":inner_uv,"tiles":metadata,"nativeAreaPixels":if request["regionSampling"].as_bool().unwrap_or(false){high.iter().map(|t|u64::from(t.source.width)*u64::from(t.source.height)).sum::<u64>()}else{u64::from(plan.tiles[0].source.width)*u64::from(plan.tiles[0].source.height)},"peripheryScale":plan.tiles.iter().filter(|t|t.width as u32!=t.source.width || t.height as u32!=t.source.height).map(|t|(t.width as f64/t.source.width as f64).min(t.height as f64/t.source.height as f64)).reduce(f64::min),"sampledPixels":plan.tiles.iter().map(|t|u64::from(t.width)*u64::from(t.height)).sum::<u64>(),"backgroundPixelPct":if request["regionSampling"].as_bool().unwrap_or(false){background_pixels}else{None},"nativeCoveragePct":if request["regionSampling"].as_bool().unwrap_or(false){Some(native_coverage)}else{None},"gutterPixels":gutter,"regionSampling":request["regionSampling"],"autoArea":request["autoArea"],"targetFps":request["targetFps"],"width":self.width,"height":self.height,"bytes":frame.bytes.len(),"desktop":[desktop.x,desktop.y,desktop.width,desktop.height]}).to_string();
         socket.write_all(&(header.len() as u32).to_be_bytes())?;
         socket.write_all(header.as_bytes())?;
         socket.write_all(&frame.bytes)?;

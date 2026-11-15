@@ -117,6 +117,16 @@ internal object DiagnosticsCanvas {
             drawCluster(canvas,snapshot,screens,now,index);canvas.restoreToCount(saved)
         }
     }
+    fun qualityText(snapshot:DiagnosticSnapshot):String{
+        val frame=snapshot.frame
+        if(frame==null || !frame.nativeCoveragePercent.isFinite())return snapshot.sampling.replace(" · ","\n").replace("effective ","Gain ").ifEmpty{"Waiting for video"}
+        val bg=frame.backgroundPixelPercent
+        val lines=if(bg.isFinite() && bg>0f)listOf(
+            String.format(java.util.Locale.ROOT,"BG pixels %.2f:1",100f/bg),
+            String.format(java.util.Locale.ROOT,"BG samples %.1f%%",bg)
+        )else listOf("BG off · full native")
+        return (lines+String.format(java.util.Locale.ROOT,"HD %.1f%% crop",frame.nativeCoveragePercent)+snapshot.sampling.substringBefore(" · ").takeIf{it.isNotEmpty()}).filterNotNull().joinToString("\n")
+    }
     fun drawCluster(canvas:Canvas,snapshot:DiagnosticSnapshot,screens:FloatArray,now:Long,index:Int){
         canvas.drawColor(Color.TRANSPARENT,PorterDuff.Mode.CLEAR)
         val state=snapshot.state
@@ -137,7 +147,7 @@ internal object DiagnosticsCanvas {
             2->if(state.transport.contains("Normal density:"))"Normal stream\n${if(state.transport.contains("source already native"))"Source-native stream" else "Zoom in for detail"}\n${state.reason.substringBefore(" · ")}\nRX ${metric(state.transport,"RX")} err ${metric(state.transport,"errors")}" else "${if(snapshot.frame!=null)"VIEW" else "NORMAL"} · ${snapshot.frame?.let{"${now-it.capturedAt}ms"} ?: "n/a"}\n${state.reason}\n"+
                 (transport.firstOrNull{it.contains("HEVC") || it.contains("H264")}?.replace("native tiles ","") ?: transport.last())+
                 "\nRX ${metric(state.transport,"RX")} err ${metric(state.transport,"errors")}\n"+transport.last()
-            else->snapshot.sampling.replace(" · ","\n").replace("effective ","Gain ").ifEmpty{"Waiting for video"}
+            else->qualityText(snapshot)
         }
         paint.style=Paint.Style.FILL;paint.color=when(index){0->Color.CYAN;1->Color.rgb(210,170,255);2->Color.rgb(150,255,190);else->Color.rgb(255,210,100)}
         paint.textSize=64f;paint.typeface=Typeface.create(Typeface.MONOSPACE,Typeface.BOLD)

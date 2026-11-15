@@ -14,17 +14,22 @@ import java.nio.file.Path;
 /** Hardware HEVC and shader reconstruction of differently sampled nonoverlapping tiles. */
 public final class PackedViewSmoke {
     static MediaCodec decode(VideoCompositor compositor,int width,int height,String file,float[] tiles,long pts)throws Exception{
+        return decode(compositor,width,height,file,tiles,pts,0);
+    }
+    static MediaCodec decode(VideoCompositor compositor,int width,int height,String file,float[] tiles,long pts,int gutter)throws Exception{
+        boolean avc=file.endsWith(".h264");
         byte[] bytes=Files.readAllBytes(Path.of(file));var csd=new java.io.ByteArrayOutputStream();
-        for(byte[] nal:H264Kt.splitAnnexB(bytes)){int type=(nal[0]>>>1)&63;if(type>=32&&type<=34){csd.write(new byte[]{0,0,0,1});csd.write(nal);}}
-        var format=MediaFormat.createVideoFormat("video/hevc",width,height);format.setByteBuffer("csd-0",ByteBuffer.wrap(csd.toByteArray()));format.setInteger(MediaFormat.KEY_LOW_LATENCY,1);
-        var codec=MediaCodec.createDecoderByType("video/hevc");
+        for(byte[] nal:H264Kt.splitAnnexB(bytes)){int type=avc?(nal[0]&31):(nal[0]>>>1)&63;if(avc?(type==7||type==8):(type>=32&&type<=34)){csd.write(new byte[]{0,0,0,1});csd.write(nal);}}
+        var format=MediaFormat.createVideoFormat(avc?"video/avc":"video/hevc",width,height);format.setByteBuffer("csd-0",ByteBuffer.wrap(csd.toByteArray()));format.setInteger(MediaFormat.KEY_LOW_LATENCY,1);
+        var codec=MediaCodec.createDecoderByType(avc?"video/avc":"video/hevc");
         try{
             System.out.println("packed: configuring "+width+"x"+height);codec.configure(format,compositor.getViewInput(),null,0);codec.start();System.out.println("packed: codec ready");
-            compositor.viewFrame(pts,new ViewFrame(new FocusRect(0,0,1,1),new FocusRect(.25f,.25f,.75f,.75f),SystemClock.uptimeMillis(),.5f,.5f,width,height,tiles));
+            compositor.viewFrame(pts,new ViewFrame(new FocusRect(0,0,1,1),new FocusRect(.25f,.25f,.75f,.75f),SystemClock.uptimeMillis(),.5f,.5f,width,height,tiles,gutter));
             int input=codec.dequeueInputBuffer(500000);if(input<0)throw new AssertionError("HEVC input unavailable");codec.getInputBuffer(input).put(bytes);codec.queueInputBuffer(input,0,bytes.length,pts,MediaCodec.BUFFER_FLAG_KEY_FRAME);
+            if(avc){int eos=codec.dequeueInputBuffer(500000);if(eos>=0)codec.queueInputBuffer(eos,0,0,pts+1,MediaCodec.BUFFER_FLAG_END_OF_STREAM);}
             var info=new MediaCodec.BufferInfo();long deadline=SystemClock.uptimeMillis()+2500;
             while(SystemClock.uptimeMillis()<deadline){int output=codec.dequeueOutputBuffer(info,10000);if(output>=0){codec.releaseOutputBuffer(output,true);System.out.println("packed: frame released");return codec;}}
-            throw new AssertionError("HEVC output unavailable");
+            throw new AssertionError((avc?"AVC":"HEVC")+" output unavailable");
         }catch(Throwable error){codec.release();throw error;}
     }
     static void await(ImageReader reader,boolean nativeFrame){
@@ -51,7 +56,19 @@ public final class PackedViewSmoke {
                 .25f,.75f,.75f,1, .25f,.75f,.5f,.875f};
             codec=decode(compositor,1024,768,"/data/local/tmp/floatdesk-packed.hevc",tiles,1000000);await(reader,false);System.out.println("packed: five tiles verified");
             codec.stop();codec.release();codec=null;
+            float[] seven={.25f,.25f,.75f,.75f,.25f,.25f,.75f,.75f,
+                0,0,.25f,1,0,0,.125f,.5f, .75f,0,1,1,.75f,0,.875f,.5f,
+                .25f,0,.75f,.25f,.25f,0,.5f,.125f,
+                .25f,.75f,.35f,1,.25f,.75f,.30f,.875f,
+                .65f,.75f,.75f,1,.45f,.75f,.5f,.875f,
+                .35f,.75f,.65f,1,.30f,.75f,.45f,.875f};
+            codec=decode(compositor,1024,768,"/data/local/tmp/floatdesk-packed.hevc",seven,1500000);await(reader,false);
+            System.out.println("PASS peripheral region beyond the old five-tile shader limit");
+            codec.stop();codec.release();codec=null;
             codec=decode(compositor,5120,3200,"/data/local/tmp/floatdesk-native.hevc",new float[]{0,0,1,1,0,0,1,1},2000000);await(reader,true);
+            codec.stop();codec.release();codec=null;
+            codec=decode(compositor,3520,3200,"/data/local/tmp/floatdesk-tall.h264",new float[]{0,0,1,1,0,0,1,1},3000000);await(reader,true);
+            System.out.println("PASS hardware AVC 3520x3200 decode beyond the former 2160-row limit");
             System.out.println("PASS hardware HEVC five-tile reconstruction, native 5120x3200 cache resizing and 100% coverage; process PSS="+android.os.Debug.getPss()/1024+"MiB");
         }catch(Throwable error){error.printStackTrace();throw error;}finally{if(codec!=null){codec.stop();codec.release();}compositor.close();reader.close();}
     }

@@ -165,21 +165,22 @@ private fun StreamingSettings(value:dev.floatdesk.client.workspace.WorkspaceFile
         Button(onClick={onApply(value.copy(detailAreaPixels=0))}){Text(if(value.detailAreaPixels==0L)"✓ Auto" else "Auto")}
         Button(onClick={onApply(value.copy(detailAreaPixels=value.detailAreaPixels.takeIf{it>0} ?: 1_048_576))}){Text(if(value.detailAreaPixels>0)"✓ Fixed area" else "Fixed area")}
     }
-    if(value.detailAreaPixels==0L){
+    run{
         var fps by remember(value.detailTargetFps){mutableStateOf(value.detailTargetFps.toString())}
         Row(horizontalArrangement=Arrangement.spacedBy(6.dp),verticalAlignment=Alignment.CenterVertically){
-            androidx.compose.material3.OutlinedTextField(fps,{fps=it},Modifier.weight(1f),label={Text("Auto FPS target")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number))
+            androidx.compose.material3.OutlinedTextField(fps,{fps=it},Modifier.weight(1f),label={Text("FPS target")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number))
             val parsed=fps.toIntOrNull()?.takeIf{it in 5..120}
             Button(enabled=parsed!=null,onClick={parsed?.let{onApply(value.copy(detailTargetFps=it))}}){Text("Apply")}
         }
-    }else{
+    }
+    if(value.detailAreaPixels>0L){
         var side by remember(value.detailAreaPixels){mutableStateOf(kotlin.math.sqrt(value.detailAreaPixels.toDouble()).toInt().toString())}
         val parsed=side.toLongOrNull()?.takeIf{it in 64..4096}
         Row(horizontalArrangement=Arrangement.spacedBy(6.dp),verticalAlignment=Alignment.CenterVertically){
             androidx.compose.material3.OutlinedTextField(side,{side=it},Modifier.weight(1f),label={Text("Native square side (px)")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number))
             Button(enabled=parsed!=null,onClick={parsed?.let{onApply(value.copy(detailAreaPixels=it*it))}}){Text("Apply")}
         }
-        Text(parsed?.let{String.format(Locale.ROOT,"%d × %d · %.2f MP maximum",it,it,it*it/1e6)} ?: "64–4096 pixels per side",color=Color.White)
+        Text(parsed?.let{String.format(Locale.ROOT,"%d × %d · %.2f MP patch",it,it,it*it/1e6)} ?: "64–4096 pixels per side",color=Color.White)
     }
     Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)){
         androidx.compose.material3.Switch(checked=value.showResources,onCheckedChange={onApply(value.copy(showResources=it))});Text("Live resources",color=Color.White)

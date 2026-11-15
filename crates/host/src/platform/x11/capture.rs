@@ -267,6 +267,13 @@ impl X11Capture {
     }
     /// Queue all GPU tile composites before one SHM reply; that reply is the error/barrier point.
     pub fn atlas(&self, tiles: &[(MonitorRect, u16, u16, u16, u16)]) -> Result<CapturedFrame> {
+        self.atlas_padded(tiles, 0)
+    }
+    pub fn atlas_padded(
+        &self,
+        tiles: &[(MonitorRect, u16, u16, u16, u16)],
+        gutter: u16,
+    ) -> Result<CapturedFrame> {
         let target = self
             .render
             .as_ref()
@@ -297,8 +304,10 @@ impl X11Capture {
         for &(r, x, y, w, h) in tiles {
             if w == 0
                 || h == 0
-                || x as u32 + w as u32 > self.width
-                || y as u32 + h as u32 > self.height
+                || x < gutter
+                || y < gutter
+                || x as u32 + w as u32 + gutter as u32 > self.width
+                || y as u32 + h as u32 + gutter as u32 > self.height
             {
                 return Err(Error::Msg("Atlas tile exceeds allocation".into()));
             }
@@ -310,10 +319,14 @@ impl X11Capture {
                         render::Transform {
                             matrix11: fixed(r.width as f64 / w as f64),
                             matrix12: 0,
-                            matrix13: fixed(r.x as f64),
+                            matrix13: fixed(
+                                r.x as f64 - f64::from(gutter) * r.width as f64 / f64::from(w),
+                            ),
                             matrix21: 0,
                             matrix22: fixed(r.height as f64 / h as f64),
-                            matrix23: fixed(r.y as f64),
+                            matrix23: fixed(
+                                r.y as f64 - f64::from(gutter) * r.height as f64 / f64::from(h),
+                            ),
                             matrix31: 0,
                             matrix32: 0,
                             matrix33: 65536,
@@ -333,10 +346,10 @@ impl X11Capture {
                         0,
                         0,
                         0,
-                        x as i16,
-                        y as i16,
-                        w,
-                        h,
+                        (x - gutter) as i16,
+                        (y - gutter) as i16,
+                        w + 2 * gutter,
+                        h + 2 * gutter,
                     )
                     .map_err(Error::x11)?,
             );

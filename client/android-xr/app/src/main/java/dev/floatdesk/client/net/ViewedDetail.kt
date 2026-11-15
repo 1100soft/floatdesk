@@ -15,7 +15,7 @@ import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicReference
 
 internal data class DetailRequest @JvmOverloads constructor(val host:InetSocketAddress,val sessionId:Long,val rect:FocusRect,val desktop:List<Int>,val center:Pair<Float,Float> = rect.centerU to rect.centerV,val quality:Int=0,val bitrateMbps:Float=0f,val fraction:Float=.35f,val nativeAreaPixels:Long=0,val targetFps:Int=30)
-internal data class ViewFrame @JvmOverloads constructor(val outer:FocusRect,val inner:FocusRect,val capturedAt:Long,val focusU:Float=inner.centerU,val focusV:Float=inner.centerV,val atlasWidth:Int=2048,val atlasHeight:Int=1536,val tiles:FloatArray=floatArrayOf())
+internal data class ViewFrame @JvmOverloads constructor(val outer:FocusRect,val inner:FocusRect,val capturedAt:Long,val focusU:Float=inner.centerU,val focusV:Float=inner.centerV,val atlasWidth:Int=2048,val atlasHeight:Int=1536,val tiles:FloatArray=floatArrayOf(),val gutterPixels:Int=0,val backgroundPixelPercent:Float=Float.NaN,val nativeCoveragePercent:Float=Float.NaN)
 internal data class ViewDestination(val surface:Surface,val frame:(Long,ViewFrame)->Unit,val clear:()->Unit)
 
 /** One encoded access unit in flight. Every decoded image is paired with its own crop by PTS. */
@@ -26,6 +26,12 @@ internal class ViewedDetail(private val destination:()->ViewDestination?,private
     @Volatile private var packed=true
     private var attempts=0L;private var received=0L;private var late=0L;private var errors=0L
     private fun report(message:String){status("REQ $attempts / RX $received / late $late / errors $errors · $message")}
+    private val avcMaxHeight=runCatching{
+        if(android.media.MediaCodecList(android.media.MediaCodecList.ALL_CODECS).codecInfos.any{info->
+            !info.isEncoder && info.isHardwareAccelerated && "video/avc" in info.supportedTypes &&
+                runCatching{info.getCapabilitiesForType("video/avc").videoCapabilities?.isSizeSupported(4096,4096)==true}.getOrDefault(false)
+        })4096 else 2160
+    }.getOrDefault(2160)
     private val worker=Thread({
         while(running){
             val first=request.get();val output=destination()
@@ -45,10 +51,10 @@ internal class ViewedDetail(private val destination:()->ViewDestination?,private
                         val start=SystemClock.elapsedRealtime();attempts++
                         val json=JSONObject().put("mode",if(usePacked)"view-tiles-v2" else "view-h264-v1").put("sessionId",next.sessionId)
                             .put("rect",org.json.JSONArray(listOf(next.rect.left,next.rect.top,next.rect.right,next.rect.bottom)))
-                            .put("areaBudget",usePacked).put("nativeAreaPixels",next.nativeAreaPixels).put("targetFps",next.targetFps).put("feedbackMs",feedbackMs).put("frameBudget",usePacked).put("quality",next.quality).put("bitrateMbps",next.bitrateMbps).put("fraction",next.fraction)
+                            .put("avcMaxHeight",avcMaxHeight).put("regionSampling",usePacked).put("areaBudget",usePacked).put("nativeAreaPixels",next.nativeAreaPixels).put("targetFps",next.targetFps).put("feedbackMs",feedbackMs).put("frameBudget",usePacked).put("quality",next.quality).put("bitrateMbps",next.bitrateMbps).put("fraction",next.fraction)
                             .put("center",org.json.JSONArray(listOf(next.center.first,next.center.second))).toString().toByteArray(Charsets.UTF_8)
                         writer.writeInt(json.size);writer.write(json);writer.flush()
-                        val size=input.readInt();require(size in 1..4096);val header=ByteArray(size);input.readFully(header)
+                        val size=input.readInt();require(size in 1..16384);val header=ByteArray(size);input.readFully(header)
                         val meta=JSONObject(String(header,Charsets.UTF_8))
                         val sequence=meta.getLong("frame");require(sequence>previous);previous=sequence
                         if(meta.getString("type")=="view-baseline-v1"){
@@ -69,7 +75,7 @@ internal class ViewedDetail(private val destination:()->ViewDestination?,private
                         require(mime=="video/avc" || mime=="video/hevc");val hevc=mime=="video/hevc"
                         if(!tiled)require(width==2048 && height==1536)
                         val tiles=if(tiled){
-                            val array=meta.getJSONArray("tiles");require(array.length() in 1..5)
+                            val array=meta.getJSONArray("tiles");require(array.length() in 1..32)
                             FloatArray(array.length()*8){n->array.getJSONArray(n/8).getJSONArray((n%8)/4).getDouble(n%4).toFloat()}.also{values->
                                 for(i in values.indices step 4)require(values.slice(i..i+3).all{it.isFinite() && it in 0f..1f} && values[i+2]>values[i] && values[i+3]>values[i+1])
                             }
@@ -96,11 +102,12 @@ internal class ViewedDetail(private val destination:()->ViewDestination?,private
                         val pts=System.nanoTime()/1000
                         val age=SystemClock.elapsedRealtime()-start;feedbackMs=age
                         if(age>250)late++
-                        output.frame(pts,ViewFrame(outer,inner,SystemClock.uptimeMillis()-age,next.center.first,next.center.second,width,height,tiles))
+                        output.frame(pts,ViewFrame(outer,inner,SystemClock.uptimeMillis()-age,next.center.first,next.center.second,width,height,tiles,meta.optInt("gutterPixels",0).coerceIn(0,8),meta.optDouble("backgroundPixelPct",Double.NaN).toFloat(),meta.optDouble("nativeCoveragePct",Double.NaN).toFloat()))
                         active.queueInputBuffer(index,0,count,pts,if(if(hevc)splitAnnexB(bytes).any{((it[0].toInt() ushr 1) and 63) in 16..21} else isKeyframe(bytes))MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
                         drain(active);received++;framesHere++
+                        val peripheralText=if(meta.optBoolean("regionSampling") && meta.isNull("peripheryScale"))" · full native" else if(meta.optBoolean("regionSampling"))" · peripheral %.1f%%".format(java.util.Locale.ROOT,meta.optDouble("peripheryScale",0.0)*100) else ""
                         val areaText=if(meta.has("nativeAreaPixels"))" · ${if(meta.optBoolean("autoArea"))"Auto" else "Fixed"} %.2fMP / ${meta.optInt("targetFps",next.targetFps)}fps".format(java.util.Locale.ROOT,meta.optLong("nativeAreaPixels")/1e6) else ""
-                        if(received%10L==1L)report("${age}ms · ${if(hevc)"HEVC native tiles" else if(tiled)"H264 native tiles" else "legacy H264"} ${width}x${height} · ${count/1024}KiB$areaText")
+                        if(received%10L==1L)report("${age}ms · ${if(hevc)"HEVC native tiles" else if(tiled)"H264 native tiles" else "legacy H264"} ${width}x${height} · ${count/1024}KiB$peripheralText$areaText")
                     }
                 }
             } catch(error:Exception){if(usePacked && framesHere==0 && running && request.get()!=null)packed=false;if(running && request.get()!=null){errors++;report("${error.javaClass.simpleName}: ${error.message.orEmpty().take(45)}");fallback();Thread.sleep(400)}}

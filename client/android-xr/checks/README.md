@@ -194,3 +194,11 @@ Dynamic-atlas tests now exercise tight packing, gaze-independent dimensions, nat
 Warp checks cover current eye updates beside/behind the flat reference plane and at its origin with an off-center valid sphere. `FLOATDESK_BASELINE_COMPARE=1` optionally compares warmed normal versus zoomed-out budget-mode RTP cadence on the private synthetic display.
 
 Native-area streaming checks cover fixed source-pixel density at different zooms and Auto reduction under injected latency (`scripts/check-viewed-detail.py`). Host unit tests cover area packing and feedback. `monitor_warp.py` verifies focus preservation through tiny off-center size corrections; `viewed_detail.py` checks finite spherical foreground HUD patch geometry and the empty focus center.
+
+Layout-independent region streaming: host `regions` tests cover unchanged density after adding off-view screens, exact nonoverlapping coverage and representative AVC packing; `scripts/check-viewed-detail.py` checks actual capture/decoded colors and sustained response time. `PackedViewSmoke` exercises a required peripheral tile beyond index 4.
+
+`GutterSmoke` checks padded tile reconstruction with sharpening and a contrasting atlas background. `BudgetStreamSmoke` accepts a valid metadata header beyond 4 KiB through the real worker. Regional pressure tests now require at least about 1 MP native detail and stable peripheral sampling instead of accepting progressive quality collapse.
+
+Contiguous-crop planner tests verify at most two rectangles, stable peripheral placement across gaze motion, cheaper single-native selection and off-view layout independence. The integration runner exercises both the single- and two-rectangle paths. `PackedViewSmoke` additionally decodes a real VA AVC frame at 3520 × 3200; `CodecCapacitySmoke` reports hardware decoder capabilities.
+
+Adaptive background checks preserve the native floor while lowering/recovering background sampling, including fixed-patch mode. Host tests verify 25% samples and 12.5% native crop coverage; `BudgetStreamSmoke` checks those per-frame values reach the real decoded-frame HUD as a 4:1 reduction and 12.5% HD coverage.

@@ -16,7 +16,7 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-view-x11-') as temp:
    assert number
    env=dict(os.environ,DISPLAY=':'+number,FLOATDESK_SYNTHETIC_DISPLAY='1');env.pop('XAUTHORITY',None)
    with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as probe:probe.bind(('127.0.0.1',0));port=probe.getsockname()[1]
-   host=subprocess.Popen([str(root/'target/release/floatdesk'),'serve','--existing','--listen',f'127.0.0.1:{port}','--fps',os.environ.get('FLOATDESK_CHECK_FPS','10'),'--encoder',os.environ.get('FLOATDESK_CHECK_ENCODER','x264enc'),'--duration','40'],env=env,stdout=log,stderr=log)
+   host=subprocess.Popen([str(root/'target/release/floatdesk'),'serve','--existing','--listen',f'127.0.0.1:{port}','--fps',os.environ.get('FLOATDESK_CHECK_FPS','10'),'--encoder',os.environ.get('FLOATDESK_CHECK_ENCODER','x264enc'),'--duration','75'],env=env,stdout=log,stderr=log)
    with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as control,socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as video:
     control.bind(('127.0.0.1',0));control.settimeout(.2);video.bind(('127.0.0.1',0));video.setblocking(False)
     def send(kind,payload):control.sendto(b'FDC1'+struct.pack('<BBHII',1,kind,0,len(payload),0)+payload,('127.0.0.1',port))
@@ -217,6 +217,91 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-view-x11-') as temp:
       meta,_=area_frame([0,0,1,1],0,250);areas.append(meta['nativeAreaPixels']);time.sleep(.04)
      assert min(areas)<areas[0], 'Auto failed to reduce native area under measured contention'
      print(f'PASS full-view fixed native 1024-square at different zooms; Auto shrank {areas[0]} to {min(areas)} source pixels under injected latency',flush=True)
+    with socket.create_connection(('127.0.0.1',port),2) as stream:
+     stream.settimeout(5);native_units=[];native_metas=[];timings=[]
+     for i in range(40):
+      began=time.monotonic()
+      payload=json.dumps(dict(mode='view-tiles-v2',areaBudget=True,regionSampling=True,avcMaxHeight=4096,frameBudget=True,sessionId=session,rect=[0,0,1,1],center=[.7,.5],nativeAreaPixels=1048576,targetFps=30,feedbackMs=0)).encode()
+      stream.sendall(struct.pack('>I',len(payload))+payload)
+      meta=json.loads(exact(stream,struct.unpack('>I',exact(stream,4))[0]));unit=exact(stream,meta['bytes'])
+      assert meta['regionSampling'] and meta['type']=='view-tiles-v2'
+      assert meta['gutterPixels']==4
+      if meta['backgroundPixelPct'] is not None:
+       assert abs(meta['backgroundPixelPct']-100*(meta['peripheryScale']**2))<.2
+      expected_coverage=100*meta['nativeAreaPixels']/(width*height)
+      assert abs(meta['nativeCoveragePct']-expected_coverage)<.01
+      assert len(meta['tiles']) in (1,2)
+      if len(meta['tiles'])==2:
+       assert .168<=meta['peripheryScale']<=.676,meta
+       if i<2:assert abs(meta['peripheryScale']-.675)<.002,meta
+       assert meta['nativeAreaPixels']==1048576
+      else:assert meta['nativeAreaPixels']==width*height
+      sampled=0
+      for j,(src,dst) in enumerate(meta['tiles']):
+       sw=round((src[2]-src[0])*width);sh=round((src[3]-src[1])*height)
+       dw=round((dst[2]-dst[0])*meta['width']);dh=round((dst[3]-dst[1])*meta['height'])
+       assert (sw==dw and sh==dh) or (abs(dw-sw*meta['peripheryScale'])<=2.1 and abs(dh-sh*meta['peripheryScale'])<=2.1)
+       sampled+=sw*sh
+      # One whole low-resolution crop deliberately overlaps the native patch.
+      expected=width*height+(meta['nativeAreaPixels'] if len(meta['tiles'])==2 else 0)
+      assert abs(sampled-expected)<width*2,'Unexpected capture coverage'
+      timings.append(time.monotonic()-began)
+      if i<2:native_units.append(unit);native_metas.append(meta)
+     regional_stats=None
+     while True:
+      try:data=control.recv(65535)
+      except socket.timeout:break
+      if data[5]==15:
+       value=json.loads(data[16:])
+       if value.get('type')=='resourceStats':regional_stats=value
+     if regional_stats:print('Region profile '+json.dumps(regional_stats),flush=True)
+     print(f"PASS layout-independent regions: {meta['codec']} {meta['width']}x{meta['height']}, {len(meta['tiles'])} tiles, {meta['sampledPixels']/1e6:.2f}MP sampled; {1/(sum(timings[5:])/len(timings[5:])):.1f} responses/s, density {meta['peripheryScale'] if meta['peripheryScale'] is not None else 'full native'}",flush=True)
+    with socket.create_connection(('127.0.0.1',port),2) as stream:
+     stream.settimeout(5);densities=[];auto_areas=[]
+     for _ in range(120):
+      payload=json.dumps(dict(mode='view-tiles-v2',areaBudget=True,regionSampling=True,avcMaxHeight=4096,frameBudget=True,sessionId=session,rect=[0,0,1,1],center=[.7,.5],nativeAreaPixels=0,targetFps=30,feedbackMs=250)).encode()
+      stream.sendall(struct.pack('>I',len(payload))+payload)
+      meta=json.loads(exact(stream,struct.unpack('>I',exact(stream,4))[0]));exact(stream,meta['bytes'])
+      densities.append(meta['peripheryScale'] if meta['peripheryScale'] is not None else 1.);auto_areas.append(meta['nativeAreaPixels']);time.sleep(.04)
+     assert min(auto_areas)>=1048576,'Auto sacrificed its useful native-detail floor'
+     assert min(densities)<.67,'Background sampling did not adapt under sustained pressure'
+     print(f'PASS regional Auto under sustained pressure: native {min(auto_areas)} pixels, peripheral {min(densities):.3f}',flush=True)
+    with socket.create_connection(('127.0.0.1',port),2) as stream:
+     stream.settimeout(5)
+     for crop in ([0,0,1,1],[.3,.2,.5,.4],[.75,.05,.9,.2],[0,0,1,1]):
+      payload=json.dumps(dict(mode='view-tiles-v2',areaBudget=True,regionSampling=True,avcMaxHeight=4096,sessionId=session,rect=crop,center=[.6,.5],nativeAreaPixels=1048576,targetFps=30)).encode()
+      stream.sendall(struct.pack('>I',len(payload))+payload)
+      meta=json.loads(exact(stream,struct.unpack('>I',exact(stream,4))[0]));unit=exact(stream,meta['bytes'])
+      assert len(meta['tiles']) in (1,2)
+      if crop[2]-crop[0]<.3:
+       assert len(meta['tiles'])==1 and meta['tiles'][0][0]==meta['rect'],'Small visible crop was not fully native'
+       assert meta['nativeCoveragePct']==100 and meta['backgroundPixelPct'] is None
+      fmt='h264' if meta['codec']=='video/avc' else 'hevc'
+      dimensions=json.loads(subprocess.check_output(['ffprobe','-v','error','-threads','2','-f',fmt,'-show_entries','stream=width,height','-of','json','pipe:0'],input=unit))['streams'][0]
+      assert (dimensions['width'],dimensions['height'])==(meta['width'],meta['height'])
+     print('PASS live contiguous-pair/full-native crop changes and codec dimensions',flush=True)
+    first=native_metas[0]
+    decoded_region=subprocess.check_output(['ffmpeg','-v','error','-threads','2','-f','h264' if first['codec']=='video/avc' else 'hevc','-i','pipe:0','-frames:v','2','-f','rawvideo','-pix_fmt','rgb24','pipe:1'],input=b''.join(native_units))
+    for src,dst in first['tiles']:
+     u=src[0]+(src[2]-src[0])*.27;v=src[1]+(src[3]-src[1])*.31
+     px=int((dst[0]+(dst[2]-dst[0])*.27)*first['width']);py=int((dst[1]+(dst[3]-dst[1])*.31)*first['height'])
+     at=(py*first['width']+px)*3;actual=decoded_region[at:at+3]
+     expected=[(255,0,0),(0,255,0),(0,0,255),(255,255,0)][(1 if u>=.5 else 0)+(2 if v>=.5 else 0)]
+     assert len(actual)==3 and all(abs(a-b)<45 for a,b in zip(actual,expected)),(src,dst,tuple(actual),expected)
+    checked_gutters=0
+    for src,dst in first['tiles']:
+     gutter_x=round(dst[0]*first['width']);y=round((dst[1]+(dst[3]-dst[1])*.31)*first['height'])
+     dw=round((dst[2]-dst[0])*first['width']);dh=round((dst[3]-dst[1])*first['height'])
+     assert gutter_x>=4 and round(dst[1]*first['height'])>=4 and round(dst[2]*first['width'])+4<=first['width'] and round(dst[3]*first['height'])+4<=first['height']
+     u=src[0]-2/dw*(src[2]-src[0]);v=src[1]+(src[3]-src[1])*.31
+     if not (0<u<1 and 0<v<1) or abs(u-.5)<.02 or abs(v-.5)<.02:continue
+     at=(y*first['width']+gutter_x-2)*3;actual=decoded_region[at:at+3]
+     expected=[(255,0,0),(0,255,0),(0,0,255),(255,255,0)][(1 if u>=.5 else 0)+(2 if v>=.5 else 0)]
+     assert all(abs(a-b)<45 for a,b in zip(actual,expected)),('Incorrect capture gutter',src,dst,tuple(actual),expected)
+     checked_gutters+=1
+    if len(first['tiles'])>1:assert checked_gutters>0
+    print(f'PASS {checked_gutters} decoded capture gutters preserve neighboring source content',flush=True)
+    print('PASS decoded native/peripheral region colors and coordinate mapping',flush=True)
     send(15,json.dumps(dict(type='encoderSettings',quality=0,bitrateMbps=0)).encode())
     assert control_json('encoderAck')['quality']==0
     decoded=subprocess.check_output(['ffmpeg','-v','error','-f','h264','-i','pipe:0','-frames:v','2','-f','rawvideo','-pix_fmt','rgb24','pipe:1'],input=b''.join(units[:2]))

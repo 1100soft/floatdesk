@@ -19,7 +19,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
     pinned:Boolean,viewer:java.util.concurrent.atomic.AtomicReference<dev.floatdesk.client.workspace.Pose?>,
     units:()->Float,
     onReady:()->Unit,onError:(String)->Unit,onHover:(String,Pair<Float,Float>?)->Unit,onTap:(Pair<Float,Float>)->Unit,
-    onPlacement:(MagnifiedWindow)->Unit,onMoving:(Boolean)->Unit,onContext:()->Unit={}){
+    onPlacement:(MagnifiedWindow,Boolean)->Unit,onMoving:(Boolean)->Unit,onContext:()->Unit={}){
     val readyNow=rememberUpdatedState(onReady);val errorNow=rememberUpdatedState(onError);val hoverNow=rememberUpdatedState(onHover)
     val tapNow=rememberUpdatedState(onTap);val windowNow=rememberUpdatedState(window);val placementNow=rememberUpdatedState(onPlacement);val movingNow=rememberUpdatedState(onMoving)
     val pinNow=rememberUpdatedState(pinned)
@@ -65,16 +65,18 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                     }
                     if(event.action==InputEvent.Action.DOWN && local!=null && !resources.resizing && !resources.moving){
                         val head=viewer.get()
-                        if(head!=null){resources.dragged=false;resources.tapCommitted=false;resources.taps.clear();val ray=rootRay();resources.drag.begin(active,head,ray.first,ray.second,transformPoint(active.pose,local));resources.dragSide=side;resources.moving=true;movingNow.value(true)}
+                        if(head!=null){resources.dragged=false;resources.tapCommitted=false;resources.taps.clear();val ray=rootRay();resources.drag.begin(active,head,ray.first,ray.second,transformPoint(active.pose,local));resources.dragSide=side;resources.moveContact=uv;resources.moving=true;movingNow.value(true)}
                     }
                     if(event.action==InputEvent.Action.MOVE && resources.moving && side==resources.dragSide && !resources.resizing){
                         val head=viewer.get()
                         if(head!=null){val ray=rootRay();val proposed=resources.drag.move(head,ray.first,ray.second)
-                            if(proposed!=null){resources.dragged=true;resources.taps.clear();resources.pending=if(active.fixed)fixedMagnifierGeometry(active,head,proposed)else magnifierGeometry(active,head,units(),proposed)}
+                            if(proposed!=null){if(!resources.dragged)movingNow.value(true);resources.dragged=true;resources.taps.clear();resources.pending=if(active.fixed)fixedMagnifierGeometry(active,head,proposed)else magnifierGeometry(active,head,units(),proposed)}
                         }
                     }
                     if((event.action==InputEvent.Action.UP || event.action==InputEvent.Action.CANCEL) && side==resources.dragSide){
-                        resources.pending?.let{placementNow.value(it)};resources.drag.clear();resources.dragSide=null;resources.moving=false;movingNow.value(false)
+                        resources.pending?.let{placementNow.value(it,resources.dragged || resources.resizing)}
+                        if(event.action==InputEvent.Action.UP && !resources.dragged && !resources.contextShown && !resources.tapCommitted){resources.moveContact?.let{resources.tapCommitted=true;resources.taps.clear();tapNow.value(it)}}
+                        resources.drag.clear();resources.dragSide=null;resources.moving=false;movingNow.value(false)
                     }
                     if(event.action==InputEvent.Action.DOWN){resources.holdAt=android.os.SystemClock.uptimeMillis();resources.contextShown=false;if(!resources.moving){resources.dragged=false;resources.tapCommitted=false}}
                     if(event.action==InputEvent.Action.UP || event.action==InputEvent.Action.CANCEL || event.action==InputEvent.Action.HOVER_EXIT && !resources.moving)resources.holdAt=0
@@ -114,7 +116,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                         val factor=event.newSize.width/resources.resizeStartWidth
                         if(factor.isFinite() && factor>0f)resources.pending=resizedMagnifier(original,factor)
                     }
-                    if(event.resizeState==ResizeEvent.ResizeState.END){resources.pending?.let{placementNow.value(it)};resources.resizing=false;resources.resizeStart=null;movingNow.value(resources.moving)}
+                    if(event.resizeState==ResizeEvent.ResizeState.END){resources.pending?.let{placementNow.value(it,resources.dragged || resources.resizing)};resources.resizing=false;resources.resizeStart=null;movingNow.value(resources.moving)}
                 }).also{it.isFixedAspectRatioEnabled=true;it.isAutoHideContentWhileResizingEnabled=false;it.shouldAutoUpdateOverlay=true;it.isAlwaysShowOverlayEnabled=false}
             }
             if(resources.resizeTarget!==moveTarget){resources.resizeTarget?.removeComponent(resources.resize!!);check(moveTarget.addComponent(resources.resize!!));resources.resizeTarget=moveTarget}
@@ -159,7 +161,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                         resources.resize?.affordanceSize=FloatSize3d(next.width,next.height,.001f)
                     }
                 }
-                resources.mesh=mesh;resources.rendered=next;prior=next;placementNow.value(next)
+                resources.mesh=mesh;resources.rendered=next;prior=next;placementNow.value(next,resources.dragged || resources.resizing)
             }
         }catch(e:kotlinx.coroutines.CancellationException){throw e}
         catch(e:Exception){resources.close();errorNow.value(e.message ?: "Window magnifier unavailable")}

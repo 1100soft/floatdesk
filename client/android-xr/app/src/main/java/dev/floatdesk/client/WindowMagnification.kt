@@ -250,8 +250,12 @@ internal class MagnifierRayDrag{
     fun clear(){start=null;dragging=false}
     private fun unit(v:FloatArray):FloatArray{val n=sqrt(v.sumOf{(it*it).toDouble()}).toFloat().coerceAtLeast(.00001f);return FloatArray(3){v[it]/n}}
     fun begin(window:MagnifiedWindow,viewer:Pose,origin:FloatArray,direction:FloatArray,contact:FloatArray){
-        start=window;dragging=false;from=unit(FloatArray(3){contact[it]-viewer.position[it]});offset=FloatArray(3){window.pose.position[it]-viewer.position[it]}
+        start=window;dragging=false;offset=FloatArray(3){window.pose.position[it]-viewer.position[it]}
         val d=unit(direction);rayDistance=(0..2).sumOf{((contact[it]-origin[it])*d[it]).toDouble()}.toFloat().coerceAtLeast(.001f)
+        // Establish identity from the captured ray itself. Native hit positions and ray origins
+        // can have different offsets/scales; comparing a hit-based DOWN with a ray-based MOVE
+        // turns a stationary pinch into an immediate drag.
+        from=unit(FloatArray(3){origin[it]+d[it]*rayDistance-viewer.position[it]})
     }
     fun move(viewer:Pose,origin:FloatArray,direction:FloatArray):FloatArray?{
         val window=start ?: return null

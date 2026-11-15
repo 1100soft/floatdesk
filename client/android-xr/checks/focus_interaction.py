@@ -91,6 +91,11 @@ fun main() {
  val movedByRay=drag.move(Pose(),origin,floatArrayOf(.3f,.2f,-1f))!!
  check(movedByRay[0]>0f && movedByRay[1]>0f)
  check(abs(sqrt(movedByRay.sumOf{(it*it).toDouble()}).toFloat()-MagnifierDistanceM)<.00001f)
+ // Offset-reference regression: an unchanged MOVE must be identity even if the hit is above the ray.
+ val offsetOrigin=floatArrayOf(.1f,-.2f,.15f)
+ drag.begin(zoom,Pose(),offsetOrigin,floatArrayOf(0f,0f,-1f),floatArrayOf(0f,.25f,-.85f))
+ repeat(5){check(drag.move(Pose(),offsetOrigin,floatArrayOf(0f,0f,-1f))==null)}
+ check(drag.move(Pose(),offsetOrigin,floatArrayOf(.2f,0f,-1f))!=null)
  val level=facingMagnifierRotation(movedByRay,Pose(),floatArrayOf(0f,0f,0f,1f))
  check(abs(rotateVector(level,1f,0f,0f)[1])<.00001f)
  drag.clear();check(drag.move(Pose(),origin,floatArrayOf(.5f,0f,-1f))==null)

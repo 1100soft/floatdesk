@@ -1149,7 +1149,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                         val point=magnified?.let{magnifierContentPoint(it,uv)} ?: uv
                         if(win!=null && bounds!=null)connection.movePointer(0,(win.x-bounds[0]+point.first*win.width)/bounds[2],(win.y-bounds[1]+point.second*win.height)/bounds[3])
                     }
-                },{next->magnified=next;magnifierMesh=next.mesh},{moving->magnifierMoving=moving})
+                },{next,_->magnified=next;magnifierMesh=next.mesh},{moving->magnifierMoving=moving})
         }
         val fixedDesktop=workspace.monitorAt(0)
         val fixedViewer=magnifierViewer.get()
@@ -1169,9 +1169,9 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                         if(record.id in fixedPins)fixedPins.remove(record.id)else if(pane.id!=0L)fixedPins[record.id]=pane.id
                         val bounds=connection.workspaceInfo.value?.bounds();val point=magnifierContentPoint(pane,uv)
                         if(source!=null && bounds!=null)connection.movePointer(0,(source.x-bounds[0]+point.first*source.width)/bounds[2],(source.y-bounds[1]+point.second*source.height)/bounds[3])
-                    },{next->
+                    },{next,manipulated->
                         fixedRuntime[record.id]=next
-                        if(record.id in fixedEditing){
+                        if(manipulated && record.id in fixedEditing){
                             val desktop=workspace.monitorAt(0)
                             if(desktop!=null){val saved=saveFixedMagnifier(record.id,next,desktop,handTracking.unitsPerMeter);workspace=workspace.copy(fixedMagnifiers=workspace.fixedMagnifiers.map{if(it.id==record.id)saved else it})}
                         }

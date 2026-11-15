@@ -205,6 +205,9 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     val gazeWindowFocus=remember{GazeWindowFocus()}
     val magnification=remember{WindowMagnification()}
     var magnified by remember { mutableStateOf<MagnifiedWindow?>(null) }
+    val magnifierViewer=remember { AtomicReference<Pose?>(null) }
+    val magnifierGazeRays=remember { AtomicReference<List<Pair<FloatArray,FloatArray>>>(emptyList()) }
+    var magnifierMoving by remember { mutableStateOf(false) }
     var magnifierPinned by remember { mutableStateOf(false) }
     var typingLocked by remember { mutableStateOf(false) }
     var magnifierMesh by remember { mutableStateOf<MonitorMesh?>(null) }
@@ -672,6 +675,8 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 androidx.xr.runtime.math.Pose((perceived.translation + rightEye.translation) * 0.5f)
             } else perceived
             viewer?.takeIf { reliable }?.let { grips["VIEWER"] = deskPose(current, root, it).translation.toArray() }
+            magnifierGazeRays.set(eyeRays)
+            displayHead.get()?.let{reference->if(reliable)magnifierViewer.set(Pose(grips["VIEWER"]?.copyOf() ?: reference.position,reference.rotation))}
             sampledHands.set(hands)
             val handStates=hands.map { (side,hand)->val state=hand.state.value;Triple(side,state,state.handJoints.toMap()) }
             val handSamples=handStates.mapNotNull { (side,state,joints) ->
@@ -877,7 +882,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             val magnifierChanged=magnified?.let{panel->focusInfo?.windows?.none{it.id==panel.id} ?: true}==true
             val magnifyBlocked=(typingLocked && magnified==null) || magnifierChanged || (magnified==null && (choice.mode.reservesDesktop || mouseGestures.engaged)) || !resumed || (!magnification.pinned && (!reliable || displayControlsOpen || palmPanel!=null || monitorGrab || nativeManipulation)) || magnifierFailed || focusInfo?.windowMagnify!=true
             val activeMagnifier=magnification.update(handTracking.nowMs,workspace.magnifyWindow,magnifyBlocked,magnifyTarget,
-                magnified?.let{window->eyeRays.any{(o,d)->magnifierPoint(window.copy(mesh=null),o,d,.35f)!=null}}==true,magnifierReady,mouseGestures.engaged || typingLocked,eyeRays.isNotEmpty())
+                magnified?.let{window->eyeRays.any{(o,d)->magnifierContainsGaze(window.copy(mesh=magnifierMesh),o,d)}}==true,magnifierReady,mouseGestures.engaged || typingLocked || magnifierMoving,eyeRays.isNotEmpty())
             if(activeMagnifier!=magnified?.id){
                 magnified=activeMagnifier?.let{id->focusInfo?.windows?.firstOrNull{it.id==id}?.let{win->
                     val ref=store.viewerReference ?: displayHead.get() ?: Pose()
@@ -909,7 +914,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 Log.i("Floatdesk","focus input gate=${focusGate.ifEmpty{"open"}} thresholds=${workspace.pinchThresholds}")
                 lastFocusGate=focusGateKey
             }
-            val gestureBlocked=displayControlsOpen || choice.mode.reservesDesktop || palmPanel!=null
+            val gestureBlocked=magnifierMoving || displayControlsOpen || choice.mode.reservesDesktop || palmPanel!=null
             for(frame in pinchFrames.drain(handTracking.nowMs)) {
                 val samples=frame.samples.filterKeys { it in mouseSamples }.mapValues { (side,sample) ->
                     val basis=mouseSamples.getValue(side)
@@ -1079,7 +1084,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
         Subspace { desk() }
         val magnifierRoot=deskSpace.get()
         if(magnifierRoot!=null) {
-            WindowMagnifierPanel(session,magnifierRoot,magnified,connection,magnifierPinned,displayHead,
+            WindowMagnifierPanel(session,magnifierRoot,magnified,connection,magnifierPinned,magnifierViewer,magnifierGazeRays,{handTracking.unitsPerMeter},
                 {magnifierReady=true},{message->magnifierFailed=true;Log.w("Floatdesk",message)},
                 {side,uv->if(uv==null)magnifierHands.remove(side) else magnifierHands[side]=uv},
                 {uv->
@@ -1089,14 +1094,20 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                         val win=info?.windows?.firstOrNull{it.id==magnified?.id};val bounds=info?.bounds()
                         if(win!=null && bounds!=null)connection.movePointer(0,(win.x-bounds[0]+uv.first*win.width)/bounds[2],(win.y-bounds[1]+uv.second*win.height)/bounds[3])
                     }
-                },{magnifierMesh=it})
+                },{next->magnified=next;magnifierMesh=next.mesh},{moving,dragged->
+                    magnifierMoving=moving
+                    if(dragged){magnification.pin();magnifierPinned=magnification.pinned}
+                })
         }
-        if(typingLocked || magnifierPinned) displayHead.get()?.let{head->
+        if(typingLocked) displayHead.get()?.let{head->
             val units=handTracking.unitsPerMeter
             val statusPose=Pose(transformPoint(head,floatArrayOf(0f,-.14f*units,-.5f*units)),head.rotation)
-            Subspace { SpatialPanel(modifier=placedPanel(statusPose,.32f*units,.045f*units,density,pixelDensity)){
-                androidx.compose.foundation.layout.Box(Modifier.fillMaxSize().background(Color(0xCC152030)),contentAlignment=Alignment.Center){
-                    Text(listOfNotNull(if(magnifierPinned)"PINNED · tap to unpin" else null,if(typingLocked)"Typing · gaze focus locked" else null).joinToString("  ·  "),color=Color(0xFFFFD060),fontSize=15.sp)
+            Subspace { SpatialPanel(modifier=placedPanel(statusPose,.042f*units,.042f*units,density,pixelDensity)){
+                androidx.compose.foundation.Canvas(Modifier.fillMaxSize()){
+                    val amber=Color(0xFFFFCA55);val w=size.width;val h=size.height
+                    drawArc(amber,180f,180f,false,androidx.compose.ui.geometry.Offset(w*.28f,h*.12f),androidx.compose.ui.geometry.Size(w*.44f,h*.58f),style=androidx.compose.ui.graphics.drawscope.Stroke(w*.085f))
+                    drawRoundRect(amber,androidx.compose.ui.geometry.Offset(w*.19f,h*.40f),androidx.compose.ui.geometry.Size(w*.62f,h*.49f),androidx.compose.ui.geometry.CornerRadius(w*.08f))
+                    drawCircle(Color(0xFF26303E),w*.065f,androidx.compose.ui.geometry.Offset(w*.5f,h*.61f))
                 }
             }}
         }

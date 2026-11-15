@@ -217,3 +217,5 @@ Known checkpoint limitation: aiming and grab-preview beams can remain invisible 
 - Add optional independently captured focused-window magnification with dwell, travel grace and re-entry cooldown; harden custom-mesh submissions following a native XR renderer crash.
 
 - Match magnifier curvature to the desktop; add native tap pinning, direct dwell-based switching, blink-safe dismissal, central-view Reset and configurable typing protection. Split Workspace settings into compact pages and reuse magnifier rendering resources after a Filament command-buffer overflow.
+
+- Correct magnifier projection around the current binocular eye midpoint at its own fixed radius; share desktop view fitting, track the gaze projection centre, add native constrained grab movement, replace textual status cues with visuals and tighten the angular gaze-exit margin.

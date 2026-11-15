@@ -26,10 +26,10 @@ internal fun WorkspaceFile.restoreViewer(viewer:Pose):WorkspaceFile {
 
 /** Fit the complete desktop into a symmetric, inset portion of the current camera view. */
 internal fun fitDesktopInView(screens:List<MonitorPlacement>,viewer:Pose,horizontalHalfAngle:Float,
-                             verticalHalfAngle:Float,unitsPerMeter:Float,spherical:Boolean,centralView:Boolean=false):MutableList<MonitorPlacement> {
+                             verticalHalfAngle:Float,unitsPerMeter:Float,spherical:Boolean,centralView:Boolean=false,distanceM:Float=ViewLayers.DesktopDistanceM):MutableList<MonitorPlacement> {
     if(screens.isEmpty())return mutableListOf()
     val units=unitsPerMeter.takeIf{it.isFinite() && it>0f} ?: 1f
-    val distance=ViewLayers.DesktopDistanceM*units
+    val distance=distanceM*units
     fun angle(value:Float,fallback:Float)=((value.takeIf{it.isFinite() && it>.05f} ?: fallback)*.85f).coerceAtMost(1.2f)
     val focused=focusViewHalfAngles(horizontalHalfAngle,verticalHalfAngle)
     val horizontal=if(centralView)focused.first else angle(horizontalHalfAngle,Math.toRadians(35.0).toFloat())

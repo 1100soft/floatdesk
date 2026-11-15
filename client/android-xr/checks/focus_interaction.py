@@ -6,7 +6,7 @@ root=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
 def body(path):return '\n'.join(l for l in (root/path).read_text().splitlines() if not l.startswith(('import ','package ')))
 workspace=body('workspace/Workspace.kt');workspace=workspace[workspace.index('internal data class Pose'):workspace.index('internal class WorkspaceStore')]
 metadata=body('net/WorkspaceInfo.kt');metadata=metadata[:metadata.index('    companion object')]+'}\n'
-code='import kotlin.math.*\n'+body('MonitorMesh.kt')+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+body('workspace/WorkspacePlacement.kt')+metadata+body('WindowMagnification.kt')+''.join(re.search(r'internal fun '+name+r'\(.*?\n}',(root/'MainActivity.kt').read_text(),re.S).group(0) for name in ('transformPoint','rotateVector'))+r'''
+code='import kotlin.math.*\n'+body('MonitorMesh.kt')+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+re.search(r'internal fun deskLayout\(.*?\n}',(root/'workspace/Workspace.kt').read_text(),re.S).group(0)+body('workspace/WorkspacePlacement.kt')+metadata+body('WindowMagnification.kt')+''.join(re.search(r'internal fun '+name+r'\(.*?\n}',(root/'MainActivity.kt').read_text(),re.S).group(0) for name in ('transformPoint','rotateVector'))+r'''
 fun main() {
  val tap=NativeSurfaceTap()
  check(tap.update("LEFT","DOWN",.5f to .4f)==null)
@@ -26,6 +26,42 @@ fun main() {
    val point=transformPoint(zoom.pose,contact)
    val result=magnifierPoint(zoom,floatArrayOf(0f,0f,0f),point)!!
    check(abs(result.first-uv.first)<.002f && abs(result.second-uv.second)<.002f)
+ }
+
+ // Magnifier uses precisely the desktop's central fit at its own distance.
+ val base=deskLayout(listOf(Triple("Window",1600,900)))
+ val desktopFit=fitDesktopInView(base,Pose(),.6f,.5f,1f,true,centralView=true).single()
+ check(abs(zoom.width/desktopFit.physicalWidthM-MagnifierDistanceM/ViewLayers.DesktopDistanceM)<.00001f)
+ val limits=focusViewHalfAngles(.6f,.5f)
+ for(vertex in sphere.outline){val world=transformPoint(zoom.pose,vertex)
+   check(abs(atan2(world[0],-world[2]))<=limits.first+.00001f)
+   check(abs(atan2(world[1],-world[2]))<=limits.second+.00001f)
+ }
+ // Eye translation, head rotation, root scale and native depth changes cannot change radial distance.
+ for(units in listOf(.56f,1f,2f)){
+   val head=Pose(floatArrayOf(.15f,-.04f,.12f),floatArrayOf(0f,sin(.3f),0f,cos(.3f)))
+   val moved=magnifierGeometry(zoom,head,units,floatArrayOf(.4f,.1f,-3f))
+   val m=moved.mesh!!
+   for(j in m.positions.indices step 3){val world=transformPoint(moved.pose,m.positions.copyOfRange(j,j+3))
+     val r=sqrt((0..2).sumOf{val delta=world[it]-head.position[it];(delta*delta).toDouble()}).toFloat()
+     check(abs(r-MagnifierDistanceM*units)<.00001f)
+   }
+   check(moved.pose.rotation.contentEquals(head.rotation))
+   check(abs(moved.width/zoom.width-units)<.00001f)
+ }
+ // Gaze (rather than head-forward) chooses the exponential map's local center.
+ val gazePoint=sphere.project(floatArrayOf(zoom.width*.3f,zoom.height*.2f,0f))
+ val gazeWorld=transformPoint(zoom.pose,gazePoint)
+ val tracked=magnifierGeometry(zoom,Pose(),1f,gazeDirection=gazeWorld)
+ check(abs(tracked.mesh!!.focus!![0]-zoom.width*.3f)<.0001f)
+ check(abs(tracked.mesh!!.focus!![1]-zoom.height*.2f)<.0001f)
+ for(curved in listOf(false,true)){
+   val w=magnifiedWindow(42,1600,900,Pose(),.6f,.5f,1f,curved)
+   val edge=floatArrayOf(w.width*.5f,0f,0f)
+   val ray=transformPoint(w.pose,w.mesh?.project(edge) ?: edge)
+   fun outside(degrees:Double):FloatArray{val half=Math.toRadians(-degrees).toFloat()/2;return rotateVector(floatArrayOf(0f,sin(half),0f,cos(half)),ray[0],ray[1],ray[2])}
+   check(magnifierContainsGaze(w,floatArrayOf(0f,0f,0f),outside(1.0)))
+   check(!magnifierContainsGaze(w,floatArrayOf(0f,0f,0f),outside(3.5)))
  }
 
  val magnify=WindowMagnification()

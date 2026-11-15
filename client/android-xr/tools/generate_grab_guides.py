@@ -48,3 +48,6 @@ for name,color in [('cyan',[.15,.95,1,1]),('violet',[.68,.34,1,1])]:
         for col in range(16):
             a=row*17+col; b=a+17; tri.extend([a,b,a+1,a+1,b,b+1])
     write(name+'-point.glb',sphere,sphere,tri,color)
+
+# Exterior magnifier pin outline, sharing the existing unlit unit-box geometry.
+write('gold-beam.glb',vertices,normals,indices,[1,.65,.02,1])

@@ -32,3 +32,6 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-gaze-kwin-') as tmp:
     try:wm.wait(timeout=5)
     except subprocess.TimeoutExpired:os.killpg(wm.pid,signal.SIGKILL);wm.wait()
    x.terminate();x.wait(timeout=5)
+   # A private portal can leave a disconnected FUSE mount after its D-Bus exits.
+   # Unmount only this test's runtime path before TemporaryDirectory traverses it.
+   subprocess.run(['fusermount3','-u',str(p/'runtime/doc')],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False)

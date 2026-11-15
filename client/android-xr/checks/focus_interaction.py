@@ -49,12 +49,28 @@ fun main() {
    check(moved.pose.rotation.contentEquals(head.rotation))
    check(abs(moved.width/zoom.width-units)<.00001f)
  }
- // Gaze (rather than head-forward) chooses the exponential map's local center.
- val gazePoint=sphere.project(floatArrayOf(zoom.width*.3f,zoom.height*.2f,0f))
- val gazeWorld=transformPoint(zoom.pose,gazePoint)
- val tracked=magnifierGeometry(zoom,Pose(),1f,gazeDirection=gazeWorld)
- check(abs(tracked.mesh!!.focus!![0]-zoom.width*.3f)<.0001f)
- check(abs(tracked.mesh!!.focus!![1]-zoom.height*.2f)<.0001f)
+ // Head-relative pose and head-driven curvature reuse geometry through ordinary head motion.
+ val anchored=magnifierGeometry(zoom,Pose(),1f,floatArrayOf(.3f,.1f,-.85f))
+ val headMoved=Pose(floatArrayOf(.4f,.2f,.3f),floatArrayOf(0f,sin(.4f),0f,cos(.4f)))
+ val followed=magnifierGeometry(anchored,headMoved,1f)
+ check(followed.mesh===anchored.mesh)
+ check(magnifierGeometry(anchored,headMoved,1.000001f).mesh===anchored.mesh)
+ val offset=viewerInMonitor(followed.pose.position,headMoved.position,headMoved.rotation)
+ for(axis in 0..2)check(abs(offset[axis]-anchored.headOffset[axis]*MagnifierDistanceM)<.00001f)
+ val enlarged=magnifierGeometry(resizedMagnifier(zoom,1.5f),Pose(),1f)
+ check(abs(enlarged.width/zoom.width-1.5f)<.00001f && enlarged.sizeScale==1.5f)
+ check(magnifiedWindow(42,1600,900,Pose(),.6f,.5f,1f,true).sizeScale==1f)
+ for(point in magnifierPinOutline(zoom))check(zoom.mesh!!.unproject(point)==null)
+ val whole=WorkspaceInfo(listOf(DesktopOutput("screen",1000,1000,0,0,false,true,3,emptyList())),0,emptyList(),0,8,8000000,60,"",false,windowFocus=true,windows=listOf(DesktopWindow(42,0,0,1000,1000)))
+ val surface=MonitorPlacement("desk","desktop",Pose(floatArrayOf(0f,0f,-1.2f)),1.2f,1.2f,0f,1000,1000,60)
+ for(curved in listOf(false,true)){
+   val m=if(curved)MonitorMesh(1.2f,1.2f,floatArrayOf(0f,0f,1.2f),focus=floatArrayOf(0f,0f)) else null
+   check(inPlaceWindowRect(whole,42,surface,m,Pose(),.65f,.65f,1f,0f)!=null)
+   check(inPlaceWindowRect(whole,42,surface.copy(physicalWidthM=.3f,physicalHeightM=.3f),null,Pose(),.65f,.65f,1f,0f)==null)
+   check(inPlaceWindowRect(whole,42,surface.copy(pose=Pose(floatArrayOf(1f,0f,-1.2f))),m,Pose(),.65f,.65f,1f,0f)==null)
+   val occluded=whole.copy(windows=listOf(DesktopWindow(43,100,100,100,100))+whole.windows)
+   check(inPlaceWindowRect(occluded,42,surface,m,Pose(),.65f,.65f,1f,0f)==null)
+ }
  for(curved in listOf(false,true)){
    val w=magnifiedWindow(42,1600,900,Pose(),.6f,.5f,1f,curved)
    val edge=floatArrayOf(w.width*.5f,0f,0f)
@@ -75,6 +91,7 @@ fun main() {
  check(magnify.update(3000,true,false,43,false,true)==42L)
  check(magnify.update(3600,true,false,43,false,true)==43L) // Direct switch, no intermediate close.
  check(magnify.update(3700,true,false,42,true,true)==43L)
+ check(magnify.update(5500,true,false,42,false,true,hold=true)==43L && !magnify.pinned) // A grab holds presentation, never pins it.
  magnify.togglePin();check(magnify.pinned)
  check(magnify.update(6000,true,false,42,false,true)==43L)
  check(magnify.update(9000,true,false,42,false,true)==43L)

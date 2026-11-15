@@ -204,9 +204,9 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     val gazeStabilizer = remember { GazeStabilizer() }
     val gazeWindowFocus=remember{GazeWindowFocus()}
     val magnification=remember{WindowMagnification()}
+    var inPlaceWindow by remember { mutableStateOf<Long?>(null) }
     var magnified by remember { mutableStateOf<MagnifiedWindow?>(null) }
     val magnifierViewer=remember { AtomicReference<Pose?>(null) }
-    val magnifierGazeRays=remember { AtomicReference<List<Pair<FloatArray,FloatArray>>>(emptyList()) }
     var magnifierMoving by remember { mutableStateOf(false) }
     var magnifierPinned by remember { mutableStateOf(false) }
     var typingLocked by remember { mutableStateOf(false) }
@@ -272,7 +272,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     val displayHead=remember { AtomicReference<Pose?>(null) }
     val viewHalfAngles=remember {AtomicReference(floatArrayOf(Math.toRadians(35.0).toFloat(),Math.toRadians(30.0).toFloat()))}
     fun resetDesk() {
-        magnification.dismiss(SystemClock.uptimeMillis());magnified=null;connection.magnifierActive=false
+        magnification.dismiss(SystemClock.uptimeMillis());magnified=null;inPlaceWindow=null;connection.magnifierActive=false
         pendingFocusMonitor=null;focusFollowUntil=0
         grabs.values.forEach {it.cancel()};pointerControl.clear()
         manipulating=false;holdingFist=false;suppressFist=true
@@ -528,7 +528,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 Log.i("Floatdesk","eye resources refreshed count=${gazeEyes.size}")
             }
             if(!resumed) {
-                magnification.dismiss(SystemClock.uptimeMillis());magnified=null;connection.magnifierActive=false
+                magnification.dismiss(SystemClock.uptimeMillis());magnified=null;inPlaceWindow=null;connection.magnifierActive=false
                 sampledHands.set(emptyList())
                 if(inputWasResumed) {
                     pinchFrames.drain(SystemClock.uptimeMillis())
@@ -602,7 +602,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                     workspace=workspace.copy(viewerReference=Pose(recovery.first,recovery.second)).restoreViewer(reference)
                     grabs.values.forEach { it.cancel() };pointerControl.clear()
                     manipulating=false;suppressFist=true;followLock=null
-                    magnification.dismiss(handTracking.nowMs);magnified=null;connection.magnifierActive=false
+                    magnification.dismiss(handTracking.nowMs);magnified=null;inPlaceWindow=null;connection.magnifierActive=false
                     Log.w("Floatdesk","Recovered workspace after tracking discontinuity")
                 }
                 if(restoreViewerPending && !workspace.layouts[workspace.activeLayout].isNullOrEmpty()) {
@@ -675,7 +675,6 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 androidx.xr.runtime.math.Pose((perceived.translation + rightEye.translation) * 0.5f)
             } else perceived
             viewer?.takeIf { reliable }?.let { grips["VIEWER"] = deskPose(current, root, it).translation.toArray() }
-            magnifierGazeRays.set(eyeRays)
             displayHead.get()?.let{reference->if(reliable)magnifierViewer.set(Pose(grips["VIEWER"]?.copyOf() ?: reference.position,reference.rotation))}
             sampledHands.set(hands)
             val handStates=hands.map { (side,hand)->val state=hand.state.value;Triple(side,state,state.handJoints.toMap()) }
@@ -868,27 +867,37 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             if(autoFocusBlocked || !workspace.gazeToFocus)connection.cancelGazeFocus()
             val magnifyTarget=rawDesktopGazeTarget?.let{hit->connection.desktopPoint(hit.monitor,hit.u,hit.v)?.let{(u,v)->focusInfo?.hover(u,v)?.window?.windowId}}
             magnified?.takeIf{it.spherical!=workspace.sphericalWarp}?.let{panel->
-                val ref=store.viewerReference ?: displayHead.get() ?: Pose()
-                val eye=viewerInMonitor(ref.position,panel.pose.position,panel.pose.rotation)
-                magnified=panel.copy(spherical=workspace.sphericalWarp,mesh=if(workspace.sphericalWarp)MonitorMesh(panel.width,panel.height,eye,columns=32,rows=20,focus=floatArrayOf(0f,0f)) else null)
+                val ref=magnifierViewer.get() ?: store.viewerReference ?: displayHead.get() ?: Pose()
+                magnified=magnifierGeometry(panel.copy(spherical=workspace.sphericalWarp,mesh=null),ref,unitsPerMeter)
                 magnifierMesh=magnified?.mesh;magnifierReady=false;magnification.refresh(handTracking.nowMs)
             }
             magnified?.let{panel->focusInfo?.windows?.firstOrNull{it.id==panel.id}?.takeIf{it.width!=panel.sourceWidth || it.height!=panel.sourceHeight}?.let{win->
                 val back=rotateVector(panel.pose.rotation,0f,0f,.85f*unitsPerMeter)
                 val origin=Pose(FloatArray(3){panel.pose.position[it]+back[it]},panel.pose.rotation)
-                magnified=magnifiedWindow(win.id,win.width,win.height,origin,viewHalfAngles.get()[0],viewHalfAngles.get()[1],unitsPerMeter,workspace.sphericalWarp)
+                val fitted=magnifiedWindow(win.id,win.width,win.height,origin,viewHalfAngles.get()[0],viewHalfAngles.get()[1],unitsPerMeter,workspace.sphericalWarp)
+                magnified=magnifierGeometry(fitted.copy(headOffset=panel.headOffset,width=fitted.width*panel.sizeScale,height=fitted.height*panel.sizeScale,sizeScale=panel.sizeScale,mesh=null),magnifierViewer.get() ?: origin,unitsPerMeter)
                 magnifierMesh=magnified?.mesh;magnifierReady=false;magnification.refresh(handTracking.nowMs)
             }}
-            val magnifierChanged=magnified?.let{panel->focusInfo?.windows?.none{it.id==panel.id} ?: true}==true
-            val magnifyBlocked=(typingLocked && magnified==null) || magnifierChanged || (magnified==null && (choice.mode.reservesDesktop || mouseGestures.engaged)) || !resumed || (!magnification.pinned && (!reliable || displayControlsOpen || palmPanel!=null || monitorGrab || nativeManipulation)) || magnifierFailed || focusInfo?.windowMagnify!=true
+            fun eligibleInPlace(id:Long):FocusRect? {
+                val info=focusInfo ?: return null;val placement=screen ?: return null
+                val viewer=magnifierViewer.get() ?: return null;val angles=viewHalfAngles.get()
+                return inPlaceWindowRect(info,id,placement,pointerControl.meshes[0],viewer,angles[0],angles[1],unitsPerMeter,workspace.screenSpacing)
+            }
+            if(inPlaceWindow?.let{eligibleInPlace(it)==null}==true){magnification.dismiss(handTracking.nowMs);inPlaceWindow=null;magnifierReady=false}
+            val currentMagnifier=magnified?.id ?: inPlaceWindow
+            val magnifierChanged=currentMagnifier?.let{id->focusInfo?.windows?.none{it.id==id} ?: true}==true
+            val magnifyBlocked=(typingLocked && currentMagnifier==null) || magnifierChanged || (currentMagnifier==null && (choice.mode.reservesDesktop || mouseGestures.engaged)) || !resumed || (!magnification.pinned && (!reliable || displayControlsOpen || palmPanel!=null || monitorGrab || nativeManipulation)) || magnifierFailed || focusInfo?.windowMagnify!=true
+            val insideMagnifier=if(inPlaceWindow!=null)magnifyTarget==inPlaceWindow else magnified?.let{window->eyeRays.any{(o,d)->magnifierContainsGaze(window.copy(mesh=magnifierMesh),o,d)}}==true
             val activeMagnifier=magnification.update(handTracking.nowMs,workspace.magnifyWindow,magnifyBlocked,magnifyTarget,
-                magnified?.let{window->eyeRays.any{(o,d)->magnifierContainsGaze(window.copy(mesh=magnifierMesh),o,d)}}==true,magnifierReady,mouseGestures.engaged || typingLocked || magnifierMoving,eyeRays.isNotEmpty())
-            if(activeMagnifier!=magnified?.id){
-                magnified=activeMagnifier?.let{id->focusInfo?.windows?.firstOrNull{it.id==id}?.let{win->
-                    val ref=store.viewerReference ?: displayHead.get() ?: Pose()
-                    val viewer=Pose(handTracking.points["VIEWER"]?.copyOf() ?: ref.position.copyOf(),ref.rotation.copyOf())
+                insideMagnifier,magnifierReady,mouseGestures.engaged || typingLocked || magnifierMoving,eyeRays.isNotEmpty())
+            if(activeMagnifier!=currentMagnifier){
+                magnified=null;inPlaceWindow=null
+                activeMagnifier?.let{id->focusInfo?.windows?.firstOrNull{it.id==id}?.let{win->
                     connection.requestGazeFocus(id)
-                    magnifiedWindow(id,win.width,win.height,viewer,viewHalfAngles.get()[0],viewHalfAngles.get()[1],unitsPerMeter,workspace.sphericalWarp)
+                    if(eligibleInPlace(id)!=null)inPlaceWindow=id else {
+                        val ref=magnifierViewer.get() ?: store.viewerReference ?: displayHead.get() ?: Pose()
+                        magnified=magnifiedWindow(id,win.width,win.height,ref,viewHalfAngles.get()[0],viewHalfAngles.get()[1],unitsPerMeter,workspace.sphericalWarp)
+                    }
                 }}
                 magnifierReady=false;magnifierMesh=magnified?.mesh;magnifierHands.clear()
             }
@@ -1082,9 +1091,10 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             )
         }
         Subspace { desk() }
+        InPlaceWindowDetail(connection,inPlaceWindow,{magnifierReady=true},{message->magnifierFailed=true;Log.w("Floatdesk",message)})
         val magnifierRoot=deskSpace.get()
         if(magnifierRoot!=null) {
-            WindowMagnifierPanel(session,magnifierRoot,magnified,connection,magnifierPinned,magnifierViewer,magnifierGazeRays,{handTracking.unitsPerMeter},
+            WindowMagnifierPanel(session,magnifierRoot,magnified,connection,magnifierPinned,magnifierViewer,{handTracking.unitsPerMeter},
                 {magnifierReady=true},{message->magnifierFailed=true;Log.w("Floatdesk",message)},
                 {side,uv->if(uv==null)magnifierHands.remove(side) else magnifierHands[side]=uv},
                 {uv->
@@ -1094,10 +1104,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                         val win=info?.windows?.firstOrNull{it.id==magnified?.id};val bounds=info?.bounds()
                         if(win!=null && bounds!=null)connection.movePointer(0,(win.x-bounds[0]+uv.first*win.width)/bounds[2],(win.y-bounds[1]+uv.second*win.height)/bounds[3])
                     }
-                },{next->magnified=next;magnifierMesh=next.mesh},{moving,dragged->
-                    magnifierMoving=moving
-                    if(dragged){magnification.pin();magnifierPinned=magnification.pinned}
-                })
+                },{next->magnified=next;magnifierMesh=next.mesh},{moving->magnifierMoving=moving})
         }
         if(typingLocked) displayHead.get()?.let{head->
             val units=handTracking.unitsPerMeter
@@ -1211,7 +1218,7 @@ private fun DeskContent(
                     // the user starts pinching can cancel its input acquisition.
                     connection.presentation().let {warp.presentation(it.rects,it.spacing)}
                     val sourceSize=connection.workspaceInfo.value?.bounds()
-                    if(warp.qualityResolution(if(file.experimentalViewedDetail && connection.hasViewedDetail() && sourceSize!=null)qualityOutputSize(sourceSize[2],sourceSize[3],connection.qualityOutputLimit()) else null))outputResizePending=true
+                    if(warp.qualityResolution(if((file.experimentalViewedDetail && connection.hasViewedDetail() || connection.hasWindowDetail()) && sourceSize!=null)qualityOutputSize(sourceSize[2],sourceSize[3],connection.qualityOutputLimit()) else null))outputResizePending=true
                     val projectionNow=SystemClock.uptimeMillis()
                     if(!hands.engaged || projectionNow-grabProjectionAt>=100) {
                         warp.update(current, root, handTracking.points["VIEWER"] ?: handTracking.points["HEAD"], screen, file.sphericalWarp,

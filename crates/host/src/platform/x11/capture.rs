@@ -818,6 +818,24 @@ mod scaled_checks {
             &[0, 0, 255],
             "must capture window, not blue occluder"
         );
+        let root_source = MonitorRect {
+            index: 0,
+            x: 100,
+            y: 100,
+            width: 128,
+            height: 96,
+        };
+        let root_capture = X11Capture::workspace(root_source, 128, 96).unwrap();
+        let visible = root_capture
+            .atlas_padded(&[(root_source, 0, 0, 128, 96)], 0)
+            .unwrap();
+        let offset = 48 * visible.stride as usize + 64 * 4;
+        assert_eq!(
+            &visible.bgra[offset..offset + 3],
+            &[255, 0, 0],
+            "in-place capture must preserve the visible blue occluder/popups"
+        );
+        drop(root_capture);
         drop(capture);
         link.conn.free_gc(gc).unwrap();
         link.conn.destroy_window(cover).unwrap();

@@ -238,10 +238,20 @@ internal class DeskConnection(
 
     }
 
+    fun windowRenderer()=decoders[0]?.windowRenderer()
+    fun hasWindowDetail()=decoders[0]?.windowRenderer()?.hasWindowDetail()==true
     @Volatile var magnifierActive=false
-    fun openWindowVideo(id:Long,video:dev.floatdesk.client.media.VideoCompositor,failed:(String)->Unit):WindowVideo?{
+    fun openWindowVideo(id:Long,video:dev.floatdesk.client.media.VideoCompositor,failed:(String)->Unit,output:WindowDestination?=null):WindowVideo?{
         val remote=pendingRemote ?: return null
-        return WindowVideo(java.net.InetSocketAddress(remote.address,remote.port+2),detailSession,id,detailTargetFps,video,failed)
+        return WindowVideo(java.net.InetSocketAddress(remote.address,remote.port+2),detailSession,id,detailTargetFps,video,failed,output?.surface ?: video.input,if(output==null)null else {pts,meta->
+            val bounds=workspaceInfo.value?.bounds()
+            val win=workspaceInfo.value?.windows?.firstOrNull{it.id==id}
+            if(bounds!=null && win!=null){
+                val x=meta.optInt("sourceX",win.x);val y=meta.optInt("sourceY",win.y)
+                val w=meta.optInt("sourceWidth",win.width);val h=meta.optInt("sourceHeight",win.height)
+                output.frame(pts,FocusRect((x-bounds[0]).toFloat()/bounds[2],(y-bounds[1]).toFloat()/bounds[3],(x+w-bounds[0]).toFloat()/bounds[2],(y+h-bounds[1]).toFloat()/bounds[3]))
+            }
+        },output!=null)
     }
     @Volatile private var lastTypingAt=0L
     private var lastTypingPoll=0L

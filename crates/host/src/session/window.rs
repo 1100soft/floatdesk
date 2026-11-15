@@ -2,6 +2,7 @@
 use super::*;
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use x11rb::protocol::xproto::ConnectionExt as _;
 pub(super) fn start(
     shared: Arc<Shared>,
     address: SocketAddr,
@@ -39,6 +40,8 @@ pub(super) fn start(
             let _ = socket.set_write_timeout(Some(Duration::from_millis(700)));
             let _ = socket.set_nodelay(true);
             let result = (|| -> Result<()> {
+                let position_link = crate::platform::x11::X11Link::open()?;
+                let mut root_mode = false;
                 let mut capture = None;
                 let mut encoder = None;
                 let mut native = (0, 0);
@@ -71,10 +74,27 @@ pub(super) fn start(
                         .and_then(|v| u32::try_from(v).ok())
                         .ok_or_else(|| Error::Msg("Missing window".into()))?;
                     let (_, windows) = crate::platform::x11::windows::observed_catalogue();
-                    let window = windows
+                    let _window = windows
                         .iter()
                         .find(|w| w.id == id)
                         .ok_or_else(|| Error::Msg("Window is no longer visible".into()))?;
+                    let position = position_link
+                        .conn
+                        .translate_coordinates(id, position_link.root, 0, 0)
+                        .map_err(Error::x11)?
+                        .reply()
+                        .map_err(Error::x11)?;
+                    let geometry = position_link
+                        .conn
+                        .get_geometry(id)
+                        .map_err(Error::x11)?
+                        .reply()
+                        .map_err(Error::x11)?;
+                    let (source_x, source_y) =
+                        (i32::from(position.dst_x), i32::from(position.dst_y));
+                    let (source_width, source_height) =
+                        (u32::from(geometry.width), u32::from(geometry.height));
+                    let root_capture = request["rootCapture"].as_bool().unwrap_or(false);
                     let target = request["fps"]
                         .as_u64()
                         .unwrap_or(30)
@@ -86,18 +106,34 @@ pub(super) fn start(
                     }
                     last = Instant::now();
                     let scale = 1f64
-                        .min(2048. / window.width as f64)
-                        .min(2048. / window.height as f64)
-                        .min((2_097_152. / (window.width as f64 * window.height as f64)).sqrt());
-                    let w = ((window.width as f64 * scale) as u32 / 2 * 2).max(32) as u16;
-                    let h = ((window.height as f64 * scale) as u32 / 2 * 2).max(32) as u16;
+                        .min(2048. / source_width as f64)
+                        .min(2048. / source_height as f64)
+                        .min((2_097_152. / (source_width as f64 * source_height as f64)).sqrt());
+                    let w = ((source_width as f64 * scale) as u32 / 2 * 2).max(32) as u16;
+                    let h = ((source_height as f64 * scale) as u32 / 2 * 2).max(32) as u16;
                     if capture.is_none()
-                        || native != (window.width, window.height)
+                        || native != (source_width, source_height)
+                        || root_mode != root_capture
                         || current_id != id
                     {
                         encoder.take();
                         capture.take();
-                        capture = Some(X11Capture::window(id, w, h)?);
+                        capture = Some(if root_capture {
+                            X11Capture::workspace(
+                                MonitorRect {
+                                    index: 0,
+                                    x: source_x,
+                                    y: source_y,
+                                    width: source_width,
+                                    height: source_height,
+                                },
+                                w,
+                                h,
+                            )?
+                        } else {
+                            X11Capture::window(id, w, h)?
+                        });
+                        root_mode = root_capture;
                         let config = crate::core::EncoderConfig {
                             width: w.into(),
                             height: h.into(),
@@ -113,15 +149,15 @@ pub(super) fn start(
                             config,
                             shared.encoder_quality.load(Ordering::Relaxed),
                         )?);
-                        native = (window.width, window.height);
+                        native = (source_width, source_height);
                         current_id = id;
                     }
                     let source = MonitorRect {
                         index: 0,
-                        x: 0,
-                        y: 0,
-                        width: window.width,
-                        height: window.height,
+                        x: if root_capture { source_x } else { 0 },
+                        y: if root_capture { source_y } else { 0 },
+                        width: source_width,
+                        height: source_height,
                     };
                     let mut image = capture
                         .as_ref()
@@ -132,10 +168,10 @@ pub(super) fn start(
                             &mut image,
                             MonitorRect {
                                 index: 0,
-                                x: window.x,
-                                y: window.y,
-                                width: window.width,
-                                height: window.height,
+                                x: source_x,
+                                y: source_y,
+                                width: source_width,
+                                height: source_height,
                             },
                             &cursor,
                             (0, 0, w.into(), h.into()),
@@ -151,7 +187,7 @@ pub(super) fn start(
                         return Err(Error::Msg("Window frame too large".into()));
                     }
                     frame += 1;
-                    let header=serde_json::json!({"type":"window-h264-v1","windowId":id,"frame":frame,"width":w,"height":h,"bytes":encoded.bytes.len()}).to_string();
+                    let header=serde_json::json!({"type":"window-h264-v1","windowId":id,"frame":frame,"width":w,"height":h,"sourceX":source_x,"sourceY":source_y,"sourceWidth":source_width,"sourceHeight":source_height,"bytes":encoded.bytes.len()}).to_string();
                     socket.write_all(&(header.len() as u32).to_be_bytes())?;
                     socket.write_all(header.as_bytes())?;
                     socket.write_all(&encoded.bytes)?;

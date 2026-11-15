@@ -219,3 +219,5 @@ Known checkpoint limitation: aiming and grab-preview beams can remain invisible 
 - Match magnifier curvature to the desktop; add native tap pinning, direct dwell-based switching, blink-safe dismissal, central-view Reset and configurable typing protection. Split Workspace settings into compact pages and reuse magnifier rendering resources after a Filament command-buffer overflow.
 
 - Correct magnifier projection around the current binocular eye midpoint at its own fixed radius; share desktop view fitting, track the gaze projection centre, add native constrained grab movement, replace textual status cues with visuals and tighten the angular gaze-exit margin.
+
+- Separate magnifier grab/resize from tap-to-pin; follow head-relative placement and head-driven curvature, reset resize per activation, and draw the pin outline outside content. Sharpen already-large fully visible windows in the existing compositor instead of opening a magnifier. Remove ordinary head-motion mesh replacement after further native crash reports.

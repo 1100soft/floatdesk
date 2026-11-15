@@ -11,8 +11,10 @@ import java.nio.ByteBuffer
 import org.json.JSONObject
 
 /** One bounded window decoder; its opaque quad uses the same compositor as normal video. */
-internal class WindowVideo(private val host:InetSocketAddress,private val session:Long,private val id:Long,private val fps:Int,
-    private val video:VideoCompositor,private val failed:(String)->Unit):AutoCloseable{
+internal data class WindowDestination(val surface:android.view.Surface,val frame:(Long,dev.floatdesk.client.FocusRect)->Unit,val clear:()->Unit)
+
+internal class WindowVideo @JvmOverloads constructor(private val host:InetSocketAddress,private val session:Long,private val id:Long,private val fps:Int,
+    private val video:VideoCompositor,private val failed:(String)->Unit,private val destination:android.view.Surface=video.input,private val beforeFrame:((Long,JSONObject)->Unit)?=null,private val rootCapture:Boolean=false):AutoCloseable{
     @Volatile private var running=true
     @Volatile private var socket:Socket?=null
     private val thread=Thread({
@@ -22,7 +24,7 @@ internal class WindowVideo(private val host:InetSocketAddress,private val sessio
             val input=DataInputStream(connection.getInputStream());val output=DataOutputStream(connection.getOutputStream())
             fun drain(c:MediaCodec){val info=MediaCodec.BufferInfo();while(true){val n=c.dequeueOutputBuffer(info,0);if(n<0)return;c.releaseOutputBuffer(n,true)}}
             while(running){
-                val bytes=JSONObject().put("sessionId",session).put("windowId",id).put("fps",fps).toString().toByteArray()
+                val bytes=JSONObject().put("sessionId",session).put("windowId",id).put("fps",fps).put("rootCapture",rootCapture).toString().toByteArray()
                 output.writeInt(bytes.size);output.write(bytes);output.flush()
                 val n=input.readInt();require(n in 1..4096);val header=ByteArray(n);input.readFully(header);val meta=JSONObject(String(header))
                 require(meta.getLong("windowId")==id);val w=meta.getInt("width");val h=meta.getInt("height");require(w in 32..2048 && h in 32..2048 && w.toLong()*h<=2_100_000)
@@ -32,12 +34,13 @@ internal class WindowVideo(private val host:InetSocketAddress,private val sessio
                     val csd=ByteArrayOutputStream();splitAnnexB(data).filter{nalType(it) in 7..8}.forEach{csd.write(byteArrayOf(0,0,0,1));csd.write(it)}
                     require(csd.size()>0)
                     val format=MediaFormat.createVideoFormat("video/avc",w,h);format.setByteBuffer("csd-0",ByteBuffer.wrap(csd.toByteArray()));format.setInteger(MediaFormat.KEY_LOW_LATENCY,1);format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE,8*1024*1024)
-                    codec=MediaCodec.createDecoderByType("video/avc").also{it.configure(format,video.input,null,0);it.start()}
+                    codec=MediaCodec.createDecoderByType("video/avc").also{it.configure(format,destination,null,0);it.start()}
                 }
                 val c=codec!!;drain(c);var slot=c.dequeueInputBuffer(10000);val until=SystemClock.uptimeMillis()+500
                 while(slot<0 && running && SystemClock.uptimeMillis()<until){drain(c);slot=c.dequeueInputBuffer(10000)}
                 check(slot>=0);val b=c.getInputBuffer(slot)!!;require(b.capacity()>=data.size);b.clear();b.put(data)
-                c.queueInputBuffer(slot,0,data.size,System.nanoTime()/1000,if(isKeyframe(data))MediaCodec.BUFFER_FLAG_KEY_FRAME else 0);drain(c)
+                val pts=System.nanoTime()/1000;beforeFrame?.invoke(pts,meta)
+                c.queueInputBuffer(slot,0,data.size,pts,if(isKeyframe(data))MediaCodec.BUFFER_FLAG_KEY_FRAME else 0);drain(c)
             }
         }}catch(e:Exception){if(running){android.util.Log.w("Floatdesk","Window stream failed",e);failed(e.message?.takeIf{it.isNotBlank()} ?: "Window magnification stopped")}}
         finally{socket=null;runCatching{codec?.stop()};runCatching{codec?.release()}}

@@ -6,7 +6,7 @@ root=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
 def body(path):return '\n'.join(l for l in (root/path).read_text().splitlines() if not l.startswith(('import ','package ')))
 workspace=body('workspace/Workspace.kt');workspace=workspace[workspace.index('internal data class Pose'):workspace.index('internal class WorkspaceStore')]
 metadata=body('net/WorkspaceInfo.kt');metadata=metadata[:metadata.index('    companion object')]+'}\n'
-code='import kotlin.math.*\n'+body('MonitorMesh.kt')+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+re.search(r'internal fun deskLayout\(.*?\n}',(root/'workspace/Workspace.kt').read_text(),re.S).group(0)+body('workspace/WorkspacePlacement.kt')+metadata+body('WindowMagnification.kt')+''.join(re.search(r'internal fun '+name+r'\(.*?\n}',(root/'MainActivity.kt').read_text(),re.S).group(0) for name in ('transformPoint','rotateVector'))+r'''
+code='import kotlin.math.*\n'+body('MonitorMesh.kt')+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+re.search(r'internal fun deskLayout\(.*?\n}',(root/'workspace/Workspace.kt').read_text(),re.S).group(0)+body('workspace/WorkspacePlacement.kt')+metadata+body('WindowMagnification.kt')+body('VideoGeometry.kt')+''.join(re.search(r'internal fun '+name+r'\(.*?\n}',(root/'MainActivity.kt').read_text(),re.S).group(0) for name in ('transformPoint','rotateVector'))+r'''
 fun main() {
  val tap=NativeSurfaceTap()
  check(tap.update("LEFT","DOWN",.5f to .4f)==null)
@@ -61,6 +61,23 @@ fun main() {
  check(abs(enlarged.width/zoom.width-1.5f)<.00001f && enlarged.sizeScale==1.5f)
  check(magnifiedWindow(42,1600,900,Pose(),.6f,.5f,1f,true).sizeScale==1f)
  for(point in magnifierPinOutline(zoom))check(zoom.mesh!!.unproject(point)==null)
+ // The exterior pin bezel must preserve every content vertex and triangle exactly.
+ val framed=framedMagnifierGeometry(zoom)
+ check(framed.positions.copyOfRange(0,sphere.positions.size).contentEquals(sphere.positions))
+ check(framed.indices.copyOfRange(0,sphere.indices.size).contentEquals(sphere.indices))
+ check(framed.positions.size>sphere.positions.size)
+ val deskAnchor=MonitorPlacement("desk","desktop",Pose(floatArrayOf(.2f,.1f,-1.2f)),1.2f,.7f,0f,1600,900,60)
+ val record=saveFixedMagnifier("pane",zoom,deskAnchor,1f)
+ val restored=fixedMagnifier(record,deskAnchor,DesktopWindow(42,0,0,1600,900),Pose(),1f,true)
+ for(axis in 0..2)check(abs(restored.pose.position[axis]-zoom.pose.position[axis])<.00001f)
+ check(abs(restored.width-zoom.width)<.00001f)
+ val shifted=fixedMagnifier(record,deskAnchor.copy(pose=Pose(floatArrayOf(.7f,.1f,-1.2f))),DesktopWindow(42,0,0,1600,900),Pose(),1f,true)
+ check(abs(shifted.pose.position[0]-restored.pose.position[0]-.5f)<.00001f)
+ val held=WindowMagnification()
+ held.update(1,true,false,42,false,false,retain=true)
+ check(held.update(601,true,false,42,false,false,retain=true)==42L)
+ check(held.update(1000,true,false,null,false,true,retain=true)==42L)
+ check(held.update(5000,true,false,null,false,true,retain=true)==42L)
  val whole=WorkspaceInfo(listOf(DesktopOutput("screen",1000,1000,0,0,false,true,3,emptyList())),0,emptyList(),0,8,8000000,60,"",false,windowFocus=true,windows=listOf(DesktopWindow(42,0,0,1000,1000)))
  val surface=MonitorPlacement("desk","desktop",Pose(floatArrayOf(0f,0f,-1.2f)),1.2f,1.2f,0f,1000,1000,60)
  for(curved in listOf(false,true)){

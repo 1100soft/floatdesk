@@ -16,7 +16,7 @@ internal fun InPlaceWindowDetail(connection:DeskConnection,id:Long?,onReady:()->
             val main=android.os.Handler(android.os.Looper.getMainLooper())
             var live=true
             val output=try{video.windowDestination{main.post{if(live)ready.value()}}}catch(e:Exception){failed.value(e.message ?: "Window detail unavailable");return@LaunchedEffect}
-            val stream=connection.openWindowVideo(id,video,{message->main.post{if(live)failed.value(message)}},output)
+            val stream=connection.windowCaptures.attach(id,output.surface,{if(live)ready.value()},{message->if(live)failed.value(message)},output)
             try{
                 while(isActive && connection.windowRenderer()===video)delay(100)
             }finally{live=false;stream?.close();output.clear()}

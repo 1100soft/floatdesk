@@ -29,7 +29,7 @@ import androidx.compose.ui.unit.sp
 import dev.floatdesk.client.net.DeskConnection
 
 @Composable
-internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpacing:(Float)->Unit,onSpacingFinished:()->Unit,onClose:()->Unit,pinches:PinchThresholds,onPinches:(PinchThresholds)->Unit,viewedDetail:Boolean,onViewedDetail:(Boolean)->Unit,viewDebug:Boolean,onViewDebug:(Boolean)->Unit,quality:dev.floatdesk.client.workspace.WorkspaceFile,onQuality:(dev.floatdesk.client.workspace.WorkspaceFile)->Unit,onPage:(String)->Unit={}) {
+internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpacing:(Float)->Unit,onSpacingFinished:()->Unit,onClose:()->Unit,pinches:PinchThresholds,onPinches:(PinchThresholds)->Unit,viewedDetail:Boolean,onViewedDetail:(Boolean)->Unit,viewDebug:Boolean,onViewDebug:(Boolean)->Unit,quality:dev.floatdesk.client.workspace.WorkspaceFile,onQuality:(dev.floatdesk.client.workspace.WorkspaceFile)->Unit,onPage:(String)->Unit={},onAddFixed:()->Unit={}) {
     val monitors by connection.monitors
     val state by connection.displayState
     val busy by connection.displayBusy
@@ -79,6 +79,10 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
                 androidx.compose.material3.Switch(checked=quality.magnifyWindow,enabled=info?.windowMagnify==true || quality.magnifyWindow,onCheckedChange={onQuality(quality.copy(magnifyWindow=it))})
                 Text("Magnify focused window",color=Color.White)
             }
+            Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){
+                listOf("floating" to "Floating","fixed" to "Fixed").forEach{(mode,label)->Button(onClick={onQuality(quality.copy(magnifierMode=mode))}){Text(if(quality.magnifierMode==mode)"✓ $label" else label)}}
+            }
+            if(quality.magnifierMode=="fixed")Button(onClick=onAddFixed){Text("Add fixed magnifier")}
             if(quality.gazeToFocus && connection.gazeFocusError.value.isNotEmpty())Text(connection.gazeFocusError.value,color=Color(0xFFFFB4AB),fontSize=12.sp)
             var quiet by remember(quality.typingQuietMs){mutableStateOf((quality.typingQuietMs/1000f).toString())}
             Row(horizontalArrangement=Arrangement.spacedBy(8.dp),verticalAlignment=Alignment.CenterVertically){

@@ -835,6 +835,13 @@ mod scaled_checks {
             &[255, 0, 0],
             "in-place capture must preserve the visible blue occluder/popups"
         );
+        let masks = crate::platform::x11::windows::occluders(&link, window).unwrap();
+        assert!(
+            masks
+                .iter()
+                .any(|r| r[0] <= 164 && r[1] <= 148 && r[0] + r[2] > 164 && r[1] + r[3] > 148),
+            "Root occluder must be excluded from the shared desktop patch"
+        );
         drop(root_capture);
         drop(capture);
         link.conn.free_gc(gc).unwrap();

@@ -11,7 +11,7 @@ import java.nio.ByteBuffer
 import org.json.JSONObject
 
 /** One bounded window decoder; its opaque quad uses the same compositor as normal video. */
-internal data class WindowDestination(val surface:android.view.Surface,val frame:(Long,dev.floatdesk.client.FocusRect)->Unit,val clear:()->Unit)
+internal data class WindowDestination(val surface:android.view.Surface,val frame:(Long,dev.floatdesk.client.FocusRect)->Unit,val clear:()->Unit,val size:(Int,Int)->Unit={_,_->},val mask:(Long,FloatArray)->Unit={_,_->})
 
 internal class WindowVideo @JvmOverloads constructor(private val host:InetSocketAddress,private val session:Long,private val id:Long,private val fps:Int,
     private val video:VideoCompositor,private val failed:(String)->Unit,private val destination:android.view.Surface=video.input,private val beforeFrame:((Long,JSONObject)->Unit)?=null,private val rootCapture:Boolean=false):AutoCloseable{

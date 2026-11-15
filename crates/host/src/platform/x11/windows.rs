@@ -620,3 +620,96 @@ mod tests {
         }
     }
 }
+
+/// Rectangles above the client's top-level frame, including unmanaged menus.
+/// No names/content are read. Fullscreen unnamed redirect windows are compositor overlays.
+pub fn occluders(link: &X11Link, client: u32) -> Result<Vec<[i32; 4]>> {
+    let mut frame = client;
+    for _ in 0..12 {
+        let tree = link
+            .conn
+            .query_tree(frame)
+            .map_err(Error::x11)?
+            .reply()
+            .map_err(Error::x11)?;
+        if tree.parent == link.root {
+            break;
+        }
+        if tree.parent == 0 {
+            break;
+        }
+        frame = tree.parent;
+    }
+    let tree = link
+        .conn
+        .query_tree(link.root)
+        .map_err(Error::x11)?
+        .reply()
+        .map_err(Error::x11)?;
+    let Some(index) = tree.children.iter().position(|w| *w == frame) else {
+        return Ok(Vec::new());
+    };
+    let screen = &link.conn.setup().roots[link.screen];
+    let mut result = Vec::new();
+    for id in tree.children.iter().skip(index + 1) {
+        let entry = (|| -> Result<Option<[i32; 4]>> {
+            let attrs = link
+                .conn
+                .get_window_attributes(*id)
+                .map_err(Error::x11)?
+                .reply()
+                .map_err(Error::x11)?;
+            if attrs.map_state != MapState::VIEWABLE
+                || attrs.class != x11rb::protocol::xproto::WindowClass::INPUT_OUTPUT
+            {
+                return Ok(None);
+            }
+            let g = link
+                .conn
+                .get_geometry(*id)
+                .map_err(Error::x11)?
+                .reply()
+                .map_err(Error::x11)?;
+            if attrs.override_redirect
+                && g.width >= screen.width_in_pixels
+                && g.height >= screen.height_in_pixels
+            {
+                let types = link
+                    .conn
+                    .get_property(
+                        false,
+                        *id,
+                        atom(link, b"_NET_WM_WINDOW_TYPE")?,
+                        AtomEnum::ATOM,
+                        0,
+                        16,
+                    )
+                    .map_err(Error::x11)?
+                    .reply()
+                    .map_err(Error::x11)?;
+                if types.value.is_empty() {
+                    return Ok(None);
+                }
+            }
+            let p = link
+                .conn
+                .translate_coordinates(*id, link.root, 0, 0)
+                .map_err(Error::x11)?
+                .reply()
+                .map_err(Error::x11)?;
+            Ok(Some([
+                p.dst_x.into(),
+                p.dst_y.into(),
+                g.width.into(),
+                g.height.into(),
+            ]))
+        })();
+        if let Ok(Some(rect)) = entry {
+            result.push(rect)
+        }
+        if result.len() == 16 {
+            break;
+        }
+    }
+    Ok(result)
+}

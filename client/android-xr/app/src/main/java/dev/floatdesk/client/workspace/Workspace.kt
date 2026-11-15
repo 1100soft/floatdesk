@@ -36,6 +36,8 @@ internal data class PanelPlacement(
     val heightM: Float = 0.48f,
 )
 
+internal data class FixedMagnifierPlacement(val id:String,val pose:Pose,val widthM:Float,val heightM:Float)
+
 internal data class WorkspaceFile(
     val schemaVersion: Int = 1,
     val activeLayout: String = "Desk",
@@ -50,6 +52,8 @@ internal data class WorkspaceFile(
     val focusMode:Boolean=false,
     val gazeToFocus:Boolean=false,
     val magnifyWindow:Boolean=false,
+    val magnifierMode:String="floating",
+    val fixedMagnifiers:List<FixedMagnifierPlacement> = emptyList(),
     val typingQuietMs:Long=1000,
     val experimentalViewedDetail:Boolean=false,
     val viewDetailDebug:Boolean=true,
@@ -150,6 +154,8 @@ private fun encode(workspace: WorkspaceFile): JSONObject {
         .put("spherical_warp", workspace.sphericalWarp)
         .put("eye_aiming", workspace.eyeAiming)
         .put("focus_mode",workspace.focusMode).put("gaze_to_focus",workspace.gazeToFocus).put("magnify_window",workspace.magnifyWindow).put("typing_quiet_ms",workspace.typingQuietMs)
+        .put("magnifier_mode",workspace.magnifierMode)
+        .put("fixed_magnifiers",JSONArray(workspace.fixedMagnifiers.map{p->JSONObject().put("id",p.id).put("pose",JSONObject().put("position",JSONArray(p.pose.position.toList())).put("rotation",JSONArray(p.pose.rotation.toList()))).put("width_m",p.widthM).put("height_m",p.heightM)}))
         .put("experimental_viewed_detail",workspace.experimentalViewedDetail)
         .put("view_detail_debug",workspace.viewDetailDebug)
         .put("encoder_quality",workspace.encoderQuality).put("encoder_mbps",workspace.encoderMbps)
@@ -200,6 +206,8 @@ private fun decode(json: JSONObject): WorkspaceFile {
         focusMode=json.optBoolean("focus_mode",false),
         gazeToFocus=json.optBoolean("gaze_to_focus",false),
         magnifyWindow=json.optBoolean("magnify_window",false),
+        magnifierMode=if(json.optString("magnifier_mode")=="fixed")"fixed" else "floating",
+        fixedMagnifiers=json.optJSONArray("fixed_magnifiers")?.let{a->(0 until a.length()).mapNotNull{i->runCatching{val p=a.getJSONObject(i);val pose=p.getJSONObject("pose");val w=p.getDouble("width_m").toFloat();val h=p.getDouble("height_m").toFloat();require(w.isFinite() && h.isFinite() && w>0f && h>0f);FixedMagnifierPlacement(p.getString("id"),Pose(floatArray(pose,"position",3),floatArray(pose,"rotation",4)),w,h)}.getOrNull()}} ?: emptyList(),
         typingQuietMs=json.optLong("typing_quiet_ms",1000).coerceIn(0,10000),
         experimentalViewedDetail=json.optBoolean("experimental_viewed_detail",false),
         viewDetailDebug=json.optBoolean("view_detail_debug",true),

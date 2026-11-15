@@ -1,6 +1,7 @@
 package dev.floatdesk.client
 
 import dev.floatdesk.client.workspace.Pose
+import dev.floatdesk.client.workspace.FixedMagnifierPlacement
 import dev.floatdesk.client.workspace.MonitorPlacement
 import dev.floatdesk.client.net.WorkspaceInfo
 import dev.floatdesk.client.net.DesktopWindow
@@ -17,7 +18,7 @@ internal class WindowMagnification(private val dwellMs:Long=600,private val trav
     fun refresh(now:Long){entered=now;readyAt=0;departed=0;candidate=null}
     fun togglePin(){if(active!=null){pinned=!pinned;departed=0;candidate=null}}
     fun dismiss(now:Long){active=null;pinned=false;candidate=null;readyAt=0;departed=0}
-    fun update(now:Long,enabled:Boolean,blocked:Boolean,target:Long?,inside:Boolean,ready:Boolean,hold:Boolean=false,validGaze:Boolean=true):Long?{
+    fun update(now:Long,enabled:Boolean,blocked:Boolean,target:Long?,inside:Boolean,ready:Boolean,hold:Boolean=false,validGaze:Boolean=true,retain:Boolean=false):Long?{
         if(!enabled || blocked){dismiss(now);return null}
         if(active!=null && !ready){if(now-entered>4000)dismiss(now);return active}
         if(active!=null && readyAt==0L)readyAt=now
@@ -29,7 +30,7 @@ internal class WindowMagnification(private val dwellMs:Long=600,private val trav
         }else candidate=null
         if(active!=null){
             if(departed==0L)departed=now
-            if(now-departed>=1000)dismiss(now)
+            if(!retain && now-departed>=1000)dismiss(now)
         }
         return active
     }
@@ -53,7 +54,7 @@ internal class NativeSurfaceTap {
     }
 }
 internal const val MagnifierDistanceM=.85f
-internal data class MagnifiedWindow(val id:Long,val pose:Pose,val width:Float,val height:Float,val sourceWidth:Int,val sourceHeight:Int,val spherical:Boolean=false,val mesh:MonitorMesh?=null,val units:Float=1f,val headOffset:FloatArray=floatArrayOf(0f,0f,-1f),val sizeScale:Float=1f)
+internal data class MagnifiedWindow(val id:Long,val pose:Pose,val width:Float,val height:Float,val sourceWidth:Int,val sourceHeight:Int,val spherical:Boolean=false,val mesh:MonitorMesh?=null,val units:Float=1f,val headOffset:FloatArray=floatArrayOf(0f,0f,-1f),val sizeScale:Float=1f,val fixed:Boolean=false)
 internal fun magnifiedWindow(id:Long,width:Int,height:Int,viewer:Pose,horizontal:Float,vertical:Float,units:Float,spherical:Boolean=false):MagnifiedWindow{
     val source=deskLayout(listOf(Triple("Window",width,height)))
     val fitted=fitDesktopInView(source,viewer,horizontal,vertical,units,spherical,centralView=true,distanceM=MagnifierDistanceM).single()
@@ -156,4 +157,60 @@ internal fun inPlaceWindowRect(info:WorkspaceInfo,id:Long,desktop:MonitorPlaceme
     val width=angles.maxOf{atan2(it[0],-it[2])}-angles.minOf{atan2(it[0],-it[2])}
     val height=angles.maxOf{atan2(it[1],-it[2])}-angles.minOf{atan2(it[1],-it[2])}
     return rect.takeIf{right-left>=width*.99f && bottom-top>=height*.99f}
+}
+
+internal fun multiplyRotation(a:FloatArray,b:FloatArray)=floatArrayOf(a[3]*b[0]+a[0]*b[3]+a[1]*b[2]-a[2]*b[1],a[3]*b[1]-a[0]*b[2]+a[1]*b[3]+a[2]*b[0],a[3]*b[2]+a[0]*b[1]-a[1]*b[0]+a[2]*b[3],a[3]*b[3]-a[0]*b[0]-a[1]*b[1]-a[2]*b[2])
+internal fun saveFixedMagnifier(id:String,window:MagnifiedWindow,desktop:MonitorPlacement,units:Float):FixedMagnifierPlacement {
+    val local=viewerInMonitor(window.pose.position,desktop.pose.position,desktop.pose.rotation)
+    val q=desktop.pose.rotation
+    val rotation=multiplyRotation(floatArrayOf(-q[0],-q[1],-q[2],q[3]),window.pose.rotation)
+    return FixedMagnifierPlacement(id,Pose(FloatArray(3){local[it]/units},rotation),window.width/units,window.height/units)
+}
+internal fun fixedMagnifier(record:FixedMagnifierPlacement,desktop:MonitorPlacement,source:DesktopWindow?,viewer:Pose,units:Float,spherical:Boolean):MagnifiedWindow{
+    val pose=Pose(transformPoint(desktop.pose,FloatArray(3){record.pose.position[it]*units}),multiplyRotation(desktop.pose.rotation,record.pose.rotation))
+    return fixedMagnifierGeometry(MagnifiedWindow(source?.id ?: 0,pose,record.widthM*units,record.heightM*units,source?.width ?: 1280,source?.height ?: 800,spherical,units=units,fixed=true),viewer)
+}
+internal fun fixedMagnifierGeometry(window:MagnifiedWindow,viewer:Pose,proposed:FloatArray=window.pose.position):MagnifiedWindow{
+    val pose=window.pose.copy(position=proposed.copyOf())
+    val eye=viewerInMonitor(viewer.position,pose.position,pose.rotation)
+    val mesh=if(!window.spherical)null else {
+        val reference=MonitorMesh(window.width,window.height,eye,columns=32,rows=20,focus=floatArrayOf(0f,0f))
+        val direction=rotateVector(viewer.rotation,0f,0f,-1f)
+        val endpoint=viewerInMonitor(FloatArray(3){viewer.position[it]+direction[it]},pose.position,pose.rotation)
+        val focus=sphericalViewFocus(reference,FloatArray(3){endpoint[it]-eye[it]}) ?: floatArrayOf(0f,0f)
+        val old=window.mesh
+        if(old!=null && old.width==window.width && old.height==window.height && (0..2).all{abs(eye[it]-old.eye[it])<.003f} && (0..1).all{abs(focus[it]-old.focus!![it])<.003f})old else MonitorMesh(window.width,window.height,eye,columns=32,rows=20,focus=focus)
+    }
+    return window.copy(pose=pose,mesh=mesh)
+}
+internal fun magnifierContentPoint(window:MagnifiedWindow,point:Pair<Float,Float>):Pair<Float,Float>{
+    val source=window.sourceWidth.toFloat()/window.sourceHeight.coerceAtLeast(1);val pane=window.width/window.height
+    val x=minOf(1f,source/pane);val y=minOf(1f,pane/source)
+    return (((point.first-.5f)/x+.5f).coerceIn(0f,1f) to ((point.second-.5f)/y+.5f).coerceIn(0f,1f))
+}
+
+internal fun surfaceRayDistance(pose:Pose,width:Float,height:Float,mesh:MonitorMesh?,origin:FloatArray,direction:FloatArray):Float?{
+    val o=viewerInMonitor(origin,pose.position,pose.rotation)
+    val end=viewerInMonitor(FloatArray(3){origin[it]+direction[it]},pose.position,pose.rotation)
+    val hit=monitorRayHit(o,FloatArray(3){end[it]-o[it]},width,height,mesh) ?: return null
+    return sqrt((0..2).sumOf{val d=hit[it]-o[it];(d*d).toDouble()}).toFloat()
+}
+
+/** Preserve every video triangle and add an exterior frame ring; content is never inset/covered. */
+internal fun framedMagnifierGeometry(window:MagnifiedWindow):VideoGeometry {
+    val mesh=window.mesh ?: return clippedVideoGeometry(window.width,window.height,null,floatArrayOf(0f,0f,1f,1f),0f)
+    val pad=.005f*window.units;val width=window.width;val height=window.height
+    val expanded=MonitorMesh(width+2*pad,height+2*pad,mesh.eye,columns=mesh.columns,rows=mesh.rows,focus=mesh.focus,center=mesh.center)
+    val perimeter=buildList{for(c in 0..mesh.columns)add(c);for(r in 1..mesh.rows)add(r*(mesh.columns+1)+mesh.columns);for(c in mesh.columns-1 downTo 0)add(mesh.rows*(mesh.columns+1)+c);for(r in mesh.rows-1 downTo 1)add(r*(mesh.columns+1))}
+    val positions=mesh.positions.toMutableList();val uv=ArrayList<Float>();val indices=mesh.indices.toMutableList()
+    fun tex(u:Float,v:Float){uv.add((pad+u*width)/(width+2*pad));uv.add(1f-(pad+v*height)/(height+2*pad))}
+    for(i in 0 until mesh.positions.size/3)tex(mesh.texCoords[i*2],mesh.texCoords[i*2+1])
+    val base=mesh.positions.size/3
+    for(i in perimeter){val u=mesh.texCoords[i*2];val v=mesh.texCoords[i*2+1]
+        val x=(u-.5f)*width+if(u==0f)-pad else if(u==1f)pad else 0f
+        val y=(.5f-v)*height+if(v==0f)pad else if(v==1f)-pad else 0f
+        positions.addAll(expanded.project(floatArrayOf(x,y,0f)).toList());tex(x/width+.5f,.5f-y/height)
+    }
+    for(j in perimeter.indices){val next=(j+1)%perimeter.size;val a=perimeter[j];val b=perimeter[next];val c=base+j;val d=base+next;indices.addAll(listOf(a,b,c,c,b,d))}
+    return VideoGeometry(positions.toFloatArray(),uv.toFloatArray(),indices.toIntArray())
 }

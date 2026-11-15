@@ -1,4 +1,5 @@
 # Changes since the LAN proof of concept
+- Add Floating/Fixed magnifier modes, saved desktop-relative panes, per-pane pinning and hold-to-open Add/Remove. Share window capture/decoding across panes and the occlusion-aware desktop sharp patch. Keep native video and the exterior pin bezel on one opaque media surface, and scope focus/gesture blocking to actual visible pane hits.
 - Add a saved Gaze to focus toggle that dwells on visible windows and changes keyboard focus without raising, moving the cursor or reframing the desktop. Validate no-raise activation against isolated Plasma/KWin with focus-stealing protection enabled.
 - Adapt background sampling toward the saved FPS target while retaining useful native detail, including with a fixed patch. Show actual background pixel reduction, sample percentage and native crop coverage in the Quality HUD.
 - Replace many-piece dynamic sampling with one stable visible peripheral rectangle and one native gaze patch. Select a single fully native crop when its encoded allocation is cheaper, and negotiate taller AVC frames with capable headset decoders.

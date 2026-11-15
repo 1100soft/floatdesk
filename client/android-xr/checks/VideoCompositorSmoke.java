@@ -44,10 +44,13 @@ public final class VideoCompositorSmoke {
             require(!new java.io.File(workspaceFile+".tmp").exists(),"Workspace save did not atomically replace file");
             org.json.JSONObject saved=new org.json.JSONObject(new String(java.nio.file.Files.readAllBytes(workspaceFile.toPath()),java.nio.charset.StandardCharsets.UTF_8));
             saved.put("gaze_to_focus",true);
+            saved.put("magnifier_mode","fixed").put("fixed_magnifiers",new org.json.JSONArray().put(new org.json.JSONObject().put("id","pane").put("pose",new org.json.JSONObject().put("position",new org.json.JSONArray("[0.2,0.3,0.4]")).put("rotation",new org.json.JSONArray("[0,0,0,1]"))).put("width_m",.7).put("height_m",.4)));
             java.nio.file.Files.write(workspaceFile.toPath(),saved.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
             var gazeStore=new WorkspaceStore(workspaceFile);
             require(gazeStore.load().getGazeToFocus(),"Gaze-to-focus preference was lost on reload");
+            require(gazeStore.load().getMagnifierMode().equals("fixed") && gazeStore.load().getFixedMagnifiers().size()==1,"Fixed magnifier settings lost");
             gazeStore.save(gazeStore.load());
+            require(new WorkspaceStore(workspaceFile).load().getFixedMagnifiers().get(0).getWidthM()==.7f,"Fixed magnifier size lost on save");
             require(new WorkspaceStore(workspaceFile).load().getGazeToFocus(),"Gaze-to-focus preference did not survive save");
             org.json.JSONObject monitor=new org.json.JSONObject().put("logical_monitor_uuid","focus-test").put("host_source_id","desktop").put("pixel_width",3840).put("pixel_height",2160).put("view_center_u",.8).put("view_center_v",.25);
             saved.put("pinch_thresholds_mm",new org.json.JSONArray().put(8.0).put(9.0).put(10.0).put(11.0));

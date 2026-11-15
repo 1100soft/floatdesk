@@ -238,6 +238,11 @@ internal class DeskConnection(
 
     }
 
+    val windowCaptures by lazy{WindowCapturePool(this)}
+    fun captureWindow(id:Long,video:dev.floatdesk.client.media.VideoCompositor,failed:(String)->Unit,frame:(Long,org.json.JSONObject)->Unit):WindowVideo?{
+        val remote=pendingRemote ?: return null
+        return WindowVideo(java.net.InetSocketAddress(remote.address,remote.port+2),detailSession,id,detailTargetFps,video,failed,video.input,frame,false)
+    }
     fun windowRenderer()=decoders[0]?.windowRenderer()
     fun hasWindowDetail()=decoders[0]?.windowRenderer()?.hasWindowDetail()==true
     @Volatile var magnifierActive=false

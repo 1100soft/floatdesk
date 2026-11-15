@@ -261,6 +261,19 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-view-x11-') as temp:
      assert min(auto_areas)>=1048576,'Auto sacrificed its useful native-detail floor'
      assert min(densities)>=.674,'Auto degraded peripheral density to chase its FPS target'
      print(f'PASS regional Auto under sustained pressure: native {min(auto_areas)} pixels, peripheral {min(densities):.3f}',flush=True)
+    with socket.create_connection(('127.0.0.1',port),2) as stream:
+     stream.settimeout(5)
+     for crop in ([0,0,1,1],[.3,.2,.5,.4],[.75,.05,.9,.2],[0,0,1,1]):
+      payload=json.dumps(dict(mode='view-tiles-v2',areaBudget=True,regionSampling=True,avcMaxHeight=4096,sessionId=session,rect=crop,center=[.6,.5],nativeAreaPixels=1048576,targetFps=30)).encode()
+      stream.sendall(struct.pack('>I',len(payload))+payload)
+      meta=json.loads(exact(stream,struct.unpack('>I',exact(stream,4))[0]));unit=exact(stream,meta['bytes'])
+      assert len(meta['tiles']) in (1,2)
+      if crop[2]-crop[0]<.3:
+       assert len(meta['tiles'])==1 and meta['tiles'][0][0]==meta['rect'],'Small visible crop was not fully native'
+      fmt='h264' if meta['codec']=='video/avc' else 'hevc'
+      dimensions=json.loads(subprocess.check_output(['ffprobe','-v','error','-threads','2','-f',fmt,'-show_entries','stream=width,height','-of','json','pipe:0'],input=unit))['streams'][0]
+      assert (dimensions['width'],dimensions['height'])==(meta['width'],meta['height'])
+     print('PASS live contiguous-pair/full-native crop changes and codec dimensions',flush=True)
     first=native_metas[0]
     decoded_region=subprocess.check_output(['ffmpeg','-v','error','-threads','2','-f','h264' if first['codec']=='video/avc' else 'hevc','-i','pipe:0','-frames:v','2','-f','rawvideo','-pix_fmt','rgb24','pipe:1'],input=b''.join(native_units))
     for src,dst in first['tiles']:
@@ -280,7 +293,7 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-view-x11-') as temp:
      expected=[(255,0,0),(0,255,0),(0,0,255),(255,255,0)][(1 if u>=.5 else 0)+(2 if v>=.5 else 0)]
      assert all(abs(a-b)<45 for a,b in zip(actual,expected)),('Incorrect capture gutter',src,dst,tuple(actual),expected)
      checked_gutters+=1
-    assert checked_gutters>0
+    if len(first['tiles'])>1:assert checked_gutters>0
     print(f'PASS {checked_gutters} decoded capture gutters preserve neighboring source content',flush=True)
     print('PASS decoded native/peripheral region colors and coordinate mapping',flush=True)
     send(15,json.dumps(dict(type='encoderSettings',quality=0,bitrateMbps=0)).encode())

@@ -103,17 +103,8 @@ fn candidates(
     }
     out
 }
-fn cost(p: &Plan, avc_height: u16) -> u64 {
-    // VA AVC is preferred at comparable allocation sizes; HEVC has a measurable
-    // conversion/encode overhead on the current host. Full native removes a capture,
-    // a mapping and the duplicate low-density area under the gaze patch.
-    let pixels = u64::from(p.width) * u64::from(p.height);
-    pixels
-        * if p.width <= 4096 && p.height <= avc_height {
-            100
-        } else {
-            150
-        }
+fn cost(p: &Plan) -> u64 {
+    u64::from(p.width) * u64::from(p.height)
 }
 pub(super) fn plan_with_avc(
     outer: MonitorRect,
@@ -145,7 +136,13 @@ pub(super) fn plan_with_avc(
     let mut density = scale;
     for _ in 0..12 {
         let plans = candidates(crop, inner, density, bound);
-        if let Some(best) = plans.into_iter().min_by_key(|p| cost(p, avc_height)) {
+        if let Some(best) = plans.into_iter().min_by_key(|p| {
+            (
+                cost(p),
+                (p.width > 4096 || p.height > avc_height) as u8,
+                p.tiles.len(),
+            )
+        }) {
             return Some(best);
         }
         if bound.is_some() {
@@ -179,8 +176,8 @@ mod tests {
     }
     #[test]
     fn taller_negotiated_avc_avoids_hevc_for_contiguous_pair() {
-        let outer = r(0, 0, 5120, 3200);
-        let inner = r(3000, 1000, 1024, 1024);
+        let outer = r(0, 0, 2400, 3600);
+        let inner = r(1000, 1000, 1024, 1024);
         let p = plan_with_avc(outer, inner, &[outer], PERIPHERAL_SCALE, None, 4096).unwrap();
         assert!(p.width <= 4096 && p.height <= 4096);
         assert_eq!(p.tiles.len(), 2);

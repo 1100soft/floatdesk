@@ -26,9 +26,10 @@ public final class PackedViewSmoke {
             System.out.println("packed: configuring "+width+"x"+height);codec.configure(format,compositor.getViewInput(),null,0);codec.start();System.out.println("packed: codec ready");
             compositor.viewFrame(pts,new ViewFrame(new FocusRect(0,0,1,1),new FocusRect(.25f,.25f,.75f,.75f),SystemClock.uptimeMillis(),.5f,.5f,width,height,tiles,gutter));
             int input=codec.dequeueInputBuffer(500000);if(input<0)throw new AssertionError("HEVC input unavailable");codec.getInputBuffer(input).put(bytes);codec.queueInputBuffer(input,0,bytes.length,pts,MediaCodec.BUFFER_FLAG_KEY_FRAME);
+            if(avc){int eos=codec.dequeueInputBuffer(500000);if(eos>=0)codec.queueInputBuffer(eos,0,0,pts+1,MediaCodec.BUFFER_FLAG_END_OF_STREAM);}
             var info=new MediaCodec.BufferInfo();long deadline=SystemClock.uptimeMillis()+2500;
             while(SystemClock.uptimeMillis()<deadline){int output=codec.dequeueOutputBuffer(info,10000);if(output>=0){codec.releaseOutputBuffer(output,true);System.out.println("packed: frame released");return codec;}}
-            throw new AssertionError("HEVC output unavailable");
+            throw new AssertionError((avc?"AVC":"HEVC")+" output unavailable");
         }catch(Throwable error){codec.release();throw error;}
     }
     static void await(ImageReader reader,boolean nativeFrame){

@@ -1,4 +1,5 @@
 # Changes since the LAN proof of concept
+- Replace many-piece dynamic sampling with one stable visible peripheral rectangle and one native gaze patch. Select a single fully native crop when its encoded allocation is cheaper, and negotiate taller AVC frames with capable headset decoders.
 - Preserve a useful native-detail floor and peripheral density in regional Auto instead of degrading the image to meet an FPS target. Add source-continuation gutters and chroma-aligned packing; render clipped tiles with one lookup per fragment and accept bounded larger metadata headers.
 - Remove total desktop height from dynamic peripheral sampling. Capture visible screen regions once, skip gaps, pack native/peripheral samples efficiently into one codec frame, and adapt to measured load while preserving peripheral density until native area reaches its minimum.
 - Add combined index/middle Focus pinch for whole-desktop Reset, sharing saved contact thresholds and release-based selection. Fix HUD disposal using a bitmap after recycling; make Show diagnostics hide all HUD clusters and label the encoding presets Encoder effort.

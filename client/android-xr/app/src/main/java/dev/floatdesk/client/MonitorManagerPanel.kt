@@ -179,7 +179,7 @@ private fun StreamingSettings(value:dev.floatdesk.client.workspace.WorkspaceFile
             androidx.compose.material3.OutlinedTextField(side,{side=it},Modifier.weight(1f),label={Text("Native square side (px)")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number))
             Button(enabled=parsed!=null,onClick={parsed?.let{onApply(value.copy(detailAreaPixels=it*it))}}){Text("Apply")}
         }
-        Text(parsed?.let{String.format(Locale.ROOT,"%d × %d · %.2f MP maximum",it,it,it*it/1e6)} ?: "64–4096 pixels per side",color=Color.White)
+        Text(parsed?.let{String.format(Locale.ROOT,"%d × %d · %.2f MP patch",it,it,it*it/1e6)} ?: "64–4096 pixels per side",color=Color.White)
     }
     Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)){
         androidx.compose.material3.Switch(checked=value.showResources,onCheckedChange={onApply(value.copy(showResources=it))});Text("Live resources",color=Color.White)

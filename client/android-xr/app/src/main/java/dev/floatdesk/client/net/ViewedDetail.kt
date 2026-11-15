@@ -29,7 +29,7 @@ internal class ViewedDetail(private val destination:()->ViewDestination?,private
     private val avcMaxHeight=runCatching{
         if(android.media.MediaCodecList(android.media.MediaCodecList.ALL_CODECS).codecInfos.any{info->
             !info.isEncoder && info.isHardwareAccelerated && "video/avc" in info.supportedTypes &&
-                runCatching{info.getCapabilitiesForType("video/avc").videoCapabilities.isSizeSupported(4096,4096)}.getOrDefault(false)
+                runCatching{info.getCapabilitiesForType("video/avc").videoCapabilities?.isSizeSupported(4096,4096)==true}.getOrDefault(false)
         })4096 else 2160
     }.getOrDefault(2160)
     private val worker=Thread({

@@ -734,7 +734,7 @@ impl MonitorPool {
             .flat_map(|o| o.modes.iter().filter(|m| m.3 > 0.0).map(|m| (m.1, m.2)))
             .collect();
         let (window_focus, windows) = super::windows::observed_catalogue();
-        serde_json::json!({"type":"status","requestId":request_id,"busy":busy,"screens":screens,"windows":windows,"windowFocus":window_focus,"available":available,"modes":modes,"availableMemoryBytes":mem,"cpuThreads":cpus,"recommendedPixels":estimated,"targetFps":fps,"estimate":"Rough planning estimate: available memory / 128 bytes per desktop pixel and 1 megapixel per CPU thread at 60 FPS. Advisory only; GPU, content and network can dominate.","desktopLimits":desktop_limits(),"setupRequired":!outputs.iter().any(|o|virtual_name(&o.name))})
+        serde_json::json!({"type":"status","requestId":request_id,"busy":busy,"screens":screens,"windows":windows,"windowFocus":window_focus,"gazeFocus":window_focus,"available":available,"modes":modes,"availableMemoryBytes":mem,"cpuThreads":cpus,"recommendedPixels":estimated,"targetFps":fps,"estimate":"Rough planning estimate: available memory / 128 bytes per desktop pixel and 1 megapixel per CPU thread at 60 FPS. Advisory only; GPU, content and network can dominate.","desktopLimits":desktop_limits(),"setupRequired":!outputs.iter().any(|o|virtual_name(&o.name))})
     }
     pub fn owned_mask(&self, sources: &[(String, MonitorRect)]) -> u8 {
         sources.iter().take(6).fold(0, |mask, (name, r)| {

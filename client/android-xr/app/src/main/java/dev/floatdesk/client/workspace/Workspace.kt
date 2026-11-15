@@ -48,6 +48,7 @@ internal data class WorkspaceFile(
     val screenSpacing:Float=0f,
     val viewerReference:Pose?=null,
     val focusMode:Boolean=false,
+    val gazeToFocus:Boolean=false,
     val experimentalViewedDetail:Boolean=false,
     val viewDetailDebug:Boolean=true,
     val encoderQuality:Int=0,
@@ -146,7 +147,7 @@ private fun encode(workspace: WorkspaceFile): JSONObject {
         .put("control", encodePanel(workspace.control))
         .put("spherical_warp", workspace.sphericalWarp)
         .put("eye_aiming", workspace.eyeAiming)
-        .put("focus_mode",workspace.focusMode)
+        .put("focus_mode",workspace.focusMode).put("gaze_to_focus",workspace.gazeToFocus)
         .put("experimental_viewed_detail",workspace.experimentalViewedDetail)
         .put("view_detail_debug",workspace.viewDetailDebug)
         .put("encoder_quality",workspace.encoderQuality).put("encoder_mbps",workspace.encoderMbps)
@@ -195,6 +196,7 @@ private fun decode(json: JSONObject): WorkspaceFile {
         control = json.optJSONObject("control")?.let { decodePanel(it) } ?: PanelPlacement(),
         sphericalWarp = json.optBoolean("spherical_warp", false),
         focusMode=json.optBoolean("focus_mode",false),
+        gazeToFocus=json.optBoolean("gaze_to_focus",false),
         experimentalViewedDetail=json.optBoolean("experimental_viewed_detail",false),
         viewDetailDebug=json.optBoolean("view_detail_debug",true),
         encoderQuality=json.optInt("encoder_quality",0).coerceIn(0,2),

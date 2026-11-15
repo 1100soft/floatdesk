@@ -96,6 +96,8 @@ internal class DeskConnection(
     val focusResult=mutableStateOf<FocusResult?>(null)
     val focusBusy=mutableStateOf(false)
     private val focusPending=AtomicInteger()
+    private val gazeFocusPending=AtomicInteger()
+    val gazeFocusError=mutableStateOf("")
     private val screenPresentation=AtomicReference(ScreenPresentation())
     private var screenSpacing=0f
     val reloading=mutableStateOf(false)
@@ -187,7 +189,7 @@ internal class DeskConnection(
         decoders.clear()
         currentMonitors=emptyList()
         screenPresentation.set(ScreenPresentation())
-        monitorPending.set(0);focusPending.set(0)
+        monitorPending.set(0);focusPending.set(0);gazeFocusPending.set(0)
         videoPending.set(false);decoderGeneration.incrementAndGet()
         videos.forEach { runCatching { it.close() } }
         videos = emptyList()
@@ -212,7 +214,7 @@ internal class DeskConnection(
     @Synchronized
     fun setRenderingActive(active: Boolean) {
         renderingActive=active
-        if(!active)viewedDetail(null)
+        if(!active){viewedDetail(null);cancelGazeFocus()}
         decoders.values.forEach { it.setRenderingActive(active) }
     }
 
@@ -236,6 +238,14 @@ internal class DeskConnection(
 
     }
 
+    fun cancelGazeFocus(){gazeFocusPending.set(0)}
+    fun requestGazeFocus(window:Long){
+        val handler=outgoing ?: return
+        val id=monitorSequence.incrementAndGet();gazeFocusPending.set(id);gazeFocusError.value=""
+        val packet=Protocol.workspace(org.json.JSONObject().put("type","gazeFocus").put("requestId",id).put("windowId",window).toString())
+        for(delay in listOf(0L,300L,900L))handler.postDelayed({if(gazeFocusPending.get()==id)send(packet)},delay)
+        main.postDelayed({if(gazeFocusPending.compareAndSet(id,0))gazeFocusError.value="Gaze focus request timed out"},2000)
+    }
     fun requestFocus(target:FocusTarget):Boolean {
         val handler=outgoing ?: return false
         if(!focusPending.compareAndSet(0,-1))return false
@@ -331,6 +341,9 @@ internal class DeskConnection(
                     }
                     is Packet.Workspace -> {
                         if(incoming.address==pendingRemote?.address && incoming.port==pendingRemote?.port) {
+                            runCatching{org.json.JSONObject(decoded.json)}.getOrNull()?.takeIf{it.optString("type")=="gazeFocusResult"}?.let{reply->
+                                if(gazeFocusPending.compareAndSet(reply.optInt("requestId"),0))main.post{gazeFocusError.value=if(reply.optBoolean("ok"))"" else reply.optString("message","Could not focus window")}
+                            }
                             runCatching {org.json.JSONObject(decoded.json)}.getOrNull()?.takeIf{it.optString("type")=="focusResult"}?.let {reply->
                                 val id=reply.optInt("requestId")
                                 if(id>0 && focusPending.compareAndSet(id,0))main.post {

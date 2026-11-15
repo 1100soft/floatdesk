@@ -43,6 +43,12 @@ public final class VideoCompositorSmoke {
             require(reloaded.load().getViewerReference()!=null && reloaded.load().getViewerReference().getPosition()[2]==3f,"Viewer reference lost on disk reload");
             require(!new java.io.File(workspaceFile+".tmp").exists(),"Workspace save did not atomically replace file");
             org.json.JSONObject saved=new org.json.JSONObject(new String(java.nio.file.Files.readAllBytes(workspaceFile.toPath()),java.nio.charset.StandardCharsets.UTF_8));
+            saved.put("gaze_to_focus",true);
+            java.nio.file.Files.write(workspaceFile.toPath(),saved.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            var gazeStore=new WorkspaceStore(workspaceFile);
+            require(gazeStore.load().getGazeToFocus(),"Gaze-to-focus preference was lost on reload");
+            gazeStore.save(gazeStore.load());
+            require(new WorkspaceStore(workspaceFile).load().getGazeToFocus(),"Gaze-to-focus preference did not survive save");
             org.json.JSONObject monitor=new org.json.JSONObject().put("logical_monitor_uuid","focus-test").put("host_source_id","desktop").put("pixel_width",3840).put("pixel_height",2160).put("view_center_u",.8).put("view_center_v",.25);
             saved.put("pinch_thresholds_mm",new org.json.JSONArray().put(8.0).put(9.0).put(10.0).put(11.0));
             saved.put("experimental_viewed_detail",true).put("view_detail_debug",false);

@@ -165,11 +165,274 @@ pub fn activate(id: u32) -> Result<()> {
     link.conn.flush().map_err(Error::x11)
 }
 
+/// Focus a visible managed client without sending activation/restacking or moving the pointer.
+pub fn focus_without_raise(id: u32) -> Result<()> {
+    use x11rb::protocol::{
+        xproto::{CreateWindowAux, InputFocus, PropMode, WindowClass},
+        Event,
+    };
+    use x11rb::wrapper::ConnectionExt as _;
+    let (supported, windows) = catalogue()?;
+    if !supported || !windows.iter().any(|w| w.id == id) {
+        return Err(Error::Msg("Gaze target is no longer visible".into()));
+    }
+    let link = X11Link::open()?;
+    let mut focused = link
+        .conn
+        .get_input_focus()
+        .map_err(Error::x11)?
+        .reply()
+        .map_err(Error::x11)?
+        .focus;
+    // Preserve the application's current text field/subwindow when it already owns focus.
+    for _ in 0..32 {
+        if focused == id {
+            return Ok(());
+        }
+        if focused <= 1 || focused == link.root {
+            break;
+        }
+        focused = match link.conn.query_tree(focused).map_err(Error::x11)?.reply() {
+            Ok(tree) => tree.parent,
+            Err(_) => break,
+        };
+    }
+    let hints = values(&link, id, atom(&link, b"WM_HINTS")?, AtomEnum::ANY)?;
+    let accepts =
+        hints.first().is_none_or(|flags| flags & 1 == 0) || hints.get(1).copied().unwrap_or(1) != 0;
+    let protocols = values(&link, id, atom(&link, b"WM_PROTOCOLS")?, AtomEnum::ATOM)?;
+    let take_focus = atom(&link, b"WM_TAKE_FOCUS")?;
+    let takes = protocols.contains(&take_focus);
+    if !accepts && !takes {
+        return Err(Error::Msg(
+            "This window does not accept keyboard focus".into(),
+        ));
+    }
+    // ICCCM WM_TAKE_FOCUS requires a real server timestamp, never CurrentTime.
+    let helper = link.conn.generate_id().map_err(Error::x11)?;
+    link.conn
+        .create_window(
+            0,
+            helper,
+            link.root,
+            0,
+            0,
+            1,
+            1,
+            0,
+            WindowClass::INPUT_ONLY,
+            0,
+            &CreateWindowAux::new().event_mask(EventMask::PROPERTY_CHANGE),
+        )
+        .map_err(Error::x11)?
+        .check()
+        .map_err(Error::x11)?;
+    link.conn
+        .change_property32(
+            PropMode::REPLACE,
+            helper,
+            atom(&link, b"_FLOATDESK_FOCUS_TIME")?,
+            AtomEnum::CARDINAL,
+            &[0],
+        )
+        .map_err(Error::x11)?
+        .check()
+        .map_err(Error::x11)?;
+    let timestamp = loop {
+        if let Event::PropertyNotify(e) = link.conn.wait_for_event().map_err(Error::x11)? {
+            if e.window == helper {
+                break e.time;
+            }
+        }
+    };
+    // This request represents an explicit user gaze action. Publish its server
+    // time before FocusIn so KWin's focus-stealing check can recognize it.
+    let user_time_window = values(
+        &link,
+        id,
+        atom(&link, b"_NET_WM_USER_TIME_WINDOW")?,
+        AtomEnum::WINDOW,
+    )?
+    .first()
+    .copied()
+    .unwrap_or(id);
+    link.conn
+        .change_property32(
+            PropMode::REPLACE,
+            user_time_window,
+            atom(&link, b"_NET_WM_USER_TIME")?,
+            AtomEnum::CARDINAL,
+            &[timestamp],
+        )
+        .map_err(Error::x11)?
+        .check()
+        .map_err(Error::x11)?;
+    if accepts {
+        link.conn
+            .set_input_focus(InputFocus::PARENT, id, timestamp)
+            .map_err(Error::x11)?
+            .check()
+            .map_err(Error::x11)?;
+    }
+    if takes {
+        link.conn
+            .send_event(
+                false,
+                id,
+                EventMask::NO_EVENT,
+                ClientMessageEvent::new(
+                    32,
+                    id,
+                    atom(&link, b"WM_PROTOCOLS")?,
+                    [take_focus, timestamp, 0, 0, 0],
+                ),
+            )
+            .map_err(Error::x11)?
+            .check()
+            .map_err(Error::x11)?;
+    }
+    link.conn
+        .destroy_window(helper)
+        .map_err(Error::x11)?
+        .check()
+        .map_err(Error::x11)?;
+    link.conn.flush().map_err(Error::x11)?;
+    let active = atom(&link, b"_NET_ACTIVE_WINDOW")?;
+    for _ in 0..40 {
+        if values(&link, link.root, active, AtomEnum::WINDOW)?.first() == Some(&id) {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    Err(Error::Msg("Window manager declined gaze focus".into()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use x11rb::protocol::xproto::{CreateWindowAux, PropMode, WindowClass};
     use x11rb::wrapper::ConnectionExt as _;
+    #[test]
+    #[ignore = "requires private Xvfb with KWin and FLOATDESK_SYNTHETIC_DISPLAY=1"]
+    fn focus_without_raise_private_kwin() {
+        assert_eq!(
+            std::env::var("FLOATDESK_SYNTHETIC_DISPLAY").as_deref(),
+            Ok("1")
+        );
+        let link = X11Link::open().unwrap();
+        let active = atom(&link, b"_NET_ACTIVE_WINDOW").unwrap();
+        let stacking = atom(&link, b"_NET_CLIENT_LIST_STACKING").unwrap();
+        let ids = [
+            link.conn.generate_id().unwrap(),
+            link.conn.generate_id().unwrap(),
+        ];
+        for (i, &id) in ids.iter().enumerate() {
+            link.conn
+                .create_window(
+                    0,
+                    id,
+                    link.root,
+                    100 + i as i16 * 200,
+                    100,
+                    400,
+                    300,
+                    0,
+                    WindowClass::INPUT_OUTPUT,
+                    0,
+                    &CreateWindowAux::new().background_pixel(0x808080),
+                )
+                .unwrap()
+                .check()
+                .unwrap();
+            link.conn.map_window(id).unwrap().check().unwrap();
+        }
+        let wait = |test: &dyn Fn() -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !test() {
+                assert!(
+                    std::time::Instant::now() < until,
+                    "KWin state did not converge: input={:?} active={:?} stack={:?} catalogue={:?}",
+                    link.conn.get_input_focus().unwrap().reply().unwrap().focus,
+                    values(&link, link.root, active, AtomEnum::WINDOW).unwrap(),
+                    values(&link, link.root, stacking, AtomEnum::WINDOW).unwrap(),
+                    catalogue().unwrap()
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+        wait(&|| {
+            catalogue()
+                .unwrap()
+                .1
+                .iter()
+                .filter(|w| ids.contains(&w.id))
+                .count()
+                == 2
+        });
+        activate(ids[1]).unwrap();
+        wait(&|| {
+            values(&link, link.root, active, AtomEnum::WINDOW)
+                .unwrap()
+                .first()
+                == Some(&ids[1])
+        });
+        let before = values(&link, link.root, stacking, AtomEnum::WINDOW).unwrap();
+        let pointer = link.conn.query_pointer(link.root).unwrap().reply().unwrap();
+        focus_without_raise(ids[0]).unwrap();
+        wait(&|| {
+            link.conn.get_input_focus().unwrap().reply().unwrap().focus == ids[0]
+                && values(&link, link.root, active, AtomEnum::WINDOW)
+                    .unwrap()
+                    .first()
+                    == Some(&ids[0])
+        });
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert_eq!(
+            values(&link, link.root, stacking, AtomEnum::WINDOW).unwrap(),
+            before
+        );
+        let after = link.conn.query_pointer(link.root).unwrap().reply().unwrap();
+        assert_eq!(
+            (pointer.root_x, pointer.root_y),
+            (after.root_x, after.root_y)
+        );
+        let child = link.conn.generate_id().unwrap();
+        link.conn
+            .create_window(
+                0,
+                child,
+                ids[0],
+                5,
+                5,
+                20,
+                20,
+                0,
+                WindowClass::INPUT_OUTPUT,
+                0,
+                &CreateWindowAux::new(),
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+        link.conn.map_window(child).unwrap().check().unwrap();
+        link.conn
+            .set_input_focus(
+                x11rb::protocol::xproto::InputFocus::PARENT,
+                child,
+                x11rb::CURRENT_TIME,
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+        focus_without_raise(ids[0]).unwrap();
+        assert_eq!(
+            link.conn.get_input_focus().unwrap().reply().unwrap().focus,
+            child
+        );
+        for id in ids {
+            link.conn.destroy_window(id).unwrap().check().unwrap();
+        }
+    }
     #[test]
     #[ignore = "requires a private Xvfb and FLOATDESK_SYNTHETIC_DISPLAY=1"]
     fn catalogue_and_activation_private_x11() {

@@ -202,6 +202,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     LaunchedEffect(workspace.encoderQuality,workspace.encoderMbps,workspace.sharpening,workspace.detailAreaPixels,workspace.detailTargetFps){connection.configureVideo(workspace.encoderQuality,workspace.encoderMbps,workspace.sharpening,workspace.denseFraction,workspace.detailAreaPixels,workspace.detailTargetFps)}
     val pointerControl = remember { PointerControl() }
     val gazeStabilizer = remember { GazeStabilizer() }
+    val gazeWindowFocus=remember{GazeWindowFocus()}
     val pinchSettings=rememberUpdatedState(workspace.pinchThresholds)
     val mouseGestures = remember { MouseGestures(thresholds={pinchSettings.value}) { Log.i("Floatdesk",it) } }
     val panelInput = remember { PanelGazeInput(palmButtons.map { PanelButtonArea(it.action.ordinal,it.x,it.y,it.w,it.h) }) }
@@ -217,8 +218,8 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
     val eyePermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (!granted) android.widget.Toast.makeText(context,"Gaze permission was not granted. Hand pointing remains available.",android.widget.Toast.LENGTH_LONG).show()
     }
-    LaunchedEffect(workspace.experimentalViewedDetail,workspace.sphericalWarp) {
-        if((workspace.experimentalViewedDetail || workspace.sphericalWarp) && context.checkSelfPermission("android.permission.EYE_TRACKING_FINE")!=android.content.pm.PackageManager.PERMISSION_GRANTED)
+    LaunchedEffect(workspace.experimentalViewedDetail,workspace.sphericalWarp,workspace.gazeToFocus) {
+        if((workspace.experimentalViewedDetail || workspace.sphericalWarp || workspace.gazeToFocus) && context.checkSelfPermission("android.permission.EYE_TRACKING_FINE")!=android.content.pm.PackageManager.PERMISSION_GRANTED)
             eyePermission.launch("android.permission.EYE_TRACKING_FINE")
     }
     val monitors by connection.monitors
@@ -812,7 +813,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             val contextHands=if(workspace.focusMode)pointerControl.focusHands(hoverHands) else hoverHands
             val nativeFocusGazeEnabled=workspace.focusMode && pointerControl.systemGazeEnabled
             val nativeFocusGaze=if(nativeFocusGazeEnabled)pointerControl.systemGaze() else null
-            val gazeTargets=if((workspace.eyeAiming || nativeFocusGazeEnabled) && reliable) eyeRays.mapNotNull { (origin,direction) -> gazePointerTarget(origin,direction,workspace,pointerControl.meshes) } else emptyList()
+            val gazeTargets=if((workspace.eyeAiming || nativeFocusGazeEnabled || workspace.gazeToFocus) && reliable) eyeRays.mapNotNull { (origin,direction) -> gazePointerTarget(origin,direction,workspace,pointerControl.meshes) } else emptyList()
             // Average binocular contacts on the same monitor; a valid single eye can still aim.
             val rawGazeTarget = gazeTargets.firstOrNull()?.let { first ->
                 val same = gazeTargets.filter { it.monitor == first.monitor }
@@ -828,6 +829,13 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             }
             dimPointer = choice.mode == PointerMode.HAND
             val focusInfo=connection.workspaceInfo.value
+            val autoFocusBlocked=!reliable || !resumed || displayControlsOpen || palmPanel!=null ||
+                choice.mode.reservesDesktop || monitorGrab || nativeManipulation || mouseGestures.engaged || connection.focusBusy.value || focusInfo?.gazeFocus!=true
+            val autoFocusWindow=if(!autoFocusBlocked && workspace.gazeToFocus)rawGazeTarget?.takeIf{it.monitor==0}?.let{hit->
+                connection.desktopPoint(hit.monitor,hit.u,hit.v)?.let{(u,v)->focusInfo?.hover(u,v)?.window?.windowId}
+            }else null
+            gazeWindowFocus.update(handTracking.nowMs,workspace.gazeToFocus,autoFocusBlocked,autoFocusWindow)?.let{connection.requestGazeFocus(it)}
+            if(autoFocusBlocked || !workspace.gazeToFocus)connection.cancelGazeFocus()
             val focusContacts=focusAimContacts(contextHands,if(nativeFocusGazeEnabled)gazeTarget ?: nativeFocusGaze else null)
             val focusHover=if(workspace.focusMode && focusInfo!=null)focusContacts.mapNotNull {(side,hit)->
                 if(hit.monitor!=0)return@mapNotNull null

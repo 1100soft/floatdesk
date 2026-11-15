@@ -1,4 +1,5 @@
 # Changes since the LAN proof of concept
+- Add a saved Gaze to focus toggle that dwells on visible windows and changes keyboard focus without raising, moving the cursor or reframing the desktop. Validate no-raise activation against isolated Plasma/KWin with focus-stealing protection enabled.
 - Adapt background sampling toward the saved FPS target while retaining useful native detail, including with a fixed patch. Show actual background pixel reduction, sample percentage and native crop coverage in the Quality HUD.
 - Replace many-piece dynamic sampling with one stable visible peripheral rectangle and one native gaze patch. Select a single fully native crop when its encoded allocation is cheaper, and negotiate taller AVC frames with capable headset decoders.
 - Preserve a useful native-detail floor and peripheral density in regional Auto instead of degrading the image to meet an FPS target. Add source-continuation gutters and chroma-aligned packing; render clipped tiles with one lookup per fragment and accept bounded larger metadata headers.

@@ -569,6 +569,7 @@ fn run(
         }
     });
     let mut topology_epoch = Instant::now();
+    let mut last_gaze_focus: Option<(SocketAddr, u32)> = None;
     let mut replies: std::collections::VecDeque<(SocketAddr, u32, Vec<u8>)> =
         std::collections::VecDeque::new();
     let mut resources = resources::Sampler::new();
@@ -641,6 +642,52 @@ fn run(
                                         Ordering::Relaxed,
                                     );
                                     shared.keys[0].store(true, Ordering::Relaxed);
+                                }
+                                continue;
+                            }
+                            if value["type"] == "gazeFocus" {
+                                let allowed = shared
+                                    .client
+                                    .read()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .as_ref()
+                                    .is_some_and(|c| c.control == from);
+                                let id = value["requestId"]
+                                    .as_u64()
+                                    .and_then(|v| u32::try_from(v).ok())
+                                    .filter(|v| *v > 0);
+                                if !allowed || id.is_none() {
+                                    continue;
+                                }
+                                let id = id.unwrap();
+                                if let Some((_, _, reply)) = replies
+                                    .iter()
+                                    .find(|(peer, key, _)| *peer == from && *key == id)
+                                {
+                                    let _ = socket.send_to(reply, from);
+                                    continue;
+                                }
+                                let stale = last_gaze_focus
+                                    .is_some_and(|(peer, key)| peer == from && id < key);
+                                if !stale {
+                                    last_gaze_focus = Some((from, id));
+                                }
+                                let result = if stale {
+                                    Err(Error::Msg("Superseded gaze focus".into()))
+                                } else {
+                                    value["windowId"]
+                                        .as_u64()
+                                        .and_then(|v| u32::try_from(v).ok())
+                                        .ok_or_else(|| Error::Msg("Missing gaze window".into()))
+                                        .and_then(
+                                            crate::platform::x11::windows::focus_without_raise,
+                                        )
+                                };
+                                let reply=ControlPacket::Workspace{json:serde_json::json!({"type":"gazeFocusResult","requestId":id,"ok":result.is_ok(),"message":result.err().map(|e|e.to_string()).unwrap_or_default()}).to_string()}.encode();
+                                let _ = socket.send_to(&reply, from);
+                                replies.push_back((from, id, reply));
+                                if replies.len() > 32 {
+                                    replies.pop_front();
                                 }
                                 continue;
                             }

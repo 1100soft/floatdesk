@@ -42,6 +42,24 @@ fun main() {
 
  routing.hover(0,"GAZE",null,null,2f,2f,5);check(routing.systemGaze()==null)
 
+ val auto=GazeWindowFocus()
+ check(auto.update(0,true,false,42)==null)
+ for(t in 50L..200L step 50)check(auto.update(t,true,false,42)==null)
+ check(auto.update(250,true,false,42)==42L)
+ for(t in 300L..500L step 50)check(auto.update(t,true,false,42)==null)
+ check(auto.update(550,true,false,43)==null);check(auto.update(600,true,false,42)==null)
+ for(t in 650L..800L step 50)check(auto.update(t,true,false,42)==null)
+ check(auto.update(850,true,false,42)==null) // A brief glance elsewhere did not change focus.
+ check(auto.update(900,true,true,43)==null)
+ check(auto.update(950,true,false,43)==null)
+ for(t in 1000L..1150L step 50)check(auto.update(t,true,false,43)==null)
+ check(auto.update(1200,true,false,43)==43L)
+ check(auto.update(1250,false,false,44)==null)
+ check(auto.update(1300,true,false,44)==null)
+ check(auto.update(2000,true,false,44)==null) // Tracking/pause gap starts a fresh dwell.
+ for(t in 2050L..2200L step 50)check(auto.update(t,true,false,44)==null)
+ check(auto.update(2250,true,false,44)==44L)
+ check(auto.update(2300,true,false,null)==null)
  val screen=FocusTarget(FocusRect(0f,0f,.5f,1f),"screen")
  val window=FocusTarget(FocusRect(.1f,.2f,.3f,.5f),"screen",42)
  val hover=mapOf("LEFT" to FocusHover(screen,window));val input=FocusGestures()

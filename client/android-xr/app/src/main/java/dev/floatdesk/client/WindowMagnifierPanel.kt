@@ -48,7 +48,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                     val expected=if(active.spherical)resources.curved?.entity else entity
                     val hit=event.hitInfoList.firstOrNull{it.inputEntity===expected}
                     val mesh=resources.mesh
-                    val local=hit?.hitPosition?.let{eventMatrixHit(floatArrayOf(it.x,it.y,it.z),hit.transform.data,active.width,active.height,mesh,entity.getScale(Space.ACTIVITY))}
+                    val local=hit?.hitPosition?.let{eventMatrixHit(floatArrayOf(it.x,it.y,it.z),hit.transform.data,active.width,active.height,mesh,entity.getScale(Space.ACTIVITY),rayDirection=if(mesh!=null)floatArrayOf(event.direction.x,event.direction.y,event.direction.z)else null,rayOrigin=floatArrayOf(event.origin.x,event.origin.y,event.origin.z))}
                     val flat=local?.let{mesh?.unproject(it) ?: it}
                     val uv=flat?.let{it[0]/active.width+.5f to (.5f-it[1]/active.height)}
                     val side=event.pointerType.toString()
@@ -57,6 +57,25 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                         else if(uv!=null)hoverNow.value(side,uv)
                     }
                     if(uv!=null)resources.lastContact=uv
+                    fun rootRay():Pair<FloatArray,FloatArray>{
+                        fun point(v:Vector3):FloatArray{val p=session.scene.activitySpace.transformPoseTo(Pose(v),root).translation;return floatArrayOf(p.x,p.y,p.z)}
+                        val origin=point(event.origin)
+                        val end=point(Vector3(event.origin.x+event.direction.x,event.origin.y+event.direction.y,event.origin.z+event.direction.z))
+                        return origin to FloatArray(3){end[it]-origin[it]}
+                    }
+                    if(event.action==InputEvent.Action.DOWN && local!=null && !resources.resizing && !resources.moving){
+                        val head=viewer.get()
+                        if(head!=null){resources.dragged=false;resources.tapCommitted=false;resources.taps.clear();val ray=rootRay();resources.drag.begin(active,head,ray.first,ray.second,transformPoint(active.pose,local));resources.dragSide=side;resources.moving=true;movingNow.value(true)}
+                    }
+                    if(event.action==InputEvent.Action.MOVE && resources.moving && side==resources.dragSide && !resources.resizing){
+                        val head=viewer.get()
+                        if(head!=null){val ray=rootRay();val proposed=resources.drag.move(head,ray.first,ray.second)
+                            if(proposed!=null){resources.dragged=true;resources.taps.clear();resources.pending=if(active.fixed)fixedMagnifierGeometry(active,head,proposed)else magnifierGeometry(active,head,units(),proposed)}
+                        }
+                    }
+                    if((event.action==InputEvent.Action.UP || event.action==InputEvent.Action.CANCEL) && side==resources.dragSide){
+                        resources.pending?.let{placementNow.value(it)};resources.drag.clear();resources.dragSide=null;resources.moving=false;movingNow.value(false)
+                    }
                     if(event.action==InputEvent.Action.DOWN){resources.holdAt=android.os.SystemClock.uptimeMillis();resources.contextShown=false;if(!resources.moving){resources.dragged=false;resources.tapCommitted=false}}
                     if(event.action==InputEvent.Action.UP || event.action==InputEvent.Action.CANCEL || event.action==InputEvent.Action.HOVER_EXIT && !resources.moving)resources.holdAt=0
                     if(!resources.dragged)resources.taps.update(side,event.action.toString(),uv)?.let{if(!resources.tapCommitted){resources.tapCommitted=true;tapNow.value(it)}}
@@ -82,47 +101,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
             // would feed our previous movement back into the next native pose.
             entity.parent=root;entity.setPose(targetPose)
             resources.curved?.entity?.let{it.parent=entity;it.setPose(Pose())}
-            if(resources.move==null){
-                resources.move=MovableComponent.createCustomMovable(session,scaleInZ=false,executor=null,entityMoveListener=object:EntityMoveListener{
-                    private var start:FloatArray?=null
-                    private fun rootPosition(entity:Entity,pose:Pose):FloatArray{
-                        val parent=entity.parent ?: root
-                        val p=parent.transformPoseTo(pose,root).translation
-                        return floatArrayOf(p.x,p.y,p.z)
-                    }
-                    override fun onMoveStart(entity:Entity,initialInputRay:Ray,initialPose:Pose,initialScale:Float,initialParent:Entity){
-                        if(!resources.visible || resources.resizing)return
-                        resources.moving=true;resources.dragged=false;resources.tapCommitted=false;resources.moveContact=resources.lastContact;start=rootPosition(entity,initialPose)
-                        movingNow.value(true)
-                    }
-                    override fun onMoveUpdate(entity:Entity,currentInputRay:Ray,currentPose:Pose,currentScale:Float){
-                        if(!resources.moving || !resources.visible || resources.resizing)return
-                        val head=viewer.get() ?: return
-                        val current=windowNow.value ?: return
-                        val proposed=rootPosition(entity,currentPose)
-                        if(!proposed.all{it.isFinite()})return
-                        val first=start ?: proposed
-                        val moved=kotlin.math.sqrt((0..2).sumOf{val d=proposed[it]-first[it];(d*d).toDouble()})>.008*units()
-                        if(moved || resources.dragged){
-                            resources.dragged=true;resources.taps.clear()
-                            val next=if(current.fixed)fixedMagnifierGeometry(current,head,proposed)else magnifierGeometry(current,head,units(),proposed)
-                            resources.pending=next;movingNow.value(true)
-                        }
-                    }
-                    override fun onMoveEnd(entity:Entity,finalInputRay:Ray,finalPose:Pose,finalScale:Float,updatedParent:Entity?){
-                        if(!resources.visible || !resources.moving)return
-                        onMoveUpdate(entity,finalInputRay,finalPose,finalScale)
-                        resources.pending?.let{placementNow.value(it)}
-                        resources.holdAt=0;resources.moving=false;movingNow.value(false)
-                        if(!resources.dragged && !resources.tapCommitted)resources.moveContact?.let{resources.tapCommitted=true;resources.taps.clear();tapNow.value(it)}
-                    }
-                })
-            }
             val moveTarget=entity
-            if(resources.moveTarget!==moveTarget){
-                resources.moveTarget?.removeComponent(resources.move!!)
-                check(moveTarget.addComponent(resources.move!!));resources.moveTarget=moveTarget
-            }
             if(resources.resize==null){
                 resources.resize=ResizableComponent.create(session,resizeEventListener=java.util.function.Consumer{event->
                     if(!resources.visible)return@Consumer
@@ -143,7 +122,6 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
             resources.resize!!.minimumEntitySize=FloatSize3d(.05f*units(),.05f*units()*target.height/target.width,.001f)
             resources.resize!!.maximumEntitySize=FloatSize3d(maxWidth,maxWidth*target.height/target.width,.001f)
             resources.resize!!.affordanceSize=FloatSize3d(target.width,target.height,.001f)
-            resources.move!!.size=FloatSize3d(target.width,target.height,.001f)
             val generation=++resources.generation
             var shown=false
             resources.stream=connection.windowCaptures.attach(target.id,entity.getSurface(),{
@@ -170,15 +148,14 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                 if(next.fixed && resources.holdAt>0 && !resources.dragged && !resources.resizing && !resources.contextShown && now-resources.holdAt>=700){
                     resources.contextShown=true;resources.tapCommitted=true;resources.taps.clear();contextNow.value()
                 }
-                if(!resources.resizing && resources.resize?.affordanceSize?.width!=next.width){resources.move?.size=FloatSize3d(next.width,next.height,.001f);resources.resize?.affordanceSize=FloatSize3d(next.width,next.height,.001f)}
+                if(!resources.resizing && resources.resize?.affordanceSize?.width!=next.width){resources.resize?.affordanceSize=FloatSize3d(next.width,next.height,.001f)}
                 if(!poseChanged && !meshChanged && !sizeChanged)continue
                 val pose=next.pose;val rotation=pose.rotation
-                resources.moveTarget?.setPose(Pose(Vector3(pose.position[0],pose.position[1],pose.position[2]),Quaternion(rotation[0],rotation[1],rotation[2],rotation[3])))
+                entity.setPose(Pose(Vector3(pose.position[0],pose.position[1],pose.position[2]),Quaternion(rotation[0],rotation[1],rotation[2],rotation[3])))
                 if(meshChanged || sizeChanged){
                     val nextShape=shape(next);resources.retain(nextShape);entity.shape=nextShape;geometryAt=android.os.SystemClock.uptimeMillis()
                     if(mesh!=null)resources.curved?.update(mesh)
                     if(!resources.resizing){
-                        resources.move?.size=FloatSize3d(next.width,next.height,.001f)
                         resources.resize?.affordanceSize=FloatSize3d(next.width,next.height,.001f)
                     }
                 }
@@ -186,7 +163,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
             }
         }catch(e:kotlinx.coroutines.CancellationException){throw e}
         catch(e:Exception){resources.close();errorNow.value(e.message ?: "Window magnifier unavailable")}
-        finally{resources.pending=null;resources.resizing=false;resources.resizeStart=null;resources.holdAt=0;resources.moving=false;movingNow.value(false);resources.visible=false;resources.generation++;resources.stream?.close();resources.stream=null;resources.entity?.setEnabled(false);resources.curved?.entity?.setEnabled(false);resources.taps.clear();resources.lastContact=null;resources.moveContact=null;hoverNow.value("LEFT",null);hoverNow.value("RIGHT",null)}
+        finally{resources.drag.clear();resources.dragSide=null;resources.pending=null;resources.resizing=false;resources.resizeStart=null;resources.holdAt=0;resources.moving=false;movingNow.value(false);resources.visible=false;resources.generation++;resources.stream?.close();resources.stream=null;resources.entity?.setEnabled(false);resources.curved?.entity?.setEnabled(false);resources.taps.clear();resources.lastContact=null;resources.moveContact=null;hoverNow.value("LEFT",null);hoverNow.value("RIGHT",null)}
     }
 
 }
@@ -197,10 +174,10 @@ private class MagnifierResources:AutoCloseable{
     var input:InteractableComponent?=null;var flatInputAttached=false
     var rendered:MagnifiedWindow?=null;var pending:MagnifiedWindow?=null
     var resize:ResizableComponent?=null;var resizeTarget:Entity?=null;var resizing=false;var resizeStart:MagnifiedWindow?=null;var resizeStartWidth=0f
-    var move:MovableComponent?=null;var moveTarget:Entity?=null;var moving=false;var dragged=false;var tapCommitted=false
+    val drag=MagnifierRayDrag();var dragSide:String?=null;var moving=false;var dragged=false;var tapCommitted=false
     var lastContact:Pair<Float,Float>?=null;var moveContact:Pair<Float,Float>?=null
     var holdAt=0L;var contextShown=false
     var visible=false;var generation=0;val taps=NativeSurfaceTap();val shapes=java.util.ArrayDeque<SurfaceEntity.Shape>()
     fun retain(shape:SurfaceEntity.Shape){shapes.addLast(shape);while(shapes.size>128)shapes.removeFirst()}
-    override fun close(){moving=false;visible=false;generation++;stream?.close();resize?.let{resizeTarget?.removeComponent(it)};resize=null;resizeTarget=null;move?.let{moveTarget?.removeComponent(it)};move=null;moveTarget=null;curved?.close();entity?.dispose();entity=null;curved=null}
+    override fun close(){moving=false;visible=false;generation++;stream?.close();resize?.let{resizeTarget?.removeComponent(it)};resize=null;resizeTarget=null;drag.clear();dragSide=null;curved?.close();entity?.dispose();entity=null;curved=null}
 }

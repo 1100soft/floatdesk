@@ -83,6 +83,19 @@ fun main() {
  val toEye=FloatArray(3){-shifted.pose.position[it]/radius}
  check((0..2).sumOf{(normal[it]*toEye[it]).toDouble()}>.99999)
  check(fixedMagnifierGeometry(shifted,Pose()).mesh===shifted.mesh)
+ // Native gaze/hand rays drag from any contact without a generated movement handle.
+ val drag=MagnifierRayDrag()
+ val origin=floatArrayOf(0f,0f,0f);val rayContact=floatArrayOf(0f,0f,-MagnifierDistanceM)
+ drag.begin(zoom,Pose(),origin,floatArrayOf(0f,0f,-1f),rayContact)
+ check(drag.move(Pose(),origin,floatArrayOf(0f,0f,-1f))==null)
+ val movedByRay=drag.move(Pose(),origin,floatArrayOf(.3f,.2f,-1f))!!
+ check(movedByRay[0]>0f && movedByRay[1]>0f)
+ check(abs(sqrt(movedByRay.sumOf{(it*it).toDouble()}).toFloat()-MagnifierDistanceM)<.00001f)
+ val level=facingMagnifierRotation(movedByRay,Pose(),floatArrayOf(0f,0f,0f,1f))
+ check(abs(rotateVector(level,1f,0f,0f)[1])<.00001f)
+ drag.clear();check(drag.move(Pose(),origin,floatArrayOf(.5f,0f,-1f))==null)
+ drag.begin(zoom,Pose(),origin,floatArrayOf(0f,0f,-1f),rayContact)
+ check(drag.move(Pose(),origin,floatArrayOf(0f,0f,-1f))==null)
  val held=WindowMagnification()
  held.update(1,true,false,42,false,false,retain=true)
  check(held.update(601,true,false,42,false,false,retain=true)==42L)

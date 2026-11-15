@@ -236,8 +236,34 @@ internal fun facingMagnifierRotation(center:FloatArray,viewer:Pose,horizontalRot
     fun unit(v:FloatArray):FloatArray{val n=sqrt(v.sumOf{(it*it).toDouble()}).toFloat().coerceAtLeast(.00001f);return FloatArray(3){v[it]/n}}
     fun cross(a:FloatArray,b:FloatArray)=floatArrayOf(a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0])
     val normal=unit(FloatArray(3){viewer.position[it]-center[it]})
-    var right=rotateVector(horizontalRotation,1f,0f,0f)
-    if(abs((0..2).sumOf{(right[it]*normal[it]).toDouble()})>.999)right=rotateVector(horizontalRotation,0f,0f,1f)
-    val up=unit(cross(normal,right));right=unit(cross(up,normal))
+    var vertical=rotateVector(horizontalRotation,0f,1f,0f)
+    if(abs((0..2).sumOf{(vertical[it]*normal[it]).toDouble()})>.999)vertical=rotateVector(horizontalRotation,0f,0f,1f)
+    val right=unit(cross(vertical,normal));val up=unit(cross(normal,right))
     return basisRotation(right,up,normal)
+}
+
+/** Captured native DOWN/MOVE/UP rays drag the actual pane without a Movable affordance. */
+internal class MagnifierRayDrag{
+    private var start:MagnifiedWindow?=null
+    private var from=floatArrayOf();private var offset=floatArrayOf();private var rayDistance=0f
+    private var dragging=false
+    fun clear(){start=null;dragging=false}
+    private fun unit(v:FloatArray):FloatArray{val n=sqrt(v.sumOf{(it*it).toDouble()}).toFloat().coerceAtLeast(.00001f);return FloatArray(3){v[it]/n}}
+    fun begin(window:MagnifiedWindow,viewer:Pose,origin:FloatArray,direction:FloatArray,contact:FloatArray){
+        start=window;dragging=false;from=unit(FloatArray(3){contact[it]-viewer.position[it]});offset=FloatArray(3){window.pose.position[it]-viewer.position[it]}
+        val d=unit(direction);rayDistance=(0..2).sumOf{((contact[it]-origin[it])*d[it]).toDouble()}.toFloat().coerceAtLeast(.001f)
+    }
+    fun move(viewer:Pose,origin:FloatArray,direction:FloatArray):FloatArray?{
+        val window=start ?: return null
+        val d=unit(direction);val to=unit(FloatArray(3){origin[it]+d[it]*rayDistance-viewer.position[it]})
+        val dot=(0..2).sumOf{(from[it]*to[it]).toDouble()}.toFloat().coerceIn(-1f,1f)
+        if(!dragging && sqrt(maxOf(0f,2f-2f*dot))*MagnifierDistanceM<.008f)return null
+        dragging=true
+        var axis=floatArrayOf(from[1]*to[2]-from[2]*to[1],from[2]*to[0]-from[0]*to[2],from[0]*to[1]-from[1]*to[0])
+        val q=if(dot<-.9999f){axis=unit(if(abs(from[0])<.9f)floatArrayOf(0f,from[2],-from[1])else floatArrayOf(-from[2],0f,from[0]));floatArrayOf(axis[0],axis[1],axis[2],0f)}else{
+            val n=sqrt(2f*(1f+dot));floatArrayOf(axis[0]/n,axis[1]/n,axis[2]/n,n/2f)
+        }
+        val moved=rotateVector(q,offset[0],offset[1],offset[2])
+        return FloatArray(3){viewer.position[it]+moved[it]}.takeIf{it.all{v->v.isFinite()} && window.units>0f}
+    }
 }

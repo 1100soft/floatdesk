@@ -46,7 +46,9 @@ fun main() {
      val r=sqrt((0..2).sumOf{val delta=world[it]-head.position[it];(delta*delta).toDouble()}).toFloat()
      check(abs(r-MagnifierDistanceM*units)<.00001f)
    }
-   check(moved.pose.rotation.contentEquals(head.rotation))
+   val face=rotateVector(moved.pose.rotation,0f,0f,1f)
+   val distance=MagnifierDistanceM*units
+   check((0..2).sumOf{(face[it]*(head.position[it]-moved.pose.position[it])/distance).toDouble()}>.9999)
    check(abs(moved.width/zoom.width-units)<.00001f)
  }
  // Head-relative pose and head-driven curvature reuse geometry through ordinary head motion.
@@ -72,7 +74,15 @@ fun main() {
  for(axis in 0..2)check(abs(restored.pose.position[axis]-zoom.pose.position[axis])<.00001f)
  check(abs(restored.width-zoom.width)<.00001f)
  val shifted=fixedMagnifier(record,deskAnchor.copy(pose=Pose(floatArrayOf(.7f,.1f,-1.2f))),DesktopWindow(42,0,0,1600,900),Pose(),1f,true)
- check(abs(shifted.pose.position[0]-restored.pose.position[0]-.5f)<.00001f)
+ check(shifted.pose.position[0]>restored.pose.position[0])
+ val radius=sqrt(shifted.pose.position.sumOf{(it*it).toDouble()}).toFloat()
+ check(abs(radius-MagnifierDistanceM)<.00001f)
+ val radial=fixedMagnifierGeometry(shifted,Pose(),FloatArray(3){shifted.pose.position[it]*4f})
+ for(axis in 0..2)check(abs(radial.pose.position[axis]-shifted.pose.position[axis])<.00001f)
+ val normal=rotateVector(shifted.pose.rotation,0f,0f,1f)
+ val toEye=FloatArray(3){-shifted.pose.position[it]/radius}
+ check((0..2).sumOf{(normal[it]*toEye[it]).toDouble()}>.99999)
+ check(fixedMagnifierGeometry(shifted,Pose()).mesh===shifted.mesh)
  val held=WindowMagnification()
  held.update(1,true,false,42,false,false,retain=true)
  check(held.update(601,true,false,42,false,false,retain=true)==42L)

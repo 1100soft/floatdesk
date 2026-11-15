@@ -19,12 +19,13 @@ internal class CurvedMonitorInput private constructor(
     private val model: GltfModel,
     private val component: InteractableComponent,
     private val pointer: SpatialPointerComponent,
+    private val columns:Int,private val rows:Int,
 ) : AutoCloseable {
     private var closed = false
 
     fun update(next:MonitorMesh) {
         if(closed || mesh===next)return
-        updateMeshPatches(entity,next)
+        updateMeshPatches(entity,next,columns,rows)
         mesh=next
     }
 
@@ -39,20 +40,20 @@ internal class CurvedMonitorInput private constructor(
     companion object {
         @android.annotation.SuppressLint("RestrictedApi")
         suspend fun create(session: Session, parent: Entity, mesh: MonitorMesh,
-                           listener: (InputEvent) -> Unit): CurvedMonitorInput {
+                           listener: (InputEvent) -> Unit,columns:Int=12,rows:Int=8): CurvedMonitorInput {
             val pixel = java.util.Base64.getDecoder().decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII=")
-            val model = GltfModel.create(session, interactionGridGlb(pixel), "floatdesk-curved-input-${System.nanoTime()}")
+            val model = GltfModel.create(session, interactionGridGlb(pixel,columns,rows), "floatdesk-curved-input-${System.nanoTime()}")
             var entity: GltfModelEntity? = null
             try {
                 val created = GltfModelEntity.create(session, model, parent = parent)
                 entity = created
-                updateMeshPatches(created,mesh)
+                updateMeshPatches(created,mesh,columns,rows)
                 val component = NativeMonitorInput.create(session, listener)
                 check(created.addComponent(component)) { "Could not attach curved monitor interaction" }
                 val pointer=SpatialPointerComponent.create(session)
                 check(created.addComponent(pointer)) { "Could not set curved monitor pointer" }
                 pointer.spatialPointerIcon=SpatialPointerIcon.NONE
-                return CurvedMonitorInput(mesh, created, model, component,pointer)
+                return CurvedMonitorInput(mesh, created, model, component,pointer,columns,rows)
             } catch (failure: Throwable) {
                 releaseOwnedGltf(model, entity)
                 throw failure

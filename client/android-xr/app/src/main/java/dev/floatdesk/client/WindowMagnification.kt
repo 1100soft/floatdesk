@@ -54,7 +54,7 @@ internal class NativeSurfaceTap {
     }
 }
 internal const val MagnifierDistanceM=.85f
-internal data class MagnifiedWindow(val id:Long,val pose:Pose,val width:Float,val height:Float,val sourceWidth:Int,val sourceHeight:Int,val spherical:Boolean=false,val mesh:MonitorMesh?=null,val units:Float=1f,val headOffset:FloatArray=floatArrayOf(0f,0f,-1f),val sizeScale:Float=1f,val fixed:Boolean=false)
+internal data class MagnifiedWindow(val id:Long,val pose:Pose,val width:Float,val height:Float,val sourceWidth:Int,val sourceHeight:Int,val spherical:Boolean=false,val mesh:MonitorMesh?=null,val units:Float=1f,val headOffset:FloatArray=floatArrayOf(0f,0f,-1f),val sizeScale:Float=1f,val fixed:Boolean=false,val desktopRotation:FloatArray?=null)
 internal fun magnifiedWindow(id:Long,width:Int,height:Int,viewer:Pose,horizontal:Float,vertical:Float,units:Float,spherical:Boolean=false):MagnifiedWindow{
     val source=deskLayout(listOf(Triple("Window",width,height)))
     val fitted=fitDesktopInView(source,viewer,horizontal,vertical,units,spherical,centralView=true,distanceM=MagnifierDistanceM).single()
@@ -72,15 +72,18 @@ internal fun magnifierGeometry(window:MagnifiedWindow,viewer:Pose,units:Float,pr
         if(length>.00001f)FloatArray(3){local[it]/length} else window.headOffset
     }
     val center=transformPoint(viewer,FloatArray(3){offset[it]*radius})
-    val pose=Pose(center,viewer.rotation.copyOf())
+    val pose=Pose(center,facingMagnifierRotation(center,viewer,viewer.rotation))
     val scale=stableUnits/window.units
     val width=window.width*scale;val height=window.height*scale
-    val eye=FloatArray(3){-offset[it]*radius}
+    val eye=viewerInMonitor(viewer.position,pose.position,pose.rotation)
     val old=window.mesh
-    val mesh=if(!window.spherical)null else if(old!=null && old.width==width && old.height==height && old.eye.indices.all{abs(old.eye[it]-eye[it])<.000001f})old else {
-        val reference=MonitorMesh(width,height,eye,columns=32,rows=20,focus=floatArrayOf(0f,0f))
-        val focus=sphericalViewFocus(reference,floatArrayOf(0f,0f,-1f)) ?: floatArrayOf(0f,0f)
-        MonitorMesh(width,height,eye,columns=32,rows=20,focus=focus)
+    val mesh=if(!window.spherical)null else {
+        val same=old!=null && old.width==width && old.height==height && old.eye.indices.all{abs(old.eye[it]-eye[it])<.000001f}
+        val reference=if(same)old!! else MonitorMesh(width,height,eye,columns=32,rows=20,focus=floatArrayOf(0f,0f))
+        val forward=rotateVector(viewer.rotation,0f,0f,-1f)
+        val end=viewerInMonitor(FloatArray(3){viewer.position[it]+forward[it]},pose.position,pose.rotation)
+        val focus=sphericalViewFocus(reference,FloatArray(3){end[it]-eye[it]}) ?: floatArrayOf(0f,0f)
+        if(same && (0..1).all{abs(focus[it]-(old!!.focus?.get(it) ?: 0f))<.00001f})old!! else MonitorMesh(width,height,eye,columns=32,rows=20,focus=focus)
     }
     return window.copy(pose=pose,width=width,height=height,mesh=mesh,units=stableUnits,headOffset=offset)
 
@@ -166,20 +169,25 @@ internal fun saveFixedMagnifier(id:String,window:MagnifiedWindow,desktop:Monitor
     val rotation=multiplyRotation(floatArrayOf(-q[0],-q[1],-q[2],q[3]),window.pose.rotation)
     return FixedMagnifierPlacement(id,Pose(FloatArray(3){local[it]/units},rotation),window.width/units,window.height/units)
 }
-internal fun fixedMagnifier(record:FixedMagnifierPlacement,desktop:MonitorPlacement,source:DesktopWindow?,viewer:Pose,units:Float,spherical:Boolean):MagnifiedWindow{
+internal fun fixedMagnifier(record:FixedMagnifierPlacement,desktop:MonitorPlacement,source:DesktopWindow?,viewer:Pose,units:Float,spherical:Boolean,mesh:MonitorMesh?=null,deferMesh:Boolean=false):MagnifiedWindow{
     val pose=Pose(transformPoint(desktop.pose,FloatArray(3){record.pose.position[it]*units}),multiplyRotation(desktop.pose.rotation,record.pose.rotation))
-    return fixedMagnifierGeometry(MagnifiedWindow(source?.id ?: 0,pose,record.widthM*units,record.heightM*units,source?.width ?: 1280,source?.height ?: 800,spherical,units=units,fixed=true),viewer)
+    return fixedMagnifierGeometry(MagnifiedWindow(source?.id ?: 0,pose,record.widthM*units,record.heightM*units,source?.width ?: 1280,source?.height ?: 800,spherical,mesh=mesh,units=units,fixed=true,desktopRotation=desktop.pose.rotation),viewer,updateMesh=!deferMesh)
 }
-internal fun fixedMagnifierGeometry(window:MagnifiedWindow,viewer:Pose,proposed:FloatArray=window.pose.position):MagnifiedWindow{
-    val pose=window.pose.copy(position=proposed.copyOf())
+internal fun fixedMagnifierGeometry(window:MagnifiedWindow,viewer:Pose,proposed:FloatArray=window.pose.position,updateMesh:Boolean=true):MagnifiedWindow{
+    fun unit(v:FloatArray):FloatArray{val n=sqrt(v.sumOf{(it*it).toDouble()}).toFloat().coerceAtLeast(.00001f);return FloatArray(3){v[it]/n}}
+    val normal=unit(FloatArray(3){viewer.position[it]-proposed[it]})
+    val center=FloatArray(3){viewer.position[it]-normal[it]*MagnifierDistanceM*window.units}
+    val pose=Pose(center,facingMagnifierRotation(center,viewer,window.desktopRotation ?: window.pose.rotation))
     val eye=viewerInMonitor(viewer.position,pose.position,pose.rotation)
-    val mesh=if(!window.spherical)null else {
-        val reference=MonitorMesh(window.width,window.height,eye,columns=32,rows=20,focus=floatArrayOf(0f,0f))
+    val mesh=if(!window.spherical)null else if(!updateMesh)window.mesh else {
         val direction=rotateVector(viewer.rotation,0f,0f,-1f)
         val endpoint=viewerInMonitor(FloatArray(3){viewer.position[it]+direction[it]},pose.position,pose.rotation)
-        val focus=sphericalViewFocus(reference,FloatArray(3){endpoint[it]-eye[it]}) ?: floatArrayOf(0f,0f)
+        val ray=FloatArray(3){endpoint[it]-eye[it]}
         val old=window.mesh
-        if(old!=null && old.width==window.width && old.height==window.height && (0..2).all{abs(eye[it]-old.eye[it])<.003f} && (0..1).all{abs(focus[it]-old.focus!![it])<.003f})old else MonitorMesh(window.width,window.height,eye,columns=32,rows=20,focus=focus)
+        val same=old!=null && old.width==window.width && old.height==window.height && (0..2).all{abs(eye[it]-old.eye[it])<.003f}
+        val reference=if(same)old!! else MonitorMesh(window.width,window.height,eye,columns=32,rows=20,focus=floatArrayOf(0f,0f))
+        val focus=sphericalViewFocus(reference,ray) ?: floatArrayOf(0f,0f)
+        if(same && (0..1).all{abs(focus[it]-(old!!.focus?.get(it) ?: 0f))<.003f})old!! else MonitorMesh(window.width,window.height,eye,columns=32,rows=20,focus=focus)
     }
     return window.copy(pose=pose,mesh=mesh)
 }
@@ -213,4 +221,23 @@ internal fun framedMagnifierGeometry(window:MagnifiedWindow):VideoGeometry {
     }
     for(j in perimeter.indices){val next=(j+1)%perimeter.size;val a=perimeter[j];val b=perimeter[next];val c=base+j;val d=base+next;indices.addAll(listOf(a,b,c,c,b,d))}
     return VideoGeometry(positions.toFloatArray(),uv.toFloatArray(),indices.toIntArray())
+}
+
+/** Orthonormal column basis, including rotations beyond 180 degrees. */
+internal fun basisRotation(x:FloatArray,y:FloatArray,z:FloatArray):FloatArray{
+    val trace=x[0]+y[1]+z[2]
+    return if(trace>0f){val s=sqrt(trace+1f)*2;floatArrayOf((y[2]-z[1])/s,(z[0]-x[2])/s,(x[1]-y[0])/s,s/4)}
+    else if(x[0]>y[1] && x[0]>z[2]){val s=sqrt(1+x[0]-y[1]-z[2])*2;floatArrayOf(s/4,(y[0]+x[1])/s,(z[0]+x[2])/s,(y[2]-z[1])/s)}
+    else if(y[1]>z[2]){val s=sqrt(1+y[1]-x[0]-z[2])*2;floatArrayOf((y[0]+x[1])/s,s/4,(z[1]+y[2])/s,(z[0]-x[2])/s)}
+    else{val s=sqrt(1+z[2]-x[0]-y[1])*2;floatArrayOf((z[0]+x[2])/s,(z[1]+y[2])/s,s/4,(x[1]-y[0])/s)}
+}
+
+internal fun facingMagnifierRotation(center:FloatArray,viewer:Pose,horizontalRotation:FloatArray):FloatArray{
+    fun unit(v:FloatArray):FloatArray{val n=sqrt(v.sumOf{(it*it).toDouble()}).toFloat().coerceAtLeast(.00001f);return FloatArray(3){v[it]/n}}
+    fun cross(a:FloatArray,b:FloatArray)=floatArrayOf(a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0])
+    val normal=unit(FloatArray(3){viewer.position[it]-center[it]})
+    var right=rotateVector(horizontalRotation,1f,0f,0f)
+    if(abs((0..2).sumOf{(right[it]*normal[it]).toDouble()})>.999)right=rotateVector(horizontalRotation,0f,0f,1f)
+    val up=unit(cross(normal,right));right=unit(cross(up,normal))
+    return basisRotation(right,up,normal)
 }

@@ -34,7 +34,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
             fun shape(surface:MagnifiedWindow):SurfaceEntity.Shape{
                 if(surface.mesh==null)return SurfaceEntity.Shape.Quad(FloatSize2d(surface.width+.01f*surface.units,surface.height+.01f*surface.units))
                 val geometry=framedMagnifierGeometry(surface)
-                return SurfaceEntity.Shape.CustomMesh(SurfaceEntity.Shape.TriangleMesh(FloatBuffer.wrap(geometry.positions),FloatBuffer.wrap(geometry.texCoords),IntBuffer.wrap(geometry.indices)))
+                return SurfaceEntity.Shape.CustomMesh(SurfaceEntity.Shape.TriangleMesh(java.nio.ByteBuffer.allocateDirect(geometry.positions.size*4).order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer().apply{put(geometry.positions);rewind()},java.nio.ByteBuffer.allocateDirect(geometry.texCoords.size*4).order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer().apply{put(geometry.texCoords);rewind()},java.nio.ByteBuffer.allocateDirect(geometry.indices.size*4).order(java.nio.ByteOrder.nativeOrder()).asIntBuffer().apply{put(geometry.indices);rewind()}))
             }
             val reusedSurface=resources.entity!=null
             if(resources.entity==null){
@@ -75,16 +75,13 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
             if(target.mesh!=null && resources.flatInputAttached){resources.input?.let{entity.removeComponent(it)};resources.flatInputAttached=false}
             if(target.mesh==null && !resources.flatInputAttached){resources.input?.let{entity.addComponent(it)};resources.flatInputAttached=true}
             if(target.mesh!=null){
-                if(resources.curved==null){delay(32);resources.curved=CurvedMonitorInput.create(session,root,target.mesh,resources.listener!!)}
+                if(resources.curved==null){delay(32);resources.curved=CurvedMonitorInput.create(session,entity,target.mesh,resources.listener!!,6,4)}
                 else resources.curved!!.update(target.mesh)
             }
             // Keep the movable body's parent fixed. Moving a collider's parent instead
             // would feed our previous movement back into the next native pose.
-            if(target.spherical){
-                val body=resources.curved!!.entity
-                body.parent=root;body.setPose(targetPose)
-                entity.parent=body;entity.setPose(Pose())
-            }else{entity.parent=root;entity.setPose(targetPose)}
+            entity.parent=root;entity.setPose(targetPose)
+            resources.curved?.entity?.let{it.parent=entity;it.setPose(Pose())}
             if(resources.move==null){
                 resources.move=MovableComponent.createCustomMovable(session,scaleInZ=false,executor=null,entityMoveListener=object:EntityMoveListener{
                     private var start:FloatArray?=null
@@ -121,7 +118,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                     }
                 })
             }
-            val moveTarget=if(target.spherical)resources.curved!!.entity else entity
+            val moveTarget=entity
             if(resources.moveTarget!==moveTarget){
                 resources.moveTarget?.removeComponent(resources.move!!)
                 check(moveTarget.addComponent(resources.move!!));resources.moveTarget=moveTarget
@@ -178,7 +175,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                 val pose=next.pose;val rotation=pose.rotation
                 resources.moveTarget?.setPose(Pose(Vector3(pose.position[0],pose.position[1],pose.position[2]),Quaternion(rotation[0],rotation[1],rotation[2],rotation[3])))
                 if(meshChanged || sizeChanged){
-                    val nextShape=shape(next);resources.retain(nextShape);entity.shape=nextShape;geometryAt=now
+                    val nextShape=shape(next);resources.retain(nextShape);entity.shape=nextShape;geometryAt=android.os.SystemClock.uptimeMillis()
                     if(mesh!=null)resources.curved?.update(mesh)
                     if(!resources.resizing){
                         resources.move?.size=FloatSize3d(next.width,next.height,.001f)
@@ -204,6 +201,6 @@ private class MagnifierResources:AutoCloseable{
     var lastContact:Pair<Float,Float>?=null;var moveContact:Pair<Float,Float>?=null
     var holdAt=0L;var contextShown=false
     var visible=false;var generation=0;val taps=NativeSurfaceTap();val shapes=java.util.ArrayDeque<SurfaceEntity.Shape>()
-    fun retain(shape:SurfaceEntity.Shape){shapes.addLast(shape);while(shapes.size>16)shapes.removeFirst()}
+    fun retain(shape:SurfaceEntity.Shape){shapes.addLast(shape);while(shapes.size>128)shapes.removeFirst()}
     override fun close(){moving=false;visible=false;generation++;stream?.close();resize?.let{resizeTarget?.removeComponent(it)};resize=null;resizeTarget=null;move?.let{moveTarget?.removeComponent(it)};move=null;moveTarget=null;curved?.close();entity?.dispose();entity=null;curved=null}
 }

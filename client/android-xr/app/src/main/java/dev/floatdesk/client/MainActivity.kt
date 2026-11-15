@@ -899,9 +899,9 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
             connection.typingQuietMs=workspace.typingQuietMs
             if(workspace.gazeToFocus || workspace.magnifyWindow)connection.pollTyping(handTracking.nowMs)
             typingLocked=connection.typingLocked(handTracking.nowMs)
-            val autoFocusBlocked=typingLocked || gazeBlockedByPane || magnifierMoving || magnifierMenu!=null || !reliable || !resumed || displayControlsOpen || palmPanel!=null ||
+            val autoFocusBlocked=typingLocked || magnifierMoving || magnifierMenu!=null || !reliable || !resumed || displayControlsOpen || palmPanel!=null ||
                 choice.mode.reservesDesktop || monitorGrab || nativeManipulation || mouseGestures.engaged || connection.focusBusy.value || focusInfo?.gazeFocus!=true
-            val autoFocusWindow=if(!autoFocusBlocked && workspace.gazeToFocus)rawGazeTarget?.takeIf{it.monitor==0}?.let{hit->
+            val autoFocusWindow=if(!autoFocusBlocked && workspace.gazeToFocus)paneGaze?.first?.id?.takeIf{it>0} ?: rawGazeTarget?.takeIf{it.monitor==0}?.let{hit->
                 connection.desktopPoint(hit.monitor,hit.u,hit.v)?.let{(u,v)->focusInfo?.hover(u,v)?.window?.windowId}
             }else null
             gazeWindowFocus.update(handTracking.nowMs,workspace.gazeToFocus,autoFocusBlocked,autoFocusWindow)?.let{connection.requestGazeFocus(it)}
@@ -1154,14 +1154,15 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
         val fixedDesktop=workspace.monitorAt(0)
         val fixedViewer=magnifierViewer.get()
         val renderedFixed=mutableListOf<Pair<String,MagnifiedWindow>>()
-        if(session!=null && magnifierRoot!=null && fixedDesktop!=null && fixedViewer!=null && workspace.magnifyWindow && workspace.magnifierMode=="fixed"){
+        if(session!=null && magnifierRoot!=null && fixedDesktop!=null && fixedViewer!=null){
             for(record in workspace.fixedMagnifiers) key(record.id){
                 val selected=fixedPins[record.id] ?: inPlaceWindow ?: lastFixedWindow
                 val source=connection.workspaceInfo.value?.windows?.firstOrNull{it.id==selected}
-                val pane=fixedMagnifier(record,fixedDesktop,source,fixedViewer,handTracking.unitsPerMeter,workspace.sphericalWarp).let{base->fixedMagnifierGeometry(base.copy(mesh=fixedRuntime[record.id]?.mesh),fixedViewer)}
-                renderedFixed.add(record.id to pane)
+                val paneEnabled=workspace.magnifyWindow && workspace.magnifierMode=="fixed"
+                val pane=if(paneEnabled)fixedMagnifier(record,fixedDesktop,source,fixedViewer,handTracking.unitsPerMeter,workspace.sphericalWarp,fixedRuntime[record.id]?.mesh,fixedRuntime[record.id]?.mesh!=null)else fixedRuntime[record.id] ?: fixedMagnifier(record,fixedDesktop,source,fixedViewer,handTracking.unitsPerMeter,false)
+                if(paneEnabled)renderedFixed.add(record.id to pane)
                 DisposableEffect(record.id,pane.id){fixedReady[record.id]=false;onDispose{fixedReady.remove(record.id)}}
-                WindowMagnifierPanel(session,magnifierRoot,pane,connection,record.id in fixedPins,magnifierViewer,{handTracking.unitsPerMeter},
+                WindowMagnifierPanel(session,magnifierRoot,pane.takeIf{paneEnabled},connection,record.id in fixedPins,magnifierViewer,{handTracking.unitsPerMeter},
                     {fixedReady[record.id]=true;magnifierReady=true},{message->fixedReady[record.id]=false;Log.w("Floatdesk",message)},
                     {side,uv->if(uv==null){if(magnifierHandOwners[side]==record.id){magnifierHands.remove(side);magnifierHandWindows.remove(side);magnifierHandOwners.remove(side)}}else{magnifierHands[side]=magnifierContentPoint(pane,uv);magnifierHandWindows[side]=pane.id;magnifierHandOwners[side]=record.id}},
                     {uv->

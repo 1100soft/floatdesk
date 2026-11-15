@@ -70,7 +70,7 @@ internal class MonitorWarp : AutoCloseable {
         val valid=geometry.indices.isNotEmpty() && geometry.positions.size%3==0 && geometry.texCoords.size*3==geometry.positions.size*2 && geometry.indices.size%3==0 &&
             geometry.positions.all{it.isFinite()} && geometry.texCoords.all{it.isFinite()} && geometry.indices.all{it>=0 && it<geometry.positions.size/3}
         if(!valid)return appliedShape ?: SurfaceEntity.Shape.Quad(FloatSize2d(.001f,.001f))
-        return SurfaceEntity.Shape.CustomMesh(SurfaceEntity.Shape.TriangleMesh(FloatBuffer.wrap(geometry.positions),FloatBuffer.wrap(geometry.texCoords),IntBuffer.wrap(geometry.indices)))
+        return SurfaceEntity.Shape.CustomMesh(SurfaceEntity.Shape.TriangleMesh(java.nio.ByteBuffer.allocateDirect(geometry.positions.size*4).order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer().apply{put(geometry.positions);rewind()},java.nio.ByteBuffer.allocateDirect(geometry.texCoords.size*4).order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer().apply{put(geometry.texCoords);rewind()},java.nio.ByteBuffer.allocateDirect(geometry.indices.size*4).order(java.nio.ByteOrder.nativeOrder()).asIntBuffer().apply{put(geometry.indices);rewind()}))
     }
     private var hoverWindow=0L
     private val hoverActions=mutableMapOf<String,Int>()
@@ -125,7 +125,7 @@ internal class MonitorWarp : AutoCloseable {
         if(target===live && appliedShape===shape)return
         target.shape = shape
         appliedShape = shape
-        recentShapes.addLast(shape);while(recentShapes.size>64)recentShapes.removeFirst()
+        recentShapes.addLast(shape);while(recentShapes.size>512)recentShapes.removeFirst()
     }
 
     @SuppressLint("RestrictedApi")
@@ -319,11 +319,11 @@ internal class MonitorWarp : AutoCloseable {
                 check(it.addComponent(pointer))
                 pointer.spatialPointerIcon=SpatialPointerIcon.NONE
                 live = it;appliedShape=shape
-                recentShapes.addLast(shape);while(recentShapes.size>64)recentShapes.removeFirst()
+                recentShapes.addLast(shape);while(recentShapes.size>512)recentShapes.removeFirst()
             } else live!!
             applyShape(target, shape)
             flatWidth = next.width; flatHeight = next.height
-            mesh = next;presentationDirty=false;geometryUpdatedAt=now
+            mesh = next;presentationDirty=false;geometryUpdatedAt=android.os.SystemClock.uptimeMillis()
         } else if (live?.shape !== appliedShape) {
             appliedShape?.let { applyShape(live!!, it) }
         }

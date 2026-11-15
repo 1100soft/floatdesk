@@ -119,3 +119,5 @@ The host resynchronizes Qt/Plasma monitor geometry after layout changes, includi
 In Focus mode, Android XR’s mixed eye/hand aiming can target windows and screens through native gaze when no current hand ray targets the desktop. Current hand targets keep priority and two-hand preview still blocks selection. Mouse mode retains its existing eye/hand settings. Native target icons are hidden on desktop surfaces, while UI panels retain their pointer feedback.
 
 Desktop focus keeps its reference surface at 1.2 metres and converts depth input into size changes. Flat mode maintains plane clearance when tilted; large spherical desktops use a view-focused, bounded mesh grid so triangle chords cannot cut into the foreground HUD region.
+
+Optional **Magnify focused window** in Workspace Settings presents a gaze-selected window in a separate fitted panel, with entry dwell, gaze-travel protection and dismissal cooldown.

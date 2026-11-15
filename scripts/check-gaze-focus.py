@@ -22,7 +22,7 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-gaze-kwin-') as tmp:
     if wm.poll() is not None:raise RuntimeError('KWin exited')
     time.sleep(.05)
    else:raise RuntimeError('KWin did not manage private display')
-   result=subprocess.run(['cargo','test','--offline','focus_without_raise_private_kwin','--','--ignored','--nocapture'],env=env,cwd=root,capture_output=True,text=True,timeout=25)
+   result=subprocess.run(['cargo','test','--offline','private_kwin','--','--ignored','--nocapture'],env=env,cwd=root,capture_output=True,text=True,timeout=25)
    print(result.stdout);print(result.stderr[-2000:]);assert result.returncode==0
   except Exception:
    log.seek(0);print(log.read()[-4000:]);raise

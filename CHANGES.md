@@ -213,3 +213,5 @@ Substantial pose changes after a sustained tracking gap restore unanchored layou
 A Wi-Fi beacon followed by Ethernet control replies could leave the client on Updating screens indefinitely, with no decoder started. Discovery now retries other fresh addresses advertised under the selected host name while retaining strict reply-endpoint matching. Healthy connections stay pinned. Beacon polling no longer adds a 200 ms wait per control packet. A real UDP regression reproduces asymmetric reply routing, and live selection of the reply interface restored video reception and resolved the pending screen query.
 
 Known checkpoint limitation: aiming and grab-preview beams can remain invisible over large live desktops despite valid hover contacts. Active-grab snapshot tethers remain visible; the last depth-path changes did not resolve this device regression.
+
+- Add optional independently captured focused-window magnification with dwell, travel grace and re-entry cooldown; harden custom-mesh submissions following a native XR renderer crash.

@@ -1,0 +1,46 @@
+package dev.floatdesk.client.net
+
+import android.media.MediaCodec
+import android.media.MediaFormat
+import android.os.SystemClock
+import dev.floatdesk.client.media.*
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.io.*
+import java.nio.ByteBuffer
+import org.json.JSONObject
+
+/** One bounded window decoder; its opaque quad uses the same compositor as normal video. */
+internal class WindowVideo(private val host:InetSocketAddress,private val session:Long,private val id:Long,private val fps:Int,
+    private val video:VideoCompositor,private val failed:(String)->Unit):AutoCloseable{
+    @Volatile private var running=true
+    @Volatile private var socket:Socket?=null
+    private val thread=Thread({
+        var codec:MediaCodec?=null;var size=0 to 0
+        try{Socket().use{connection->
+            socket=connection;connection.connect(host,1000);connection.soTimeout=2000;connection.tcpNoDelay=true
+            val input=DataInputStream(connection.getInputStream());val output=DataOutputStream(connection.getOutputStream())
+            fun drain(c:MediaCodec){val info=MediaCodec.BufferInfo();while(true){val n=c.dequeueOutputBuffer(info,0);if(n<0)return;c.releaseOutputBuffer(n,true)}}
+            while(running){
+                val bytes=JSONObject().put("sessionId",session).put("windowId",id).put("fps",fps).toString().toByteArray()
+                output.writeInt(bytes.size);output.write(bytes);output.flush()
+                val n=input.readInt();require(n in 1..4096);val header=ByteArray(n);input.readFully(header);val meta=JSONObject(String(header))
+                require(meta.getLong("windowId")==id);val w=meta.getInt("width");val h=meta.getInt("height");require(w in 32..2048 && h in 32..2048 && w.toLong()*h<=2_100_000)
+                val length=meta.getInt("bytes");require(length in 1..8*1024*1024);val data=ByteArray(length);input.readFully(data)
+                if(codec==null || size!=(w to h)){
+                    codec?.stop();codec?.release();codec=null;size=w to h
+                    val csd=ByteArrayOutputStream();splitAnnexB(data).filter{nalType(it) in 7..8}.forEach{csd.write(byteArrayOf(0,0,0,1));csd.write(it)}
+                    require(csd.size()>0)
+                    val format=MediaFormat.createVideoFormat("video/avc",w,h);format.setByteBuffer("csd-0",ByteBuffer.wrap(csd.toByteArray()));format.setInteger(MediaFormat.KEY_LOW_LATENCY,1);format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE,8*1024*1024)
+                    codec=MediaCodec.createDecoderByType("video/avc").also{it.configure(format,video.input,null,0);it.start()}
+                }
+                val c=codec!!;drain(c);var slot=c.dequeueInputBuffer(10000);val until=SystemClock.uptimeMillis()+500
+                while(slot<0 && running && SystemClock.uptimeMillis()<until){drain(c);slot=c.dequeueInputBuffer(10000)}
+                check(slot>=0);val b=c.getInputBuffer(slot)!!;require(b.capacity()>=data.size);b.clear();b.put(data)
+                c.queueInputBuffer(slot,0,data.size,System.nanoTime()/1000,if(isKeyframe(data))MediaCodec.BUFFER_FLAG_KEY_FRAME else 0);drain(c)
+            }
+        }}catch(e:Exception){if(running){android.util.Log.w("Floatdesk","Window stream failed",e);failed(e.message?.takeIf{it.isNotBlank()} ?: "Window magnification stopped")}}
+        finally{socket=null;runCatching{codec?.stop()};runCatching{codec?.release()}}
+    },"floatdesk-window-video").also{it.start()}
+    override fun close(){running=false;runCatching{socket?.close()};if(Thread.currentThread()!==thread)thread.join(1500)}
+}

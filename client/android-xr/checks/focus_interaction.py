@@ -6,8 +6,23 @@ root=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
 def body(path):return '\n'.join(l for l in (root/path).read_text().splitlines() if not l.startswith(('import ','package ')))
 workspace=body('workspace/Workspace.kt');workspace=workspace[workspace.index('internal data class Pose'):workspace.index('internal class WorkspaceStore')]
 metadata=body('net/WorkspaceInfo.kt');metadata=metadata[:metadata.index('    companion object')]+'}\n'
-code='import kotlin.math.*\n'+body('MonitorMesh.kt')+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+body('workspace/WorkspacePlacement.kt')+metadata+r'''
+code='import kotlin.math.*\n'+body('MonitorMesh.kt')+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+body('workspace/WorkspacePlacement.kt')+metadata+body('WindowMagnification.kt').split('internal data class MagnifiedWindow')[0]+r'''
 fun main() {
+ val magnify=WindowMagnification()
+ check(magnify.update(1,true,false,42,false,false)==null)
+ check(magnify.update(600,true,false,42,false,false)==null)
+ check(magnify.update(601,true,false,42,false,false)==42L)
+ check(magnify.update(1000,true,false,43,false,false)==42L) // Wait for decoded video.
+ check(magnify.update(1200,true,false,43,false,true)==42L)
+ check(magnify.update(2099,true,false,43,false,true)==42L) // Travel does not select intermediate windows.
+ check(magnify.update(2100,true,false,43,false,true)==42L)
+ check(magnify.update(2280,true,false,43,false,true)==null)
+ check(magnify.update(4000,true,false,42,false,false)==null) // Re-entry cooldown.
+ check(magnify.update(4080,true,false,42,false,false)==null)
+ check(magnify.update(4680,true,false,42,false,false)==42L)
+ check(magnify.update(4700,true,true,42,true,true)==null)
+ check(magnify.update(4800,false,false,42,true,true)==null)
+
  val routing=PointerControl();routing.hover(0,"GAZE",floatArrayOf(0f,0f,0f),floatArrayOf(0f,0f,0f),2f,2f,1)
  val eye=routing.systemGaze()!!
  check(routing.systemGazeEnabled)

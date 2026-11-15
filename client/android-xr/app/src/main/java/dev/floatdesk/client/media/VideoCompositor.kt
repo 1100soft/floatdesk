@@ -79,6 +79,8 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     private var hasFrame=false
     @Volatile private var sharpening=0f
     fun sharpen(value:Float){val next=value.takeIf{it.isFinite()}?.coerceIn(0f,1.5f) ?: 0f;if(sharpening==next)return;sharpening=next;if(!closed)handler.post{if(!closed)guard{draw()}}}
+    @Volatile private var outputPresented:(()->Unit)?=null
+    fun onOutputPresented(callback:()->Unit){outputPresented=callback}
     private var baseFrames=0L
     private var swaps=0L
     private var submitNs=0L
@@ -357,7 +359,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         GLES20.glDisable(GLES20.GL_SCISSOR_TEST)
         drawInk(w[0],h[0])
         check(EGL14.eglSwapBuffers(display,window)) { "video swap failed" }
-        lastDraw=System.nanoTime();submitNs+=lastDraw-drawStarted;swaps++
+        lastDraw=System.nanoTime();submitNs+=lastDraw-drawStarted;swaps++;outputPresented?.invoke()
     }
 
     private fun samplePresentation() {

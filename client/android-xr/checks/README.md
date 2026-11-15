@@ -204,3 +204,5 @@ Contiguous-crop planner tests verify at most two rectangles, stable peripheral p
 Adaptive background checks preserve the native floor while lowering/recovering background sampling, including fixed-patch mode. Host tests verify 25% samples and 12.5% native crop coverage; `BudgetStreamSmoke` checks those per-frame values reach the real decoded-frame HUD as a 4:1 reduction and 12.5% HD coverage.
 
 Gaze-to-focus: `focus_interaction.py` covers identity dwell, saccades, blocking and tracking-gap rearming. `VideoCompositorSmoke` checks saved toggle persistence on Android. Run `python3 scripts/check-gaze-focus.py` from the repository to validate activation under a private KWin/Xvfb session with focus-stealing protection enabled, preserving stack, pointer and focused child. Requires Xvfb, KWin X11 and D-Bus; it never controls the current desktop.
+
+`WindowVideoSmoke` verifies the optional magnifier’s session/window identity, real AVC decoding, first-presentation callback and shutdown. `focus_interaction.py` also checks magnifier dwell, transition protection and cooldown. `scripts/check-gaze-focus.py` includes an isolated XComposite occlusion capture check.

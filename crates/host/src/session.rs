@@ -4,6 +4,7 @@
 
 mod detail;
 mod resources;
+mod window;
 
 use crate::core::{
     epoch_ns, monotonic_ns, CaptureBackend, CursorBackend, DisplayBackend, EncodeBackend,
@@ -516,6 +517,15 @@ fn run(
         opts.fps,
         opts.bitrate_bps,
     );
+    let _window_worker = opts.listen.port().checked_add(2).and_then(|port| {
+        window::start(
+            Arc::clone(&shared),
+            SocketAddr::new(opts.listen.ip(), port),
+            opts.encoder.clone(),
+            opts.fps,
+            opts.bitrate_bps,
+        )
+    });
     let stop_flag = Arc::clone(&shared);
     let _ = ctrlc::set_handler(move || {
         stop_flag.stop.store(true, Ordering::Relaxed);

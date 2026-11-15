@@ -40,6 +40,8 @@ internal class MonitorWarp : AutoCloseable {
     private var flatWidth = 0f
     private var flatHeight = 0f
     private var appliedShape: SurfaceEntity.Shape? = null
+    // Native rendering may consume direct mesh buffers after the Java setter returns.
+    private val recentShapes=java.util.ArrayDeque<SurfaceEntity.Shape>()
     private var interaction: InteractableComponent? = null
     private val sequences = mutableSetOf<String>()
     private var curvedInput: CurvedMonitorInput? = null
@@ -65,6 +67,9 @@ internal class MonitorWarp : AutoCloseable {
     private fun videoShape(width:Float,height:Float,sphere:MonitorMesh?):SurfaceEntity.Shape {
         if(sphere==null && videoCoverageIsFull(screenRects,spacing)) return SurfaceEntity.Shape.Quad(FloatSize2d(width,height))
         val geometry=clippedVideoGeometry(width,height,sphere,screenRects,spacing)
+        val valid=geometry.indices.isNotEmpty() && geometry.positions.size%3==0 && geometry.texCoords.size*3==geometry.positions.size*2 && geometry.indices.size%3==0 &&
+            geometry.positions.all{it.isFinite()} && geometry.texCoords.all{it.isFinite()} && geometry.indices.all{it>=0 && it<geometry.positions.size/3}
+        if(!valid)return appliedShape ?: SurfaceEntity.Shape.Quad(FloatSize2d(.001f,.001f))
         return SurfaceEntity.Shape.CustomMesh(SurfaceEntity.Shape.TriangleMesh(FloatBuffer.wrap(geometry.positions),FloatBuffer.wrap(geometry.texCoords),IntBuffer.wrap(geometry.indices)))
     }
     private var hoverWindow=0L
@@ -117,8 +122,10 @@ internal class MonitorWarp : AutoCloseable {
     }
 
     private fun applyShape(target: SurfaceEntity, shape: SurfaceEntity.Shape) {
+        if(target===live && appliedShape===shape)return
         target.shape = shape
         appliedShape = shape
+        recentShapes.addLast(shape);while(recentShapes.size>64)recentShapes.removeFirst()
     }
 
     @SuppressLint("RestrictedApi")
@@ -311,7 +318,8 @@ internal class MonitorWarp : AutoCloseable {
                 val pointer=SpatialPointerComponent.create(session)
                 check(it.addComponent(pointer))
                 pointer.spatialPointerIcon=SpatialPointerIcon.NONE
-                live = it
+                live = it;appliedShape=shape
+                recentShapes.addLast(shape);while(recentShapes.size>64)recentShapes.removeFirst()
             } else live!!
             applyShape(target, shape)
             flatWidth = next.width; flatHeight = next.height

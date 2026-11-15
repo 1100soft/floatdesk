@@ -124,6 +124,7 @@ pub struct X11Capture {
     dirty: bool,
     generation: u64,
     last: Option<Instant>,
+    window_pixmap: Option<(u32, u32, bool)>,
 }
 
 // The SHM mapping and the X connection are used by one capture thread.
@@ -241,9 +242,96 @@ impl X11Capture {
             dirty: true,
             generation: 1,
             last: None,
+            window_pixmap: None,
         })
     }
 
+    /// Capture the client's unobscured Composite backing pixmap without raising it.
+    pub fn window(window: u32, width: u16, height: u16) -> Result<Self> {
+        use x11rb::protocol::composite::{ConnectionExt as _, Redirect};
+        let link = X11Link::open()?;
+        let geometry = link
+            .conn
+            .get_geometry(window)
+            .map_err(Error::x11)?
+            .reply()
+            .map_err(Error::x11)?;
+        let attrs = link
+            .conn
+            .get_window_attributes(window)
+            .map_err(Error::x11)?
+            .reply()
+            .map_err(Error::x11)?;
+        let rect = MonitorRect {
+            index: 0,
+            x: 0,
+            y: 0,
+            width: geometry.width.into(),
+            height: geometry.height.into(),
+        };
+        let mut capture = Self::workspace(rect, width, height)?;
+        let pixmap = capture.link.conn.generate_id().map_err(Error::x11)?;
+        let mut owned = false;
+        if capture
+            .link
+            .conn
+            .composite_name_window_pixmap(window, pixmap)
+            .map_err(Error::x11)?
+            .check()
+            .is_err()
+        {
+            capture
+                .link
+                .conn
+                .composite_redirect_window(window, Redirect::AUTOMATIC)
+                .map_err(Error::x11)?
+                .check()
+                .map_err(Error::x11)?;
+            owned = true;
+            capture
+                .link
+                .conn
+                .composite_name_window_pixmap(window, pixmap)
+                .map_err(Error::x11)?
+                .check()
+                .map_err(Error::x11)?;
+        }
+        capture.window_pixmap = Some((window, pixmap, owned));
+        let formats = capture
+            .link
+            .conn
+            .render_query_pict_formats()
+            .map_err(Error::x11)?
+            .reply()
+            .map_err(Error::x11)?;
+        let format = formats
+            .screens
+            .iter()
+            .flat_map(|s| &s.depths)
+            .flat_map(|d| &d.visuals)
+            .find(|v| v.visual == attrs.visual)
+            .map(|v| v.format)
+            .ok_or_else(|| Error::Msg("Window visual cannot be captured".into()))?;
+        let source = capture.link.conn.generate_id().map_err(Error::x11)?;
+        capture
+            .link
+            .conn
+            .render_create_picture(source, pixmap, format, &render::CreatePictureAux::new())
+            .map_err(Error::x11)?
+            .check()
+            .map_err(Error::x11)?;
+        capture
+            .link
+            .conn
+            .render_set_picture_filter(source, b"bilinear", &[])
+            .map_err(Error::x11)?
+            .check()
+            .map_err(Error::x11)?;
+        let target = capture.render.as_mut().unwrap();
+        let _ = capture.link.conn.render_free_picture(target.source);
+        target.source = source;
+        Ok(capture)
+    }
     /// One bounded SHM allocation and target pixmap for all packed-atlas regions.
     pub fn workspace(rect: MonitorRect, width: u16, height: u16) -> Result<Self> {
         let mut result = Self::open_detail(rect, width, height)?;
@@ -571,6 +659,16 @@ impl Drop for X11Capture {
         if let Some(target) = &self.render {
             target.free(&self.link);
         }
+        if let Some((window, pixmap, owned)) = self.window_pixmap.take() {
+            use x11rb::protocol::composite::ConnectionExt as _;
+            let _ = self.link.conn.free_pixmap(pixmap);
+            if owned {
+                let _ = self.link.conn.composite_unredirect_window(
+                    window,
+                    x11rb::protocol::composite::Redirect::AUTOMATIC,
+                );
+            }
+        }
         if self.damage != 0 {
             let _ = self.link.conn.damage_destroy(self.damage);
         }
@@ -640,6 +738,92 @@ mod pacing_checks {
 mod scaled_checks {
     use super::*;
     use x11rb::protocol::xproto::{CreateGCAux, CreateWindowAux, Rectangle, WindowClass};
+    #[test]
+    #[ignore = "private Xvfb only; requires FLOATDESK_SYNTHETIC_DISPLAY=1"]
+    fn window_capture_private_kwin() {
+        assert_eq!(
+            std::env::var("FLOATDESK_SYNTHETIC_DISPLAY").as_deref(),
+            Ok("1")
+        );
+        let link = X11Link::open().unwrap();
+        let screen = &link.conn.setup().roots[link.screen];
+        let window = link.conn.generate_id().unwrap();
+        let cover = link.conn.generate_id().unwrap();
+        for (id, color) in [(window, 0xff0000), (cover, 0x0000ff)] {
+            link.conn
+                .create_window(
+                    screen.root_depth,
+                    id,
+                    screen.root,
+                    100,
+                    100,
+                    128,
+                    96,
+                    0,
+                    WindowClass::INPUT_OUTPUT,
+                    screen.root_visual,
+                    &CreateWindowAux::new()
+                        .background_pixel(color)
+                        .override_redirect(1),
+                )
+                .unwrap()
+                .check()
+                .unwrap();
+            link.conn.map_window(id).unwrap().check().unwrap();
+        }
+        link.conn.flush().unwrap();
+        let capture = X11Capture::window(window, 128, 96).unwrap();
+        let gc = link.conn.generate_id().unwrap();
+        link.conn
+            .create_gc(gc, window, &CreateGCAux::new().foreground(0xff0000))
+            .unwrap()
+            .check()
+            .unwrap();
+        link.conn
+            .poly_fill_rectangle(
+                window,
+                gc,
+                &[Rectangle {
+                    x: 0,
+                    y: 0,
+                    width: 128,
+                    height: 96,
+                }],
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+        link.conn.flush().unwrap();
+        let frame = capture
+            .atlas_padded(
+                &[(
+                    MonitorRect {
+                        index: 0,
+                        x: 0,
+                        y: 0,
+                        width: 128,
+                        height: 96,
+                    },
+                    0,
+                    0,
+                    128,
+                    96,
+                )],
+                0,
+            )
+            .unwrap();
+        let offset = 48 * frame.stride as usize + 64 * 4;
+        assert_eq!(
+            &frame.bgra[offset..offset + 3],
+            &[0, 0, 255],
+            "must capture window, not blue occluder"
+        );
+        drop(capture);
+        link.conn.free_gc(gc).unwrap();
+        link.conn.destroy_window(cover).unwrap();
+        link.conn.destroy_window(window).unwrap();
+        link.conn.flush().unwrap();
+    }
     #[test]
     #[ignore = "writes only private synthetic Xvfb pixels; requires FLOATDESK_SYNTHETIC_DISPLAY=1"]
     fn server_capture_tracks_third_output_with_nonzero_desktop_origin() {

@@ -70,6 +70,10 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
                 androidx.compose.material3.Switch(checked=quality.gazeToFocus,enabled=info?.gazeFocus==true || quality.gazeToFocus,onCheckedChange={onQuality(quality.copy(gazeToFocus=it))})
                 Text("Gaze to focus",color=Color.White)
             }
+            Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)){
+                androidx.compose.material3.Switch(checked=quality.magnifyWindow,enabled=info?.windowMagnify==true || quality.magnifyWindow,onCheckedChange={onQuality(quality.copy(magnifyWindow=it))})
+                Text("Magnify focused window",color=Color.White)
+            }
             if(quality.gazeToFocus && connection.gazeFocusError.value.isNotEmpty())Text(connection.gazeFocusError.value,color=Color(0xFFFFB4AB),fontSize=12.sp)
             Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                 androidx.compose.material3.Switch(checked=viewedDetail,onCheckedChange=onViewedDetail)

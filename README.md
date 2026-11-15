@@ -6,7 +6,7 @@ This tree is the LAN proof of concept: RandR 1.5 regions, MIT-SHM capture, XDama
 
 ## Host
 
-Run `floatdesk tray` (requires PySide6), or install a desktop launcher with `python3 scripts/install-tray.py`. The tray offers service controls, output status, logs and first-time backend setup.
+Run `floatdesk tray` (requires PySide6), or install a desktop launcher with `python3 scripts/install-tray.py`. The tray offers service controls, output status, logs and first-time backend setup. Status polling pauses while hidden; visible Qt helpers run without IBus input contexts. The server observes screen changes through a persistent native RandR connection.
 
 Use **Workspace → Screens** in the headset to add, resize or remove independent desktop screens from a pre-provisioned VKMS pool. A pre-provisioned pool supports this without a reboot or privileged commands during use. Drag screen rectangles in Workspace to arrange them with snapping. Workspace lists actual modes and accepts custom dimensions without a product count/resolution limit; host metadata supplies an advisory resource estimate. External layout changes reload automatically. See [multi-monitor behavior](docs/multi-monitor.md) and [first-time setup](docs/virtual-display-setup.md).
 

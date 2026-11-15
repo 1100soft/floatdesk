@@ -1138,7 +1138,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
         InPlaceWindowDetail(connection,if(workspace.magnifierMode=="fixed" && workspace.fixedMagnifiers.isEmpty())null else magnified?.id ?: inPlaceWindow ?: if(workspace.magnifierMode=="fixed")lastFixedWindow else null,{if(magnified==null)magnifierReady=true},{message->magnifierFailed=true;Log.w("Floatdesk",message)})
         val magnifierRoot=deskSpace.get()
         if(magnifierRoot!=null) {
-            WindowMagnifierPanel(session,magnifierRoot,magnified,connection,magnifierPinned,magnifierViewer,{handTracking.unitsPerMeter},
+            WindowMagnifierPanel(session,magnifierRoot,magnified,connection,magnifierPinned,magnifierViewer,{handTracking.unitsPerMeter},handTracking,
                 {magnifierReady=true},{message->magnifierFailed=true;Log.w("Floatdesk",message)},
                 {side,uv->if(uv==null){if(magnifierHandOwners[side]=="floating"){magnifierHands.remove(side);magnifierHandWindows.remove(side);magnifierHandOwners.remove(side)}}else{magnifierHands[side]=uv;magnifierHandOwners[side]="floating";magnified?.let{magnifierHandWindows[side]=it.id}}},
                 {uv->
@@ -1162,7 +1162,7 @@ private fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?) {
                 val pane=if(paneEnabled)fixedMagnifier(record,fixedDesktop,source,fixedViewer,handTracking.unitsPerMeter,workspace.sphericalWarp,fixedRuntime[record.id]?.mesh,fixedRuntime[record.id]?.mesh!=null)else fixedRuntime[record.id] ?: fixedMagnifier(record,fixedDesktop,source,fixedViewer,handTracking.unitsPerMeter,false)
                 if(paneEnabled)renderedFixed.add(record.id to pane)
                 DisposableEffect(record.id,pane.id){fixedReady[record.id]=false;onDispose{fixedReady.remove(record.id)}}
-                WindowMagnifierPanel(session,magnifierRoot,pane.takeIf{paneEnabled},connection,record.id in fixedPins,magnifierViewer,{handTracking.unitsPerMeter},
+                WindowMagnifierPanel(session,magnifierRoot,pane.takeIf{paneEnabled},connection,record.id in fixedPins,magnifierViewer,{handTracking.unitsPerMeter},handTracking,
                     {fixedReady[record.id]=true;magnifierReady=true},{message->fixedReady[record.id]=false;Log.w("Floatdesk",message)},
                     {side,uv->if(uv==null){if(magnifierHandOwners[side]==record.id){magnifierHands.remove(side);magnifierHandWindows.remove(side);magnifierHandOwners.remove(side)}}else{magnifierHands[side]=magnifierContentPoint(pane,uv);magnifierHandWindows[side]=pane.id;magnifierHandOwners[side]=record.id}},
                     {uv->

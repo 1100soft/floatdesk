@@ -82,29 +82,23 @@ fn lowest_mode(output: &Output, width: u16, height: u16) -> Option<&(String, u16
         .min_by(|a, b| a.3.total_cmp(&b.3))
 }
 fn desktop_limits() -> (u32, u32) {
-    let text = Command::new("xrandr")
-        .arg("--current")
-        .output()
-        .ok()
-        .map(|r| String::from_utf8_lossy(&r.stdout).into_owned())
-        .unwrap_or_default();
-    let words: Vec<_> = text
-        .lines()
-        .next()
-        .unwrap_or("")
-        .split_whitespace()
-        .collect();
-    words
-        .iter()
-        .position(|w| *w == "maximum")
-        .and_then(|i| {
-            Some((
-                words.get(i + 1)?.parse().ok()?,
-                words.get(i + 3)?.parse().ok()?,
-            ))
-        })
+    use x11rb::protocol::randr::ConnectionExt as _;
+    static LIMITS: std::sync::OnceLock<(u32, u32)> = std::sync::OnceLock::new();
+    *LIMITS.get_or_init(|| {
+        (|| -> Result<(u32, u32)> {
+            let link = super::X11Link::open()?;
+            let size = link
+                .conn
+                .randr_get_screen_size_range(link.root)
+                .map_err(Error::x11)?
+                .reply()
+                .map_err(Error::x11)?;
+            Ok((u32::from(size.max_width), u32::from(size.max_height)))
+        })()
         .unwrap_or((32767, 32767))
+    })
 }
+
 pub(super) fn query() -> Result<Vec<Output>> {
     let out = Command::new("xrandr").arg("--current").output()?;
     if !out.status.success() {
@@ -567,6 +561,7 @@ fn plasma_snapshot(
     let mut result = std::collections::BTreeMap::new();
     let Ok(reply) = Command::new("timeout")
         .args(["1", "kscreen-doctor", "-j"])
+        .env("QT_IM_MODULE", "none")
         .output()
     else {
         return None;
@@ -630,6 +625,7 @@ fn plasma_transaction(
     );
     let result = Command::new("timeout")
         .args(["120", "kscreen-doctor"])
+        .env("QT_IM_MODULE", "none")
         .args(commands)
         .output()?;
     if !result.status.success() {

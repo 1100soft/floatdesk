@@ -548,12 +548,28 @@ fn run(
             return;
         }
         let observer = MonitorPool::observer();
+        let mut native = match crate::platform::x11::monitor_watch::MonitorWatch::open(
+            &initial_sources,
+        ) {
+            Ok(watch) => {
+                tracing::info!("Watching display changes through native RandR events");
+                Some(watch)
+            }
+            Err(error) => {
+                tracing::warn!(%error,"Native display watch unavailable; using cached-state CLI fallback");
+                None
+            }
+        };
         let mut published = initial_sources;
         let mut previous = published.clone();
         let mut announced = false;
         while !topology_shared.stop.load(Ordering::Relaxed) {
             let observed = Instant::now();
-            if let Ok(next) = observer.sources() {
+            let next = match native.as_mut() {
+                Some(watch) => watch.sources(),
+                None => observer.sources(),
+            };
+            if let Ok(next) = next {
                 if next != published && !announced {
                     send_reload(&topology_shared, &topology_socket, true);
                     announced = true;
@@ -571,7 +587,7 @@ fn run(
                 }
                 previous = next;
             }
-            for _ in 0..2 {
+            for _ in 0..if native.is_some() { 2 } else { 8 } {
                 if topology_shared.stop.load(Ordering::Relaxed) {
                     return;
                 }

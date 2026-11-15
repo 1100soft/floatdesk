@@ -7,6 +7,7 @@ mod cursor;
 mod display;
 mod doctor;
 pub mod monitor_pool;
+pub mod monitor_watch;
 pub mod typing;
 pub mod windows;
 

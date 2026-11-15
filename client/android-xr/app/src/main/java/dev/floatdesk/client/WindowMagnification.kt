@@ -62,7 +62,7 @@ internal fun magnifiedWindow(id:Long,width:Int,height:Int,viewer:Pose,horizontal
     return magnifierGeometry(window,viewer,units)
 }
 /** Same exponential-map projection as the desktop, with this panel's own fixed radial distance. */
-internal fun magnifierGeometry(window:MagnifiedWindow,viewer:Pose,units:Float,proposed:FloatArray?=null):MagnifiedWindow{
+internal fun magnifierGeometry(window:MagnifiedWindow,viewer:Pose,units:Float,proposed:FloatArray?=null,updateMesh:Boolean=true):MagnifiedWindow{
     // Perception-space matrices can jitter by a few ULPs. Do not turn that into native mesh uploads.
     val stableUnits=if(abs(units/window.units-1f)<.001f)window.units else units
     val radius=MagnifierDistanceM*stableUnits
@@ -77,7 +77,7 @@ internal fun magnifierGeometry(window:MagnifiedWindow,viewer:Pose,units:Float,pr
     val width=window.width*scale;val height=window.height*scale
     val eye=viewerInMonitor(viewer.position,pose.position,pose.rotation)
     val old=window.mesh
-    val mesh=if(!window.spherical)null else {
+    val mesh=if(!window.spherical)null else if(!updateMesh)window.mesh else {
         val same=old!=null && old.width==width && old.height==height && old.eye.indices.all{abs(old.eye[it]-eye[it])<.000001f}
         val reference=if(same)old!! else MonitorMesh(width,height,eye,columns=32,rows=20,focus=floatArrayOf(0f,0f))
         val forward=rotateVector(viewer.rotation,0f,0f,-1f)
@@ -247,19 +247,43 @@ internal class MagnifierRayDrag{
     private var start:MagnifiedWindow?=null
     private var from=floatArrayOf();private var offset=floatArrayOf();private var rayDistance=0f
     private var dragging=false
-    fun clear(){start=null;dragging=false}
+    private var handStart:FloatArray?=null
+    private var contactStart=floatArrayOf()
+    var gain=1f;private set
+    fun clear(){start=null;handStart=null;dragging=false}
     private fun unit(v:FloatArray):FloatArray{val n=sqrt(v.sumOf{(it*it).toDouble()}).toFloat().coerceAtLeast(.00001f);return FloatArray(3){v[it]/n}}
-    fun begin(window:MagnifiedWindow,viewer:Pose,origin:FloatArray,direction:FloatArray,contact:FloatArray){
+    fun begin(window:MagnifiedWindow,viewer:Pose,origin:FloatArray,direction:FloatArray,contact:FloatArray,hand:FloatArray?=null){
         start=window;dragging=false;offset=FloatArray(3){window.pose.position[it]-viewer.position[it]}
         val d=unit(direction);rayDistance=(0..2).sumOf{((contact[it]-origin[it])*d[it]).toDouble()}.toFloat().coerceAtLeast(.001f)
         // Establish identity from the captured ray itself. Native hit positions and ray origins
         // can have different offsets/scales; comparing a hit-based DOWN with a ray-based MOVE
         // turns a stationary pinch into an immediate drag.
         from=unit(FloatArray(3){origin[it]+d[it]*rayDistance-viewer.position[it]})
+        handStart=null;gain=1f
+        if(hand!=null && hand.all{it.isFinite()}){
+            val handRange=sqrt((0..2).sumOf{val x=hand[it]-viewer.position[it];(x*x).toDouble()}).toFloat()
+            val targetRange=sqrt((0..2).sumOf{val x=contact[it]-viewer.position[it];(x*x).toDouble()}).toFloat()
+            if(handRange>.00001f && targetRange>.00001f){handStart=hand.copyOf();contactStart=contact.copyOf();gain=targetRange/handRange;from=unit(FloatArray(3){contact[it]-viewer.position[it]})}
+        }
     }
     fun move(viewer:Pose,origin:FloatArray,direction:FloatArray):FloatArray?{
         val window=start ?: return null
         val d=unit(direction);val to=unit(FloatArray(3){origin[it]+d[it]*rayDistance-viewer.position[it]})
+        return rotateTo(viewer,to)
+    }
+    fun moveHand(viewer:Pose,hand:FloatArray):FloatArray?{
+        val window=start ?: return null;val first=handStart ?: return null
+        if(!hand.all{it.isFinite()})return null
+        val delta=FloatArray(3){hand[it]-first[it]}
+        val movement=sqrt(delta.sumOf{(it*it).toDouble()}).toFloat()
+        // Intent is measured at the hand, so increased gain cannot turn pinch jitter into a drag.
+        if(!dragging && movement<.008f*window.units)return null
+        dragging=true
+        val to=unit(FloatArray(3){contactStart[it]+delta[it]*gain-viewer.position[it]})
+        return rotateTo(viewer,to)
+    }
+    private fun rotateTo(viewer:Pose,to:FloatArray):FloatArray?{
+        val window=start ?: return null
         val dot=(0..2).sumOf{(from[it]*to[it]).toDouble()}.toFloat().coerceIn(-1f,1f)
         if(!dragging && sqrt(maxOf(0f,2f-2f*dot))*MagnifierDistanceM<.008f)return null
         dragging=true

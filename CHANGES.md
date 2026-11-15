@@ -1,4 +1,6 @@
 # Changes since the LAN proof of concept
+- Apply capture-time distance gain to magnifier dragging using the owning hand’s tracked pinch point. Decouple display-rate pose movement from curved-mesh upload budgets and measure drag intent at the hand.
+- Stop hidden tray polling and isolate Qt display helpers from IBus. Replace rapid topology subprocess polling with a cached native RandR event observer and cache native framebuffer limits. Preserve display-change debounce, low refresh rates and priorities.
 - Fix magnifier tap teleportation by calibrating DOWN and MOVE from the same captured ray, separate captured presses from manual placement persistence, and pin stationary releases using the original contact.
 - Remove magnifier move handles and drive direct image dragging from captured native gaze/hand pinch events. Keep resize and pin/menu actions separate, and realign the window horizontally after sideways or diagonal movement.
 - Align magnifier native movement with its visible surface; constrain both modes to a viewer-facing fixed radius, align fixed panes horizontally with the desktop, and include pane sources in gaze-to-focus. Reuse fixed rendering resources and cached geometry, reduce magnifier collider updates, and extend bounded native upload-buffer retention after renderer crashes.

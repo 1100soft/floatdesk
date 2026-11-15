@@ -14,6 +14,7 @@ print('Virtual-1-1 connected'+(' 800x600+800+0' if Path(os.environ['FD_TEST_STAT
     (bin/'kscreen-doctor').write_text('''#!/usr/bin/env python3
 import sys,json,os,time
 from pathlib import Path
+assert os.environ.get('QT_IM_MODULE')=='none', 'Qt display helpers must not connect to IBus'
 state=Path(os.environ['FD_TEST_STATE'])
 if '-j' in sys.argv:
  def row(name,x,active,priority,rate):return {'name':name,'enabled':active,'priority':priority,'pos':{'x':x,'y':0},'size':{'width':800,'height':600},'modes':[{'id':'low','size':{'width':800,'height':600},'refreshRate':rate}]}
@@ -57,7 +58,7 @@ else:
                 assert b[20],b;completed=time.monotonic()-start
             if b[5]==15:
                 m=json.loads(b[16:])
-                if m['requestId']==100:metadata=m
+                if m.get('requestId')==100:metadata=m
             if completed and metadata:break
         assert heartbeat is not None and heartbeat<1.6,heartbeat
         assert completed and completed>=2,completed

@@ -2,7 +2,10 @@
 """Floatdesk's KDE/Linux tray: service controls, output status and initial display setup."""
 from pathlib import Path
 import json,os,subprocess,sys,tempfile
-from PySide6.QtCore import QProcess,QTimer,Qt
+# This utility has only numeric input; keep it and its Qt helpers off IBus entirely.
+# XKB keyboard layout remains managed by the desktop, not this process environment.
+os.environ['QT_IM_MODULE']='none'
+from PySide6.QtCore import QProcess,QProcessEnvironment,QTimer,Qt
 from PySide6.QtGui import QAction,QIcon
 from PySide6.QtWidgets import QApplication,QSystemTrayIcon,QMenu,QWidget,QVBoxLayout,QLabel,QPushButton,QPlainTextEdit,QSpinBox,QMessageBox,QTableWidget,QTableWidgetItem,QStyle
 
@@ -16,18 +19,26 @@ class Window(QWidget):
         self.setup=QPushButton('Set up virtual screens');self.setup.clicked.connect(self.prepare);layout.addWidget(self.setup)
         self.auto=QPushButton('Detect / prepare available virtual backend');self.auto.clicked.connect(lambda:self.execute(sys.executable,[str(ROOT/'scripts/auto-virtual-displays.py'),str(self.count.value())]));layout.addWidget(self.auto)
         self.log=QPlainTextEdit();self.log.setReadOnly(True);layout.addWidget(self.log)
-        self.timer=QTimer(self);self.timer.timeout.connect(self.refresh);self.timer.start(3000);self.refresh()
+        self.timer=QTimer(self);self.timer.timeout.connect(self.refresh);self.timer.setInterval(15000)
+    def showEvent(self,event):
+        super().showEvent(event);self.refresh();self.timer.start()
+    def hideEvent(self,event):
+        self.timer.stop();super().hideEvent(event)
+    def processEnvironment(self):
+        env=QProcessEnvironment.systemEnvironment();env.insert('QT_IM_MODULE','none');return env
     def execute(self,program,args,finished=None):
         if self.process and self.process.state()!=QProcess.NotRunning:return
-        p=QProcess(self);self.process=p;p.setProcessChannelMode(QProcess.MergedChannels)
+        p=QProcess(self);p.setProcessEnvironment(self.processEnvironment());self.process=p;p.setProcessChannelMode(QProcess.MergedChannels)
         p.readyReadStandardOutput.connect(lambda:self.log.appendPlainText(bytes(p.readAllStandardOutput()).decode(errors='replace')))
         p.errorOccurred.connect(lambda _:self.log.appendPlainText(p.errorString()))
         p.finished.connect(lambda code,status: (self.log.appendPlainText(f'Finished (exit {code})'),self.refresh(),finished(code) if finished else None))
         p.start(program,args)
     def refresh(self):
+        # Hidden tray windows do not need a display catalogue or service polling.
+        if not self.isVisible():return
         # QProcess keeps slow XRandR/KScreen replies off the Qt event loop.
         if getattr(self,'probe',None) and self.probe.state()!=QProcess.NotRunning:return
-        self.probe=QProcess(self);p=self.probe
+        self.probe=QProcess(self);p=self.probe;p.setProcessEnvironment(self.processEnvironment())
         def read(code,status):
             if code:return
             try:

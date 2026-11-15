@@ -96,6 +96,22 @@ fun main() {
  drag.begin(zoom,Pose(),offsetOrigin,floatArrayOf(0f,0f,-1f),floatArrayOf(0f,.25f,-.85f))
  repeat(5){check(drag.move(Pose(),offsetOrigin,floatArrayOf(0f,0f,-1f))==null)}
  check(drag.move(Pose(),offsetOrigin,floatArrayOf(.2f,0f,-1f))!=null)
+ // Distance gain comes from the actual pinch anchor, for either hand and any scene scale.
+ for(units in listOf(.5f,1f,2f))for(handX in listOf(-.1f,.1f)){
+   val panel=zoom.copy(units=units,pose=Pose(floatArrayOf(0f,0f,-.85f*units)),width=zoom.width*units,height=zoom.height*units)
+   val hand=floatArrayOf(handX*units,0f,-.35f*units)
+   val pixel=floatArrayOf(0f,0f,-.85f*units)
+   drag.begin(panel,Pose(),origin,floatArrayOf(0f,0f,-1f),pixel,hand)
+   val handRange=sqrt(hand.sumOf{(it*it).toDouble()}).toFloat()
+   check(abs(drag.gain-.85f*units/handRange)<.00001f)
+   check(drag.moveHand(Pose(),hand)==null)
+   check(drag.moveHand(Pose(),floatArrayOf(hand[0]+.002f*units,hand[1],hand[2]))==null)
+   val result=drag.moveHand(Pose(),floatArrayOf(hand[0]+.05f*units,hand[1],hand[2]))!!
+   check(abs(result[0]/-result[2]-(.05f*units/handRange))<.00001f)
+   check(abs(sqrt(result.sumOf{(it*it).toDouble()}).toFloat()-.85f*units)<.00001f)
+ }
+ val immediate=magnifierGeometry(zoom,Pose(),1f,floatArrayOf(.2f,0f,-.85f),updateMesh=false)
+ check(immediate.pose.position[0]>0f && immediate.mesh===zoom.mesh)
  val level=facingMagnifierRotation(movedByRay,Pose(),floatArrayOf(0f,0f,0f,1f))
  check(abs(rotateVector(level,1f,0f,0f)[1])<.00001f)
  drag.clear();check(drag.move(Pose(),origin,floatArrayOf(.5f,0f,-1f))==null)

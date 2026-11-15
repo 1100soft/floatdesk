@@ -165,14 +165,15 @@ private fun StreamingSettings(value:dev.floatdesk.client.workspace.WorkspaceFile
         Button(onClick={onApply(value.copy(detailAreaPixels=0))}){Text(if(value.detailAreaPixels==0L)"✓ Auto" else "Auto")}
         Button(onClick={onApply(value.copy(detailAreaPixels=value.detailAreaPixels.takeIf{it>0} ?: 1_048_576))}){Text(if(value.detailAreaPixels>0)"✓ Fixed area" else "Fixed area")}
     }
-    if(value.detailAreaPixels==0L){
+    run{
         var fps by remember(value.detailTargetFps){mutableStateOf(value.detailTargetFps.toString())}
         Row(horizontalArrangement=Arrangement.spacedBy(6.dp),verticalAlignment=Alignment.CenterVertically){
-            androidx.compose.material3.OutlinedTextField(fps,{fps=it},Modifier.weight(1f),label={Text("Auto FPS target")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number))
+            androidx.compose.material3.OutlinedTextField(fps,{fps=it},Modifier.weight(1f),label={Text("FPS target")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number))
             val parsed=fps.toIntOrNull()?.takeIf{it in 5..120}
             Button(enabled=parsed!=null,onClick={parsed?.let{onApply(value.copy(detailTargetFps=it))}}){Text("Apply")}
         }
-    }else{
+    }
+    if(value.detailAreaPixels>0L){
         var side by remember(value.detailAreaPixels){mutableStateOf(kotlin.math.sqrt(value.detailAreaPixels.toDouble()).toInt().toString())}
         val parsed=side.toLongOrNull()?.takeIf{it in 64..4096}
         Row(horizontalArrangement=Arrangement.spacedBy(6.dp),verticalAlignment=Alignment.CenterVertically){

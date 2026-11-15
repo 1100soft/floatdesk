@@ -30,9 +30,10 @@ public final class BudgetStreamSmoke {
      int size=input.readInt();byte[] bytes=new byte[size];input.readFully(bytes);
      var request=new org.json.JSONObject(new String(bytes,java.nio.charset.StandardCharsets.UTF_8));
      if(!request.optBoolean("frameBudget"))throw new AssertionError("Client failed to negotiate normal frame budget");
-     var header=new org.json.JSONObject().put("frame",++frame);boolean nativeFrame=phase.get()==1;
+     var header=new org.json.JSONObject().put("frame",++frame);boolean nativeFrame=phase.get()==1 || phase.get()==3;
      if(nativeFrame){
       header.put("extensions"," ".repeat(6000));
+      header.put("backgroundPixelPct",phase.get()==3?org.json.JSONObject.NULL:25).put("nativeCoveragePct",phase.get()==3?100:12.5);
       header.put("type","view-tiles-v2").put("codec","video/avc").put("width",2048).put("height",1536).put("bytes",ViewFrameFixture.DATA.length)
        .put("rect",new org.json.JSONArray("[0,0,1,1]")).put("inner",new org.json.JSONArray("[0,0,1,1]"))
        .put("tiles",new org.json.JSONArray("[[[0,0,1,1],[0,0,1,1]]]")).put("desktop",new org.json.JSONArray("[0,0,5120,3200]"));
@@ -45,7 +46,16 @@ public final class BudgetStreamSmoke {
    message->{System.out.println("budget worker: "+message);return Unit.INSTANCE;},()->{fallbacks.incrementAndGet();if(!done.get()){Canvas c=video.getInput().lockCanvas(null);c.drawColor(Color.GREEN);video.getInput().unlockCanvasAndPost(c);}return Unit.INSTANCE;});
   try{
    worker.update(new DetailRequest(new InetSocketAddress("127.0.0.1",server.getLocalPort()),123,new FocusRect(0,0,1,1),java.util.List.of(0,0,5120,3200),new kotlin.Pair<Float,Float>(.5f,.5f),0,0f,1f));
-   await(reader,false);phase.set(1);await(reader,true);phase.set(2);await(reader,false);
+   await(reader,false);phase.set(1);await(reader,true);
+   var text=DiagnosticsCanvas.INSTANCE.qualityText(video.diagnosticSnapshot());
+   if(!text.contains("BG pixels 4.00:1") || !text.contains("BG samples 25.0%") || !text.contains("HD 12.5% crop"))throw new AssertionError("Frame metrics did not reach the quality HUD: "+text);
+   System.out.println("PASS frame-specific background reduction and HD coverage reach HUD");
+   phase.set(3);long until=SystemClock.uptimeMillis()+3000;
+   while(SystemClock.uptimeMillis()<until && (video.diagnosticSnapshot().getFrame()==null || video.diagnosticSnapshot().getFrame().getNativeCoveragePercent()!=100f))SystemClock.sleep(10);
+   text=DiagnosticsCanvas.INSTANCE.qualityText(video.diagnosticSnapshot());
+   if(!text.contains("BG off") || !text.contains("HD 100.0% crop"))throw new AssertionError("Full-native HUD did not clear background ratio: "+text);
+   System.out.println("PASS full-native frame clears background ratio and shows 100% coverage");
+   phase.set(2);await(reader,false);
    if(failure.get()!=null)throw new AssertionError(failure.get());
    if(fallbacks.get()<2)throw new AssertionError("Baseline transitions were not announced");
    System.out.println("PASS actual budget negotiation, baseline without decoder, native AVC tile decoding and fresh baseline restoration");

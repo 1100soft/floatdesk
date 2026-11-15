@@ -152,6 +152,26 @@ pub(super) fn plan_with_avc(
     }
     None
 }
+/// Pixel sampling facts from the frame actually encoded, not requested settings.
+pub(super) fn sampling(plan: &Plan) -> (Option<f64>, f64) {
+    let native =
+        |t: &&Tile| u32::from(t.width) == t.source.width && u32::from(t.height) == t.source.height;
+    let background = plan.tiles.iter().find(|t| !native(t));
+    let area = |r: MonitorRect| u64::from(r.width) * u64::from(r.height);
+    let crop = background
+        .map(|t| area(t.source))
+        .unwrap_or_else(|| plan.tiles.iter().map(|t| area(t.source)).max().unwrap_or(1));
+    let high = plan
+        .tiles
+        .iter()
+        .filter(native)
+        .map(|t| area(t.source))
+        .sum::<u64>();
+    (
+        background.map(|t| 100. * f64::from(t.width) * f64::from(t.height) / area(t.source) as f64),
+        (100. * high as f64 / crop as f64).clamp(0., 100.),
+    )
+}
 #[cfg(test)]
 fn plan(
     outer: MonitorRect,
@@ -173,6 +193,25 @@ mod tests {
             width,
             height,
         }
+    }
+    #[test]
+    fn reported_background_ratio_and_native_coverage_use_actual_samples() {
+        let outer = r(0, 0, 4000, 2000);
+        let inner = r(1000, 500, 1000, 1000);
+        let p = plan(outer, inner, &[outer], 0.5, None).unwrap();
+        let (bg, coverage) = sampling(&p);
+        assert_eq!(bg, Some(25.));
+        assert_eq!(coverage, 12.5);
+        let small = r(0, 0, 1200, 900);
+        let p = plan(
+            small,
+            r(100, 50, 1024, 800),
+            &[small],
+            PERIPHERAL_SCALE,
+            None,
+        )
+        .unwrap();
+        assert_eq!(sampling(&p), (None, 100.));
     }
     #[test]
     fn taller_negotiated_avc_avoids_hevc_for_contiguous_pair() {

@@ -226,16 +226,21 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-view-x11-') as temp:
       meta=json.loads(exact(stream,struct.unpack('>I',exact(stream,4))[0]));unit=exact(stream,meta['bytes'])
       assert meta['regionSampling'] and meta['type']=='view-tiles-v2'
       assert meta['gutterPixels']==4
+      if meta['backgroundPixelPct'] is not None:
+       assert abs(meta['backgroundPixelPct']-100*(meta['peripheryScale']**2))<.2
+      expected_coverage=100*meta['nativeAreaPixels']/(width*height)
+      assert abs(meta['nativeCoveragePct']-expected_coverage)<.01
       assert len(meta['tiles']) in (1,2)
       if len(meta['tiles'])==2:
-       assert abs(meta['peripheryScale']-.675)<.002,meta
+       assert .168<=meta['peripheryScale']<=.676,meta
+       if i<2:assert abs(meta['peripheryScale']-.675)<.002,meta
        assert meta['nativeAreaPixels']==1048576
       else:assert meta['nativeAreaPixels']==width*height
       sampled=0
       for j,(src,dst) in enumerate(meta['tiles']):
        sw=round((src[2]-src[0])*width);sh=round((src[3]-src[1])*height)
        dw=round((dst[2]-dst[0])*meta['width']);dh=round((dst[3]-dst[1])*meta['height'])
-       assert (sw==dw and sh==dh) or (abs(dw-sw*.675)<=1.1 and abs(dh-sh*.675)<=1.1)
+       assert (sw==dw and sh==dh) or (abs(dw-sw*meta['peripheryScale'])<=2.1 and abs(dh-sh*meta['peripheryScale'])<=2.1)
        sampled+=sw*sh
       # One whole low-resolution crop deliberately overlaps the native patch.
       expected=width*height+(meta['nativeAreaPixels'] if len(meta['tiles'])==2 else 0)
@@ -259,7 +264,7 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-view-x11-') as temp:
       meta=json.loads(exact(stream,struct.unpack('>I',exact(stream,4))[0]));exact(stream,meta['bytes'])
       densities.append(meta['peripheryScale'] if meta['peripheryScale'] is not None else 1.);auto_areas.append(meta['nativeAreaPixels']);time.sleep(.04)
      assert min(auto_areas)>=1048576,'Auto sacrificed its useful native-detail floor'
-     assert min(densities)>=.674,'Auto degraded peripheral density to chase its FPS target'
+     assert min(densities)<.67,'Background sampling did not adapt under sustained pressure'
      print(f'PASS regional Auto under sustained pressure: native {min(auto_areas)} pixels, peripheral {min(densities):.3f}',flush=True)
     with socket.create_connection(('127.0.0.1',port),2) as stream:
      stream.settimeout(5)
@@ -270,6 +275,7 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-view-x11-') as temp:
       assert len(meta['tiles']) in (1,2)
       if crop[2]-crop[0]<.3:
        assert len(meta['tiles'])==1 and meta['tiles'][0][0]==meta['rect'],'Small visible crop was not fully native'
+       assert meta['nativeCoveragePct']==100 and meta['backgroundPixelPct'] is None
       fmt='h264' if meta['codec']=='video/avc' else 'hevc'
       dimensions=json.loads(subprocess.check_output(['ffprobe','-v','error','-threads','2','-f',fmt,'-show_entries','stream=width,height','-of','json','pipe:0'],input=unit))['streams'][0]
       assert (dimensions['width'],dimensions['height'])==(meta['width'],meta['height'])

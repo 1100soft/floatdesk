@@ -1,4 +1,5 @@
 # Changes since the LAN proof of concept
+- Adapt background sampling toward the saved FPS target while retaining useful native detail, including with a fixed patch. Show actual background pixel reduction, sample percentage and native crop coverage in the Quality HUD.
 - Replace many-piece dynamic sampling with one stable visible peripheral rectangle and one native gaze patch. Select a single fully native crop when its encoded allocation is cheaper, and negotiate taller AVC frames with capable headset decoders.
 - Preserve a useful native-detail floor and peripheral density in regional Auto instead of degrading the image to meet an FPS target. Add source-continuation gutters and chroma-aligned packing; render clipped tiles with one lookup per fragment and accept bounded larger metadata headers.
 - Remove total desktop height from dynamic peripheral sampling. Capture visible screen regions once, skip gaps, pack native/peripheral samples efficiently into one codec frame, and adapt to measured load while preserving peripheral density until native area reaches its minimum.

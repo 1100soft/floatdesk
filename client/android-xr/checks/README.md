@@ -200,3 +200,5 @@ Layout-independent region streaming: host `regions` tests cover unchanged densit
 `GutterSmoke` checks padded tile reconstruction with sharpening and a contrasting atlas background. `BudgetStreamSmoke` accepts a valid metadata header beyond 4 KiB through the real worker. Regional pressure tests now require at least about 1 MP native detail and stable peripheral sampling instead of accepting progressive quality collapse.
 
 Contiguous-crop planner tests verify at most two rectangles, stable peripheral placement across gaze motion, cheaper single-native selection and off-view layout independence. The integration runner exercises both the single- and two-rectangle paths. `PackedViewSmoke` additionally decodes a real VA AVC frame at 3520 × 3200; `CodecCapacitySmoke` reports hardware decoder capabilities.
+
+Adaptive background checks preserve the native floor while lowering/recovering background sampling, including fixed-patch mode. Host tests verify 25% samples and 12.5% native crop coverage; `BudgetStreamSmoke` checks those per-frame values reach the real decoded-frame HUD as a 4:1 reduction and 12.5% HD coverage.

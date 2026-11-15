@@ -1,27 +1,55 @@
 #!/usr/bin/env python3
 """Focus pinch arbitration, window stacking, spacing and view-fit geometry without XR dependencies."""
 from pathlib import Path
-import subprocess,sys,tempfile
+import subprocess,sys,tempfile,re
 root=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
 def body(path):return '\n'.join(l for l in (root/path).read_text().splitlines() if not l.startswith(('import ','package ')))
 workspace=body('workspace/Workspace.kt');workspace=workspace[workspace.index('internal data class Pose'):workspace.index('internal class WorkspaceStore')]
 metadata=body('net/WorkspaceInfo.kt');metadata=metadata[:metadata.index('    companion object')]+'}\n'
-code='import kotlin.math.*\n'+body('MonitorMesh.kt')+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+body('workspace/WorkspacePlacement.kt')+metadata+body('WindowMagnification.kt').split('internal data class MagnifiedWindow')[0]+r'''
+code='import kotlin.math.*\n'+body('MonitorMesh.kt')+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+body('workspace/WorkspacePlacement.kt')+metadata+body('WindowMagnification.kt')+''.join(re.search(r'internal fun '+name+r'\(.*?\n}',(root/'MainActivity.kt').read_text(),re.S).group(0) for name in ('transformPoint','rotateVector'))+r'''
 fun main() {
+ val tap=NativeSurfaceTap()
+ check(tap.update("LEFT","DOWN",.5f to .4f)==null)
+ check(tap.update("LEFT","UP",null)==(.5f to .4f))
+ check(tap.update("LEFT","UP",null)==null)
+ tap.update("LEFT","DOWN",.5f to .4f);tap.update("LEFT","HOVER_EXIT",null)
+ check(tap.update("LEFT","UP",null)==null)
+ tap.update("RIGHT","DOWN",.2f to .2f);tap.update("RIGHT","HOVER_MOVE",.6f to .5f)
+ check(tap.update("RIGHT","UP",null)==null)
+ tap.update("LEFT","DOWN",.5f to .4f);tap.clear();check(tap.update("LEFT","UP",null)==null)
+
+ val zoom=magnifiedWindow(42,1600,900,Pose(),.6f,.5f,1f,true)
+ val sphere=zoom.mesh!!
+ for(i in sphere.positions.indices step 3){val radius=sqrt((0..2).sumOf{val d=sphere.positions[i+it]-sphere.eye[it];(d*d).toDouble()}).toFloat();check(abs(radius-sphere.radius)<.00001f)}
+ for(uv in listOf(.5f to .5f,.05f to .05f,.95f to .95f)){
+   val contact=sphere.project(floatArrayOf((uv.first-.5f)*zoom.width,(.5f-uv.second)*zoom.height,0f))
+   val point=transformPoint(zoom.pose,contact)
+   val result=magnifierPoint(zoom,floatArrayOf(0f,0f,0f),point)!!
+   check(abs(result.first-uv.first)<.002f && abs(result.second-uv.second)<.002f)
+ }
+
  val magnify=WindowMagnification()
  check(magnify.update(1,true,false,42,false,false)==null)
- check(magnify.update(600,true,false,42,false,false)==null)
  check(magnify.update(601,true,false,42,false,false)==42L)
- check(magnify.update(1000,true,false,43,false,false)==42L) // Wait for decoded video.
+ check(magnify.update(1000,true,false,43,false,false)==42L)
  check(magnify.update(1200,true,false,43,false,true)==42L)
- check(magnify.update(2099,true,false,43,false,true)==42L) // Travel does not select intermediate windows.
- check(magnify.update(2100,true,false,43,false,true)==42L)
- check(magnify.update(2280,true,false,43,false,true)==null)
- check(magnify.update(4000,true,false,42,false,false)==null) // Re-entry cooldown.
- check(magnify.update(4080,true,false,42,false,false)==null)
- check(magnify.update(4680,true,false,42,false,false)==42L)
- check(magnify.update(4700,true,true,42,true,true)==null)
- check(magnify.update(4800,false,false,42,true,true)==null)
+ check(magnify.update(2099,true,false,43,false,true)==42L)
+ // A blink neither dismisses the image nor completes a pending dwell.
+ check(magnify.update(2500,true,false,null,false,true,validGaze=false)==42L)
+ check(magnify.update(3000,true,false,43,false,true)==42L)
+ check(magnify.update(3600,true,false,43,false,true)==43L) // Direct switch, no intermediate close.
+ check(magnify.update(3700,true,false,42,true,true)==43L)
+ magnify.togglePin();check(magnify.pinned)
+ check(magnify.update(6000,true,false,42,false,true)==43L)
+ check(magnify.update(9000,true,false,42,false,true)==43L)
+ magnify.togglePin();check(!magnify.pinned)
+ check(magnify.update(9100,true,false,null,false,true)==43L)
+ check(magnify.update(9600,true,false,null,false,true,validGaze=false)==43L)
+ check(magnify.update(10000,true,false,null,false,true)==43L)
+ check(magnify.update(11000,true,false,null,false,true)==null) // One second of active distant gaze.
+ check(magnify.update(11001,true,false,42,false,false)==null)
+ check(magnify.update(11601,true,false,42,false,false)==42L) // Dwell alone, no cooldown.
+ check(magnify.update(11602,true,true,42,true,true)==null)
 
  val routing=PointerControl();routing.hover(0,"GAZE",floatArrayOf(0f,0f,0f),floatArrayOf(0f,0f,0f),2f,2f,1)
  val eye=routing.systemGaze()!!

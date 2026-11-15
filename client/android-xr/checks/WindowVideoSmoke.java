@@ -22,7 +22,7 @@ public final class WindowVideoSmoke {
    }
   }catch(Throwable e){if(!done.get()){e.printStackTrace();error.set(e);}}});serving.start();
   var reader=ImageReader.newInstance(64,48,PixelFormat.RGBA_8888,4);var video=new VideoCompositor(64,48);
-  video.onOutputPresented(()->{presented.incrementAndGet();return Unit.INSTANCE;});video.output(reader.getSurface());
+  video.onBasePresented(()->{presented.incrementAndGet();return Unit.INSTANCE;});video.output(reader.getSurface());
   var worker=new WindowVideo(new InetSocketAddress("127.0.0.1",server.getLocalPort()),123,42,30,video,message->{System.out.println("Window worker error: "+message);error.set(new AssertionError(message));return Unit.INSTANCE;});
   try{
    try(var image=VideoCompositorSmoke.frame(reader)){var p=VideoCompositorSmoke.pixel(image,32,24);VideoCompositorSmoke.require(p[0]>200 && p[1]<40,"Window decoded wrong pixel");}

@@ -29,7 +29,7 @@ import androidx.compose.ui.unit.sp
 import dev.floatdesk.client.net.DeskConnection
 
 @Composable
-internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpacing:(Float)->Unit,onSpacingFinished:()->Unit,onClose:()->Unit,pinches:PinchThresholds,onPinches:(PinchThresholds)->Unit,viewedDetail:Boolean,onViewedDetail:(Boolean)->Unit,viewDebug:Boolean,onViewDebug:(Boolean)->Unit,quality:dev.floatdesk.client.workspace.WorkspaceFile,onQuality:(dev.floatdesk.client.workspace.WorkspaceFile)->Unit) {
+internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpacing:(Float)->Unit,onSpacingFinished:()->Unit,onClose:()->Unit,pinches:PinchThresholds,onPinches:(PinchThresholds)->Unit,viewedDetail:Boolean,onViewedDetail:(Boolean)->Unit,viewDebug:Boolean,onViewDebug:(Boolean)->Unit,quality:dev.floatdesk.client.workspace.WorkspaceFile,onQuality:(dev.floatdesk.client.workspace.WorkspaceFile)->Unit,onPage:(String)->Unit={}) {
     val monitors by connection.monitors
     val state by connection.displayState
     val busy by connection.displayBusy
@@ -38,34 +38,39 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
     val sizes=screens?.map {it.width to it.height} ?: state.screens
     val positions=screens?.map {it.x to it.y} ?: state.positions
     val available=info?.available ?: state.available
-    var setup by remember { mutableStateOf(false) }
+    var section by remember { mutableStateOf("Screens") }
+    androidx.compose.runtime.SideEffect{onPage(section)}
     MaterialTheme(colorScheme=darkColorScheme()) {
     Column(Modifier.fillMaxSize().background(Color(0xF01C2430)).padding(16.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
-            Text("Screens",color=Color.White,fontSize=22.sp)
+            Text(section,color=Color.White,fontSize=22.sp)
             IconButton(onClick=onClose,modifier=Modifier.background(MaterialTheme.colorScheme.surfaceContainerHighest,CircleShape).semantics {contentDescription="Close workspace"}) {Text("×",fontSize=30.sp)}
         }
+        if(section!="Screens")Button(onClick={section=if(section=="Settings")"Screens" else "Settings"}){Text("‹ Back")}
         Text(if(busy) "Updating screens…" else "${sizes.size} desktop screens · $available available",color=Color.White)
-        Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+        if(section=="Screens") Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             Button(enabled=!busy && available>0,onClick={connection.requestDisplays(1)}) {Text("Add screen")}
             Button(enabled=!busy,onClick={connection.requestDisplays()}) {Text("Refresh")}
-            Button(onClick={setup=!setup}) {Text("Settings")}
+            Button(onClick={section="Settings"}) {Text("Settings")}
         }
-        info?.let {host->
+        if(section=="Screens")info?.let {host->
             val pixels=sizes.sumOf {it.first.toLong()*it.second}
             val capturePixels=if(sizes.isEmpty()) 0L else (sizes.indices.maxOf {positions[it].first+sizes[it].first}-positions.minOf {it.first}).toLong()*(sizes.indices.maxOf {positions[it].second+sizes[it].second}-positions.minOf {it.second})
             Text(String.format(Locale.ROOT,"%,d pixels (%.2f MP) · capture %.2f MP",pixels,pixels/1e6,capturePixels/1e6),color=Color.White,fontSize=13.sp)
             if(host.setupRequired) Text("No virtual output backend is ready. Open the computer's Floatdesk tray → Virtual screen setup.",color=Color(0xFFFFD69A),fontSize=13.sp)
         }
-        monitors.firstOrNull()?.let {stream->
+        if(section=="Screens")monitors.firstOrNull()?.let {stream->
             val sourceWidth=if(sizes.isEmpty()) stream.width else sizes.indices.maxOf {positions[it].first+sizes[it].first}-positions.minOf {it.first}
             val percent=(100f*stream.width/sourceWidth.coerceAtLeast(1)).roundToInt()
             Text("${if(viewedDetail) "Normal fallback" else "Stream"} ${stream.width} × ${stream.height} · $percent% scale",color=Color.White,fontSize=13.sp)
         }
-        if(quality.showResources)Text(connection.resourceStatus.value,color=Color(0xFFB8D9EA),fontSize=11.sp,maxLines=3)
+        if(section=="Screens" && quality.showResources)Text(connection.resourceStatus.value,color=Color(0xFFB8D9EA),fontSize=11.sp,maxLines=3)
         if(!state.ok) Text(state.message,color=Color(0xFFFFB4AB),fontSize=13.sp)
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(8.dp)) {
-        if(setup) {
+        if(section=="Settings") {
+            listOf("Focus & magnification","Streaming","Pinches","Virtual screen setup").forEach{label->Button(onClick={section=label},modifier=Modifier.fillMaxWidth()){Text(label)}}
+        }
+        if(section=="Focus & magnification") {
             Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)){
                 androidx.compose.material3.Switch(checked=quality.gazeToFocus,enabled=info?.gazeFocus==true || quality.gazeToFocus,onCheckedChange={onQuality(quality.copy(gazeToFocus=it))})
                 Text("Gaze to focus",color=Color.White)
@@ -75,6 +80,14 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
                 Text("Magnify focused window",color=Color.White)
             }
             if(quality.gazeToFocus && connection.gazeFocusError.value.isNotEmpty())Text(connection.gazeFocusError.value,color=Color(0xFFFFB4AB),fontSize=12.sp)
+            var quiet by remember(quality.typingQuietMs){mutableStateOf((quality.typingQuietMs/1000f).toString())}
+            Row(horizontalArrangement=Arrangement.spacedBy(8.dp),verticalAlignment=Alignment.CenterVertically){
+                androidx.compose.material3.OutlinedTextField(quiet,{quiet=it},Modifier.weight(1f),label={Text("Typing focus lock (seconds)")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Decimal))
+                val seconds=quiet.toFloatOrNull()?.takeIf{it.isFinite() && it in 0f..10f}
+                Button(enabled=seconds!=null,onClick={seconds?.let{onQuality(quality.copy(typingQuietMs=(it*1000).toLong()))}}){Text("Apply")}
+            }
+        }
+        if(section=="Streaming") {
             Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                 androidx.compose.material3.Switch(checked=viewedDetail,onCheckedChange=onViewedDetail)
                 Text("Experimental viewed-area quality",color=Color.White)
@@ -85,10 +98,13 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
             }
             if(viewedDetail)Text(connection.detailStatus.value,color=Color(0xFFB8D9EA),fontSize=13.sp)
             StreamingSettings(quality,onQuality)
-            PinchSettings(pinches,onPinches)
+        }
+        if(section=="Pinches")PinchSettings(pinches,onPinches)
+        if(section=="Virtual screen setup") {
             Text("Virtual screen setup",color=Color.White,fontSize=18.sp)
             Text("On the computer, run: python3 scripts/virtual-display-setup.py --check\nIf no pool is available, use --write-bundle to prepare installation files. A compatible VKMS configfs kernel, administrator setup and a graphical-session restart are required. Existing pools are reused; Floatdesk never rebuilds kernel topology during use.",color=Color(0xFFB8D9EA),fontSize=13.sp)
         }
+        if(section=="Screens") {
         ScreenArrangementEditor(sizes,positions,busy,screens?.indexOfFirst {it.primary}?.coerceAtLeast(0) ?: if(state.primary==0) 0 else Integer.numberOfTrailingZeros(state.primary),info?.limits ?: (32767 to 32767)) {index,x,y->connection.requestDisplays(4,index,x,y)}
         if(sizes.isNotEmpty()) {
             Text(String.format(Locale.ROOT,"Visual spacing: %.1f%%",spacing*100),color=Color.White)
@@ -104,6 +120,7 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
                 ResolutionChoice(width to height,screens?.getOrNull(index)?.modes.orEmpty(),!busy) {(w,h)->connection.requestDisplays(3,index,w,h)}
                 Button(enabled=!busy,onClick={connection.requestDisplays(2,index)}) {Text("Remove")}
             }
+        }
         }
         }
     }

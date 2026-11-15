@@ -7,6 +7,7 @@ mod cursor;
 mod display;
 mod doctor;
 pub mod monitor_pool;
+pub mod typing;
 pub mod windows;
 
 pub use capture::X11Capture;

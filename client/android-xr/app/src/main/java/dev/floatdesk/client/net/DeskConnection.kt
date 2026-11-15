@@ -243,11 +243,16 @@ internal class DeskConnection(
         val remote=pendingRemote ?: return null
         return WindowVideo(java.net.InetSocketAddress(remote.address,remote.port+2),detailSession,id,detailTargetFps,video,failed)
     }
+    @Volatile private var lastTypingAt=0L
+    private var lastTypingPoll=0L
+    var typingQuietMs=1000L
+    fun typingLocked(now:Long=android.os.SystemClock.uptimeMillis()):Boolean=lastTypingAt>0 && now-lastTypingAt<typingQuietMs
+    fun pollTyping(now:Long){if(now-lastTypingPoll>=150){lastTypingPoll=now;send(Protocol.workspace(org.json.JSONObject().put("type","typingState").toString()))}}
     fun cancelGazeFocus(){gazeFocusPending.set(0)}
     fun requestGazeFocus(window:Long){
         val handler=outgoing ?: return
         val id=monitorSequence.incrementAndGet();gazeFocusPending.set(id);gazeFocusError.value=""
-        val packet=Protocol.workspace(org.json.JSONObject().put("type","gazeFocus").put("requestId",id).put("windowId",window).toString())
+        val packet=Protocol.workspace(org.json.JSONObject().put("type","gazeFocus").put("quietMs",typingQuietMs).put("requestId",id).put("windowId",window).toString())
         for(delay in listOf(0L,300L,900L))handler.postDelayed({if(gazeFocusPending.get()==id)send(packet)},delay)
         main.postDelayed({if(gazeFocusPending.compareAndSet(id,0))gazeFocusError.value="Gaze focus request timed out"},2000)
     }
@@ -346,6 +351,9 @@ internal class DeskConnection(
                     }
                     is Packet.Workspace -> {
                         if(incoming.address==pendingRemote?.address && incoming.port==pendingRemote?.port) {
+                            runCatching{org.json.JSONObject(decoded.json)}.getOrNull()?.takeIf{it.optString("type")=="typingState"}?.let{reply->
+                                if(reply.optBoolean("available"))lastTypingAt=(android.os.SystemClock.uptimeMillis()-reply.optLong("ageMs",60000)).coerceAtLeast(1)
+                            }
                             runCatching{org.json.JSONObject(decoded.json)}.getOrNull()?.takeIf{it.optString("type")=="gazeFocusResult"}?.let{reply->
                                 if(gazeFocusPending.compareAndSet(reply.optInt("requestId"),0))main.post{gazeFocusError.value=if(reply.optBoolean("ok"))"" else reply.optString("message","Could not focus window")}
                             }

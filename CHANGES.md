@@ -215,3 +215,5 @@ A Wi-Fi beacon followed by Ethernet control replies could leave the client on Up
 Known checkpoint limitation: aiming and grab-preview beams can remain invisible over large live desktops despite valid hover contacts. Active-grab snapshot tethers remain visible; the last depth-path changes did not resolve this device regression.
 
 - Add optional independently captured focused-window magnification with dwell, travel grace and re-entry cooldown; harden custom-mesh submissions following a native XR renderer crash.
+
+- Match magnifier curvature to the desktop; add native tap pinning, direct dwell-based switching, blink-safe dismissal, central-view Reset and configurable typing protection. Split Workspace settings into compact pages and reuse magnifier rendering resources after a Filament command-buffer overflow.

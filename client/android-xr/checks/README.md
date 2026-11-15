@@ -205,4 +205,6 @@ Adaptive background checks preserve the native floor while lowering/recovering b
 
 Gaze-to-focus: `focus_interaction.py` covers identity dwell, saccades, blocking and tracking-gap rearming. `VideoCompositorSmoke` checks saved toggle persistence on Android. Run `python3 scripts/check-gaze-focus.py` from the repository to validate activation under a private KWin/Xvfb session with focus-stealing protection enabled, preserving stack, pointer and focused child. Requires Xvfb, KWin X11 and D-Bus; it never controls the current desktop.
 
-`WindowVideoSmoke` verifies the optional magnifier’s session/window identity, real AVC decoding, first-presentation callback and shutdown. `focus_interaction.py` also checks magnifier dwell, transition protection and cooldown. `scripts/check-gaze-focus.py` includes an isolated XComposite occlusion capture check.
+`WindowVideoSmoke` verifies the optional magnifier’s session/window identity, real AVC decoding, first-presentation callback and shutdown. `focus_interaction.py` also checks magnifier dwell, transition protection and dismissal timing. `scripts/check-gaze-focus.py` includes an isolated XComposite occlusion capture check.
+
+Magnifier checks cover native tap releases without HitInfo, cancelled/moved taps, pin locking, direct dwell switching, blink-safe departure, no cooldown, constant-radius geometry and curved-ray mapping. The private Xvfb/KWin run also generates a synthetic keystroke and verifies XI2 timestamp-only observation.

@@ -81,6 +81,8 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     fun sharpen(value:Float){val next=value.takeIf{it.isFinite()}?.coerceIn(0f,1.5f) ?: 0f;if(sharpening==next)return;sharpening=next;if(!closed)handler.post{if(!closed)guard{draw()}}}
     @Volatile private var outputPresented:(()->Unit)?=null
     fun onOutputPresented(callback:()->Unit){outputPresented=callback}
+    private var basePresented:(()->Unit)?=null
+    fun onBasePresented(callback:()->Unit){if(!closed)handler.post{basePresented=callback}}
     private var baseFrames=0L
     private var swaps=0L
     private var submitNs=0L
@@ -120,7 +122,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                     if(!closed) guard {
                         texture.updateTexImage(); texture.getTransformMatrix(transform); hasFrame=true;baseFrames++
                         if(handoff){handoff=false;viewCurrent=null;viewLatched=false}
-                        draw()
+                        draw();basePresented?.invoke()
                     }
                 },handler)
                 val viewIds=IntArray(1);GLES20.glGenTextures(1,viewIds,0);viewTextureId=viewIds[0]

@@ -467,6 +467,7 @@ fn run(
     }
 
     let mut pointer = InputDevices::open()?;
+    crate::platform::x11::typing::start();
     let socket = UdpSocket::bind(opts.listen)?;
     socket.set_nonblocking(true)?;
     let session_id = monotonic_ns();
@@ -655,6 +656,20 @@ fn run(
                                 }
                                 continue;
                             }
+                            if value["type"] == "typingState" {
+                                if shared
+                                    .client
+                                    .read()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .as_ref()
+                                    .is_some_and(|c| c.control == from)
+                                {
+                                    let age = crate::platform::x11::typing::age_ms().min(60_000);
+                                    let reply=ControlPacket::Workspace{json:serde_json::json!({"type":"typingState","ageMs":age,"available":crate::platform::x11::typing::start()}).to_string()}.encode();
+                                    let _ = socket.send_to(&reply, from);
+                                }
+                                continue;
+                            }
                             if value["type"] == "gazeFocus" {
                                 let allowed = shared
                                     .client
@@ -682,7 +697,11 @@ fn run(
                                 if !stale {
                                     last_gaze_focus = Some((from, id));
                                 }
-                                let result = if stale {
+                                let quiet =
+                                    value["quietMs"].as_u64().unwrap_or(1000).clamp(0, 10_000);
+                                let result = if crate::platform::x11::typing::age_ms() < quiet {
+                                    Err(Error::Msg("Typing: gaze focus paused".into()))
+                                } else if stale {
                                     Err(Error::Msg("Superseded gaze focus".into()))
                                 } else {
                                     value["windowId"]

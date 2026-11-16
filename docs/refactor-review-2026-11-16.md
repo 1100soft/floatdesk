@@ -6,7 +6,7 @@ The review covers the runtime boundaries across the X11/Rust host, Kotlin XR cli
 
 Keep Rust for capture, encoding and transport, and Kotlin for the Android XR SDK integration. MediaCodec, GLES, XRender, GStreamer and SceneCore already perform the expensive work natively. A framework/language rewrite would not remove native command queues, unnecessary updates or thermal throttling, and would introduce another interoperability/lifetime boundary. Revisit isolated compute kernels only if device profiling demonstrates that managed computation dominates.
 
-Current headset thermal state could not be measured: neither USB nor wireless ADB discovery found a headset. The previous connected reading was severe thermal status with CPU throttling. Available memory and stream FPS do not establish headset compositor health. Resource telemetry now includes Android's thermal severity; the HUD shows it as `T:normal`, `T:severe`, etc., and reports unavailable readings explicitly.
+After reconnection, Android reported severe thermal status (3) with CPU throttling. During a brief stopped-app interval it fell to moderate (2), then returned to severe after the app reopened. This is evidence of thermal pressure, not a controlled attribution of all heat to Floatdesk. Available memory and stream FPS do not establish headset compositor health. Resource telemetry now includes Android's thermal severity; the HUD shows it as `T:normal`, `T:severe`, etc., and reports unavailable readings explicitly.
 
 ## Responsibilities
 
@@ -56,13 +56,26 @@ flowchart LR
 - Focus, Reset and HUD reuse the same view-fit bounds and canonical scene radii. Framebuffer and codec safety bounds remain explicit contracts rather than inferred from available RAM.
 - Host protocol, combined desktop arrangement, priorities and virtual refresh-rate selection retain their existing semantics. Hardware pixel throughput is not inferred from source-code structure.
 
+## Connected profiling and targeted reductions
+
+A bounded five-second ART sampling trace identified repeated native scene transactions, hand snapshot construction, baseline-mode region calculations and video payload copying. Sampling is diagnostic evidence, not a calibrated before/after throughput benchmark.
+
+- Unchanged app-owned node parent, transform, alpha and enabled state now skip JNI submission. Native manipulation invalidates the cache so system changes are respected.
+- The scene snapshot reads its ten consumed hand joints directly. Enumerating the SDK map previously materialized and hashed every joint. The independent high-rate pinch sampler retains its cadence.
+- Eye-tracking maintenance is extracted from the hot gesture coroutine after ART repeatedly reported its 16,622-instruction method exceeded the JIT limit. After installation, the new Activity emitted no instruction-limit warnings in the bounded startup observation. This establishes removal of that observed compiler refusal, not a sustained FPS gain.
+- Normal streaming skips dynamic-region triangle scans, including when resource diagnostics are enabled.
+- Keyframe detection scans Annex-B headers without copying video payloads. Parameter-set extraction keeps its existing behavior.
+- Expensive Android PSS/graphics memory collection runs every five seconds; CPU, available memory and thermal status remain sampled every second.
+
 ## Validation and remaining evidence
 
-Completed: Rust workspace tests, Clippy with warnings denied, rustfmt, Python Ruff lint/format, all 22 platform-substituted JVM checks, Android assemble/lint, private Xvfb/KWin capture/focus/typing/RandR checks, slow display-operation heartbeats, offscreen tray polling checks, and live private-X11 dynamic streaming/encoder reconstruction checks. Changed shared-math and native-buffer checks were rerun after consolidation.
+Completed: Rust workspace tests, Clippy with warnings denied, rustfmt, Python Ruff lint/format, all 24 platform-substituted JVM checks, including three new allocation/state regressions, Android assemble/lint, private Xvfb/KWin capture/focus/typing/RandR checks, slow display-operation heartbeats, offscreen tray polling checks, and live private-X11 dynamic streaming/encoder reconstruction checks. Changed shared-math and native-buffer checks were rerun after consolidation.
 
-These tests validate algorithms, protocol identity, request handling and ownership invariants. Private-X11 stream profiles are functional test workloads, not before/after throughput measurements on the user's headset. No headset performance improvement, current thermal state, native hit ordering or native-renderer crash stability is claimed without connected-device testing.
+These tests validate algorithms, protocol identity, request handling and ownership invariants. Private-X11 stream profiles are functional test workloads, not before/after throughput measurements on the user's headset. The connected headset also passed ten offscreen hardware decoder/compositor checks. These do not establish sustained thermal improvement, native hit ordering or elimination of intermittent native-renderer crashes.
 
 The remaining highest-value measurements are per-thread XR frame time, native mesh submission time/queue pressure, thermal severity during sustained use, decoder/GL teardown duration, and capture/encoder load with several different pinned sources. High-rate hand sampling remains because it protects quick pinch detection; changing its cadence needs device evidence. The workspace coordinator still contains a large tracked-input transaction, deliberately kept coherent until its device behavior can be profiled and split further without losing event ordering.
+
+A native `CodecLooper` destroyed-mutex abort was also observed during the device-probe interval. The probe commands completed successfully and the running Activity had a different PID; this does not establish the cause or eliminate the existing codec/native crash risk. Sustained interactive stability still needs observation. A subsequent Activity teardown also crashed inside the SDK `ImpressApiImpl.nDisposeAllResources` during `Session.destroy`; the Activity restarted. This is an observed unresolved native-resource cleanup failure, distinct from the codec probe shutdown abort. The application does not call `Session.destroy` directly. It must not be reported as fixed by buffer retention or managed exception handling.
 
 ## Reproducing checks
 

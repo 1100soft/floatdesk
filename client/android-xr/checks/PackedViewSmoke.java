@@ -5,7 +5,7 @@ import android.media.MediaFormat;
 import android.os.SystemClock;
 import dev.floatdesk.client.FocusRect;
 import dev.floatdesk.client.media.VideoCompositor;
-import dev.floatdesk.client.media.H264Kt;
+import dev.floatdesk.client.media.AnnexBKt;
 import dev.floatdesk.client.net.ViewFrame;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
@@ -19,7 +19,7 @@ public final class PackedViewSmoke {
     static MediaCodec decode(VideoCompositor compositor,int width,int height,String file,float[] tiles,long pts,int gutter)throws Exception{
         boolean avc=file.endsWith(".h264");
         byte[] bytes=Files.readAllBytes(Path.of(file));var csd=new java.io.ByteArrayOutputStream();
-        for(byte[] nal:H264Kt.splitAnnexB(bytes)){int type=avc?(nal[0]&31):(nal[0]>>>1)&63;if(avc?(type==7||type==8):(type>=32&&type<=34)){csd.write(new byte[]{0,0,0,1});csd.write(nal);}}
+        for(byte[] nal:AnnexBKt.splitAnnexB(bytes)){int type=avc?(nal[0]&31):(nal[0]>>>1)&63;if(avc?(type==7||type==8):(type>=32&&type<=34)){csd.write(new byte[]{0,0,0,1});csd.write(nal);}}
         var format=MediaFormat.createVideoFormat(avc?"video/avc":"video/hevc",width,height);format.setByteBuffer("csd-0",ByteBuffer.wrap(csd.toByteArray()));format.setInteger(MediaFormat.KEY_LOW_LATENCY,1);
         var codec=MediaCodec.createDecoderByType(avc?"video/avc":"video/hevc");
         try{

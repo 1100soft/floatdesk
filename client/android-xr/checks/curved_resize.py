@@ -6,10 +6,10 @@ import sys
 import tempfile
 folder=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
 sources=[];imports=[]
-for name in ['MonitorMesh.kt','ResizeFrameGeometry.kt','MonitorSystemControls.kt']:
+for name in ['MonitorMesh.kt','ResizeFrameGeometry.kt','NativeNodeState.kt','MonitorSystemControls.kt']:
     lines=(folder/name).read_text().splitlines()
     imports += [l for l in lines if l.startswith('import kotlin.')]
-    sources.append('\n'.join(l for l in lines if not l.startswith(('package ','import ')) and not l.strip().startswith('@OptIn(')))
+    sources.append('\n'.join(l for l in lines if not l.startswith(('package ','import ')) and not l.strip().startswith(('@OptIn(', '@android.annotation.SuppressLint'))))
 stubs='''
 internal object SpatialPointerIcon { const val NONE=0 }
 internal class SpatialPointerComponent { var spatialPointerIcon=0; companion object{fun create(session:Session)=SpatialPointerComponent()} }
@@ -33,6 +33,8 @@ internal open class Entity {
     fun setPose(p:Pose) { pose=p }
     fun getScale()=scale
     fun setScale(s:Float) { scale=s }
+    fun setScale(s:Vector3) { scale=s.x }
+    fun setAlpha(a:Float) {}
     fun setEnabled(e:Boolean) { enabled=e }
     fun addComponent(c:SpatialPointerComponent):Boolean = true
     fun addComponent(c:ResizableComponent):Boolean { resize=c; return true }

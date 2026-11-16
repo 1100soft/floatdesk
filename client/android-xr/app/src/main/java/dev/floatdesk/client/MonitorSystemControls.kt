@@ -25,6 +25,7 @@ internal enum class SystemMovePhase { START,UPDATE,END }
 /** Native move/resize rectangle behind the image. The system owns it throughout a gesture. */
 internal class MonitorSystemControls : AutoCloseable {
     private var entity: SurfaceEntity?=null
+    private var submitted:NativeNodeState?=null
     private var component: ResizableComponent?=null
     private var movable: MovableComponent?=null
     private var generation=0L
@@ -49,7 +50,7 @@ internal class MonitorSystemControls : AutoCloseable {
         listener=onResize;moveListener=onMove
         if(video==null || (!enabled && (resizeStartWidth!=null || moving))) { close();return }
         // Do not feed the app's changing geometry back into an active native controller.
-        if(resizeStartWidth!=null || moving) return
+        if(resizeStartWidth!=null || moving) {submitted?.invalidate();return}
         val frame=if(mesh!=null) {
             if(frameMesh!==mesh || curvedFrame==null) {curvedFrame=curvedResizeFrame(mesh);frameMesh=mesh}
             curvedFrame!!
@@ -74,9 +75,10 @@ internal class MonitorSystemControls : AutoCloseable {
             root.getSurface().unlockCanvasAndPost(canvas)
             val resize=ResizableComponent.create(session,resizeEventListener=java.util.function.Consumer { event ->
                 if(token==generation && !moving) {
+                    submitted?.invalidate()
                     val startEvent=event.resizeState==ResizeEvent.ResizeState.START
                     val end=event.resizeState==ResizeEvent.ResizeState.END
-                    if(startEvent) {resizeStartWidth=event.newSize.width.takeIf {it.isFinite() && it>0f} ?: frameWidth;lastResizeFactor=1f}
+                    if(startEvent) {submitted?.invalidate();resizeStartWidth=event.newSize.width.takeIf {it.isFinite() && it>0f} ?: frameWidth;lastResizeFactor=1f}
                     val start=resizeStartWidth
                     if(start!=null && start>0f) {
                         val proposed=event.newSize.width/start
@@ -97,24 +99,26 @@ internal class MonitorSystemControls : AutoCloseable {
             val move=MovableComponent.createSystemMovable(session,scaleInZ=false)
             move.addMoveListener(object: EntityMoveListener {
                 override fun onMoveStart(entity: Entity,initialInputRay: Ray,initialPose: Pose,initialScale: Float,initialParent: Entity) {
-                    if(token==generation && resizeStartWidth==null) { moving=true;moveListener?.invoke(SystemMovePhase.START,initialPose) }
+                    if(token==generation && resizeStartWidth==null) { submitted?.invalidate();moving=true;moveListener?.invoke(SystemMovePhase.START,initialPose) }
                 }
                 override fun onMoveUpdate(entity: Entity,currentInputRay: Ray,currentPose: Pose,currentScale: Float) {
+                    if(token==generation)submitted?.invalidate()
                     if(token==generation && moving) { moveListener?.invoke(SystemMovePhase.UPDATE,currentPose) }
                 }
                 override fun onMoveEnd(entity: Entity,finalInputRay: Ray,finalPose: Pose,finalScale: Float,updatedParent: Entity?) {
+                    if(token==generation)submitted?.invalidate()
                     if(token==generation && moving) { moveListener?.invoke(SystemMovePhase.END,finalPose);moving=false }
                 }
             })
             check(root.addComponent(move))
-            entity=root;component=resize;movable=move
+            entity=root;submitted=NativeNodeState(root);component=resize;movable=move
         }
         val scale=video.getScale()
         val offset=Vector3(frame.center[0]*scale,frame.center[1]*scale,frame.center[2]*scale)
         val normal=Vector3(frame.normal[0],frame.normal[1],frame.normal[2]);val up=Vector3(frame.up[0],frame.up[1],frame.up[2])
         entity?.let {
-            it.parent=video.parent;it.setPose(video.getPose().compose(Pose(offset,Quaternion.fromLookTowards(normal,up))))
-            it.setScale(scale);it.setEnabled(enabled)
+            submitted!!.parent(video.parent);submitted!!.pose(video.getPose().compose(Pose(offset,Quaternion.fromLookTowards(normal,up))))
+            submitted!!.scale(scale);submitted!!.enabled(enabled)
             if(geometryChanged) it.shape=SurfaceEntity.Shape.Quad(FloatSize2d(nextWidth,nextHeight))
         }
         if(boundsChanged) component?.let {
@@ -130,7 +134,7 @@ internal class MonitorSystemControls : AutoCloseable {
     }
 
     override fun close() {
-        generation++;moving=false
+        generation++;moving=false;submitted=null
         frameMesh=null;curvedFrame=null
         component?.let { entity?.removeComponent(it) };movable?.let { entity?.removeComponent(it) }
         entity?.parent=null

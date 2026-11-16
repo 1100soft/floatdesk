@@ -8,7 +8,7 @@ import android.media.MediaFormat;
 import android.os.SystemClock;
 import dev.floatdesk.client.FocusRect;
 import dev.floatdesk.client.media.VideoCompositor;
-import dev.floatdesk.client.media.H264Kt;
+import dev.floatdesk.client.media.AnnexBKt;
 import dev.floatdesk.client.net.DetailDiagnostics;
 import dev.floatdesk.client.net.ViewFrame;
 import java.nio.ByteBuffer;
@@ -52,8 +52,8 @@ public final class ViewStreamSmoke {
             System.out.println("view test: compositor ready, limit="+compositor.getOutputLimit());
             compositor.output(reader.getSurface());Canvas canvas=compositor.getInput().lockCanvas(null);canvas.drawColor(Color.GREEN);compositor.getInput().unlockCanvasAndPost(canvas);
             compositor.detailDebug(new DetailDiagnostics(true,new FocusRect(.1f,.1f,.9f,.9f),"view test","H264",2f,2f));
-            var nals=H264Kt.splitAnnexB(ViewFrameFixture.DATA);byte[] sps=null,pps=null;for(byte[] nal:nals){if(H264Kt.nalType(nal)==7)sps=nal;if(H264Kt.nalType(nal)==8)pps=nal;}
-            var format=MediaFormat.createVideoFormat("video/avc",2048,1536);format.setByteBuffer("csd-0",ByteBuffer.wrap(H264Kt.annexBParameterSets(sps,pps)));format.setInteger(MediaFormat.KEY_LOW_LATENCY,1);
+            var nals=AnnexBKt.splitAnnexB(ViewFrameFixture.DATA);byte[] sps=null,pps=null;for(byte[] nal:nals){if(AnnexBKt.nalType(nal)==7)sps=nal;if(AnnexBKt.nalType(nal)==8)pps=nal;}
+            var format=MediaFormat.createVideoFormat("video/avc",2048,1536);format.setByteBuffer("csd-0",ByteBuffer.wrap(AnnexBKt.annexBParameterSets(sps,pps)));format.setInteger(MediaFormat.KEY_LOW_LATENCY,1);
             codec=MediaCodec.createDecoderByType("video/avc");codec.configure(format,compositor.getViewInput(),null,0);codec.start();System.out.println("view test: codec started");
             submit(codec,compositor,1000000,true);System.out.println("view test: first output released");await(reader,2);System.out.println("view test: diagnostic-enabled video remains untinted");
             compositor.detailDebug(new DetailDiagnostics(true,new FocusRect(.1f,.1f,.9f,.9f),"gaze test","H264",2f,2f,false));

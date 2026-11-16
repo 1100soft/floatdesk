@@ -436,11 +436,9 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
         var followLock: FollowLock? = null
         var seenGeneration = followGeneration
         var tick = 0
-        while (isActive) {
-            delay(10)
-            tick += 1
-            val wantEyes = context.checkSelfPermission("android.permission.EYE_TRACKING_FINE") == android.content.pm.PackageManager.PERMISSION_GRANTED
-            val resumed = current.lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+        // Keep platform maintenance outside the gesture coroutine's bytecode body.
+        // ART refuses to JIT oversized methods, leaving this hot loop interpreted.
+        fun updateEyeTracking(wantEyes: Boolean, resumed: Boolean) {
             val eyeAction=eyeLifecycle.update(SystemClock.uptimeMillis(),resumed,wantEyes,
                 current.config.eyeTracking==EyeTrackingMode.FINE_TRACKING,gazeEyes.size==2,
                 wantEyes && resumed && gazeEyes.any { it.state.value.trackingState==TrackingState.TRACKING })
@@ -456,6 +454,17 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 gazeEyes=listOfNotNull(runCatching { Eye.left(current) }.getOrNull(),runCatching { Eye.right(current) }.getOrNull())
                 Log.i("Floatdesk","eye resources refreshed count=${gazeEyes.size}")
             }
+            if(wantEyes && resumed && gazeEyes.isEmpty() && SystemClock.uptimeMillis()-eyeRequestAt>=1500 && !eyeNoticeShown) {
+                eyeNoticeShown=true
+                android.widget.Toast.makeText(context,"Eye tracking is unavailable. Hand pointing remains available.",android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
+        while (isActive) {
+            delay(10)
+            tick += 1
+            val wantEyes = context.checkSelfPermission("android.permission.EYE_TRACKING_FINE") == android.content.pm.PackageManager.PERMISSION_GRANTED
+            val resumed = current.lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+            updateEyeTracking(wantEyes,resumed)
             if(!resumed) {
                 magnification.dismiss(SystemClock.uptimeMillis());magnified=null;inPlaceWindow=null;connection.magnifierActive=false
                 sampledHands.set(emptyList())
@@ -477,10 +486,6 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 delay(100);continue
             }
             inputWasResumed=true
-            if(wantEyes && resumed && gazeEyes.isEmpty() && SystemClock.uptimeMillis()-eyeRequestAt>=1500 && !eyeNoticeShown) {
-                eyeNoticeShown=true
-                android.widget.Toast.makeText(context,"Eye tracking is unavailable. Hand pointing remains available.",android.widget.Toast.LENGTH_LONG).show()
-            }
             if (followGeneration != seenGeneration) {
                 followLock = null
                 seenGeneration = followGeneration
@@ -560,7 +565,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 }
             } else emptyList()
             val screen=workspace.monitorAt(0)
-            val qualityTargets=if(screen==null)emptyList() else eyeRays.mapNotNull{(origin,direction)->
+            val qualityTargets=if(!workspace.experimentalViewedDetail || screen==null)emptyList() else eyeRays.mapNotNull{(origin,direction)->
                 val local=viewerInMonitor(origin,screen.pose.position,screen.pose.rotation)
                 val endpoint=viewerInMonitor(add(origin,direction),screen.pose.position,screen.pose.rotation)
                 extendedQualityTarget(local,subtract(endpoint,local),screen.physicalWidthM,screen.physicalHeightM,pointerControl.meshes[0])
@@ -569,7 +574,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             val raw=if(qualityTargets.isEmpty())null else qualityTargets.map{it.first}.average().toFloat() to qualityTargets.map{it.second}.average().toFloat()
             val sharedGaze=qualityGaze.update(raw,handTracking.nowMs)
             connection.detailDebug(workspace.experimentalViewedDetail,workspace.viewDetailDebug,workspace.showResources)
-            if(displayControlsOpen || head==null || manipulating || !workspace.experimentalViewedDetail && !workspace.showResources) {
+            if(displayControlsOpen || head==null || manipulating || !workspace.experimentalViewedDetail) {
                 connection.viewedDetail(null,when {
                     displayControlsOpen->"Paused: Workspace open"
                     head==null->"Paused: head tracking unavailable"
@@ -606,7 +611,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             viewer?.takeIf { reliable }?.let { grips["VIEWER"] = deskPose(current, root, it).translation.toArray() }
             displayHead.get()?.let{reference->if(reliable)magnifierViewer.set(Pose(grips["VIEWER"]?.copyOf() ?: reference.position,reference.rotation))}
             sampledHands.set(hands)
-            val handStates=hands.map { (side,hand)->val state=hand.state.value;Triple(side,state,state.handJoints.toMap()) }
+            val handStates=hands.map { (side,hand)->val state=hand.state.value;Triple(side,state,snapshotHandJoints(state)) }
             val handSamples=handStates.mapNotNull { (side,state,joints) ->
                 if(state.trackingState!=TrackingState.TRACKING) null else {
                     val wrist=joints[HandJointType.WRIST];val palm=joints[HandJointType.PALM]

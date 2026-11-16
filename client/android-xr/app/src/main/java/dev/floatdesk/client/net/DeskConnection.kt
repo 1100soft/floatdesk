@@ -72,7 +72,7 @@ internal class DeskConnection(
         val format=currentMonitors.singleOrNull()
         val target=bounds?.let{qualityOutputSize(it[2],it[3],qualityOutputLimit())}
         val fraction=if(rect!=null && target!=null)qualityDenseFraction(denseFraction,rect,target.first,target.second) else denseFraction
-        val request=if(detailDiagnostics.get().enabled && rect!=null && renderingActive && remote!=null && bounds!=null && format!=null)DetailRequest(remote,detailSession,rect,bounds,center ?: (rect.centerU to rect.centerV),videoQuality,videoMbps,fraction,if(magnifierActive)4096 else nativeAreaPixels,detailTargetFps) else null
+        val request=if(detailDiagnostics.get().enabled && rect!=null && renderingActive && desktopVisible && remote!=null && bounds!=null && format!=null)DetailRequest(remote,detailSession,rect,bounds,center ?: (rect.centerU to rect.centerV),videoQuality,videoMbps,fraction,if(magnifierActive)4096 else nativeAreaPixels,detailTargetFps) else null
         val reason=when {
             !detailDiagnostics.get().enabled->"Normal full-desktop streaming"
             rect==null->blockedReason
@@ -112,6 +112,7 @@ internal class DeskConnection(
     private val main = Handler(Looper.getMainLooper())
     private val assembler = CursorAssembler()
     @Volatile private var renderingActive=true
+    @Volatile private var desktopVisible=true
     private val decoders = ConcurrentHashMap<Int, MonitorDecoder>()
     private val viewProjections=HashMap<Int,ViewProjection?>()
     private val pendingCursors = ConcurrentHashMap<Int, CursorView>()
@@ -129,7 +130,7 @@ internal class DeskConnection(
     private var outgoingThread: HandlerThread? = null
     private val cursorFlushPosted = AtomicBoolean(false)
     private var lastGapAsk = 0L
-    private var control: DatagramSocket? = null
+    @Volatile private var control: DatagramSocket? = null
     private var beacon: DatagramSocket? = null
     private var videos: List<DatagramSocket> = emptyList()
     private var thread: Thread? = null
@@ -214,10 +215,18 @@ internal class DeskConnection(
     fun isRenderingActive(): Boolean = renderingActive
 
     @Synchronized
+    fun setDesktopVisible(visible:Boolean) {
+        if(desktopVisible==visible)return
+        desktopVisible=visible
+        if(!visible)viewedDetail(null)
+        decoders.values.forEach { it.setRenderingActive(renderingActive && visible) }
+    }
+
+    @Synchronized
     fun setRenderingActive(active: Boolean) {
         renderingActive=active
         if(!active){viewedDetail(null);cancelGazeFocus()}
-        decoders.values.forEach { it.setRenderingActive(active) }
+        decoders.values.forEach { it.setRenderingActive(active && desktopVisible) }
     }
 
     fun requestDisplays(action:Int=0,index:Int=0,width:Int=1920,height:Int=1080) {
@@ -323,13 +332,14 @@ internal class DeskConnection(
     }
 
     private fun controlLoop() {
-        val socket = control ?: return
+        var socket = control ?: return
         socket.soTimeout = 200
         val buffer = ByteArray(65535)
         val incoming = DatagramPacket(buffer, buffer.size)
         val broadcast = InetSocketAddress("255.255.255.255", 47000)
         var lastHello = 0L
         while (running) {
+            try {
             pollBeacon()
             val discoveryNow=android.os.SystemClock.elapsedRealtime()
             val selected=hostDiscovery.select(pendingRemote,currentMonitors.isNotEmpty() && discoveryNow-lastAcceptedHello<5000,discoveryNow)
@@ -347,7 +357,6 @@ internal class DeskConnection(
                 send(Protocol.clientHello("floatdesk", 48000))
                 lastHello = now
             }
-            try {
                 incoming.setLength(buffer.size)
                 socket.receive(incoming)
                 val decoded = Protocol.decode(buffer.copyOf(incoming.length)) ?: continue
@@ -397,9 +406,18 @@ internal class DeskConnection(
                     is Packet.Ignored -> Unit
                 }
             } catch (_: SocketTimeoutException) {
-            } catch (_: Exception) {
-                if (running) main.post { status.value = "Control socket closed" }
-                break
+            } catch (error:java.net.SocketException) {
+                if(!running)break
+                Log.w("Floatdesk","Control socket failed; reopening",error)
+                socket.close()
+                try {
+                    socket=DatagramSocket().apply{this.broadcast=true;soTimeout=200}
+                    control=socket;lastHello=0L
+                } catch(retry:Exception){Log.e("Floatdesk","Control socket reopen failed",retry);Thread.sleep(250)}
+            } catch (error: Exception) {
+                // A malformed/unexpected reply must not permanently stop heartbeats and telemetry.
+                if(!running)break
+                Log.w("Floatdesk","Control packet rejected; keeping connection alive",error)
             }
         }
     }
@@ -429,7 +447,8 @@ internal class DeskConnection(
     private fun onHello(hello: Packet.HostHello, remote: InetSocketAddress) {
         sendEncoderSettings()
         if(detailSession!=hello.sessionId){viewedDetail(null);detailSession=hello.sessionId}
-        if (hello.monitors==currentMonitors && decoders.isNotEmpty()) {
+        val healthy=decoders.isNotEmpty() && decoders.size==hello.monitors.size && hello.monitors.all{decoders[it.index]?.isHealthy()==true}
+        if (hello.monitors==currentMonitors && healthy) {
             // A dropped one-shot progress notification must not leave an overlay
             // behind after the host has returned to its normal heartbeat.
             if(!videoPending.get() && monitorPending.get()==0) main.post {reloading.value=false}
@@ -437,7 +456,7 @@ internal class DeskConnection(
         }
         Log.i("Floatdesk","Host handshake from $remote: ${hello.monitors.size} video stream(s)")
         main.post {reloading.value=true}
-        val sameFormat=hello.monitors.map {it.copy(ssrc=0)}==currentMonitors.map {it.copy(ssrc=0)} && decoders.isNotEmpty()
+        val sameFormat=hello.monitors.map {it.copy(ssrc=0)}==currentMonitors.map {it.copy(ssrc=0)} && healthy
         if(sameFormat) {
             currentMonitors=hello.monitors;videoPending.set(true)
             main.post {monitors.value=hello.monitors}
@@ -459,7 +478,7 @@ internal class DeskConnection(
             decoder.projection(viewProjections[monitor.index])
             activeSurfaces[monitor.index]?.let { decoder.attach(it) }
             decoder.punch(remote.address)
-            decoder.setRenderingActive(renderingActive)
+            decoder.setRenderingActive(renderingActive && desktopVisible)
             decoder.start()
             decoders[monitor.index] = decoder
         }

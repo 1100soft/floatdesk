@@ -50,6 +50,14 @@ internal class MonitorWarp : AutoCloseable {
     private var pointerRefreshAt=0L
     private var inputListener: ((InputEvent) -> Unit)? = null
     private var mask: Texture? = null
+    private var shown=true
+    fun setVisible(visible:Boolean) {
+        if(shown==visible)return
+        shown=visible
+        input?.setEnabled(visible && ownerEnabled && mesh==null)
+        if(live!==input)live?.setEnabled(visible)
+        curvedInput?.entity?.setEnabled(visible && mesh!=null)
+    }
     private var ownerEnabled=true
     private var directInteraction = false
     private var screenRects=floatArrayOf(0f,0f,1f,1f)
@@ -86,6 +94,7 @@ internal class MonitorWarp : AutoCloseable {
     @SuppressLint("RestrictedApi")
     suspend fun syncCurvedInput(session: Session) {
         val sphere = mesh
+        if(!shown){input?.setEnabled(false);if(live!==input)live?.setEnabled(false);curvedInput?.entity?.setEnabled(false);return}
         if (sphere == null) {
             curvedInput?.entity?.setEnabled(false)
             input?.setEnabled(ownerEnabled)

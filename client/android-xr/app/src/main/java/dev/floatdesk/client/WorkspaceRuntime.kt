@@ -239,7 +239,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
         clickView.playSoundEffect(android.view.SoundEffectConstants.CLICK)
     }
     var displayControlsOpen by remember { mutableStateOf(false) }
-    LaunchedEffect(displayControlsOpen,sceneActive){if(displayControlsOpen || !sceneActive)magnifierMenu=null}
+    LaunchedEffect(displayControlsOpen,sceneActive){connection.setDesktopVisible(!displayControlsOpen);if(displayControlsOpen || !sceneActive)magnifierMenu=null}
     var displayControlsPose by remember { mutableStateOf(workspace.control.pose) }
     fun toggleDisplays() {
         displayControlsOpen=!displayControlsOpen
@@ -435,6 +435,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
         var lastFocusGate="<initial>"
         var lastDetailAt=0L
         val qualityGaze=QualityGazeTracker()
+        val hudGaze=HudGazeRegions(dev.floatdesk.client.workspace.ViewLayers.DiagnosticsDistanceM)
         var inputWasResumed=true
         var fistHeld = 0
         var panelHand: String? = null
@@ -570,6 +571,13 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     gaze.translation.toArray() to rotateVector(floatArrayOf(q.x,q.y,q.z,q.w),0f,0f,-1f)
                 }
             } else emptyList()
+            val hudHead=displayHead.get()
+            val hudReading=hudHead!=null && eyeRays.any{(origin,direction)->
+                val local=viewerInMonitor(origin,hudHead.position,hudHead.rotation).map{it/unitsPerMeter}.toFloatArray()
+                val end=viewerInMonitor(add(origin,direction),hudHead.position,hudHead.rotation).map{it/unitsPerMeter}.toFloatArray()
+                hudGaze.hit(local,subtract(end,local),viewHalfAngles.get()[0],viewHalfAngles.get()[1],workspace.showResources,workspace.viewDetailDebug)
+            }
+            val contentEyeRays=if(hudReading)emptyList() else eyeRays
             val screen=workspace.monitorAt(0)
             val qualityTargets=if(!workspace.experimentalViewedDetail || screen==null)emptyList() else eyeRays.mapNotNull{(origin,direction)->
                 val local=viewerInMonitor(origin,screen.pose.position,screen.pose.rotation)
@@ -759,7 +767,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 }
             }
             val panel=palmPanel
-            val panelHits=if(panel==null) emptyList() else eyeRays.mapNotNull { (origin,direction) -> palmRayPoint(panel,origin,direction) }
+            val panelHits=if(panel==null) emptyList() else contentEyeRays.mapNotNull { (origin,direction) -> palmRayPoint(panel,origin,direction) }
             val panelGaze=if(panelHits.isEmpty()) null else floatArrayOf(panelHits.map {it[0]}.average().toFloat(),panelHits.map {it[1]}.average().toFloat())
             val activate=panelInput.update(handTracking.nowMs,panel?.side,panelGaze,panel?.let { mouseSamples[it.side]?.middleMetres })
             panelFocused=panelInput.focused?.let { PalmAction.entries.getOrNull(it) }
@@ -777,8 +785,8 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             val panelHands=magnifierHands.mapNotNull{(side,uv)->magnifiedTarget(uv,magnifierHands.window(side))?.let{side to it}}.toMap()
             val contextHands=if(workspace.focusMode)desktopHands else desktopHands+panelHands
             val nativeFocusGazeEnabled=workspace.focusMode && pointerControl.systemGazeEnabled
-            val nativeFocusGaze=if(nativeFocusGazeEnabled)pointerControl.systemGaze() else null
-            val gazeTargets=if((workspace.eyeAiming || nativeFocusGazeEnabled || workspace.gazeToFocus || workspace.magnifyWindow) && reliable) eyeRays.mapNotNull { (origin,direction) -> gazePointerTarget(origin,direction,workspace,pointerControl.meshes) } else emptyList()
+            val nativeFocusGaze=if(nativeFocusGazeEnabled && !hudReading)pointerControl.systemGaze() else null
+            val gazeTargets=if((workspace.eyeAiming || nativeFocusGazeEnabled || workspace.gazeToFocus || workspace.magnifyWindow) && reliable) contentEyeRays.mapNotNull { (origin,direction) -> gazePointerTarget(origin,direction,workspace,pointerControl.meshes) } else emptyList()
             // Average binocular contacts on the same monitor; a valid single eye can still aim.
             val rawDesktopGazeTarget = gazeTargets.firstOrNull()?.let { first ->
                 val same = gazeTargets.filter { it.monitor == first.monitor }
@@ -788,7 +796,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 if(magnifierSurfacesAllowed(workspace.magnifyWindow,sceneActive,displayControlsOpen) && magnifierReady)magnified?.let{add(it.copy(mesh=magnifierMesh))}
                 if(workspace.magnifierMode=="fixed")fixedWindows.get().filter{fixedReady[it.first]==true}.forEach{add(it.second)}
             }
-            val paneGaze=visibleMagnifiers.mapNotNull{window->eyeRays.firstNotNullOfOrNull{(o,d)->
+            val paneGaze=visibleMagnifiers.mapNotNull{window->contentEyeRays.firstNotNullOfOrNull{(o,d)->
                 val depth=surfaceRayDistance(window.pose,window.width,window.height,window.mesh,o,d)
                 val desktopDepth=gazePointerTarget(o,d,workspace,pointerControl.meshes)?.takeIf{connection.desktopPoint(it.monitor,it.u,it.v)!=null}?.let{hit->workspace.monitorAt(hit.monitor)?.let{surfaceRayDistance(it.pose,it.physicalWidthM,it.physicalHeightM,pointerControl.meshes[hit.monitor],o,d)}}
                 if(depth==null || desktopDepth!=null && desktopDepth+.002f*handTracking.unitsPerMeter<depth)null
@@ -797,7 +805,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             val gazeBlockedByPane=paneGaze!=null
             val magnifierGaze=paneGaze?.let{(window,uv)->magnifiedTarget(magnifierContentPoint(window,uv),window.id)}
             val rawGazeTarget=if(gazeBlockedByPane)magnifierGaze else rawDesktopGazeTarget
-            val gazeTarget=if(contextHands.isEmpty()) gazeStabilizer.update(rawGazeTarget?.takeIf {connection.desktopPoint(it.monitor,it.u,it.v)!=null},handTracking.nowMs) else { gazeStabilizer.reset(); null }
+            val gazeTarget=if(contextHands.isEmpty() && !hudReading) gazeStabilizer.update(rawGazeTarget?.takeIf {connection.desktopPoint(it.monitor,it.u,it.v)!=null},handTracking.nowMs) else { gazeStabilizer.reset(); null }
             val monitorGrab=grabs.values.any { it.engaged }
             val nativeManipulation=pointerControl.nativeManipulating
             val choice = pointerControl.choose(workspace.eyeAiming || nativeFocusGazeEnabled,gazeTarget ?: nativeFocusGaze?.takeUnless{gazeBlockedByPane},contextHands,monitorGrab || nativeManipulation,handTracking.nowMs)
@@ -810,7 +818,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             connection.typingQuietMs=workspace.typingQuietMs
             if(workspace.gazeToFocus || workspace.magnifyWindow)connection.pollTyping(handTracking.nowMs)
             typingLocked=connection.typingLocked(handTracking.nowMs)
-            val autoFocusBlocked=typingLocked || magnifierMoving || magnifierMenu!=null || !reliable || !resumed || displayControlsOpen || palmPanel!=null ||
+            val autoFocusBlocked=hudReading || typingLocked || magnifierMoving || magnifierMenu!=null || !reliable || !resumed || displayControlsOpen || palmPanel!=null ||
                 choice.mode.reservesDesktop || monitorGrab || nativeManipulation || mouseGestures.engaged || connection.focusBusy.value || focusInfo?.gazeFocus!=true
             val autoFocusWindow=if(!autoFocusBlocked && workspace.gazeToFocus)paneGaze?.first?.id?.takeIf{it>0} ?: rawGazeTarget?.takeIf{it.monitor==0}?.let{hit->
                 connection.desktopPoint(hit.monitor,hit.u,hit.v)?.let{(u,v)->focusInfo?.hover(u,v)?.window?.windowId}
@@ -838,7 +846,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             if(workspace.magnifierMode=="floating" && inPlaceWindow?.let{eligibleInPlace(it)==null}==true){magnification.dismiss(handTracking.nowMs);inPlaceWindow=null;magnifierReady=false}
             val currentMagnifier=magnified?.id ?: inPlaceWindow
             val magnifierChanged=currentMagnifier?.let{id->focusInfo?.windows?.none{it.id==id} ?: true}==true
-            val magnifyBlocked=(typingLocked && currentMagnifier==null) || magnifierChanged || (currentMagnifier==null && (choice.mode.reservesDesktop || mouseGestures.engaged)) || !resumed || (!magnification.pinned && (!reliable || displayControlsOpen || palmPanel!=null || monitorGrab || nativeManipulation)) || magnifierFailed || focusInfo?.windowMagnify!=true
+            val magnifyBlocked=hudReading || (typingLocked && currentMagnifier==null) || magnifierChanged || (currentMagnifier==null && (choice.mode.reservesDesktop || mouseGestures.engaged)) || !resumed || (!magnification.pinned && (!reliable || displayControlsOpen || palmPanel!=null || monitorGrab || nativeManipulation)) || magnifierFailed || focusInfo?.windowMagnify!=true
             val insideMagnifier=if(inPlaceWindow!=null)magnifyTarget==inPlaceWindow else magnified?.let{window->eyeRays.any{(o,d)->magnifierContainsGaze(window.copy(mesh=magnifierMesh),o,d)}}==true
             val activeMagnifier=magnification.update(handTracking.nowMs,workspace.magnifyWindow,magnifyBlocked,magnifyTarget,
                 insideMagnifier,magnifierReady,mouseGestures.engaged || typingLocked || magnifierMoving || magnifierMenu!=null,eyeRays.isNotEmpty(),retain=workspace.magnifierMode=="fixed")
@@ -857,7 +865,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             if(lastFixedWindow!=null && focusInfo!=null && focusInfo.windows.none{it.id==lastFixedWindow})lastFixedWindow=null
             magnifierPinned=magnification.pinned
             magnifierFailed=false;connection.magnifierActive=magnified!=null
-            val focusContacts=focusAimContacts(desktopHands,if(nativeFocusGazeEnabled && !gazeBlockedByPane)gazeTarget ?: nativeFocusGaze else null)
+            val focusContacts=focusAimContacts(desktopHands,if(nativeFocusGazeEnabled && !hudReading && !gazeBlockedByPane)gazeTarget ?: nativeFocusGaze else null)
             val focusHover=if(workspace.focusMode && focusInfo!=null)focusContacts.mapNotNull {(side,hit)->
                 if(hit.monitor!=0)return@mapNotNull null
                 connection.desktopPoint(hit.monitor,hit.u,hit.v)?.let{(u,v)->focusInfo.hover(u,v)}?.let{side to it}

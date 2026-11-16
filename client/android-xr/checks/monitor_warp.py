@@ -220,6 +220,16 @@ suspend fun main() {
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false)
     warp.syncCurvedInput(session)
     val patch=CurvedMonitorInput.last!!
+    val retainedEntity=warp.displayEntity!!
+    val retained=warp.outputSurface
+    val entityCount=session.scene.entities.size
+    repeat(50){
+        warp.setVisible(false);warp.syncCurvedInput(session)
+        check(!retainedEntity.enabled && !input.enabled)
+        warp.setVisible(true);warp.syncCurvedInput(session)
+        check(retainedEntity.enabled && warp.outputSurface===retained)
+    }
+    check(session.scene.entities.size==entityCount)
     val fixedMesh=warp.mesh;val fixedShape=warp.displayEntity!!.shape
     SystemClock.now+=1000L
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false,viewDirection=floatArrayOf(.2f,0f,-1f))

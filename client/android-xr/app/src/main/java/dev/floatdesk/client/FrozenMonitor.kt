@@ -51,6 +51,8 @@ internal class FrozenMonitor private constructor(
         if (!hidden) { live.setEnabled(false); hidden = true }
     }
 
+    fun suspendVisibility(){entity.setEnabled(false);hidden=false}
+
     override fun close() {
         if (closed) return
         closed = true

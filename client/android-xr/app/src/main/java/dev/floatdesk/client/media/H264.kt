@@ -285,6 +285,8 @@ internal class MonitorDecoder(
         compositor?.output(null)
     }
 
+    fun isHealthy():Boolean=running.get() && receiveThread?.isAlive==true && decodeThread?.isAlive==true
+
     fun stop() {
         running.set(false)
         socket.close()
@@ -298,8 +300,13 @@ internal class MonitorDecoder(
         val buffer = ByteArray(2048)
         val packet = java.net.DatagramPacket(buffer, buffer.size)
         var packets = 0
-        runCatching { socket.receiveBufferSize = 8 * 1024 * 1024 }
-        socket.soTimeout = 20
+        try {
+            socket.receiveBufferSize = 8 * 1024 * 1024
+            socket.soTimeout = 20
+        } catch(error:java.net.SocketException) {
+            if(running.get())Log.w(TAG,"Video socket unavailable during receiver startup",error)
+            return
+        }
         while (running.get()) {
             val ready = try {
                 packet.setLength(buffer.size)

@@ -5,6 +5,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.xr.compose.subspace.draw.scale
 import androidx.xr.compose.subspace.layout.pointerHoverIcon
 import androidx.xr.scenecore.scene
@@ -45,7 +46,7 @@ internal fun DiagnosticsPanel(connection:dev.floatdesk.client.net.DeskConnection
     val pose=head ?: return
     val fov=angles();val h=kotlin.math.round(fov[0]*100f)/100f;val v=kotlin.math.round(fov[1]*100f)/100f
     val patches=androidx.compose.runtime.remember(h,v){hudForegroundPatches(h,v,ViewLayers.DiagnosticsDistanceM)}
-    val state=androidx.compose.runtime.remember(snapshot,resources,quality,qualityDebug){snapshot.copy(state=snapshot.state.copy(enabled=quality,showOverlay=qualityDebug,showResources=resources))}
+    val state=androidx.compose.runtime.remember(snapshot,resources,quality,qualityDebug){snapshot.copy(frame=if(quality)snapshot.frame else null,state=snapshot.state.copy(enabled=quality,showOverlay=qualityDebug,showResources=resources))}
     val unit=units().takeIf{it.isFinite() && it>0f} ?: 1f
     // Only this parent follows the head. Text refreshes never update individual block poses.
     androidx.xr.compose.subspace.SpatialBox(modifier=placedPanel(pose,unit,unit,density,pixelDensity)){
@@ -60,7 +61,9 @@ internal fun DiagnosticsPanel(connection:dev.floatdesk.client.net.DeskConnection
                 androidx.xr.compose.subspace.SpatialPanel(
                     modifier=placedPanel(local,patch.width*unit*supersample,patch.height*unit*supersample,density,pixelDensity).scale(1f/supersample).pointerHoverIcon(androidx.xr.scenecore.SpatialPointerIcon.NONE),
                     shape=androidx.xr.compose.subspace.layout.SpatialRoundedCornerShape(androidx.compose.foundation.shape.CornerSize(androidx.compose.ui.unit.Dp(0f)))){
-                    androidx.compose.foundation.Canvas(androidx.compose.ui.Modifier.fillMaxSize()){
+                    androidx.compose.foundation.Canvas(androidx.compose.ui.Modifier.fillMaxSize().pointerInput(Unit){
+                        awaitPointerEventScope{while(true){awaitPointerEvent().changes.forEach{it.consume()}}}
+                    }){
                         drawIntoCanvas{target->
                             val c=target.nativeCanvas;val saved=c.save();c.scale(size.width/800f,size.height/400f)
                             texture.draw(c,state,connection.presentation().rects,stamp,index,patch.columns,patch.rows,patch.vertices)
@@ -131,6 +134,8 @@ internal object DiagnosticsCanvas {
         canvas.drawColor(Color.TRANSPARENT,PorterDuff.Mode.CLEAR)
         val state=snapshot.state
         if(index<2 && !state.showResources || index>=2 && !state.showOverlay)return
+        paint.style=Paint.Style.FILL;paint.color=Color.argb(165,12,20,30)
+        canvas.drawRect(0f,0f,800f,400f,paint)
         val title=listOf("HOST","HEADSET","STREAM","QUALITY")[index]
         fun metric(text:String,label:String)=Regex(Regex.escape(label)+"\\s+([^\\s]+)").find(text)?.groupValues?.get(1) ?: "—"
         fun value(text:String,suffix:String)=Regex("[0-9.]+"+suffix).find(text)?.value ?: "—"

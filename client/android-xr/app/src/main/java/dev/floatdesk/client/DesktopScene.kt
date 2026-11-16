@@ -125,7 +125,8 @@ internal fun DeskContent(
         }
     }
     // Remove desktop render/input surfaces while Workspace is open so no surface can occlude it.
-    if(!displayControlsOpen) layout.forEachIndexed { index, placement ->
+    val controlsOpenNow=rememberUpdatedState(displayControlsOpen)
+    layout.forEachIndexed { index, placement ->
         androidx.compose.runtime.key(placement.hostSourceId,placement.pixelWidth,placement.pixelHeight) {
         val hands = remember(index) { grabs.getOrPut(index) { TwoHandState() } }
         var nativeResize by remember(index) { mutableStateOf(false) }
@@ -147,6 +148,15 @@ internal fun DeskContent(
             while (isActive) {
                 delay(20)
                 if(!connection.isRenderingActive() || !current.lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) { delay(100);continue }
+                if(controlsOpenNow.value) {
+                    warp.setVisible(false);systemControls.setVisible(false)
+                    hands.cancel();pointerControl.clearMonitor(index)
+                    if(nativeMove || nativeResize)onManipulate(false)
+                    nativeMove=false;nativeResize=false;moveBefore=null
+                    frozenMonitor?.suspendVisibility()
+                    delay(100);continue
+                }
+                warp.setVisible(true);systemControls.setVisible(true)
                 if (videoSurface.get() == null) continue
                 val root = findDeskSpace(current) ?: continue
                 val file = latest.value
@@ -249,7 +259,7 @@ internal fun DeskContent(
                 frozen?.close()
             }
         }
-        frozenMonitor?.let { frozen -> SideEffect { frozen.update(placement,warp.mesh) } }
+        if(!displayControlsOpen) frozenMonitor?.let { frozen -> SideEffect { frozen.update(placement,warp.mesh) } }
 
         val inputPolicy = remember(index) {
                 object : InteractionPolicy {
@@ -296,6 +306,7 @@ internal fun DeskContent(
                     pointerControl.hover(index,side,point,flat,width,height,SystemClock.uptimeMillis())
                 }
                 videoSurface.set(display)
+                warp.setVisible(!controlsOpenNow.value)
                 connection.attachSurface(index, display)
             }
             onSurfaceDestroyed {

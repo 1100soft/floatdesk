@@ -28,6 +28,13 @@ internal class MonitorSystemControls : AutoCloseable {
     private var submitted:NativeNodeState?=null
     private var component: ResizableComponent?=null
     private var movable: MovableComponent?=null
+    private var visible=true
+    fun setVisible(value:Boolean) {
+        if(visible==value)return
+        visible=value
+        if(!value){entity?.setEnabled(false);moving=false;resizeStartWidth=null}
+        submitted?.invalidate()
+    }
     private var generation=0L
     private var frameWidth=1f
     private var frameMesh:MonitorMesh?=null
@@ -74,7 +81,7 @@ internal class MonitorSystemControls : AutoCloseable {
             canvas.drawColor(Color.TRANSPARENT,PorterDuff.Mode.CLEAR)
             root.getSurface().unlockCanvasAndPost(canvas)
             val resize=ResizableComponent.create(session,resizeEventListener=java.util.function.Consumer { event ->
-                if(token==generation && !moving) {
+                if(visible && token==generation && !moving) {
                     submitted?.invalidate()
                     val startEvent=event.resizeState==ResizeEvent.ResizeState.START
                     val end=event.resizeState==ResizeEvent.ResizeState.END
@@ -99,15 +106,15 @@ internal class MonitorSystemControls : AutoCloseable {
             val move=MovableComponent.createSystemMovable(session,scaleInZ=false)
             move.addMoveListener(object: EntityMoveListener {
                 override fun onMoveStart(entity: Entity,initialInputRay: Ray,initialPose: Pose,initialScale: Float,initialParent: Entity) {
-                    if(token==generation && resizeStartWidth==null) { submitted?.invalidate();moving=true;moveListener?.invoke(SystemMovePhase.START,initialPose) }
+                    if(visible && token==generation && resizeStartWidth==null) { submitted?.invalidate();moving=true;moveListener?.invoke(SystemMovePhase.START,initialPose) }
                 }
                 override fun onMoveUpdate(entity: Entity,currentInputRay: Ray,currentPose: Pose,currentScale: Float) {
-                    if(token==generation)submitted?.invalidate()
-                    if(token==generation && moving) { moveListener?.invoke(SystemMovePhase.UPDATE,currentPose) }
+                    if(visible && token==generation)submitted?.invalidate()
+                    if(visible && token==generation && moving) { moveListener?.invoke(SystemMovePhase.UPDATE,currentPose) }
                 }
                 override fun onMoveEnd(entity: Entity,finalInputRay: Ray,finalPose: Pose,finalScale: Float,updatedParent: Entity?) {
-                    if(token==generation)submitted?.invalidate()
-                    if(token==generation && moving) { moveListener?.invoke(SystemMovePhase.END,finalPose);moving=false }
+                    if(visible && token==generation)submitted?.invalidate()
+                    if(visible && token==generation && moving) { moveListener?.invoke(SystemMovePhase.END,finalPose);moving=false }
                 }
             })
             check(root.addComponent(move))
@@ -118,7 +125,7 @@ internal class MonitorSystemControls : AutoCloseable {
         val normal=Vector3(frame.normal[0],frame.normal[1],frame.normal[2]);val up=Vector3(frame.up[0],frame.up[1],frame.up[2])
         entity?.let {
             submitted!!.parent(video.parent);submitted!!.pose(video.getPose().compose(Pose(offset,Quaternion.fromLookTowards(normal,up))))
-            submitted!!.scale(scale);submitted!!.enabled(enabled)
+            submitted!!.scale(scale);submitted!!.enabled(enabled && visible)
             if(geometryChanged) it.shape=SurfaceEntity.Shape.Quad(FloatSize2d(nextWidth,nextHeight))
         }
         if(boundsChanged) component?.let {
@@ -133,11 +140,12 @@ internal class MonitorSystemControls : AutoCloseable {
         if(geometryChanged) {shapeWidth=nextWidth;shapeHeight=nextHeight};canonicalWidth=width;canonicalHeight=height
     }
 
+    @SuppressLint("RestrictedApi")
     override fun close() {
         generation++;moving=false;submitted=null
         frameMesh=null;curvedFrame=null
         component?.let { entity?.removeComponent(it) };movable?.let { entity?.removeComponent(it) }
-        entity?.parent=null
+        entity?.dispose()
         entity=null;component=null;movable=null;listener=null;moveListener=null;resizeStartWidth=null
         shapeWidth=Float.NaN;shapeHeight=Float.NaN;canonicalWidth=Float.NaN;canonicalHeight=Float.NaN
     }

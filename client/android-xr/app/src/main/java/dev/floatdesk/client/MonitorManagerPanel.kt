@@ -93,8 +93,9 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
         }
         if(section=="Streaming") {
             Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                androidx.compose.material3.Switch(checked=viewedDetail,onCheckedChange=onViewedDetail)
-                Text("Experimental viewed-area quality",color=Color.White)
+                listOf(false to "Normal",true to "Dynamic").forEach{(mode,label)->
+                    Button(onClick={onViewedDetail(mode)},colors=androidx.compose.material3.ButtonDefaults.buttonColors(containerColor=if(viewedDetail==mode)Color(0xFF396A9B)else Color(0xFF263344))){Text(if(viewedDetail==mode)"✓ $label" else label)}
+                }
             }
             Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                 androidx.compose.material3.Switch(checked=viewDebug,onCheckedChange=onViewDebug)
@@ -191,6 +192,7 @@ private fun StreamingSettings(value:dev.floatdesk.client.workspace.WorkspaceFile
     var sharp by remember(value.sharpening){mutableStateOf(value.sharpening)}
     Text(String.format(Locale.ROOT,"Sharpening %.2f",sharp),color=Color.White)
     androidx.compose.material3.Slider(value=sharp,onValueChange={sharp=(it*20).roundToInt()/20f},onValueChangeFinished={onApply(value.copy(sharpening=sharp))},valueRange=0f..1.5f,steps=29)
+    if(value.experimentalViewedDetail) {
     Row(horizontalArrangement=Arrangement.spacedBy(6.dp)){
         Button(onClick={onApply(value.copy(detailAreaPixels=0))}){Text(if(value.detailAreaPixels==0L)"✓ Auto" else "Auto")}
         Button(onClick={onApply(value.copy(detailAreaPixels=value.detailAreaPixels.takeIf{it>0} ?: 1_048_576))}){Text(if(value.detailAreaPixels>0)"✓ Fixed area" else "Fixed area")}
@@ -211,6 +213,7 @@ private fun StreamingSettings(value:dev.floatdesk.client.workspace.WorkspaceFile
             Button(enabled=parsed!=null,onClick={parsed?.let{onApply(value.copy(detailAreaPixels=it*it))}}){Text("Apply")}
         }
         Text(parsed?.let{String.format(Locale.ROOT,"%d × %d · %.2f MP patch",it,it,it*it/1e6)} ?: "64–4096 pixels per side",color=Color.White)
+    }
     }
     Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)){
         androidx.compose.material3.Switch(checked=value.showResources,onCheckedChange={onApply(value.copy(showResources=it))});Text("Live resources",color=Color.White)

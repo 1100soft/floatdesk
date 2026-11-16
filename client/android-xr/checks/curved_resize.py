@@ -36,6 +36,7 @@ internal open class Entity {
     fun setScale(s:Vector3) { scale=s.x }
     fun setAlpha(a:Float) {}
     fun setEnabled(e:Boolean) { enabled=e }
+    fun dispose(){parent=null;enabled=false}
     fun addComponent(c:SpatialPointerComponent):Boolean = true
     fun addComponent(c:ResizableComponent):Boolean { resize=c; return true }
     fun addComponent(c:MovableComponent):Boolean { move=c; return true }

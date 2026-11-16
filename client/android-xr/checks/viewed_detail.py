@@ -19,6 +19,15 @@ fun main(){
   }
  }
 
+ // Gaze is blocked only on rendered HUD footprints, never in the central content area.
+ val hitRegions=HudGazeRegions(.24f)
+ for((index,patch) in hudForegroundPatches(.6f,.5f,.24f).withIndex()){
+   check(hudPatchHit(floatArrayOf(0f,0f,0f),patch.position,patch))
+   check(hitRegions.hit(floatArrayOf(0f,0f,0f),patch.position,.6f,.5f,true,true))
+   check(hitRegions.hit(floatArrayOf(0f,0f,0f),patch.position,.6f,.5f,false,true)==(index>=2))
+   check(!hitRegions.hit(floatArrayOf(0f,0f,0f),patch.position,.6f,.5f,true,false))
+ }
+ check(!hitRegions.hit(floatArrayOf(0f,0f,0f),floatArrayOf(0f,0f,-1f),.6f,.5f,true,true))
  // Every glyph region is one mesh in a single head-relative sphere, with no center collider.
  val layout=hudSurfaceLayout(.6f,.5f,.35f)
  check(layout.pixelWidth<=2048 && layout.pixelHeight<=2048)

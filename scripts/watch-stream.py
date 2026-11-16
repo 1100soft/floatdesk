@@ -17,7 +17,9 @@ from pathlib import Path
 
 
 def control(kind: int, payload: bytes) -> bytes:
-    return b"FDC1" + bytes([1, kind]) + struct.pack("<HII", 0, len(payload), 0) + payload
+    return (
+        b"FDC1" + bytes([1, kind]) + struct.pack("<HII", 0, len(payload), 0) + payload
+    )
 
 
 def client_hello() -> bytes:
@@ -180,13 +182,23 @@ def main() -> int:
     try:
         from PIL import Image
     except ImportError:
-        print(f"PASS: wrote {frame} ({frame.stat().st_size} bytes); PIL not installed for the variance check")
+        print(
+            f"PASS: wrote {frame} ({frame.stat().st_size} bytes); PIL not installed for the variance check"
+        )
         return 0
     image = Image.open(frame).convert("RGB")
     pixels = list(image.resize((64, 40)).getdata())
     count = len(pixels)
-    mean = tuple(sum(pixel[channel] for pixel in pixels) / count for channel in range(3))
-    variance = sum(sum((pixel[channel] - mean[channel]) ** 2 for channel in range(3)) for pixel in pixels) / count
+    mean = tuple(
+        sum(pixel[channel] for pixel in pixels) / count for channel in range(3)
+    )
+    variance = (
+        sum(
+            sum((pixel[channel] - mean[channel]) ** 2 for channel in range(3))
+            for pixel in pixels
+        )
+        / count
+    )
     print(f"frame={image.size[0]}x{image.size[1]} variance={variance:.1f} file={frame}")
     if variance < 20:
         print("FAIL: decoded frame is a flat color")

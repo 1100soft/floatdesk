@@ -1,6 +1,7 @@
 package dev.floatdesk.client
 
 import dev.floatdesk.client.workspace.Pose
+import dev.floatdesk.client.workspace.ViewLayers
 import dev.floatdesk.client.workspace.FixedMagnifierPlacement
 import dev.floatdesk.client.workspace.MonitorPlacement
 import dev.floatdesk.client.net.WorkspaceInfo
@@ -53,7 +54,7 @@ internal class NativeSurfaceTap {
         return null
     }
 }
-internal const val MagnifierDistanceM=.85f
+internal const val MagnifierDistanceM=ViewLayers.MagnifierDistanceM
 internal data class MagnifiedWindow(val id:Long,val pose:Pose,val width:Float,val height:Float,val sourceWidth:Int,val sourceHeight:Int,val spherical:Boolean=false,val mesh:MonitorMesh?=null,val units:Float=1f,val headOffset:FloatArray=floatArrayOf(0f,0f,-1f),val sizeScale:Float=1f,val fixed:Boolean=false,val desktopRotation:FloatArray?=null)
 internal fun magnifiedWindow(id:Long,width:Int,height:Int,viewer:Pose,horizontal:Float,vertical:Float,units:Float,spherical:Boolean=false):MagnifiedWindow{
     val source=deskLayout(listOf(Triple("Window",width,height)))
@@ -75,16 +76,7 @@ internal fun magnifierGeometry(window:MagnifiedWindow,viewer:Pose,units:Float,pr
     val pose=Pose(center,facingMagnifierRotation(center,viewer,viewer.rotation))
     val scale=stableUnits/window.units
     val width=window.width*scale;val height=window.height*scale
-    val eye=viewerInMonitor(viewer.position,pose.position,pose.rotation)
-    val old=window.mesh
-    val mesh=if(!window.spherical)null else if(!updateMesh)window.mesh else {
-        val same=old!=null && old.width==width && old.height==height && old.eye.indices.all{abs(old.eye[it]-eye[it])<.000001f}
-        val reference=if(same)old!! else MonitorMesh(width,height,eye,columns=32,rows=20,focus=floatArrayOf(0f,0f))
-        val forward=rotateVector(viewer.rotation,0f,0f,-1f)
-        val end=viewerInMonitor(FloatArray(3){viewer.position[it]+forward[it]},pose.position,pose.rotation)
-        val focus=sphericalViewFocus(reference,FloatArray(3){end[it]-eye[it]}) ?: floatArrayOf(0f,0f)
-        if(same && (0..1).all{abs(focus[it]-(old!!.focus?.get(it) ?: 0f))<.00001f})old!! else MonitorMesh(width,height,eye,columns=32,rows=20,focus=focus)
-    }
+    val mesh=projectMagnifier(window,viewer,pose,width,height,updateMesh,.000001f,.00001f)
     return window.copy(pose=pose,width=width,height=height,mesh=mesh,units=stableUnits,headOffset=offset)
 
 }
@@ -162,15 +154,15 @@ internal fun inPlaceWindowRect(info:WorkspaceInfo,id:Long,desktop:MonitorPlaceme
     return rect.takeIf{right-left>=width*.99f && bottom-top>=height*.99f}
 }
 
-internal fun multiplyRotation(a:FloatArray,b:FloatArray)=floatArrayOf(a[3]*b[0]+a[0]*b[3]+a[1]*b[2]-a[2]*b[1],a[3]*b[1]-a[0]*b[2]+a[1]*b[3]+a[2]*b[0],a[3]*b[2]+a[0]*b[1]-a[1]*b[0]+a[2]*b[3],a[3]*b[3]-a[0]*b[0]-a[1]*b[1]-a[2]*b[2])
+
 internal fun saveFixedMagnifier(id:String,window:MagnifiedWindow,desktop:MonitorPlacement,units:Float):FixedMagnifierPlacement {
     val local=viewerInMonitor(window.pose.position,desktop.pose.position,desktop.pose.rotation)
     val q=desktop.pose.rotation
-    val rotation=multiplyRotation(floatArrayOf(-q[0],-q[1],-q[2],q[3]),window.pose.rotation)
+    val rotation=multiplyQuaternion(floatArrayOf(-q[0],-q[1],-q[2],q[3]),window.pose.rotation)
     return FixedMagnifierPlacement(id,Pose(FloatArray(3){local[it]/units},rotation),window.width/units,window.height/units)
 }
 internal fun fixedMagnifier(record:FixedMagnifierPlacement,desktop:MonitorPlacement,source:DesktopWindow?,viewer:Pose,units:Float,spherical:Boolean,mesh:MonitorMesh?=null,deferMesh:Boolean=false):MagnifiedWindow{
-    val pose=Pose(transformPoint(desktop.pose,FloatArray(3){record.pose.position[it]*units}),multiplyRotation(desktop.pose.rotation,record.pose.rotation))
+    val pose=Pose(transformPoint(desktop.pose,FloatArray(3){record.pose.position[it]*units}),multiplyQuaternion(desktop.pose.rotation,record.pose.rotation))
     return fixedMagnifierGeometry(MagnifiedWindow(source?.id ?: 0,pose,record.widthM*units,record.heightM*units,source?.width ?: 1280,source?.height ?: 800,spherical,mesh=mesh,units=units,fixed=true,desktopRotation=desktop.pose.rotation),viewer,updateMesh=!deferMesh)
 }
 internal fun fixedMagnifierGeometry(window:MagnifiedWindow,viewer:Pose,proposed:FloatArray=window.pose.position,updateMesh:Boolean=true):MagnifiedWindow{
@@ -178,17 +170,7 @@ internal fun fixedMagnifierGeometry(window:MagnifiedWindow,viewer:Pose,proposed:
     val normal=unit(FloatArray(3){viewer.position[it]-proposed[it]})
     val center=FloatArray(3){viewer.position[it]-normal[it]*MagnifierDistanceM*window.units}
     val pose=Pose(center,facingMagnifierRotation(center,viewer,window.desktopRotation ?: window.pose.rotation))
-    val eye=viewerInMonitor(viewer.position,pose.position,pose.rotation)
-    val mesh=if(!window.spherical)null else if(!updateMesh)window.mesh else {
-        val direction=rotateVector(viewer.rotation,0f,0f,-1f)
-        val endpoint=viewerInMonitor(FloatArray(3){viewer.position[it]+direction[it]},pose.position,pose.rotation)
-        val ray=FloatArray(3){endpoint[it]-eye[it]}
-        val old=window.mesh
-        val same=old!=null && old.width==window.width && old.height==window.height && (0..2).all{abs(eye[it]-old.eye[it])<.003f}
-        val reference=if(same)old!! else MonitorMesh(window.width,window.height,eye,columns=32,rows=20,focus=floatArrayOf(0f,0f))
-        val focus=sphericalViewFocus(reference,ray) ?: floatArrayOf(0f,0f)
-        if(same && (0..1).all{abs(focus[it]-(old!!.focus?.get(it) ?: 0f))<.003f})old!! else MonitorMesh(window.width,window.height,eye,columns=32,rows=20,focus=focus)
-    }
+    val mesh=projectMagnifier(window,viewer,pose,window.width,window.height,updateMesh,.003f,.003f)
     return window.copy(pose=pose,mesh=mesh)
 }
 internal fun magnifierContentPoint(window:MagnifiedWindow,point:Pair<Float,Float>):Pair<Float,Float>{
@@ -233,14 +215,13 @@ internal fun basisRotation(x:FloatArray,y:FloatArray,z:FloatArray):FloatArray{
 }
 
 internal fun facingMagnifierRotation(center:FloatArray,viewer:Pose,horizontalRotation:FloatArray):FloatArray{
-    fun unit(v:FloatArray):FloatArray{val n=sqrt(v.sumOf{(it*it).toDouble()}).toFloat().coerceAtLeast(.00001f);return FloatArray(3){v[it]/n}}
-    fun cross(a:FloatArray,b:FloatArray)=floatArrayOf(a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0])
-    val normal=unit(FloatArray(3){viewer.position[it]-center[it]})
+    val normal=normalize3(FloatArray(3){viewer.position[it]-center[it]})
     var vertical=rotateVector(horizontalRotation,0f,1f,0f)
     if(abs((0..2).sumOf{(vertical[it]*normal[it]).toDouble()})>.999)vertical=rotateVector(horizontalRotation,0f,0f,1f)
-    val right=unit(cross(vertical,normal));val up=unit(cross(normal,right))
+    val right=normalize3(cross3(vertical,normal));val up=normalize3(cross3(normal,right))
     return basisRotation(right,up,normal)
 }
+
 
 /** Captured native DOWN/MOVE/UP rays drag the actual pane without a Movable affordance. */
 internal class MagnifierRayDrag{
@@ -251,24 +232,23 @@ internal class MagnifierRayDrag{
     private var contactStart=floatArrayOf()
     var gain=1f;private set
     fun clear(){start=null;handStart=null;dragging=false}
-    private fun unit(v:FloatArray):FloatArray{val n=sqrt(v.sumOf{(it*it).toDouble()}).toFloat().coerceAtLeast(.00001f);return FloatArray(3){v[it]/n}}
     fun begin(window:MagnifiedWindow,viewer:Pose,origin:FloatArray,direction:FloatArray,contact:FloatArray,hand:FloatArray?=null){
         start=window;dragging=false;offset=FloatArray(3){window.pose.position[it]-viewer.position[it]}
-        val d=unit(direction);rayDistance=(0..2).sumOf{((contact[it]-origin[it])*d[it]).toDouble()}.toFloat().coerceAtLeast(.001f)
+        val d=normalize3(direction);rayDistance=(0..2).sumOf{((contact[it]-origin[it])*d[it]).toDouble()}.toFloat().coerceAtLeast(.001f)
         // Establish identity from the captured ray itself. Native hit positions and ray origins
         // can have different offsets/scales; comparing a hit-based DOWN with a ray-based MOVE
         // turns a stationary pinch into an immediate drag.
-        from=unit(FloatArray(3){origin[it]+d[it]*rayDistance-viewer.position[it]})
+        from=normalize3(FloatArray(3){origin[it]+d[it]*rayDistance-viewer.position[it]})
         handStart=null;gain=1f
         if(hand!=null && hand.all{it.isFinite()}){
             val handRange=sqrt((0..2).sumOf{val x=hand[it]-viewer.position[it];(x*x).toDouble()}).toFloat()
             val targetRange=sqrt((0..2).sumOf{val x=contact[it]-viewer.position[it];(x*x).toDouble()}).toFloat()
-            if(handRange>.00001f && targetRange>.00001f){handStart=hand.copyOf();contactStart=contact.copyOf();gain=targetRange/handRange;from=unit(FloatArray(3){contact[it]-viewer.position[it]})}
+            if(handRange>.00001f && targetRange>.00001f){handStart=hand.copyOf();contactStart=contact.copyOf();gain=targetRange/handRange;from=normalize3(FloatArray(3){contact[it]-viewer.position[it]})}
         }
     }
     fun move(viewer:Pose,origin:FloatArray,direction:FloatArray):FloatArray?{
         val window=start ?: return null
-        val d=unit(direction);val to=unit(FloatArray(3){origin[it]+d[it]*rayDistance-viewer.position[it]})
+        val d=normalize3(direction);val to=normalize3(FloatArray(3){origin[it]+d[it]*rayDistance-viewer.position[it]})
         return rotateTo(viewer,to)
     }
     fun moveHand(viewer:Pose,hand:FloatArray):FloatArray?{
@@ -279,7 +259,7 @@ internal class MagnifierRayDrag{
         // Intent is measured at the hand, so increased gain cannot turn pinch jitter into a drag.
         if(!dragging && movement<.008f*window.units)return null
         dragging=true
-        val to=unit(FloatArray(3){contactStart[it]+delta[it]*gain-viewer.position[it]})
+        val to=normalize3(FloatArray(3){contactStart[it]+delta[it]*gain-viewer.position[it]})
         return rotateTo(viewer,to)
     }
     private fun rotateTo(viewer:Pose,to:FloatArray):FloatArray?{
@@ -287,11 +267,23 @@ internal class MagnifierRayDrag{
         val dot=(0..2).sumOf{(from[it]*to[it]).toDouble()}.toFloat().coerceIn(-1f,1f)
         if(!dragging && sqrt(maxOf(0f,2f-2f*dot))*MagnifierDistanceM<.008f)return null
         dragging=true
-        var axis=floatArrayOf(from[1]*to[2]-from[2]*to[1],from[2]*to[0]-from[0]*to[2],from[0]*to[1]-from[1]*to[0])
-        val q=if(dot<-.9999f){axis=unit(if(abs(from[0])<.9f)floatArrayOf(0f,from[2],-from[1])else floatArrayOf(-from[2],0f,from[0]));floatArrayOf(axis[0],axis[1],axis[2],0f)}else{
-            val n=sqrt(2f*(1f+dot));floatArrayOf(axis[0]/n,axis[1]/n,axis[2]/n,n/2f)
-        }
+        val q=quaternionBetween(from,to)
         val moved=rotateVector(q,offset[0],offset[1],offset[2])
         return FloatArray(3){viewer.position[it]+moved[it]}.takeIf{it.all{v->v.isFinite()} && window.units>0f}
     }
+}
+
+/** Placement changes independently; expensive geometry is shared, cached and budgeted by callers. */
+private fun projectMagnifier(window:MagnifiedWindow,viewer:Pose,pose:Pose,width:Float,height:Float,update:Boolean,eyeTolerance:Float,focusTolerance:Float):MonitorMesh?{
+    if(!window.spherical)return null
+    if(!update)return window.mesh
+    val eye=viewerInMonitor(viewer.position,pose.position,pose.rotation)
+    val old=window.mesh
+    val same=old!=null && old.width==width && old.height==height && eye.indices.all{abs(eye[it]-old.eye[it])<eyeTolerance}
+    val reference=if(same)old!! else MonitorMesh(width,height,eye,columns=32,rows=20,focus=floatArrayOf(0f,0f))
+    val direction=rotateVector(viewer.rotation,0f,0f,-1f)
+    val end=viewerInMonitor(FloatArray(3){viewer.position[it]+direction[it]},pose.position,pose.rotation)
+    val focus=sphericalViewFocus(reference,FloatArray(3){end[it]-eye[it]}) ?: floatArrayOf(0f,0f)
+    if(same && focus.indices.all{abs(focus[it]-(old!!.focus?.get(it) ?: 0f))<focusTolerance})return old
+    return MonitorMesh(width,height,eye,columns=32,rows=20,focus=focus)
 }

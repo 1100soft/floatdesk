@@ -19,8 +19,8 @@ pub use control::{
     KIND_TOUCHPAD_STATE, KIND_VIDEO_NACK, MAGIC, MAX_DATAGRAM, VERSION,
 };
 pub use rtp::{
-    rtp_timestamp, split_annex_b, Depacketized, RtpH264Depacketizer, RtpH264Packetizer,
-    RTP_CLOCK_HZ, RTP_PAYLOAD_TYPE,
+    rtp_timestamp, split_annex_b, Depacketized, MalformedRtp, RtpH264Depacketizer,
+    RtpH264Packetizer, RTP_CLOCK_HZ, RTP_PAYLOAD_TYPE,
 };
 pub use workspace::{
     compose_pose, desk_layout, Pose, WorkspaceFile, WorkspaceMonitor, SCHEMA_VERSION,

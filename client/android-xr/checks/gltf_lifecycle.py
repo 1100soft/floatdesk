@@ -16,7 +16,7 @@ internal class Quaternion(val x:Float,val y:Float,val z:Float,val w:Float)
 internal class Pose(val position:Vector3,val rotation:Quaternion)
 internal data class InteractionPatch(val center:FloatArray=floatArrayOf(0f,0f,0f),val rotation:FloatArray=floatArrayOf(0f,0f,0f,1f),val scale:FloatArray=floatArrayOf(1f,1f),val childRotation:FloatArray=floatArrayOf(0f,0f,0f,1f))
 internal fun interactionPatches(mesh:MonitorMesh,columns:Int=12,rows:Int=8)=List(columns*rows*2){InteractionPatch()}
-internal fun interactionGridGlb(pixel:ByteArray)=pixel
+internal fun interactionGridGlb(pixel:ByteArray,columns:Int=12,rows:Int=8)=pixel
 internal class InputEvent
 internal class InteractableComponent
 internal enum class SpatialPointerIcon { NONE }

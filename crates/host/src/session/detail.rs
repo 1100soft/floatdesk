@@ -183,14 +183,16 @@ pub(super) fn start(
                         sequence += 1;
                         let began = Instant::now();
                         packed.as_mut().unwrap().send(
-                            &shared,
                             &mut socket,
-                            desktop,
-                            &screens,
-                            outer,
-                            outer_uv,
-                            &request,
-                            sequence,
+                            ViewedFrame {
+                                shared: &shared,
+                                desktop,
+                                screens: &screens,
+                                outer,
+                                outer_uv,
+                                request: &request,
+                                sequence,
+                            },
                         )?;
                         if area_mode {
                             let p = packed.as_ref().unwrap();
@@ -382,88 +384,6 @@ fn region(desktop: MonitorRect, request: &serde_json::Value) -> Option<(MonitorR
         ],
     ))
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn packed_tiles_partition_without_overlap_even_at_edges() {
-        let outer = MonitorRect {
-            index: 0,
-            x: -100,
-            y: 50,
-            width: 1000,
-            height: 600,
-        };
-        for inner in [
-            outer,
-            MonitorRect {
-                index: 0,
-                x: -100,
-                y: 50,
-                width: 400,
-                height: 240,
-            },
-            MonitorRect {
-                index: 0,
-                x: 200,
-                y: 230,
-                width: 400,
-                height: 240,
-            },
-            MonitorRect {
-                index: 0,
-                x: 500,
-                y: 410,
-                width: 400,
-                height: 240,
-            },
-        ] {
-            let regions = packed_regions(outer, inner);
-            assert_eq!(regions[0], inner);
-            assert_eq!(
-                regions
-                    .iter()
-                    .map(|r| r.width as u64 * r.height as u64)
-                    .sum::<u64>(),
-                outer.width as u64 * outer.height as u64
-            );
-            for (i, a) in regions.iter().enumerate() {
-                for b in regions.iter().skip(i + 1) {
-                    assert!(
-                        a.x + a.width as i32 <= b.x
-                            || b.x + b.width as i32 <= a.x
-                            || a.y + a.height as i32 <= b.y
-                            || b.y + b.height as i32 <= a.y
-                    );
-                }
-            }
-        }
-    }
-    #[test]
-    fn crops_are_bounded_and_match_exact_pixels() {
-        let desktop = MonitorRect {
-            index: 0,
-            x: -100,
-            y: 30,
-            width: 1000,
-            height: 600,
-        };
-        let (r, uv) = region(
-            desktop,
-            &serde_json::json!({"rect":[0.1001,0.2,0.4001,0.8]}),
-        )
-        .unwrap();
-        assert_eq!((r.x, r.y, r.width, r.height), (0, 150, 301, 360));
-        assert_eq!(uv, [0.1, 0.2, 0.401, 0.8]);
-        for rect in [
-            serde_json::json!([-0.1, 0, 1, 1]),
-            serde_json::json!([0, 0, 0, 1]),
-            serde_json::json!([0, 0, 2, 1]),
-        ] {
-            assert!(region(desktop, &serde_json::json!({"rect":rect})).is_none());
-        }
-    }
-}
 
 fn view_plan(
     desktop: MonitorRect,
@@ -516,6 +436,17 @@ fn avc_height(request: &serde_json::Value) -> u16 {
         2160
     }
 }
+/// One captured view request, keeping routing/geometry metadata together.
+struct ViewedFrame<'a> {
+    shared: &'a Shared,
+    desktop: MonitorRect,
+    screens: &'a [MonitorRect],
+    outer: MonitorRect,
+    outer_uv: [f32; 4],
+    request: &'a serde_json::Value,
+    sequence: u64,
+}
+
 struct PackedView {
     source: (u32, u32),
     fraction: f64,
@@ -677,17 +608,16 @@ impl PackedView {
         }
         best_area * 2 >= area
     }
-    fn send(
-        &mut self,
-        shared: &Shared,
-        socket: &mut std::net::TcpStream,
-        desktop: MonitorRect,
-        screens: &[MonitorRect],
-        outer: MonitorRect,
-        outer_uv: [f32; 4],
-        request: &serde_json::Value,
-        sequence: u64,
-    ) -> Result<()> {
+    fn send(&mut self, socket: &mut std::net::TcpStream, frame: ViewedFrame<'_>) -> Result<()> {
+        let ViewedFrame {
+            shared,
+            desktop,
+            screens,
+            outer,
+            outer_uv,
+            request,
+            sequence,
+        } = frame;
         let start = Instant::now();
         let plan = if request["regionSampling"].as_bool().unwrap_or(false) {
             self.plan.clone()
@@ -786,7 +716,7 @@ impl PackedView {
             .filter(|t| t.width as u32 == t.source.width && t.height as u32 == t.source.height)
             .collect::<Vec<_>>();
         let inner_uv = if high.is_empty() || !request["regionSampling"].as_bool().unwrap_or(false) {
-            metadata[0][0].clone()
+            metadata[0][0]
         } else {
             let x = high.iter().map(|t| t.source.x).min().unwrap();
             let y = high.iter().map(|t| t.source.y).min().unwrap();
@@ -893,4 +823,87 @@ fn packed_regions(outer: MonitorRect, inner: MonitorRect) -> Vec<MonitorRect> {
     .into_iter()
     .filter(|r| r.width > 0 && r.height > 0)
     .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn packed_tiles_partition_without_overlap_even_at_edges() {
+        let outer = MonitorRect {
+            index: 0,
+            x: -100,
+            y: 50,
+            width: 1000,
+            height: 600,
+        };
+        for inner in [
+            outer,
+            MonitorRect {
+                index: 0,
+                x: -100,
+                y: 50,
+                width: 400,
+                height: 240,
+            },
+            MonitorRect {
+                index: 0,
+                x: 200,
+                y: 230,
+                width: 400,
+                height: 240,
+            },
+            MonitorRect {
+                index: 0,
+                x: 500,
+                y: 410,
+                width: 400,
+                height: 240,
+            },
+        ] {
+            let regions = packed_regions(outer, inner);
+            assert_eq!(regions[0], inner);
+            assert_eq!(
+                regions
+                    .iter()
+                    .map(|r| r.width as u64 * r.height as u64)
+                    .sum::<u64>(),
+                outer.width as u64 * outer.height as u64
+            );
+            for (i, a) in regions.iter().enumerate() {
+                for b in regions.iter().skip(i + 1) {
+                    assert!(
+                        a.x + a.width as i32 <= b.x
+                            || b.x + b.width as i32 <= a.x
+                            || a.y + a.height as i32 <= b.y
+                            || b.y + b.height as i32 <= a.y
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn crops_are_bounded_and_match_exact_pixels() {
+        let desktop = MonitorRect {
+            index: 0,
+            x: -100,
+            y: 30,
+            width: 1000,
+            height: 600,
+        };
+        let (r, uv) = region(
+            desktop,
+            &serde_json::json!({"rect":[0.1001,0.2,0.4001,0.8]}),
+        )
+        .unwrap();
+        assert_eq!((r.x, r.y, r.width, r.height), (0, 150, 301, 360));
+        assert_eq!(uv, [0.1, 0.2, 0.401, 0.8]);
+        for rect in [
+            serde_json::json!([-0.1, 0, 1, 1]),
+            serde_json::json!([0, 0, 0, 1]),
+            serde_json::json!([0, 0, 2, 1]),
+        ] {
+            assert!(region(desktop, &serde_json::json!({"rect":rect})).is_none());
+        }
+    }
 }

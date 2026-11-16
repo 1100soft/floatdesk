@@ -173,7 +173,7 @@ impl GstEncoder {
         input_size: (u32, u32),
         quality: u32,
     ) -> Result<Self> {
-        if config.width % 2 != 0 || config.height % 2 != 0 {
+        if (config.width & 1) != 0 || (config.height & 1) != 0 {
             return Err(Error::Encoder(
                 "encoder width and height must be even".into(),
             ));

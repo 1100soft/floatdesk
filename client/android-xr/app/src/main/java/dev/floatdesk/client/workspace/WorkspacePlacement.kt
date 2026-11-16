@@ -1,10 +1,12 @@
 package dev.floatdesk.client.workspace
 
+import dev.floatdesk.client.viewHalfAngles
 import dev.floatdesk.client.focusViewHalfAngles
 
 /** UI panel compositing plus ordered physical planes; all values are in meters. */
 internal object ViewLayers {
     const val DesktopDistanceM=1.2f
+    const val MagnifierDistanceM=.85f
     const val ControlsDistanceM=.40f
     const val DiagnosticsDistanceM=.35f
 }
@@ -30,10 +32,8 @@ internal fun fitDesktopInView(screens:List<MonitorPlacement>,viewer:Pose,horizon
     if(screens.isEmpty())return mutableListOf()
     val units=unitsPerMeter.takeIf{it.isFinite() && it>0f} ?: 1f
     val distance=distanceM*units
-    fun angle(value:Float,fallback:Float)=((value.takeIf{it.isFinite() && it>.05f} ?: fallback)*.85f).coerceAtMost(1.2f)
-    val focused=focusViewHalfAngles(horizontalHalfAngle,verticalHalfAngle)
-    val horizontal=if(centralView)focused.first else angle(horizontalHalfAngle,Math.toRadians(35.0).toFloat())
-    val vertical=if(centralView)focused.second else angle(verticalHalfAngle,Math.toRadians(30.0).toFloat())
+    val bounds=if(centralView)focusViewHalfAngles(horizontalHalfAngle,verticalHalfAngle)else viewHalfAngles(horizontalHalfAngle,verticalHalfAngle)
+    val horizontal=bounds.first;val vertical=bounds.second
     val left=screens.minOf{it.pose.position[0]-it.physicalWidthM*.5f}
     val right=screens.maxOf{it.pose.position[0]+it.physicalWidthM*.5f}
     val bottom=screens.minOf{it.pose.position[1]-it.physicalHeightM*.5f}

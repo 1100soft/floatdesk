@@ -32,6 +32,13 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     private val thread=HandlerThread("floatdesk-video-gl").also { it.start() }
     private val handler=Handler(thread.looper)
     private val ready=CountDownLatch(1)
+    private val uniformLocations=mutableMapOf<Int,MutableMap<String,Int>>()
+    private val attributeLocations=mutableMapOf<Int,MutableMap<String,Int>>()
+    private fun uniform(program:Int,name:String)=uniformLocations.getOrPut(program){mutableMapOf()}.getOrPut(name){GLES20.glGetUniformLocation(program,name)}
+    private fun attribute(program:Int,name:String)=attributeLocations.getOrPut(program){mutableMapOf()}.getOrPut(name){GLES20.glGetAttribLocation(program,name)}
+    // Bounded decoration geometry is rebuilt into reusable primitive storage, without boxing.
+    private val inkValues=FloatArray((256+2*24)*6*6)
+    private val inkBuffer=ByteBuffer.allocateDirect(inkValues.size*4).order(ByteOrder.nativeOrder()).asFloatBuffer()
     private val redrawPosted=AtomicBoolean(false)
     private val presentationPosted=AtomicBoolean(false)
     @Volatile private var closed=false
@@ -355,22 +362,22 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         val view=viewCurrent?.takeIf{viewLatched && (diagnostics.enabled || handoff)}
         if(view==null && !hasFrame)return
         GLES20.glViewport(0,0,w[0],h[0]); GLES20.glUseProgram(program)
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(program,"viewGutter"),view?.gutterPixels?.toFloat() ?: 0f)
-        GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"viewMode"),if(view?.tiles?.isNotEmpty()==true)2 else if(view!=null)1 else 0)
+        GLES20.glUniform1f(uniform(program,"viewGutter"),view?.gutterPixels?.toFloat() ?: 0f)
+        GLES20.glUniform1i(uniform(program,"viewMode"),if(view?.tiles?.isNotEmpty()==true)2 else if(view!=null)1 else 0)
         if(view!=null){
-            GLES20.glUniform4f(GLES20.glGetUniformLocation(program,"viewOuter"),view.outer.left,view.outer.top,view.outer.right,view.outer.bottom)
-            GLES20.glUniform4f(GLES20.glGetUniformLocation(program,"viewInner"),view.inner.left,view.inner.top,view.inner.right,view.inner.bottom)
+            GLES20.glUniform4f(uniform(program,"viewOuter"),view.outer.left,view.outer.top,view.outer.right,view.outer.bottom)
+            GLES20.glUniform4f(uniform(program,"viewInner"),view.inner.left,view.inner.top,view.inner.right,view.inner.bottom)
 
         }
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0); GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,if(view!=null)viewTextureId else textureId)
-        GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"video"),0)
-        GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"retainedVideo"),2)
-        GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"useRetained"),if(view!=null)1 else 0)
+        GLES20.glUniform1i(uniform(program,"video"),0)
+        GLES20.glUniform1i(uniform(program,"retainedVideo"),2)
+        GLES20.glUniform1i(uniform(program,"useRetained"),if(view!=null)1 else 0)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE2);GLES20.glBindTexture(GLES20.GL_TEXTURE_2D,retainedTexture)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(program,"textureMatrix"),1,false,if(view!=null)viewTransform else transform,0)
+        GLES20.glUniformMatrix4fv(uniform(program,"textureMatrix"),1,false,if(view!=null)viewTransform else transform,0)
         // Active sampler types must use distinct texture units even when the branch is off.
-        GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"projectionMap"),1)
+        GLES20.glUniform1i(uniform(program,"projectionMap"),1)
         if(lookupTexture==0) {
             GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
             val id=IntArray(1);GLES20.glGenTextures(1,id,0);lookupTexture=id[0]
@@ -381,23 +388,23 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         }
         val mirror=activeMirror
-        GLES20.glUniform2f(GLES20.glGetUniformLocation(program,"framePadding"),mirror?.padX ?: 0f,mirror?.padY ?: 0f)
-        GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"framePinned"),if(mirror?.pinned==true)1 else 0)
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(program,"paneAspect"),mirror?.aspect ?: 0f)
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(program,"sourceAspect"),sourceAspect)
-        GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"windowMaskCount"),minOf(16,windowMask.size/4))
-        if(windowMask.isNotEmpty())GLES20.glUniform4fv(GLES20.glGetUniformLocation(program,"windowMasks[0]"),minOf(16,windowMask.size/4),windowMask,0)
+        GLES20.glUniform2f(uniform(program,"framePadding"),mirror?.padX ?: 0f,mirror?.padY ?: 0f)
+        GLES20.glUniform1i(uniform(program,"framePinned"),if(mirror?.pinned==true)1 else 0)
+        GLES20.glUniform1f(uniform(program,"paneAspect"),mirror?.aspect ?: 0f)
+        GLES20.glUniform1f(uniform(program,"sourceAspect"),sourceAspect)
+        GLES20.glUniform1i(uniform(program,"windowMaskCount"),minOf(16,windowMask.size/4))
+        if(windowMask.isNotEmpty())GLES20.glUniform4fv(uniform(program,"windowMasks[0]"),minOf(16,windowMask.size/4),windowMask,0)
         val focusWindow=windowRect
-        GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"windowEnabled"),if(focusWindow==null)0 else 1)
-        GLES20.glUniform4f(GLES20.glGetUniformLocation(program,"windowRect"),focusWindow?.left ?: 0f,focusWindow?.top ?: 0f,focusWindow?.right ?: 1f,focusWindow?.bottom ?: 1f)
+        GLES20.glUniform1i(uniform(program,"windowEnabled"),if(focusWindow==null)0 else 1)
+        GLES20.glUniform4f(uniform(program,"windowRect"),focusWindow?.left ?: 0f,focusWindow?.top ?: 0f,focusWindow?.right ?: 1f,focusWindow?.bottom ?: 1f)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE3);GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,windowTextureId)
-        GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"windowLayer"),3)
-        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(program,"windowMatrix"),1,false,windowTransform,0)
+        GLES20.glUniform1i(uniform(program,"windowLayer"),3)
+        GLES20.glUniformMatrix4fv(uniform(program,"windowMatrix"),1,false,windowTransform,0)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(program,"sharpenStrength"),sharpening)
-        GLES20.glUniform2f(GLES20.glGetUniformLocation(program,"videoTexel"),if(view!=null)1f/view.atlasWidth else 1f/baseWidth,if(view!=null)1f/view.atlasHeight else 1f/baseHeight)
+        GLES20.glUniform1f(uniform(program,"sharpenStrength"),sharpening)
+        GLES20.glUniform2f(uniform(program,"videoTexel"),if(view!=null)1f/view.atlasWidth else 1f/baseWidth,if(view!=null)1f/view.atlasHeight else 1f/baseHeight)
         val projection=viewProjection
-        GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"projectionEnabled"),if(projection==null) 0 else 1)
+        GLES20.glUniform1i(uniform(program,"projectionEnabled"),if(projection==null) 0 else 1)
         if(projection!=null) {
             GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
             if(lookupTexture==0) {val id=IntArray(1);GLES20.glGenTextures(1,id,0);lookupTexture=id[0]}
@@ -415,8 +422,8 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                 } else GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D,0,0,0,size.first,size.second,GLES20.GL_RGBA,GLES20.GL_UNSIGNED_BYTE,bytes)
                 uploadedProjection=projection
             }
-            GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"projectionMap"),1)
-            GLES20.glUniform2f(GLES20.glGetUniformLocation(program,"projectionGrid"),projection.columns.toFloat(),projection.rows.toFloat())
+            GLES20.glUniform1i(uniform(program,"projectionMap"),1)
+            GLES20.glUniform2f(uniform(program,"projectionGrid"),projection.columns.toFloat(),projection.rows.toFloat())
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         }
         val mapping=presentation
@@ -427,17 +434,17 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             val bottom=kotlin.math.floor((1f-bounds.bottom)*h[0]).toInt().coerceIn(0,h[0]);val top=kotlin.math.ceil((1f-bounds.top)*h[0]).toInt().coerceIn(bottom,h[0])
             GLES20.glEnable(GLES20.GL_SCISSOR_TEST);GLES20.glScissor(left,bottom,right-left,top-bottom)
         }
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(program,"contentScale"),1f-mapping.spacing.coerceIn(0f,.15f))
-        val position=GLES20.glGetAttribLocation(program,"position")
+        GLES20.glUniform1f(uniform(program,"contentScale"),1f-mapping.spacing.coerceIn(0f,.15f))
+        val position=attribute(program,"position")
         GLES20.glEnableVertexAttribArray(position); GLES20.glVertexAttribPointer(position,2,GLES20.GL_FLOAT,false,0,vertices)
         // Draw one scissored region at a time: each fragment needs one lookup, regardless
         // of region count. Lower-priority coverage goes first so native detail wins.
         val tileCount=view?.tiles?.size?.div(8) ?: 0
         for(tile in (if(tileCount>0)tileCount-1 else 0) downTo 0){
-            GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"viewTileCount"),if(tileCount>0)1 else 0)
+            GLES20.glUniform1i(uniform(program,"viewTileCount"),if(tileCount>0)1 else 0)
             if(view!=null && tileCount>0){
-                GLES20.glUniform4fv(GLES20.glGetUniformLocation(program,"viewSources[0]"),1,view.tiles,tile*8)
-                GLES20.glUniform4fv(GLES20.glGetUniformLocation(program,"viewDestinations[0]"),1,view.tiles,tile*8+4)
+                GLES20.glUniform4fv(uniform(program,"viewSources[0]"),1,view.tiles,tile*8)
+                GLES20.glUniform4fv(uniform(program,"viewDestinations[0]"),1,view.tiles,tile*8+4)
                 val n=tile*8
                 val visible=dev.floatdesk.client.FocusRect(view.tiles[n],view.tiles[n+1],view.tiles[n+2],view.tiles[n+3]).intersect(view.outer) ?: continue
                 val bounds=mapping.displayBounds(visible) ?: continue
@@ -447,8 +454,8 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             }
             for(start in 0 until mapping.rects.size/4 step 6) {
                 val count=minOf(6,mapping.rects.size/4-start)
-                GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"screenCount"),count)
-                GLES20.glUniform4fv(GLES20.glGetUniformLocation(program,"screenRects[0]"),count,mapping.rects,start*4)
+                GLES20.glUniform1i(uniform(program,"screenCount"),count)
+                GLES20.glUniform4fv(uniform(program,"screenRects[0]"),count,mapping.rects,start*4)
                 GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP,0,4)
             }
         }
@@ -471,10 +478,10 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     private fun drawInk(width: Int,height: Int) {
         val overlay=aim
         if(overlay.segments.isEmpty() && overlay.contacts.isEmpty()) return
-        val values=ArrayList<Float>()
+        val values=inkValues;var valueCount=0
         fun vertex(x: Float,y: Float,alpha: Float,red: Float,green: Float,blue: Float) {
-            values.add(x/width*2f-1f); values.add(1f-y/height*2f); values.add(alpha)
-            values.add(red); values.add(green); values.add(blue)
+            values[valueCount++]=x/width*2f-1f;values[valueCount++]=1f-y/height*2f;values[valueCount++]=alpha
+            values[valueCount++]=red;values[valueCount++]=green;values[valueCount++]=blue
         }
         fun line(ax: Float,ay: Float,bx: Float,by: Float,thickness: Float,alpha: Float,red: Float,green: Float,blue: Float) {
             val dx=bx-ax; val dy=by-ay; val length=kotlin.math.hypot(dx,dy)
@@ -499,19 +506,18 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                     x+kotlin.math.cos(b).toFloat()*5f,y+kotlin.math.sin(b).toFloat()*5f,2f,.4f,.4236f,.9777f,1f)
             }
         }
-        if(values.isEmpty()) return
-        val buffer=ByteBuffer.allocateDirect(values.size*4).order(ByteOrder.nativeOrder()).asFloatBuffer()
-            .put(values.toFloatArray()).also { it.position(0) }
+        if(valueCount==0) return
+        val buffer=inkBuffer.apply{clear();put(values,0,valueCount);flip()}
         GLES20.glUseProgram(inkProgram)
         GLES20.glEnable(GLES20.GL_BLEND); GLES20.glBlendFuncSeparate(GLES20.GL_SRC_ALPHA,GLES20.GL_ONE_MINUS_SRC_ALPHA,GLES20.GL_ONE,GLES20.GL_ONE_MINUS_SRC_ALPHA)
-        val p=GLES20.glGetAttribLocation(inkProgram,"position")
-        val a=GLES20.glGetAttribLocation(inkProgram,"alpha")
-        val c=GLES20.glGetAttribLocation(inkProgram,"color")
+        val p=attribute(inkProgram,"position")
+        val a=attribute(inkProgram,"alpha")
+        val c=attribute(inkProgram,"color")
         GLES20.glEnableVertexAttribArray(p); GLES20.glEnableVertexAttribArray(a); GLES20.glEnableVertexAttribArray(c)
         buffer.position(0); GLES20.glVertexAttribPointer(p,2,GLES20.GL_FLOAT,false,24,buffer)
         buffer.position(2); GLES20.glVertexAttribPointer(a,1,GLES20.GL_FLOAT,false,24,buffer)
         buffer.position(3); GLES20.glVertexAttribPointer(c,3,GLES20.GL_FLOAT,false,24,buffer)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES,0,values.size/6)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES,0,valueCount/6)
         GLES20.glDisableVertexAttribArray(p); GLES20.glDisableVertexAttribArray(a); GLES20.glDisableVertexAttribArray(c); GLES20.glDisable(GLES20.GL_BLEND)
     }
 

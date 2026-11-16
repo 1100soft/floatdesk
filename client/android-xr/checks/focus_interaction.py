@@ -1,13 +1,31 @@
 #!/usr/bin/env python3
 """Focus pinch arbitration, window stacking, spacing and view-fit geometry without XR dependencies."""
 from pathlib import Path
+from production_sources import application_sources
 import subprocess,sys,tempfile,re
 root=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
 def body(path):return '\n'.join(l for l in (root/path).read_text().splitlines() if not l.startswith(('import ','package ')))
 workspace=body('workspace/Workspace.kt');workspace=workspace[workspace.index('internal data class Pose'):workspace.index('internal class WorkspaceStore')]
 metadata=body('net/WorkspaceInfo.kt');metadata=metadata[:metadata.index('    companion object')]+'}\n'
-code='import kotlin.math.*\n'+body('MonitorMesh.kt')+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+re.search(r'internal fun deskLayout\(.*?\n}',(root/'workspace/Workspace.kt').read_text(),re.S).group(0)+body('workspace/WorkspacePlacement.kt')+metadata+body('WindowMagnification.kt')+body('VideoGeometry.kt')+''.join(re.search(r'internal fun '+name+r'\(.*?\n}',(root/'MainActivity.kt').read_text(),re.S).group(0) for name in ('transformPoint','rotateVector'))+r'''
+code='import kotlin.math.*\n'+body('MonitorMesh.kt')+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+re.search(r'internal fun deskLayout\(.*?\n}',(root/'workspace/Workspace.kt').read_text(),re.S).group(0)+body('workspace/WorkspacePlacement.kt')+metadata+body('WindowMagnification.kt')+body('VideoGeometry.kt')+body('MagnifierContacts.kt')+body('BoundedHistory.kt')+body('net/WindowCaptureFormat.kt')+''.join(re.search(r'internal fun '+name+r'\(.*?\n}',application_sources(),re.S).group(0) for name in ('transformPoint','rotateVector','quaternionBetween','multiplyQuaternion','normalize3','normalize4'))+re.search(r'internal fun dot\(a: FloatArray[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun cross3\(.*',application_sources()).group(0)+'\n'+r'''
 fun main() {
+ for(enabled in listOf(false,true))for(active in listOf(false,true))for(open in listOf(false,true)){
+   check(magnifierSurfacesAllowed(enabled,active,open)==(enabled && active && !open))
+ }
+ val history=BoundedHistory<ByteArray>(4,10){it.size.toLong()}
+ repeat(100){history.retain(ByteArray(4));check(history.bytes<=10 && history.size<=4)}
+ val huge=ByteArray(30);history.retain(huge);check(history.size==1 && history.bytes==30L)
+ history.retain(huge);check(history.size==1)
+ val contacts=MagnifierContacts()
+ contacts.update("first","LEFT",.2f to .3f,42)
+ contacts.update("second","LEFT",.6f to .7f,43)
+ contacts.update("first","LEFT",null,null)
+ check(contacts["LEFT"]==(.6f to .7f) && contacts.window("LEFT")==43L)
+ contacts.clear();check(contacts.isEmpty() && contacts.window("LEFT")==null)
+ for((width,height) in listOf(800 to 600,7680 to 4320,2048 to 2048,1 to 100000)){
+   val size=WindowCaptureFormat.size(width,height)
+   check(WindowCaptureFormat.valid(size.first,size.second) && size.first%2==0 && size.second%2==0)
+ }
  val tap=NativeSurfaceTap()
  check(tap.update("LEFT","DOWN",.5f to .4f)==null)
  check(tap.update("LEFT","UP",null)==(.5f to .4f))

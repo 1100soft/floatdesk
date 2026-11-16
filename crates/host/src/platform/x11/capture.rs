@@ -354,9 +354,6 @@ impl X11Capture {
         Ok(result)
     }
     /// Queue all GPU tile composites before one SHM reply; that reply is the error/barrier point.
-    pub fn atlas(&self, tiles: &[(MonitorRect, u16, u16, u16, u16)]) -> Result<CapturedFrame> {
-        self.atlas_padded(tiles, 0)
-    }
     pub fn atlas_padded(
         &self,
         tiles: &[(MonitorRect, u16, u16, u16, u16)],

@@ -569,9 +569,7 @@ fn plasma_snapshot(
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(&reply.stdout) else {
         return None;
     };
-    let Some(rows) = value["outputs"].as_array() else {
-        return None;
-    };
+    let rows = value["outputs"].as_array()?;
     let active: BTreeSet<_> = outputs
         .iter()
         .filter(|o| o.geometry.is_some())
@@ -587,12 +585,9 @@ fn plasma_snapshot(
         return None;
     }
     for output in outputs.iter().filter(|o| o.geometry.is_some()) {
-        let Some(row) = rows
+        let row = rows
             .iter()
-            .find(|r| r["name"].as_str() == Some(output.name.as_str()))
-        else {
-            return None;
-        };
+            .find(|r| r["name"].as_str() == Some(output.name.as_str()))?;
         let (x, y, w, h) = output.geometry.unwrap();
         if row["pos"]["x"].as_i64() != Some(i64::from(x))
             || row["pos"]["y"].as_i64() != Some(i64::from(y))

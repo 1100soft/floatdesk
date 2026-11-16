@@ -142,7 +142,7 @@ internal object DiagnosticsCanvas {
                 "${value(host,"fps")} ${value(host,"Mbps")}\nCap ${metric(host,"cap")} Enc ${metric(host,"enc")}"
             1->"CPU ${metric(local,"CPU(core)")} GPU ${metric(local,"GPU")}\n"+
                 "RAM ${metric(local,"PSS").replace("MiB","M")} Gfx ${metric(local,"gfx").replace("MiB","M")}\n"+
-                "Free ${metric(local,"free").replace("MiB","M")}\nImage ${metric(snapshot.presentation,"Image")}\n"+
+                "Free ${metric(local,"free").replace("MiB","M")} T:${metric(local,"thermal").replace("unavailable","n/a")}\nImage ${metric(snapshot.presentation,"Image")}\n"+
                 "Draw ${metric(snapshot.presentation,"redraw").replace(".0fps","fps")} GL${metric(snapshot.presentation,"submit")}"
             2->if(state.transport.contains("Normal density:"))"Normal stream\n${if(state.transport.contains("source already native"))"Source-native stream" else "Zoom in for detail"}\n${state.reason.substringBefore(" · ")}\nRX ${metric(state.transport,"RX")} err ${metric(state.transport,"errors")}" else "${if(snapshot.frame!=null)"VIEW" else "NORMAL"} · ${snapshot.frame?.let{"${now-it.capturedAt}ms"} ?: "n/a"}\n${state.reason}\n"+
                 (transport.firstOrNull{it.contains("HEVC") || it.contains("H264")}?.replace("native tiles ","") ?: transport.last())+

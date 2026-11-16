@@ -40,7 +40,7 @@ internal class CurvedMonitorInput private constructor(
     companion object {
         @android.annotation.SuppressLint("RestrictedApi")
         suspend fun create(session: Session, parent: Entity, mesh: MonitorMesh,
-                           listener: (InputEvent) -> Unit,columns:Int=12,rows:Int=8): CurvedMonitorInput {
+                           columns:Int=12,rows:Int=8,listener: (InputEvent) -> Unit): CurvedMonitorInput {
             val pixel = java.util.Base64.getDecoder().decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII=")
             val model = GltfModel.create(session, interactionGridGlb(pixel,columns,rows), "floatdesk-curved-input-${System.nanoTime()}")
             var entity: GltfModelEntity? = null

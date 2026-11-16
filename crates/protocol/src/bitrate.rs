@@ -39,11 +39,7 @@ pub fn allocate_bitrate(total_bps: u32, loads: &[MonitorLoad]) -> Vec<u32> {
     const FLOOR: u32 = 400_000;
     let visible = weights.iter().filter(|w| **w > 0).count() as u32;
     let floor_budget = FLOOR.saturating_mul(visible).min(total_bps);
-    let floor_each = if visible == 0 {
-        0
-    } else {
-        floor_budget / visible
-    };
+    let floor_each = floor_budget.checked_div(visible).unwrap_or(0);
     let remainder = total_bps.saturating_sub(floor_each.saturating_mul(visible));
     weights
         .into_iter()

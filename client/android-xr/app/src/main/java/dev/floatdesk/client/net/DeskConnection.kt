@@ -163,7 +163,7 @@ internal class DeskConnection(
             acquire()
         }
         running = true
-        localResources=LocalResources {message->
+        localResources=LocalResources(thermalStatus={context.applicationContext.getSystemService(android.os.PowerManager::class.java)?.currentThermalStatus ?: -1}) {message->
             val value=detailDiagnostics.updateAndGet{it.copy(localResources=message)};decoders[0]?.detailDebug(value);publishResources()
         }
         outgoingThread = HandlerThread("floatdesk-input").also { it.start(); outgoing = Handler(it.looper) }

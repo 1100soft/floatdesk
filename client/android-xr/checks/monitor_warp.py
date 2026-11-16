@@ -7,6 +7,7 @@ import tempfile
 
 folder = Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client'
 mesh = (folder/'MonitorMesh.kt').read_text().split('\n', 1)[1]+'\n'+(folder/'VideoGeometry.kt').read_text().split('\n',1)[1]
+mesh+='\n'+''.join('\n'.join(l for l in (folder/n).read_text().splitlines() if not l.startswith(('package ','import ','@android.annotation.SuppressLint')))+'\n' for n in ('BoundedHistory.kt','NativeSurfaceResources.kt'))
 warp = (folder/'MonitorWarp.kt').read_text()
 warp = warp[warp.index('internal class MonitorWarp'):].replace('@SuppressLint("RestrictedApi")', '').replace('androidx.xr.runtime.math.IntSize2d','IntSize2d').replace('android.os.SystemClock','SystemClock')
 stubs = '''
@@ -93,7 +94,7 @@ internal class SurfaceEntity(var shape: Shape): Entity() {
     interface Shape {
         class Quad(val extents: FloatSize2d): Shape
         class TriangleMesh(val positions: java.nio.FloatBuffer, val texCoords: java.nio.FloatBuffer, val indices: java.nio.IntBuffer? = null)
-        class CustomMesh(val mesh: TriangleMesh, val rightEye: TriangleMesh? = null): Shape
+        class CustomMesh(val mesh: TriangleMesh, val rightEye: TriangleMesh? = null): Shape {val leftEye get()=mesh}
     }
     companion object {
         fun create(session: Session, shape: Shape,pose: Pose=Pose(),parent: Entity?=null,superSampling: SuperSampling=SuperSampling.NONE) = SurfaceEntity(shape).also { it.setPose(pose); it.parent=parent; session.scene.entities.add(it) }

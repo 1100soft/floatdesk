@@ -21,17 +21,20 @@ internal class WindowCapturePool @JvmOverloads constructor(private val connectio
         val frames=java.util.concurrent.ConcurrentSkipListMap<Long,JSONObject>()
         val info=connection.workspaceInfo.value?.windows?.firstOrNull{it.id==id}
         val width=info?.width ?: 1280;val height=info?.height ?: 800
-        val scale=minOf(1.0,2048.0/width,2048.0/height,kotlin.math.sqrt(2_097_152.0/(width.toDouble()*height)))
-        val w=((width*scale).toInt()/2*2).coerceAtLeast(32);val h=((height*scale).toInt()/2*2).coerceAtLeast(32)
+        val size=WindowCaptureFormat.size(width,height)
+        val w=size.first;val h=size.second
         val video=VideoCompositor(w,h)
+        @Volatile private var encodedSize=w to h
         var stream:WindowVideo?=null
         init{
             if(id==0L){val c=video.input.lockCanvas(null);c.drawColor(Color.rgb(30,38,48));val paint=android.graphics.Paint().also{it.color=Color.rgb(90,110,130);it.strokeWidth=3f};c.drawLine(w*.4f,h*.5f,w*.6f,h*.5f,paint);c.drawLine(w*.5f,h*.4f,w*.5f,h*.6f,paint);video.input.unlockCanvasAndPost(c)}
             else stream=capture(id,video,{message->main.post{members.values.forEach{it.error(message)}}}){pts,meta->
                 frames[pts]=meta;while(frames.size>64)frames.pollFirstEntry()
-                members.values.forEach{it.output?.size?.invoke(meta.getInt("width"),meta.getInt("height"))}
+                val next=meta.getInt("width") to meta.getInt("height")
+                if(next!=encodedSize){encodedSize=next;members.values.forEach{it.output?.size?.invoke(next.first,next.second)}}
             }
         }
+        fun outputSize()=encodedSize
         fun update(){video.mirrors(members.values.map{member->member.mirror.copy(before={pts->
             val output=member.output
             val meta=frames[pts]
@@ -45,7 +48,7 @@ internal class WindowCapturePool @JvmOverloads constructor(private val connectio
                     output.mask(pts,if(masks==null)floatArrayOf() else FloatArray(minOf(16,masks.length())*4){i->val r=masks.getJSONArray(i/4);when(i%4){0->(r.getInt(0)-b[0]).toFloat()/b[2];1->(r.getInt(1)-b[1]).toFloat()/b[3];2->(r.getInt(0)+r.getInt(2)-b[0]).toFloat()/b[2];else->(r.getInt(1)+r.getInt(3)-b[1]).toFloat()/b[3]}})
                 }
             }
-        },presented={if(member.shown.compareAndSet(false,true))main.post{member.ready()}})})}
+        },presented={if(member.shown.compareAndSet(false,true))main.post{if(member in members.values)member.ready()}})})}
         fun close(){stream?.close();video.close()}
     }
     internal class Lease(private val updateAction:(Float,Float,Boolean,Float)->Unit,private val closeAction:()->Unit):AutoCloseable{
@@ -55,11 +58,11 @@ internal class WindowCapturePool @JvmOverloads constructor(private val connectio
     }
     fun attach(id:Long,surface:Surface,onReady:()->Unit,onError:(String)->Unit,output:WindowDestination?=null):Lease{
         val source=sources.getOrPut(id){Source(id)};val key=Any()
-        output?.size?.invoke(source.w,source.h)
+        source.outputSize().let{output?.size?.invoke(it.first,it.second)}
         val member=Member(VideoMirror(surface),onReady,onError,output);source.members[key]=member;source.update()
         return Lease({x,y,pin,aspect->if(member.mirror.padX!=x || member.mirror.padY!=y || member.mirror.pinned!=pin || member.mirror.aspect!=aspect){member.mirror=member.mirror.copy(padX=x,padY=y,pinned=pin,aspect=aspect);source.update()}},{
             source.members.remove(key);output?.clear?.invoke()
-            if(source.members.isEmpty()){sources.remove(id);source.close()}else source.update()
+            if(source.members.isEmpty()){sources.remove(id);source.stream?.stop();source.video.mirrors(emptyList());BackgroundRelease.close(AutoCloseable{source.close()})}else source.update()
         })
     }
 }

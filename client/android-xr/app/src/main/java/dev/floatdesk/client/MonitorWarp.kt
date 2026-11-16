@@ -41,7 +41,7 @@ internal class MonitorWarp : AutoCloseable {
     private var flatHeight = 0f
     private var appliedShape: SurfaceEntity.Shape? = null
     // Native rendering may consume direct mesh buffers after the Java setter returns.
-    private val recentShapes=java.util.ArrayDeque<SurfaceEntity.Shape>()
+    private val recentShapes=RetainedSurfaceShapes()
     private var interaction: InteractableComponent? = null
     private val sequences = mutableSetOf<String>()
     private var curvedInput: CurvedMonitorInput? = null
@@ -70,7 +70,7 @@ internal class MonitorWarp : AutoCloseable {
         val valid=geometry.indices.isNotEmpty() && geometry.positions.size%3==0 && geometry.texCoords.size*3==geometry.positions.size*2 && geometry.indices.size%3==0 &&
             geometry.positions.all{it.isFinite()} && geometry.texCoords.all{it.isFinite()} && geometry.indices.all{it>=0 && it<geometry.positions.size/3}
         if(!valid)return appliedShape ?: SurfaceEntity.Shape.Quad(FloatSize2d(.001f,.001f))
-        return SurfaceEntity.Shape.CustomMesh(SurfaceEntity.Shape.TriangleMesh(java.nio.ByteBuffer.allocateDirect(geometry.positions.size*4).order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer().apply{put(geometry.positions);rewind()},java.nio.ByteBuffer.allocateDirect(geometry.texCoords.size*4).order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer().apply{put(geometry.texCoords);rewind()},java.nio.ByteBuffer.allocateDirect(geometry.indices.size*4).order(java.nio.ByteOrder.nativeOrder()).asIntBuffer().apply{put(geometry.indices);rewind()}))
+        return nativeVideoMesh(geometry)
     }
     private var hoverWindow=0L
     private val hoverActions=mutableMapOf<String,Int>()
@@ -109,7 +109,7 @@ internal class MonitorWarp : AutoCloseable {
         val target = live ?: return
         val listener = inputListener ?: return
         val owner = input
-        val next = CurvedMonitorInput.create(session, target, sphere, listener)
+        val next = CurvedMonitorInput.create(session, target, sphere, listener=listener)
         // Loading suspends. A monitor removal/resize can close this owner meanwhile.
         if (input !== owner || live !== target || mesh !== sphere) {
             next.close()
@@ -123,9 +123,9 @@ internal class MonitorWarp : AutoCloseable {
 
     private fun applyShape(target: SurfaceEntity, shape: SurfaceEntity.Shape) {
         if(target===live && appliedShape===shape)return
+        recentShapes.retain(shape)
         target.shape = shape
         appliedShape = shape
-        recentShapes.addLast(shape);while(recentShapes.size>512)recentShapes.removeFirst()
     }
 
     @SuppressLint("RestrictedApi")
@@ -309,6 +309,7 @@ internal class MonitorWarp : AutoCloseable {
                 Log.i("Floatdesk","warp geometry map=geodesic viewer=${viewer.contentToString()} sdkViewer=$sdkEye radius=${next.radius} radiusActivity=${next.radius*original.getScale(Space.ACTIVITY)} image=${placement.pixelWidth}x${placement.pixelHeight} extent=${next.width}x${next.height} horizontalSag=${sag(h)} verticalSag=${sag(v)}")
             }
             val shape = videoShape(next.width,next.height,next)
+            recentShapes.retain(shape)
             val target = if (live === original) SurfaceEntity.create(session,
                 shape = shape, pose = original.getPose(), parent = original.parent,
                 superSampling = SurfaceEntity.SuperSampling.NONE).also {
@@ -319,7 +320,7 @@ internal class MonitorWarp : AutoCloseable {
                 check(it.addComponent(pointer))
                 pointer.spatialPointerIcon=SpatialPointerIcon.NONE
                 live = it;appliedShape=shape
-                recentShapes.addLast(shape);while(recentShapes.size>512)recentShapes.removeFirst()
+                recentShapes.retain(shape)
             } else live!!
             applyShape(target, shape)
             flatWidth = next.width; flatHeight = next.height

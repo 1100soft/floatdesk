@@ -215,3 +215,6 @@ Magnifier geometry checks compare its angular fit directly with the desktop, ver
 
 
 `WindowFanoutSmoke` exercises the actual capture pool, AVC decoder and headset EGL outputs: one source feeds two panels plus the desktop patch, pin gold stays outside image content, occluder masks preserve desktop menus, and removing one lease leaves other outputs live. `VideoCompositorSmoke` also round-trips fixed mode and saved pane dimensions. Pure focus checks preserve all image triangles under the exterior frame, verify desktop-relative placement and retain fixed content after gaze departure. Native pane hit ordering, hold menu and simultaneous hands still need user testing.
+
+
+Architecture refactor: platform-substituted checks use `production_sources.py` to follow the Activity/runtime/presentation/interaction split. `focus_interaction.py` also covers owner-safe hover clearing, lifecycle/Workspace visibility, shared capture size bounds and weighted upload-buffer retention. Run groups through `python3 scripts/verify.py` from the repository root. GPU/native interaction checks remain separate and require a connected headset; build/lint and JVM checks do not validate thermal or native compositor performance.

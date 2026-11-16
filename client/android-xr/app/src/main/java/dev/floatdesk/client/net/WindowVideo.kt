@@ -27,7 +27,7 @@ internal class WindowVideo @JvmOverloads constructor(private val host:InetSocket
                 val bytes=JSONObject().put("sessionId",session).put("windowId",id).put("fps",fps).put("rootCapture",rootCapture).toString().toByteArray()
                 output.writeInt(bytes.size);output.write(bytes);output.flush()
                 val n=input.readInt();require(n in 1..4096);val header=ByteArray(n);input.readFully(header);val meta=JSONObject(String(header))
-                require(meta.getLong("windowId")==id);val w=meta.getInt("width");val h=meta.getInt("height");require(w in 32..2048 && h in 32..2048 && w.toLong()*h<=2_100_000)
+                require(meta.getLong("windowId")==id);val w=meta.getInt("width");val h=meta.getInt("height");require(WindowCaptureFormat.valid(w,h))
                 val length=meta.getInt("bytes");require(length in 1..8*1024*1024);val data=ByteArray(length);input.readFully(data)
                 if(codec==null || size!=(w to h)){
                     codec?.stop();codec?.release();codec=null;size=w to h
@@ -45,5 +45,6 @@ internal class WindowVideo @JvmOverloads constructor(private val host:InetSocket
         }}catch(e:Exception){if(running){android.util.Log.w("Floatdesk","Window stream failed",e);failed(e.message?.takeIf{it.isNotBlank()} ?: "Window magnification stopped")}}
         finally{socket=null;runCatching{codec?.stop()};runCatching{codec?.release()}}
     },"floatdesk-window-video").also{it.start()}
-    override fun close(){running=false;runCatching{socket?.close()};if(Thread.currentThread()!==thread)thread.join(1500)}
+    fun stop(){running=false;runCatching{socket?.close()}}
+    override fun close(){stop();if(Thread.currentThread()!==thread)thread.join(1500)}
 }

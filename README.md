@@ -121,3 +121,6 @@ In Focus mode, Android XR’s mixed eye/hand aiming can target windows and scree
 Desktop focus keeps its reference surface at 1.2 metres and converts depth input into size changes. Flat mode maintains plane clearance when tilted; large spherical desktops use a view-focused, bounded mesh grid so triangle chords cannot cut into the foreground HUD region.
 
 Optional **Magnify focused window** in Workspace Settings presents a gaze-selected window in a separate fitted panel, with entry dwell, gaze-travel protection, blink-safe dismissal and native tap pinning. Choose **Floating** for a temporary head-following panel or **Fixed** for saved desktop-relative panes. Hold a fixed pane to Add/Remove; tap to pin its source. Captured detail also sharpens the original window on the desktop using the same decoder. Focus & magnification settings also contain the configurable typing lock for automatic gaze focus.
+
+
+The [runtime architecture review](docs/refactor-review-2026-11-16.md) describes module responsibilities, resource ownership and validation limits. Run `python3 scripts/verify.py` for sequential, bounded-memory Rust/Python/JVM checks; add `--group integration` or `--group android` to select platform checks. Magnifiers suspend while Workspace is open. Headset diagnostics include thermal severity (`T:`), independently of stream FPS and free memory.

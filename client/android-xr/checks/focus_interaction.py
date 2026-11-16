@@ -46,6 +46,59 @@ fun main() {
    check(abs(result.first-uv.first)<.002f && abs(result.second-uv.second)<.002f)
  }
 
+ // A cold curved start and entering curved from flat use identical fitting and projection.
+ fun sameGeometry(a:MagnifiedWindow,b:MagnifiedWindow){
+   check(abs(a.width-b.width)<.00001f && abs(a.height-b.height)<.00001f)
+   for(axis in 0..2)check(abs(a.pose.position[axis]-b.pose.position[axis])<.00001f)
+   for(axis in 0..3)check(abs(a.pose.rotation[axis]-b.pose.rotation[axis])<.00001f)
+   check((a.mesh==null)==(b.mesh==null))
+   if(a.mesh!=null){
+     check(a.mesh!!.positions.size==b.mesh!!.positions.size)
+     a.mesh!!.positions.indices.forEach{check(abs(a.mesh!!.positions[it]-b.mesh!!.positions[it])<.00001f)}
+   }
+ }
+ for(head in listOf(Pose(),Pose(floatArrayOf(.4f,-.2f,.3f),floatArrayOf(0f,sin(.3f),0f,cos(.3f)))))for(unit in listOf(.7f,1f,1.8f)){
+   var floating=magnifiedWindow(42,1600,900,head,.6f,.5f,unit,false)
+   repeat(10){
+     floating=magnifiedWindow(42,1600,900,head,.6f,.5f,unit,true,previous=floating)
+     sameGeometry(floating,magnifiedWindow(42,1600,900,head,.6f,.5f,unit,true))
+     floating=magnifiedWindow(42,1600,900,head,.6f,.5f,unit,false,previous=floating)
+     sameGeometry(floating,magnifiedWindow(42,1600,900,head,.6f,.5f,unit,false))
+   }
+   val resized=resizedMagnifier(floating,1.4f)
+   val moved=magnifierGeometry(resized,head,unit,transformPoint(head,floatArrayOf(.2f*unit,.1f*unit,-.85f*unit)))
+   val switched=magnifiedWindow(42,1600,900,head,.6f,.5f,unit,true,previous=moved)
+   val cold=resizedMagnifier(magnifiedWindow(42,1600,900,head,.6f,.5f,unit,true),1.4f)
+   sameGeometry(switched,magnifierGeometry(cold.copy(headOffset=moved.headOffset),head,unit))
+   val desktop=MonitorPlacement("desktop","desktop",Pose(floatArrayOf(.2f,.1f,-1.2f)),1.2f,.7f,0f,1600,900,60)
+   val saved=saveFixedMagnifier("fixed",moved,desktop,unit)
+   val source=DesktopWindow(42,0,0,1600,900)
+   var fixed=fixedMagnifier(saved,desktop,source,head,unit,false)
+   val laterHead=head.copy(position=FloatArray(3){head.position[it]+floatArrayOf(.2f,-.1f,.15f)[it]*unit})
+   val afterViewerChange=magnifierFrame(fixed.copy(spherical=true),fixed,laterHead,unit,true)
+   sameGeometry(afterViewerChange,fixedMagnifier(saved,desktop,source,laterHead,unit,true))
+   val relocated=desktop.copy(pose=desktop.pose.copy(position=FloatArray(3){desktop.pose.position[it]+floatArrayOf(.4f,.2f,-.3f)[it]*unit}))
+   val pending=fixedMagnifier(saved,relocated,source,head,unit,false)
+   sameGeometry(magnifierFrame(pending.copy(spherical=true),pending,laterHead,unit,true),fixedMagnifier(saved,relocated,source,laterHead,unit,true))
+   repeat(10){
+     fixed=fixedMagnifier(saved,desktop,source,head,unit,true,previous=fixed)
+     sameGeometry(fixed,fixedMagnifier(saved,desktop,source,head,unit,true))
+     fixed=fixedMagnifier(saved,desktop,source,head,unit,false,previous=fixed)
+     sameGeometry(fixed,fixedMagnifier(saved,desktop,source,head,unit,false))
+   }
+ }
+ // Switch live projection in both directions while the ordinary update budget is closed.
+ for(fixed in listOf(false,true)){
+   var rendered=magnifiedWindow(42,1600,900,Pose(),.6f,.5f,1f,false).copy(fixed=fixed)
+   repeat(30){
+     val curved=magnifierFrame(rendered.copy(spherical=true),rendered,Pose(),1f,false)
+     check(curved.spherical && curved.mesh!=null)
+     check(curved.id==rendered.id && curved.width==rendered.width && curved.height==rendered.height)
+     val flat=magnifierFrame(curved.copy(spherical=false),curved,Pose(),1f,false)
+     check(!flat.spherical && flat.mesh==null && flat.id==curved.id)
+     rendered=flat
+   }
+ }
  // Magnifier uses precisely the desktop's central fit at its own distance.
  val base=deskLayout(listOf(Triple("Window",1600,900)))
  val desktopFit=fitDesktopInView(base,Pose(),.6f,.5f,1f,true,centralView=true).single()

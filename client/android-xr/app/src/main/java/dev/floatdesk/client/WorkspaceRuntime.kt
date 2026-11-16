@@ -818,18 +818,18 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             gazeWindowFocus.update(handTracking.nowMs,workspace.gazeToFocus,autoFocusBlocked,autoFocusWindow)?.let{connection.requestGazeFocus(it)}
             if(autoFocusBlocked || !workspace.gazeToFocus)connection.cancelGazeFocus()
             val magnifyTarget=if(gazeBlockedByPane)null else rawDesktopGazeTarget?.let{hit->connection.desktopPoint(hit.monitor,hit.u,hit.v)?.let{(u,v)->focusInfo?.hover(u,v)?.window?.windowId}}
-            magnified?.takeIf{it.spherical!=workspace.sphericalWarp}?.let{panel->
-                val ref=magnifierViewer.get() ?: store.viewerReference ?: displayHead.get() ?: Pose()
-                magnified=magnifierGeometry(panel.copy(spherical=workspace.sphericalWarp,mesh=null),ref,unitsPerMeter)
-                magnifierMesh=magnified?.mesh;magnifierReady=false;magnification.refresh(handTracking.nowMs)
+            magnified?.let { panel ->
+                val source=focusInfo?.windows?.firstOrNull { it.id==panel.id }
+                val width=source?.width ?: panel.sourceWidth
+                val height=source?.height ?: panel.sourceHeight
+                if(panel.spherical!=workspace.sphericalWarp || width!=panel.sourceWidth || height!=panel.sourceHeight) {
+                    val ref=magnifierViewer.get() ?: store.viewerReference ?: displayHead.get() ?: Pose()
+                    magnified=magnifiedWindow(panel.id,width,height,ref,viewHalfAngles.get()[0],viewHalfAngles.get()[1],
+                        unitsPerMeter,workspace.sphericalWarp,previous=panel)
+                    magnifierMesh=magnified?.mesh
+                    magnification.refresh(handTracking.nowMs)
+                }
             }
-            magnified?.let{panel->focusInfo?.windows?.firstOrNull{it.id==panel.id}?.takeIf{it.width!=panel.sourceWidth || it.height!=panel.sourceHeight}?.let{win->
-                val back=rotateVector(panel.pose.rotation,0f,0f,MagnifierDistanceM*unitsPerMeter)
-                val origin=Pose(FloatArray(3){panel.pose.position[it]+back[it]},panel.pose.rotation)
-                val fitted=magnifiedWindow(win.id,win.width,win.height,origin,viewHalfAngles.get()[0],viewHalfAngles.get()[1],unitsPerMeter,workspace.sphericalWarp)
-                magnified=magnifierGeometry(fitted.copy(headOffset=panel.headOffset,width=fitted.width*panel.sizeScale,height=fitted.height*panel.sizeScale,sizeScale=panel.sizeScale,mesh=null),magnifierViewer.get() ?: origin,unitsPerMeter)
-                magnifierMesh=magnified?.mesh;magnifierReady=false;magnification.refresh(handTracking.nowMs)
-            }}
             fun eligibleInPlace(id:Long):FocusRect? {
                 val info=focusInfo ?: return null;val placement=screen ?: return null
                 val viewer=magnifierViewer.get() ?: return null;val angles=viewHalfAngles.get()
@@ -1070,7 +1070,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 val selected=fixedPins[record.id] ?: inPlaceWindow ?: lastFixedWindow
                 val source=connection.workspaceInfo.value?.windows?.firstOrNull{it.id==selected}
                 val paneEnabled=workspace.magnifierMode=="fixed" && magnifierSurfacesAllowed(workspace.magnifyWindow,sceneActive,displayControlsOpen)
-                val pane=if(paneEnabled)fixedMagnifier(record,fixedDesktop,source,fixedViewer,handTracking.unitsPerMeter,workspace.sphericalWarp,fixedRuntime[record.id]?.mesh,fixedRuntime[record.id]?.mesh!=null)else fixedRuntime[record.id] ?: fixedMagnifier(record,fixedDesktop,source,fixedViewer,handTracking.unitsPerMeter,false)
+                val pane=if(paneEnabled)fixedMagnifier(record,fixedDesktop,source,fixedViewer,handTracking.unitsPerMeter,workspace.sphericalWarp,previous=fixedRuntime[record.id])else fixedRuntime[record.id] ?: fixedMagnifier(record,fixedDesktop,source,fixedViewer,handTracking.unitsPerMeter,false)
                 if(paneEnabled)renderedFixed.add(record.id to pane)
                 DisposableEffect(record.id,pane.id){fixedReady[record.id]=false;onDispose{fixedReady.remove(record.id)}}
                 WindowMagnifierPanel(session,magnifierRoot,pane.takeIf{paneEnabled},connection,record.id in fixedPins,magnifierViewer,{handTracking.unitsPerMeter},handTracking,

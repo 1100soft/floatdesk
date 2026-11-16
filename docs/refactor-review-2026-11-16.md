@@ -1,121 +1,233 @@
-# Runtime review and refactor — 16 November 2026
+# Changes since the LAN proof of concept
+- Keep magnifier capture attached across flat/curved changes. Use CustomMesh surfaces from creation in both modes so transitions do not change native canvas type. Use the same fitting and projection path for startup, mode changes and source resizing; retain requested fixed-pane anchors separately from rendered poses. Apply projection mode, visible mesh and native input together, bypassing geometry deferral for transitions; cancel active interactions without unpinning. Add repeated floating/fixed mode-transition and collider ownership regressions.
+- Coalesce video, beam, projection and magnifier-patch redraws at display vsync instead of independently submitting full desktop frames. Copy only retained AVC parameter sets during header inspection. Explicitly dispose app-owned curved surfaces and beam canvases rather than merely detaching them. Suspend decoding, scene updates and input sampling when the headset sleeps even if XR leaves the Activity resumed.
+- Reduce profiled XR overhead: read only consumed hand joints, suppress unchanged native node submissions, skip dynamic-region work in normal streaming, scan keyframes without payload copies, and sample expensive memory metrics less frequently. Extract eye maintenance from the oversized gesture coroutine to permit ART JIT compilation.
+- Separate XR startup, workspace orchestration, desktop presentation and shared interaction helpers; split host stream/control/cursor/receiver modules. Share magnifier projection, view-fit/rotation math, capture-format limits, hover ownership and byte-bounded native mesh storage. Hide/suspend magnifiers while Workspace is open or the scene is inactive, clear stale readiness, and move decoder/GL joins off the UI thread. Cache GL locations and reuse primitive beam buffers. Add thermal telemetry, format/lint Python tooling and provide a bounded-memory verification entry point.
+- Apply capture-time distance gain to magnifier dragging using the owning hand’s tracked pinch point. Decouple display-rate pose movement from curved-mesh upload budgets and measure drag intent at the hand.
+- Stop hidden tray polling and isolate Qt display helpers from IBus. Replace rapid topology subprocess polling with a cached native RandR event observer and cache native framebuffer limits. Preserve display-change debounce, low refresh rates and priorities.
+- Fix magnifier tap teleportation by calibrating DOWN and MOVE from the same captured ray, separate captured presses from manual placement persistence, and pin stationary releases using the original contact.
+- Remove magnifier move handles and drive direct image dragging from captured native gaze/hand pinch events. Keep resize and pin/menu actions separate, and realign the window horizontally after sideways or diagonal movement.
+- Align magnifier native movement with its visible surface; constrain both modes to a viewer-facing fixed radius, align fixed panes horizontally with the desktop, and include pane sources in gaze-to-focus. Reuse fixed rendering resources and cached geometry, reduce magnifier collider updates, and extend bounded native upload-buffer retention after renderer crashes.
+- Add Floating/Fixed magnifier modes, saved desktop-relative panes, per-pane pinning and hold-to-open Add/Remove. Share window capture/decoding across panes and the occlusion-aware desktop sharp patch. Keep native video and the exterior pin bezel on one opaque media surface, and scope focus/gesture blocking to actual visible pane hits.
+- Add a saved Gaze to focus toggle that dwells on visible windows and changes keyboard focus without raising, moving the cursor or reframing the desktop. Validate no-raise activation against isolated Plasma/KWin with focus-stealing protection enabled.
+- Adapt background sampling toward the saved FPS target while retaining useful native detail, including with a fixed patch. Show actual background pixel reduction, sample percentage and native crop coverage in the Quality HUD.
+- Replace many-piece dynamic sampling with one stable visible peripheral rectangle and one native gaze patch. Select a single fully native crop when its encoded allocation is cheaper, and negotiate taller AVC frames with capable headset decoders.
+- Preserve a useful native-detail floor and peripheral density in regional Auto instead of degrading the image to meet an FPS target. Add source-continuation gutters and chroma-aligned packing; render clipped tiles with one lookup per fragment and accept bounded larger metadata headers.
+- Remove total desktop height from dynamic peripheral sampling. Capture visible screen regions once, skip gaps, pack native/peripheral samples efficiently into one codec frame, and adapt to measured load while preserving peripheral density until native area reaches its minimum.
+- Add combined index/middle Focus pinch for whole-desktop Reset, sharing saved contact thresholds and release-based selection. Fix HUD disposal using a bitmap after recycling; make Show diagnostics hide all HUD clusters and label the encoding presets Encoder effort.
+- Keep a native-resolution square around gaze even when zoomed out. Replace percentage coverage with saved Auto/FPS-target and fixed pixel-area controls; adapt Auto using measured processing/delivery time. Preserve curvature focus through size corrections, and move diagnostics into a foreground UI group above desktop video.
+- Keep tilted flat desktops at fixed plane depth and adapt large spherical meshes around the view to prevent inward triangle chords. Budget dynamic quality against normal streaming: zoomed-out views use the normal stream; zoomed-in native detail uses the configured AVC encoder within its pixel budget.
+- Fix HUD header/body overlap using glyph bounds. Tight-pack dynamic video samples and batch XRender composites into one SHM readback, preserving sample density while reducing low-coverage encoding work; keep cursor and gap clipping within packed tiles.
+- Consolidate diagnostics into one transparent spherical HUD with larger text, shared pose and square unclipped text regions. Preserve observed mixed gaze availability through scene recovery so Focus can resume from fine-eye rays without another pinch.
+- Place HUD clusters immediately outside Focus’s shared target bounds. Replace the experimental fixed-budget dense tile with bounded native-density HEVC tiles and normal-density visible periphery; honor all coverage values through 100%. Reapply desktop-only gaze cursor suppression after native hover changes.
 
-## Scope and decision
+- Add a larger four-cluster game-style peripheral HUD with an empty center. Make 100% quality cover the full visible view without gaze shifts or low-tile blending. Support mixed native gaze/hand targeting in Focus mode while preserving mouse routing, and hide native desktop target icons.
 
-The review covers the runtime boundaries across the X11/Rust host, Kotlin XR client, shared wire protocol, desktop tooling and regression harnesses (103 Rust/Kotlin/Python/shell source files at the start of the review). It focuses on update cadence, allocation, ownership, blocking work, coordinate consistency and maintainable module boundaries. It preserves the confirmed gesture, projection and display-layout behavior rather than replacing functioning algorithms wholesale.
+- Move diagnostics to eye level in the left view periphery. Raise the experimental dense-region maximum from 65% to 100% while retaining automatic density protection. Verify a synthetic native 5120×3200 HEVC frame through host hardware encoding and headset decoding/compositing.
 
-Keep Rust for capture, encoding and transport, and Kotlin for the Android XR SDK integration. MediaCodec, GLES, XRender, GStreamer and SceneCore already perform the expensive work natively. A framework/language rewrite would not remove native command queues, unnecessary updates or thermal throttling, and would introduce another interoperability/lifetime boundary. Revisit isolated compute kernels only if device profiling demonstrates that managed computation dominates.
+- Fix stale exposed pixels caused by Plasma retaining old monitor geometry: publish a final root geometry notification after display changes and on host startup, without changing refresh rates or restarting the shell.
 
-After reconnection, Android reported severe thermal status (3) with CPU throttling. During a brief stopped-app interval it fell to moderate (2), then returned to severe after the app reopened. This is evidence of thermal pressure, not a controlled attribution of all heat to Floatdesk. Available memory and stream FPS do not establish headset compositor health. Resource telemetry now includes Android's thermal severity; the HUD shows it as `T:normal`, `T:severe`, etc., and reports unavailable readings explicitly.
+- Bring direct-touch controls to 40 cm. Render transparent diagnostics through the working Compose spatial-panel path, with FOV-bounded placement and a streaming-independent switch. Add numbered four-screen GPU/capture regressions, including isolated screen 3 and nonzero desktop origins.
 
-## Responsibilities
+- Use UI-panel compositing above desktop video for transparent diagnostics. Fix flat/curved output rebinding while baseline encoding is paused. Keep desktop focus at 1.2 m with depth-to-size conversion; center controls at arm’s length.
 
-| Area | Owner | Change or review outcome |
-| --- | --- | --- |
-| Android startup and permissions | `MainActivity.kt` | Reduced from 2,049 to approximately 54 lines. Session ownership is Activity-scoped; anchor work uses lifecycleScope rather than an uncancelled independent scope. |
-| XR workspace orchestration | `WorkspaceRuntime.kt` | Owns lifecycle, tracked inputs and workspace/controller coordination. No process-global Session reference remains. |
-| Desktop presentation | `DesktopScene.kt` | Scene surfaces, native handles, pointer presentation and Workspace UI placement are separate from startup. |
-| Input and geometry adapters | `WorkspaceInteraction.kt` | Shared transforms, quaternion rotation, normalization, hand geometry and native event conversions. The confirmed hit-coordinate conversion remains unchanged. |
-| Magnifier policies | `WindowMagnification.kt`, `MagnifierContacts.kt` | Floating/fixed panes share projection; desktop and magnifier rotation reuse the same quaternion implementation. Hover ownership has one update/clear path. Rendering and hit routing use one visibility policy. |
-| Native mesh storage | `NativeSurfaceResources.kt`, `BoundedHistory.kt` | Desktop and magnifier uploads share validation, direct-buffer construction and retention. Entry limits also have byte budgets: 64 MiB for desktop upload history and 16 MiB per magnifier. These budgets cover retained CPU upload buffers, not total GPU/decoder memory. |
-| Window capture | `WindowCapturePool.kt`, `WindowCaptureFormat.kt` | One source/codec per unique window remains shared across mirrors and desktop patch. Allocation and decoder validation share size bounds. Buffer-size setters run only when encoded size changes. Closed outputs cannot receive delayed ready callbacks. |
-| Teardown | `BackgroundRelease.kt` | Producers stop immediately; decoder/GL joins run off the UI thread. Hiding several panes no longer serializes their join timeouts onto input processing. |
-| GLES compositor | `media/VideoCompositor.kt` | Uniform/attribute locations are cached per program. Beam/ring vertices reuse bounded primitive/direct buffers rather than boxing a list of Floats and allocating upload storage every draw. Projection, opaque priority, UVs and source mapping are preserved. |
-| Host session coordinator | `session.rs` | Reduced from 2,146 to about 1,187 lines. Coordinates lifecycle and state rather than implementing every transport and pixel operation. |
-| Stream workers | `session/streaming.rs` | Encoder/worker ownership and pacing. Video destination fields travel together instead of positional peer/destination/index arguments. |
-| Control/discovery | `session/transport.rs` | Authenticated input routing, pointer mapping, hello/layout publication and discovery. |
-| Cursor and receiver | `session/cursor.rs`, `session/receiver.rs` | Cursor painting is reusable by stream paths; the diagnostic receiver is independent. |
-| Dynamic streaming | `session/detail.rs` and submodules | Frame-request metadata is grouped in a typed context. Existing resource adaptation, sampling density, crop mapping and baseline handoff are preserved and integration-tested. |
-| X11 display management | `monitor_pool.rs`, `monitor_watch.rs` | Persistent event-driven RandR observation and IBus-isolated Qt helpers remain. Low-rate operation responsiveness and priority preservation are retained. Removed an unused capture wrapper. |
-| Wire protocol | `crates/protocol` | Binary layouts and packet bounds preserved. Malformed RTP returns a named error instead of unit error; allocation division uses checked arithmetic. |
-| Tooling | `scripts` | All production Python scripts formatted; formatting verified against parsed ASTs. Unused imports removed. Setup tooling retains its existing authorization and active-topology guards. |
-| Verification | `scripts/verify.py`, `checks/production_sources.py` | Shared source loading follows the new module boundaries. One verifier runs Rust/style/JVM/integration/Android groups, with sequential JVM tests and a default 512 MiB heap. |
+- Retain a bounded GPU atlas across rejected dynamic frames and stream handoffs to avoid blanking. Move diagnostic text outside the previous near-eye clipping range. Auto-narrow dense crops to preserve final-output detail and report effective sampling gain.
 
-```mermaid
-flowchart LR
-    X[X11 capture and window sources] --> E[Rust encoder workers]
-    E --> N[Authenticated control and video transport]
-    N --> D[Kotlin MediaCodec decoders]
-    D --> G[Shared GLES compositor]
-    G --> S[Desktop and magnifier surfaces]
-    I[Tracked input and native events] --> W[Workspace controllers]
-    W --> S
-    W --> N
-    L[Lifecycle and Workspace visibility] --> W
-    L --> C[Capture leases and background release]
-    C --> D
+- Put transparent bright diagnostics in the upper view periphery, adapting depth to stay ahead of desktop geometry. Prevent dynamic-stream flashes of the paused baseline on duplicate callbacks or frame-age expiry; require fresh decoded baseline frames during handoff.
+
+- Restore head-driven spherical curvature while retaining gaze-targeted streaming. Move diagnostics to a separate noninteractive view-following overlay, remove desktop diagnostic tint/borders/text, and clarify core-summed CPU and target video bitrate labels.
+
+- Synchronize spherical curvature with fine gaze and the displayed high-density frame. Narrow the configurable dense region to 35% by default. Add saved encoder effort/bitrate and GPU sharpening settings, plus live host/headset resource and streaming telemetry in both streaming modes.
+
+- Follow fine gaze for the dense streaming region, retain targets beyond desktop edges and during tracking gaps, and separate debug visibility from streaming. Preserve captured detail in bounded source-native XR output buffers instead of downscaling into the normal-stream buffer.
+
+- Replace the experimental JPEG overlay with a view-only H.264 atlas: dense center, lower-density visible periphery, frame-exact crop mapping and full-desktop encoder suspension. Fix large spherical viewport bounds by clipping rendered triangles to the frustum.
+
+- Visualize experimental viewed-area quality with a live desktop map, candidate/active patch borders, GPU-only tint, sampling gains, transport counters, timing, upload age and explicit gating reasons.
+
+
+- Focus selection places the cursor at the captured pinch/ray contact rather than the target center.
+
+- Hide desktop render/input surfaces while Workspace is open, and request numeric keyboards for resolution and pinch-threshold fields.
+
+- Focus pinches no longer require experimental mouse gestures; both modes reserve two-ray aiming for preview/grabbing. Shared per-hand pinch thresholds are available from Workspace’s fixed Settings button.
+
+- Share saved pinch settings across mouse, focus and grab. Select focus targets on release without chord vetoes, retain fresh input after stale batches, decouple hand actions from head tracking, and release stuck native handle ownership. Fit selected regions to a central 36°×24° view and extend temporary Follow to three seconds.
+
+- Add a palm-toggle screen/window focus mode, live colored highlights, shared pinch thresholds, acknowledged EWMH activation/cursor placement, selected-region view fitting in both projection modes, and a temporary three-second Follow lease. Revert the subsequent size-threshold beam overlay experiment while retaining tested per-segment highlight colors.
+
+- Reset now centers the active desktop in the current view and fits its size to the binocular field of view, preserving aspect ratio and accounting for spherical corners.
+
+- Show the dynamically projected spherical result during grabs with a reusable textured native grid and projected contact markers. Explicitly apply scene depth testing and use opaque beam texels with entity-level dimming for live-video overlap.
+
+- Consolidate grab state/preview geometry, share binary index contact with mouse control, and resolve native/gaze input against rendered triangles. Fix false large-screen collider rejection, cancellation on fresh delayed samples, and aiming suppression across different monitors or stale generic manipulation state.
+
+- Use five-degree contact separation for two-hand grabs regardless of desktop size; allow validated joint-pinched preview contacts to complete acquisition after a missed native DOWN.
+
+- Expanded spherical coverage toward the antipodal overlap boundary. Very wide fields compress far peripheral angular spacing while preserving local view-centric curvature; wraparound resize bounds remain finite.
+- Fixed oversized desktop resize/release consistency: native resize bounds grow with the desktop, final invalid SDK proposals retain the last valid size, and aiming beams resolve their endpoint against current rendered geometry. Dynamic spherical geometry no longer uses the obsolete 2.2-radian envelope.
+
+This covers the work after `b8eba1a` ("Show the laptop screen on the headset without a typed address"). The headset still finds the computer by itself, and `--existing` still streams the physical panel.
+
+These notes describe the code. The JVM checks do not prove headset placement, joint accuracy, or picture stability. Those still have to be confirmed on the device.
+
+## Host
+
+The pointer is no longer a separate overlay. XFixes does not put the cursor in the framebuffer, so the host reads the pointer position every few milliseconds and paints the cursor image into the frame before encode. The shape is fetched only when the cursor serial changes.
+
+XDamage does not fire for a cursor-only move. A pointer move marks the capture dirty, and the next frame interval sends a picture with the new cursor. A still desktop with a still pointer does not keep encoding.
+
+The H.264 encoder prefers `vah264enc` when it is present (`x264enc` remains the fallback). The VA profile is low-latency CBR: no B-frames, one reference frame, a 400 Kb coded-picture buffer. The GOP is about eight seconds, because a full-screen keyframe every second stalled the encoder. `appsrc` does not block. Encoded frames are always read back before another raw frame is submitted. The appsink keeps two buffers and drops incoming encoded buffers when full (`leaky-type=upstream`) instead of blocking the encoder thread.
+
+### Capture stall, 8 November 2026
+
+After the pointer started forcing a frame on every interval, the stream began to stop while the process stayed up. It happened twice: the frame and skip counters froze at 08:07, and again at 09:04. The capture thread was asleep on a futex, and the GStreamer `src` thread was too. The status line kept printing the same counters.
+
+The cause is a queue deadlock, not an X11 reply that never arrives. A moving pointer now captures continuously at 2560×1600. The encoder was limited to one finished frame and blocked when that slot was full. The path that treated "encoder busy" as a dropped input returned without reading the output. The encoder then refused more input until that output was read, and nothing read it.
+
+The capture thread now drains encoded frames before each submit, and again if a submit is refused. A refused submit also requests a keyframe, so a discarded picture does not leave the headset decoder on a broken reference. If a connected client still sees no capture progress for two seconds, the host shuts down the X11 socket. That unblocks a reply wait that has no timeout, and the capture thread opens a new connection instead of staying stuck. The logs for those two stalls are in `.agent-artifacts/host-troubleshooting.log`, which is not part of the tree.
+
+## Headset video
+
+RTP is reassembled on its own thread, with a short reorder window so a packet that arrives slightly out of order is not treated as a hole. A real sequence gap, or a decoder queue that cannot accept another frame, drops non-keyframes until the next keyframe and asks the host for one. SPS and PPS are sent together in `csd-0`. The decoder is configured for low latency, and frames are rendered to the `SpatialExternalSurface`.
+
+The cursor is inside that video. There is no second cursor panel on the stream.
+
+## Spatial desk
+
+Monitor and control-panel poses are stored in the workspace file and applied in the Compose subspace. The subspace root is not activity space: its scale and pose are read from the live surface parent, and head and hand poses are converted into that space before they move anything.
+
+Follow keeps each panel fixed relative to the head by applying `headNow * inverse(headAtLock)` to the pose captured when follow started. A closed fist has to stay closed (about a third of a second) before follow starts, and opening the hand stops it. The Follow button latches follow until Unlock, until a grab starts, or until the workspace is reset. Follow does not run during a two-hand grab.
+
+Turning an open palm toward the face shows a small control panel in front of that hand. The other hand's index fingertip pokes its buttons: Follow, Reset desk, Reconnect, Workspace, and Enable spherical / Disable spherical. The panel hides when that hand turns away.
+
+## Two-hand monitor grab
+
+A grab starts when both hands pinch the same monitor, far enough apart. The two contact points are fixed on the screen. Between the hands, a miniature of the monitor is held so those contacts match the pinch points. Moving, separating, or turning the hands moves that miniature; the real monitor repeats the same translation, rotation, and uniform scale.
+
+While the grab lasts, the live video surface is hidden and a frozen snapshot of the current frame is shown in its place, so the guides stay visible. The decoder keeps writing to the hidden surface. Releasing either pinch, or losing tracking, ends the grab and shows the live video again. Contacts that are too close together are rejected.
+
+The miniature outline/pinch guides use native glTF meshes; aiming beams, tethers and contact decorations use stable custom-mesh SurfaceEntities parented to the desk root. They are not interactable panels, so they do not take the hand rays. Regenerate the meshes with `python3 tools/generate_grab_guides.py` from `client/android-xr`.
+
+## Spherical monitor display
+
+The palm panel's Enable spherical / Disable spherical button saves a workspace-wide setting, off by default. The mesh lies on a sphere centered between the eyes, with radius equal to the distance to the monitor center. An equal-edge angular quadrilateral net gives horizontal and vertical neighboring grid rays their prescribed central-angle steps at a shared angular pitch per image pixel. The grid can shear as required by spherical geometry. Extreme fields are limited uniformly to avoid folds. Invalid viewpoints freeze the last valid geometry; viewer-coordinate changes above 1 cm refit it.
+
+Curved video uses a dedicated native SurfaceEntity created with its mesh and supersampling disabled, outside Compose's rectangular canvas sizing. The retained flat video owner is masked and disabled in curved mode. A separate system rectangle behind the image provides native move/resize controls. A transparent native glTF interaction patch shares the curved video's mesh and transform. Resizing updates the bounds used to validate contacts. Mode switches route the decoder to the appropriate surface; head-driven curved updates reuse the same decoder surface.
+
+Raw pinch state freezes geometry before platform DOWN acquisition. The frozen image, contact markers and miniature outline use that same geometry throughout a grab. The hidden video continues receiving frames and reappears immediately on release.
+
+## Coordinates, tracking and hand aiming
+
+Native contact positions include the activity-root scale, while the event's hit-localization matrix does not. The listener computes `local = hitInfo.transform * (rawHit / activityRootScale)` and validates the result against the actual surface. Recorded-contact regressions cover this conversion, including independent left/right sequences. Native move/resize handles use relative gesture deltas and consume large discontinuities as new references without moving the monitor. Rearming a rejected two-point grab does not disable handles.
+
+Head-quality checks gate follow independently of raw hand tracking. Tracking gaps and discontinuities suspend follow until 300 ms of stable samples, then follow rebases. Space-origin changes cancel gestures and reset follow. A visible activity stays awake and reapplies tracking configuration on resume. Physical boundaries and sensor availability remain system-controlled.
+
+The user confirmed that Settings → Input → Aiming method → Use hand aiming only keeps hand rays available without waving. Mixed eye/hand aiming can switch away from the hand pointer. Independent app-level eye gaze alongside hand aiming is now implemented, subject to eye-tracking permission and the limitations below.
+
+## Streaming recovery
+
+`scripts/serve-existing.sh` starts the existing-desktop host as the `floatdesk-live` user service, with restart on failure, journal output and an unlimited regular-file size limit. The packaged unit uses the same logging and limit settings. This avoids tying the host to a terminal/tool lifetime or regular-file log limit. Restart recovery was verified on the headset.
+
+The receiver resets reorder/depacketizer state when the RTP source changes or sequence numbers restart backwards after downtime, then requests a keyframe. Capture-thread retries retain packetizer sequence numbers within one host process. The other agent's existing host capture/encoder fixes are preserved.
+
+## Checks and confirmed regression baseline
+
+From `client/android-xr`, with a directory of Kotlin compiler jars:
+
+```bash
+python3 checks/gestures.py /path/to/gradle/lib
+python3 checks/monitor_warp.py /path/to/gradle/lib
+python3 checks/frozen_frame.py /path/to/gradle/lib
+python3 checks/rtp.py /path/to/gradle/lib
 ```
 
-## Behavior and performance invariants
+These cover grab transforms, gesture thresholds, spherical radius and angular sampling, pixel inversion, mode-switch surface ownership, curved interaction routing, snapshot geometry/materials, native coordinate conversion, tracking guards and RTP recovery. `python3 scripts/check-serve-existing.py` checks launcher arguments without changing a service. JVM checks cannot validate physical placement or native rendering; those need the headset.
 
-- Workspace opening hides magnifier surfaces, colliders, gaze interception and transient menus, including pinned panes. Capture leases stop while hidden; placements and pin locks survive the temporary suspension.
-- Fixed panes also suspend when the scene is no longer active. Readiness is cleared when hidden, preventing an invisible pane from intercepting gaze before its next first frame.
-- Native custom-mesh parameters are validated before JNI; original buffers are retained before native submission. This is defensive ownership, not proof that the previously observed SDK crash is eliminated.
-- Pose updates remain display-paced; curved geometry uploads retain their separate budgets. Shared projection checks the old mesh before rebuilding it.
-- The source-capture gain and initiating hand stay fixed throughout magnifier dragging. Contact thresholds and binary rearming are not retuned by the refactor.
-- Focus, Reset and HUD reuse the same view-fit bounds and canonical scene radii. Framebuffer and codec safety bounds remain explicit contracts rather than inferred from available RAM.
-- Host protocol, combined desktop arrangement, priorities and virtual refresh-rate selection retain their existing semantics. Hardware pixel throughput is not inferred from source-code structure.
+On 8 November 2026 the user confirmed flat coordinate alignment, matching live/frozen spherical shape, and successful spherical grabs near both outer edges. Preserve the separate native curved video canvas, matching interaction patch, resized contact bounds, and event-matrix/root-scale conversion. Native handles or Reset remain the accepted fallback below the minimum safe contact separation. Future interaction changes must rerun the regressions and verify center/edge grabs, live/frozen agreement, mode toggling, and native handles on the headset. Local APK/source backups preserve both confirmed baselines and are excluded from Git.
 
-## Connected profiling and targeted reductions
+## Mouse, interaction and stream checkpoint — 10 November 2026
 
-A bounded five-second ART sampling trace identified repeated native scene transactions, hand snapshot construction, baseline-mode region calculations and video payload copying. Sampling is diagnostic evidence, not a calibrated before/after throughput benchmark.
+This checkpoint adds direct hand/gaze mouse routing, optional click/drag/scroll gestures, palm gaze activation and interaction/rendering recovery. Gesture reliability remains incomplete. At the user’s request, further gesture work is deferred; [the gesture issue record](docs/gesture-issues.md) contains observed failures, current constants, diagnostics and resume criteria.
 
-- Unchanged app-owned node parent, transform, alpha and enabled state now skip JNI submission. Native manipulation invalidates the cache so system changes are respected.
-- The scene snapshot reads its ten consumed hand joints directly. Enumerating the SDK map previously materialized and hashed every joint. The independent high-rate pinch sampler retains its cadence.
-- Eye-tracking maintenance is extracted from the hot gesture coroutine after ART repeatedly reported its 16,622-instruction method exceeded the JIT limit. After installation, the new Activity emitted no instruction-limit warnings in the bounded startup observation. This establishes removal of that observed compiler refusal, not a sustained FPS gain.
-- Normal streaming skips dynamic-region triangle scans, including when resource diagnostics are enabled.
-- Keyframe detection scans Annex-B headers without copying video payloads. Parameter-set extraction keeps its existing behavior.
-- Expensive Android PSS/graphics memory collection runs every five seconds; CPU, available memory and thermal status remain sampled every second.
+- Hand mouse aiming remains available independently of the desktop Eyes toggle. One ray takes precedence over gaze; two rays freeze pointer motion and show grab preview. Gesture and eye preferences persist separately.
+- Index pinch releases click, a 350 ms hold drags, middle pinch releases right-click, and middle pinch plus 8 mm palm translation scrolls immediately. Combined contact produces middle-click. Contacts and rearming are binary and independent; no desktop click minimum hold is intended. Rapid physical pinches and triple-clicks are still unreliable despite synthetic replay checks.
+- The palm panel supports sticky eye focus plus same-hand middle pinch, independent of desktop Eyes and OS aiming selection. Its existing activation threshold/dwell remain separate. Fine eye resources stay configured while active; head and eye poses are composed in the correct spaces.
+- Native monitor input preserves the matched entity/hit matrix. In curved mode the old flat owner is disabled. A tangent-aligned system rectangle sits behind both flat and curved video, preventing interception and providing stable one-hand fallback movement/resizing. App geometry does not rewrite an active system controller; final resize dimensions refit the latest curved mesh.
+- Left/right rays and grab guides use cyan/violet. Screen pointer icons and redundant contact dots are hidden. Stable unit ray meshes avoid the observed native Impress replacement crash. The guides remain visible across video and monitor edges.
+- Tracking checks reject duplicates/discontinuities. A single identity established before a new overlapping clone can retain mouse ownership; ambiguous pairs remain blocked. This mitigates app input interruption, not the OS-drawn duplicate hand. Deferred notes preserve the user’s observations outside Floatdesk and recovery after a headset reboot.
+- Mouse datagrams carry validated coordinates and independent sequences. The host scopes input to the connected peer, deduplicates clicks, uses XTest buttons/drag and a native libevdev/uinput two-contact touchpad. Buttons/contacts have release leases. Pointer and pad motion are coalesced off the UI thread; click and release edges are retained. Scrolling needs writable `/dev/uinput` and `libevdev.so.2`.
+- Video uses a stable decoder input and EGL compositor across flat/curved surface handoffs. Output drains while input is idle; identical overlays do not resubmit stale frames. Hidden video releases decoder/output resources; visibility return requests a keyframe, and composition disposal closes the connection.
+- Host capture is paced between starts rather than completion plus a full interval. Raw encoder input keeps one pending frame and replaces obsolete frames before encoding; nonblocking max-bytes alone had allowed backlog. X event failures now propagate to the existing reconnect loop. Read-only pacing and slow-consumer queue checks cover these cases.
 
-## Validation and remaining evidence
+Verification commands and their limits are documented in [the checks README](client/android-xr/checks/README.md). Hardware quick-pinch reliability is explicitly not established by the automated checks. Local troubleshooting captures/build backups remain ignored; this checkpoint contains no raw personal desktop images or logs.
 
-Completed: Rust workspace tests, Clippy with warnings denied, rustfmt, Python Ruff lint/format, all 24 platform-substituted JVM checks, including three new allocation/state regressions, Android assemble/lint, private Xvfb/KWin capture/focus/typing/RandR checks, slow display-operation heartbeats, offscreen tray polling checks, and live private-X11 dynamic streaming/encoder reconstruction checks. Changed shared-math and native-buffer checks were rerun after consolidation.
+Checkpoint validation on 10 November 2026: Android debug build and lint; all ten JVM checks; Rust workspace tests/release build/format check; private-Xvfb XTest checks; read-only live capture/reconnection and passive uinput classification; and offscreen headset EGL/MediaCodec pause/resume checks passed. The Android unit-test task has no test sources. Clippy completes with existing warnings in unchanged code; it is not a warning-free result. Gesture reliability remains deferred despite these checks.
 
-These tests validate algorithms, protocol identity, request handling and ownership invariants. Private-X11 stream profiles are functional test workloads, not before/after throughput measurements on the user's headset. The connected headset also passed ten offscreen hardware decoder/compositor checks. These do not establish sustained thermal improvement, native hit ordering or elimination of intermittent native-renderer crashes.
+## Dynamic screen pool — 10 November 2026
 
-The remaining highest-value measurements are per-thread XR frame time, native mesh submission time/queue pressure, thermal severity during sustained use, decoder/GL teardown duration, and capture/encoder load with several different pinned sources. High-rate hand sampling remains because it protects quick pinch detection; changing its cadence needs device evidence. The workspace coordinator still contains a large tracked-input transaction, deliberately kept coherent until its device behavior can be profiled and split further without losing event ordering.
+The headset's Workspace button now opens screen management. With `serve --existing`, active XRandR outputs stream independently; Add/Remove/resolution commands manage only virtual outputs created by the current host process. The already-provisioned VKMS pool supplies real KDE desktop screens without privileged runtime setup. Capture/decoder reconfiguration and source-identity layout reconciliation preserve existing placements. Retried commands are deduplicated, and graceful host shutdown releases its outputs. See [multi-monitor behavior and limitations](docs/multi-monitor.md).
 
-A native `CodecLooper` destroyed-mutex abort was also observed during the device-probe interval. The probe commands completed successfully and the running Activity had a different PID; this does not establish the cause or eliminate the existing codec/native crash risk. Sustained interactive stability still needs observation. A subsequent Activity teardown also crashed inside the SDK `ImpressApiImpl.nDisposeAllResources` during `Session.destroy`; the Activity restarted. This is an observed unresolved native-resource cleanup failure, distinct from the codec probe shutdown abort. The application does not call `Session.destroy` directly. It must not be reported as fixed by buffer retention or managed exception handling.
+11 November device follow-up: screen creation worked, but native renderer crashes reported unknown material instances. Curved colliders, snapshots and guide entities now release their native instances before their model resources. Late curved-collider loads reject disposed/replaced owners. Added lifetime and late-completion regressions; hardware stability remains to be rechecked.
 
-## Reproducing checks
+11 November combined-desktop follow-up: the lifetime fix did not eliminate the reported native material crash. Existing-desktop mode now captures the X11 arrangement as one object/stream, with one spherical projection. Output inventory remains separate for Add/Remove/resolution management. Video fits within 4096 × 2160 while mouse input maps to full desktop bounds. Stability remains pending a sustained headset test.
 
-```sh
-python3 scripts/verify.py
-python3 scripts/verify.py --group integration
-python3 scripts/verify.py --group android
-python3 scripts/verify.py --group jvm --only jvm-focus_interaction
-```
+11 November streaming follow-up: completed encoded pictures drain even without a new XDamage capture; video packet trains are paced to reduce UDP bursts. Conversion/scaling uses the measured faster fused four-worker path, with the prior path as fallback. Packet-loss recovery remains necessary on lossy links. Added pacing regression; validated static large-desktop output/recovery on private Xvfb. Device smoothness remains pending retest.
 
-The verifier prints a temporary directory containing complete per-check logs. Pass `--gradle-lib /path/to/gradle/lib` if the Kotlin compiler distribution is not in the wrapper cache. Integration checks use private displays and prepare a release host binary; they do not launch the production headset app or reconfigure the user's desktop. Android checks require an installed SDK and cached Gradle dependencies. The GPU/device suite remains `client/android-xr/checks/video_compositor_device.py` and requires ADB.
+Workspace now includes a draggable desktop arrangement map with stronger edge/centre snapping and apply-on-release position commands. External X11 layout changes are detected in a background worker and reload capture/catalogue without opening Workspace. Virtual modes use the lowest advertised positive refresh rate. Addition/removal/resolution edits preserve deliberate positions.
 
-## Follow-up: recurrent lag and native teardown
+The encoder's sender runs independently of capture; its bounded compressed queue applies backpressure instead of dropping H.264 reference frames. Raw input still replaces obsolete frames. Setup assistance adds read-only diagnostics and reviewable boot/login installation bundles, without modifying the existing VKMS installation. Distribution-specific provider automation remains release work.
 
-The next live lag report again showed thermal severity 3, AP sensor 75.8 C and Floatdesk around 134% core CPU. After force-stop, severity fell to 2. The user subsequently reported smooth behavior inside and outside the app, with crashes still occurring. Recovery after stopping/reopening is consistent with releasing resources and thermal recovery; it does not isolate either cause.
+Connector names/DRM roles now identify screens independently of primary selection and position; mirrored outputs stay listed. Plasma changes apply enablement/mode/position/priorities in one transaction, preserving the existing order. Cached XRandR observation is faster, unchanged desktop bounds avoid video restart, same-format source changes reuse decoding, and reconfiguration has a visible progress indicator. Display requests retry safely and reconcile automatically instead of warning users to refresh.
 
-Inspection found independent full-frame GPU submissions from baseline video, focused-window patches, aiming, presentation and projection. They now share one Choreographer-paced pending draw on the GL thread; all source textures retain their exact metadata association, and readiness callbacks follow the shared draw. Updates during rendering schedule a later frame, rather than being dropped by a fixed 12 ms timeout. In the device stress check, 500 competing presentation/overlay changes produced 18 redraws over 23 display frames. This bounds redundant submissions; it is not a sustained thermal benchmark.
+XRender downscales before SHM readback, with fallback; measured readback time fell from ~53 to ~26 ms on the current desktop. Cursor scaling preserves full-resolution input mapping. Bounded packet retransmission repairs isolated losses and incomplete frame tails before keyframe fallback, rejecting unbound peers, inactive sources and late retired-source traffic. These improve known bottlenecks without establishing stall-free playback on every link.
 
-AVC reception also split and copied every NAL merely to find SPS/PPS. A shared range visitor now copies only the retained parameter sets. The keyframe scan remains allocation-free.
+Sub-Hz modes are excluded from interactive selection after a real full-resolution Plasma transaction exposed a multi-second flip wait (`@0` mode). The lowest responsive supported rate is retained. Partially applied additions retain management ownership, and SIGTERM/SIGHUP now shut the host down gracefully.
 
-Curved desktop video surfaces were abandoned after parent detachment on mode changes/close; beam canvases did the same on renderer close. These app-owned surfaces now receive explicit disposal. The old curved collider is released before its parent surface. The Compose-owned surface remains alive. Ownership regressions cover repeated transitions and idempotent close. This addresses concrete lifetime defects; the observed SDK native `nDisposeAllResources` crash must still be monitored rather than declared eliminated.
+12 November: blank non-screen pixels in the combined desktop before encoding, preventing stale window fragments in gaps. Cached clipping follows arrangement changes without changing the stream geometry or decoding path. Pixel-centre coverage avoids seams at fractional shared edges; the cursor is clipped too.
 
-The first revised standalone GPU probes failed in Choreographer because plain app_process has no ActivityThread. The probe launcher now prepares its main Looper and initializes ActivityThread; the actual app already provides this state. Subsequent real GPU checks validate paced rendering, output handoff, shared fanout, idle pause/resume, atlas mappings and resolution.
+### Connected screen layout and XR gaps — 12 November 2026
 
-A subsequent observation explicitly recorded `mWakefulness=Asleep` while Floatdesk remained alive and continued work. The runtime now combines lifecycle visibility with PowerManager interactive state, updated through protected screen-on/off broadcasts. Screen-off pauses desktop decoders, dynamic detail and magnifier leases, stops high-rate hand sampling through the existing inactive-input path, and skips desktop geometry/beam updates. Wake reuses the existing fresh-keyframe recovery. This avoids relying on XR Activity pause events that were absent during the observation.
+Layout edits now reject orphan screens, including corner-only attachment and deleting a bridge output. The host validates against fresh output geometry before mutation, with the editor rejecting invalid drops locally. Existing externally disconnected arrangements can be repaired incrementally.
 
-The user confirmed Workspace hiding/restoration and ordinary aiming, grabbing and magnifier movement worked after the structural refactor. That confirmation predates this follow-up; sustained heat/crash outcomes for the new draw/lifetime changes remain pending.
+The client masks unused desktop areas to transparent in live video and snapshots. Workspace adds saved visual spacing with inverse mouse mapping; logical screen edges stay connected. Actual black screen content remains opaque. No gesture tuning is included.
 
-Follow-up validation: Android assemble/lint passed; nine targeted JVM checks passed across frame coalescing, Annex-B ranges, curved ownership, model cleanup, gestures, resize beams, display requests, focus and hand quality. Seven hardware probes passed with the initialized launcher (video/pacing, capture fanout, in-place patches, idle decoding, dynamic atlas, output resolution and packed reconstruction). The final sleep-gate build also assembled/linted successfully. During the sleep observation no rendered-frame or ray-frame progress was logged; incoming UDP packets continue to be drained because host baseline suspension is not part of this change. The headset reported thermal status 0 while asleep, which is not evidence of improvement under sustained worn use. Automated wake requests did not keep this unworn headset awake, so physical wake/resume and sustained interactive stability remain user-verification items.
+Visual spacing now explains its per-dimension reduction and uses matching 0.1% slider/display precision. Previously the continuous value was displayed as a truncated integer.
 
-## Magnifier projection transition correction
+Screen edits now reject overlapping output rectangles as well as orphan screens. The arrangement map centers/fits the screen union with space on every side, and adds edge-to-midpoint snapping. Moving beyond the top/left translates the full logical arrangement atomically to valid X11 coordinates while retaining screen priorities.
 
-The initial refactor checks did not exercise the live magnifier controller across projection-mode changes. The panel keyed capture lifetime on spherical mode, restarting capture and clearing readiness, while rendered mesh selection, deferred updates and native input attachment were handled on separate paths. Projection now updates in the existing capture lifetime. Both initialization and subsequent frames use one native input-binding function; hit conversion reads the actually rendered state. Mode/size changes force mesh reconciliation even when the ordinary update budget is closed. Returning to flat applies the quad and disables the curved collider; re-entry reuses and updates that collider. Mode changes still cancel transient dragging/tapping without changing pin state.
+### Host capabilities and tray
 
-Regression coverage now includes repeated floating/fixed projection changes during deferred updates and execution of the production collider-binding helper through 50 round trips, hidden panes, and invalidated asynchronous creation. These substitute native entities and do not independently prove headset-native hit behavior.
+The host now selects the lowest positive advertised virtual refresh, including sub-Hz modes. Slow display changes execute in a worker instead of blocking control/repair/heartbeat processing. Workspace receives a named output catalogue with actual modes and refresh, supports custom mode provisioning, and carries an advisory memory/CPU pixel estimate in host metadata. The fixed client count/resolution choices and six-rectangle mask restriction are removed. A Python/PySide6 tray provides service controls, logs, output status and authorized first-time setup; server startup also attempts unprivileged backend preparation. Real kernel, X11, decoder and transport limits remain.
 
-## Canonical magnifier fitting and placement
+Workspace now has a pinned × close control, concise pixel totals and high-contrast resolution inputs. Resolution changes reflow connected output positions as needed and verify the resulting dimensions. Live video returns to opaque composition with exact geometric holes for transparent gaps, preserving the continuous native-ray path. Unanchored layouts persist a viewer reference, restore relative to the new XR session, and save atomically on pause/stop. Regression checks cover these geometry, blending and persistence contracts.
 
-The preceding transition correction shared projection/input mechanics but did not eliminate the startup-versus-mode fitting difference. Floating startup used `fitDesktopInView` for the selected mode, whereas a mode switch only changed the old dimensions' projection. Creation, projection changes and source resizing now call `magnifiedWindow` with the same fitting and projection implementation; optional prior state preserves the user's size multiplier and head-relative offset. Capture readiness is not cleared for a geometry-only change.
+Workspace’s × control now has a circular background. Status, core actions, content/capture pixel totals and stream dimensions/scale stay fixed while arrangement and resolution controls scroll. Capture quality and gaze-centered projection feasibility are documented; stream packing and spherical projection are unchanged.
 
-Fixed pane construction no longer has a separate deferred-mesh parameter. It feeds the shared frame calculation, and mode/size changes invalidate cached geometry. Mesh budget deferral only reuses structurally valid cached geometry. Requested fixed-pane placement is stored independently from the radius-constrained render pose, so layout and render passes cannot successively constrain an already constrained point using different head samples. A relocated desktop plus a translated head reproduced the old pose mismatch before this correction.
+### Layout latency and release jitter
 
-The expanded checks compare width, height, pose and every vertex against cold starts for both projection modes, round trips, different scene scales, head translation/rotation, retained user adjustments and relocated desktops. These are quantitative geometry comparisons rather than mesh-presence checks.
+Position edits now suspend virtual scanout inside a guarded native RandR transaction before changing framebuffer bounds, then restore the exact original modes. This avoids repeated low-rate waits across intermediate configurations. A live production move measured 6.2 seconds; the earlier KScreen bounds-change comparison took 93 seconds. Refresh rates remain unchanged. Add/remove/resolution changes retain the desktop backend, and driver pending-scanout waits can still delay position changes. Partial failures attempt to restore the original layout.
+
+Arrangement drops discard the final 100 ms of pinch-opening aim movement using input timestamps; preview remains live and sample history is bounded. Packed atlas streaming and view-adaptive detail remain proposals, with tradeoffs documented in `docs/multi-monitor.md`.
+
+### Dynamic spherical geometry and lost-tracking recovery
+
+Spherical mode now reshapes surface vertices with a view-centered spherical exponential map. The full gnomonic map was removed because it made the entire desktop read as planar. Checks require a straight viewed axis, curved peripheral edges, constant vertex radius, an anchored desktop center and non-rigid deformation. Flat mode remains unchanged under head turns. Texture-only correction is disabled. Video, snapshots, exact hand-ray resolution and backing controls share the geometry; the backing frame contains the complete curved outline.
+
+Native input uses one reusable shared-material triangle grid, transformed to follow the current surface without loading/destroying GLTF models on head turns. Transform reconstruction and resource-identity checks cover the grid. Geometry freezes during mouse pinches and native handle interaction; custom spherical grabs show the projected result through a reusable native snapshot grid. Tiny backing-frame size changes from float roundoff do not replace its material. Native hit behavior and long-running stability still need headset confirmation.
+
+Substantial pose changes after a sustained tracking gap restore unanchored layouts relative to the last trusted viewer. The system warning remains under Android XR control. Adaptive/cropped streaming remains unimplemented.
+
+### Recover discovery across network interfaces
+
+A Wi-Fi beacon followed by Ethernet control replies could leave the client on Updating screens indefinitely, with no decoder started. Discovery now retries other fresh addresses advertised under the selected host name while retaining strict reply-endpoint matching. Healthy connections stay pinned. Beacon polling no longer adds a 200 ms wait per control packet. A real UDP regression reproduces asymmetric reply routing, and live selection of the reply interface restored video reception and resolved the pending screen query.
+
+Known checkpoint limitation: aiming and grab-preview beams can remain invisible over large live desktops despite valid hover contacts. Active-grab snapshot tethers remain visible; the last depth-path changes did not resolve this device regression.
+
+- Add optional independently captured focused-window magnification with dwell, travel grace and re-entry cooldown; harden custom-mesh submissions following a native XR renderer crash.
+
+- Match magnifier curvature to the desktop; add native tap pinning, direct dwell-based switching, blink-safe dismissal, central-view Reset and configurable typing protection. Split Workspace settings into compact pages and reuse magnifier rendering resources after a Filament command-buffer overflow.
+
+- Correct magnifier projection around the current binocular eye midpoint at its own fixed radius; share desktop view fitting, track the gaze projection centre, add native constrained grab movement, replace textual status cues with visuals and tighten the angular gaze-exit margin.
+
+- Separate magnifier grab/resize from tap-to-pin; follow head-relative placement and head-driven curvature, reset resize per activation, and draw the pin outline outside content. Sharpen already-large fully visible windows in the existing compositor instead of opening a magnifier. Remove ordinary head-motion mesh replacement after further native crash reports.

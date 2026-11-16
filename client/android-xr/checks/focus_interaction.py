@@ -134,6 +134,13 @@ fun main() {
  check(abs(enlarged.width/zoom.width-1.5f)<.00001f && enlarged.sizeScale==1.5f)
  check(magnifiedWindow(42,1600,900,Pose(),.6f,.5f,1f,true).sizeScale==1f)
  for(point in magnifierPinOutline(zoom))check(zoom.mesh!!.unproject(point)==null)
+ // Flat and curved rendering both submit mesh geometry, including the exterior padding.
+ val flatPane=magnifiedWindow(42,1600,900,Pose(),.6f,.5f,1f,false)
+ val flatGeometry=framedMagnifierGeometry(flatPane)
+ check(flatGeometry.positions.filterIndexed{index,_->index%3==2}.all{it==0f})
+ check(abs(flatGeometry.positions.filterIndexed{index,_->index%3==0}.max()-flatPane.width*.5f-.005f)<.00001f)
+ check(abs(flatGeometry.positions.filterIndexed{index,_->index%3==1}.max()-flatPane.height*.5f-.005f)<.00001f)
+ check(flatGeometry.indices.size==6 && flatGeometry.texCoords.min()==0f && flatGeometry.texCoords.max()==1f)
  // The exterior pin bezel must preserve every content vertex and triangle exactly.
  val framed=framedMagnifierGeometry(zoom)
  check(framed.positions.copyOfRange(0,sphere.positions.size).contentEquals(sphere.positions))

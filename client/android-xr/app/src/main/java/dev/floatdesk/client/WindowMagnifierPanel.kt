@@ -34,9 +34,8 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
         val target=magnifierFrame(initial,initial,viewer.get() ?: return@LaunchedEffect,units(),true)
         try{
             fun shape(surface:MagnifiedWindow):SurfaceEntity.Shape{
-                if(surface.mesh==null)return SurfaceEntity.Shape.Quad(FloatSize2d(surface.width+.01f*surface.units,surface.height+.01f*surface.units))
-                val geometry=framedMagnifierGeometry(surface)
-                return nativeVideoMesh(geometry)
+                // Keep the native canvas type identical across cold starts and mode changes.
+                return nativeVideoMesh(framedMagnifierGeometry(surface))
             }
             val reusedSurface=resources.entity!=null
             if(resources.entity==null){
@@ -98,6 +97,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
 
             val targetPose=Pose(Vector3(p.position[0],p.position[1],p.position[2]),Quaternion(q[0],q[1],q[2],q[3]))
             resources.mesh=target.mesh;resources.rendered=target
+            logMagnifierSubmission("start",target,entity)
             if(reusedSurface){val nextShape=shape(target);resources.retain(nextShape);entity.shape=nextShape}
             syncMagnifierInput(session,resources,entity,target.mesh)
             entity.parent=root;entity.setPose(targetPose)
@@ -180,6 +180,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                 if(modeChanged || meshChanged || sizeChanged){
                     val nextShape=shape(next);resources.retain(nextShape);entity.shape=nextShape;geometryAt=android.os.SystemClock.uptimeMillis()
                     syncMagnifierInput(session,resources,entity,mesh)
+                    if(modeChanged)logMagnifierSubmission("mode",next,entity)
                     if(!resources.resizing){
                         resources.resize?.affordanceSize=FloatSize3d(next.width,next.height,.001f)
                     }
@@ -192,6 +193,14 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
     }
 
 }
+/** Bounded startup/transition evidence; never log or allocate diagnostics each frame. */
+private fun logMagnifierSubmission(reason:String,window:MagnifiedWindow,entity:SurfaceEntity) {
+    val geometry=framedMagnifierGeometry(window)
+    val bounds=FloatArray(6){if(it<3)Float.POSITIVE_INFINITY else Float.NEGATIVE_INFINITY}
+    for(i in geometry.positions.indices){val axis=i%3;bounds[axis]=minOf(bounds[axis],geometry.positions[i]);bounds[axis+3]=maxOf(bounds[axis+3],geometry.positions[i])}
+    android.util.Log.i("Floatdesk","magnifier geometry reason=$reason id=${window.id} curved=${window.spherical} fixed=${window.fixed} shape=${entity.shape.javaClass.simpleName} extent=${window.width}x${window.height} units=${window.units} scale=${entity.getScale(Space.ACTIVITY)} pose=${window.pose.position.contentToString()} eye=${window.mesh?.eye?.contentToString()} radius=${window.mesh?.radius} bounds=${bounds.contentToString()} vertices=${geometry.positions.size/3}")
+}
+
 /** Bind input to the geometry actually rendered, without reopening the capture lease. */
 @android.annotation.SuppressLint("RestrictedApi")
 private suspend fun syncMagnifierInput(session:Session,resources:MagnifierResources,entity:SurfaceEntity,mesh:MonitorMesh?) {

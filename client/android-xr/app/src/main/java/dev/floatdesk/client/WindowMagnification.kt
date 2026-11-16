@@ -202,7 +202,7 @@ internal fun surfaceRayDistance(pose:Pose,width:Float,height:Float,mesh:MonitorM
 
 /** Preserve every video triangle and add an exterior frame ring; content is never inset/covered. */
 internal fun framedMagnifierGeometry(window:MagnifiedWindow):VideoGeometry {
-    val mesh=window.mesh ?: return clippedVideoGeometry(window.width,window.height,null,floatArrayOf(0f,0f,1f,1f),0f)
+    val mesh=window.mesh ?: return clippedVideoGeometry(window.width+.01f*window.units,window.height+.01f*window.units,null,floatArrayOf(0f,0f,1f,1f),0f)
     val pad=.005f*window.units;val width=window.width;val height=window.height
     val expanded=MonitorMesh(width+2*pad,height+2*pad,mesh.eye,columns=mesh.columns,rows=mesh.rows,focus=mesh.focus,center=mesh.center)
     val perimeter=buildList{for(c in 0..mesh.columns)add(c);for(r in 1..mesh.rows)add(r*(mesh.columns+1)+mesh.columns);for(c in mesh.columns-1 downTo 0)add(mesh.rows*(mesh.columns+1)+c);for(r in mesh.rows-1 downTo 1)add(r*(mesh.columns+1))}

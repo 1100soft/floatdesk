@@ -211,6 +211,8 @@ internal class DeskConnection(
         }
     }
 
+    fun isRenderingActive(): Boolean = renderingActive
+
     @Synchronized
     fun setRenderingActive(active: Boolean) {
         renderingActive=active

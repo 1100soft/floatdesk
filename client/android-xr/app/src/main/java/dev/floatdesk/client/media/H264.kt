@@ -323,10 +323,10 @@ internal class MonitorDecoder(
                 val accessUnit = depacketizer.push(copy, copy.size)
                 if (depacketizer.consumeLoss()) recover("RTP packet loss")
                 if (accessUnit == null) continue
-                for (nal in splitAnnexB(accessUnit)) {
-                    when (nalType(nal)) {
-                        7 -> sps.set(nal)
-                        8 -> pps.set(nal)
+                visitAnnexB(accessUnit) { start, end ->
+                    if (start < end) when (accessUnit[start].toInt() and 0x1F) {
+                        7 -> sps.set(accessUnit.copyOfRange(start, end))
+                        8 -> pps.set(accessUnit.copyOfRange(start, end))
                     }
                 }
                 val keyframe = isKeyframe(accessUnit)

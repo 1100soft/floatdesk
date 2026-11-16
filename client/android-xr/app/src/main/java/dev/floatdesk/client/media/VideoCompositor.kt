@@ -14,7 +14,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
+import android.view.Choreographer
 
 /** Normalized top-left video coordinates. At most 256 colored border segments and two contacts. */
 internal data class VideoAim @JvmOverloads constructor(
@@ -39,8 +39,20 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     // Bounded decoration geometry is rebuilt into reusable primitive storage, without boxing.
     private val inkValues=FloatArray((256+2*24)*6*6)
     private val inkBuffer=ByteBuffer.allocateDirect(inkValues.size*4).order(ByteOrder.nativeOrder()).asFloatBuffer()
-    private val redrawPosted=AtomicBoolean(false)
-    private val presentationPosted=AtomicBoolean(false)
+    // Latch all available sources first, then submit once at the next display frame.
+    private val afterDraw = linkedSetOf<() -> Unit>() // GL-thread owned.
+    private val redraw = CoalescedFrame(
+        schedule = { render -> handler.post {
+            if (!closed) Choreographer.getInstance().postFrameCallback { render() }
+        } },
+        render = { if (!closed) guard {
+            draw()
+            val callbacks = afterDraw.toList()
+            afterDraw.clear()
+            callbacks.forEach { it() }
+        } },
+    )
+    private fun requestDraw() { if (!closed) redraw.request() }
     @Volatile private var closed=false
     @Volatile private var failure: Throwable?=null
     @Volatile private var aim=VideoAim()
@@ -92,9 +104,9 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                 windowTexture.updateTexImage();val pts=windowTexture.timestamp/1000
                 val frame=windowFrames[pts];windowFrames.headMap(pts,false).clear()
                 if(frame?.first==windowEpoch.get()){
-                    windowTexture.getTransformMatrix(windowTransform);windowRect=frame.second;windowMask=windowMasks[pts] ?: floatArrayOf();windowMasks.headMap(pts,false).clear();draw()
-                    if(first){first=false;onReady()}
-                }else{windowRect=null;draw()}
+                    windowTexture.getTransformMatrix(windowTransform);windowRect=frame.second;windowMask=windowMasks[pts] ?: floatArrayOf();windowMasks.headMap(pts,false).clear();requestDraw()
+                    if(first){first=false;afterDraw.add { if(windowEpoch.get()==epoch)onReady() }}
+                }else{windowRect=null;requestDraw()}
             }},handler)
         }catch(e:Throwable){error=e}finally{
             val active=if(window!=EGL14.EGL_NO_SURFACE)window else pbuffer
@@ -104,7 +116,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         error?.let{windowRequested=false;throw IllegalStateException("Window compositor unavailable",it)}
         return dev.floatdesk.client.net.WindowDestination(windowInputSurface,{pts,rect->
             if(windowEpoch.get()==epoch){windowFrames[pts]=epoch to rect;while(windowFrames.size>64)windowFrames.pollFirstEntry()}
-        },{if(windowEpoch.compareAndSet(epoch,epoch+1)){windowRequested=false;handler.post{windowRect=null;windowFrames.clear();draw()}}},{w,h->windowTexture.setDefaultBufferSize(w,h)},{pts,mask->windowMasks[pts]=mask;while(windowMasks.size>64)windowMasks.pollFirstEntry()})
+        },{if(windowEpoch.compareAndSet(epoch,epoch+1)){windowRequested=false;handler.post{windowRect=null;windowFrames.clear();requestDraw()}}},{w,h->windowTexture.setDefaultBufferSize(w,h)},{pts,mask->windowMasks[pts]=mask;while(windowMasks.size>64)windowMasks.pollFirstEntry()})
     }
     private data class Mirror(val value:VideoMirror,val egl:android.opengl.EGLSurface)
     private var mirrors=emptyList<Mirror>()
@@ -114,7 +126,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         val previous=mirrors
         mirrors=values.filter{it.surface.isValid}.map{value->Mirror(value,previous.firstOrNull{it.value.surface===value.surface}?.egl ?: EGL14.eglCreateWindowSurface(display,config,value.surface,intArrayOf(EGL14.EGL_NONE),0))}
         previous.filter{old->mirrors.none{it.egl===old.egl}}.forEach{EGL14.eglDestroySurface(display,it.egl)}
-        draw()
+        requestDraw()
     }}}
     private val viewTransform=FloatArray(16)
     private val viewFrames=java.util.concurrent.ConcurrentSkipListMap<Long,dev.floatdesk.client.net.ViewFrame>()
@@ -137,14 +149,13 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     private var uploadedProjection:ViewProjection?=null
     private var lookupSize=0 to 0
     @Volatile private var viewProjection:ViewProjection?=null
-    private val projectionPosted=AtomicBoolean(false)
     private var program=0
     private var inkProgram=0
     @Volatile var outputLimit:Int=4096
         private set
     private var hasFrame=false
     @Volatile private var sharpening=0f
-    fun sharpen(value:Float){val next=value.takeIf{it.isFinite()}?.coerceIn(0f,1.5f) ?: 0f;if(sharpening==next)return;sharpening=next;if(!closed)handler.post{if(!closed)guard{draw()}}}
+    fun sharpen(value:Float){val next=value.takeIf{it.isFinite()}?.coerceIn(0f,1.5f) ?: 0f;if(sharpening==next)return;sharpening=next;if(!closed)handler.post{if(!closed)guard{requestDraw()}}}
     @Volatile private var outputPresented:(()->Unit)?=null
     fun onOutputPresented(callback:()->Unit){outputPresented=callback}
     private var basePresented:(()->Unit)?=null
@@ -188,7 +199,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                     if(!closed) guard {
                         texture.updateTexImage(); texture.getTransformMatrix(transform); hasFrame=true;baseFrames++
                         if(handoff){handoff=false;viewCurrent=null;viewLatched=false}
-                        draw();basePresented?.invoke()
+                        basePresented?.let { afterDraw.add(it) };requestDraw()
                     }
                 },handler)
                 val viewIds=IntArray(1);GLES20.glGenTextures(1,viewIds,0);viewTextureId=viewIds[0]
@@ -225,9 +236,9 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             viewTexture.getTransformMatrix(viewTransform)
             retainAtlas(next)
             viewCurrent=next;viewLatched=true;handoff=false
-            detailUploads++;viewPresented?.invoke()
+            detailUploads++;viewPresented?.let { afterDraw.add(it) }
         } else rejectedViews++ // Keep the last independently cached pixels AND their mapping.
-        draw()
+        requestDraw()
     }
 
     /** One bounded (at most 64 MiB) GPU atlas keeps valid pixels independent of decoder/SurfaceTexture lifetime. */
@@ -274,7 +285,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                     window=EGL14.eglCreateWindowSurface(display,config,surface,intArrayOf(EGL14.EGL_NONE),0)
                     check(window!=EGL14.EGL_NO_SURFACE) { "could not bind video output" }
                     check(EGL14.eglMakeCurrent(display,window,window,context))
-                    draw()
+                    requestDraw()
                 }
             }
         }
@@ -307,25 +318,20 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             before.segments.contentEquals(value.segments) && before.contacts.contentEquals(value.contacts) &&
             before.colors.contentEquals(value.colors)) return
         aim=value
-        if(!closed && redrawPosted.compareAndSet(false,true)) handler.post {
-            redrawPosted.set(false)
-            if(!closed && System.nanoTime()-lastDraw>12_000_000L) guard { draw() }
-        }
+        requestDraw()
     }
 
     fun presentation(value:ScreenPresentation) {
         val before=presentation
         if(before.spacing==value.spacing && before.rects.contentEquals(value.rects)) return
         presentation=value
-        if(!closed && presentationPosted.compareAndSet(false,true)) handler.post {presentationPosted.set(false);if(!closed) guard {draw()}}
+        requestDraw()
     }
 
     fun projection(value:ViewProjection?) {
         if(viewProjection===value)return
         viewProjection=value
-        if(!closed && projectionPosted.compareAndSet(false,true)) handler.post {
-            projectionPosted.set(false);if(!closed) guard {draw()}
-        }
+        requestDraw()
     }
 
     private fun guard(block: () -> Unit) {

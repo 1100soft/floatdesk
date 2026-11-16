@@ -146,7 +146,7 @@ internal fun DeskContent(
             var outputResizePending=false
             while (isActive) {
                 delay(20)
-                if(!current.lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) { delay(100);continue }
+                if(!connection.isRenderingActive() || !current.lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) { delay(100);continue }
                 if (videoSurface.get() == null) continue
                 val root = findDeskSpace(current) ?: continue
                 val file = latest.value

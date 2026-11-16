@@ -255,7 +255,11 @@ internal class MonitorWarp : AutoCloseable {
         if (enabled && viewer == null) return
         val usable = enabled
         if (!usable) {
-            if (live !== original) { live?.parent = null; live = original }
+            if (live !== original) {
+                curvedInput?.close(); curvedInput = null
+                live?.let { it.parent = null; it.dispose() }
+                live = original
+            }
             if (presentationDirty || mesh != null || flatWidth != placement.physicalWidthM || flatHeight != placement.physicalHeightM) {
                 val shape = videoShape(placement.physicalWidthM,placement.physicalHeightM,null)
                 applyShape(original, shape)
@@ -334,7 +338,7 @@ internal class MonitorWarp : AutoCloseable {
     override fun close() {
         // Restore the Compose-owned surface before releasing our independent curved resources.
         curvedInput?.close(); curvedInput = null
-        if (live !== input) live?.parent = null
+        if (live !== input) live?.let { it.parent = null; it.dispose() }
         input?.setEnabled(ownerEnabled)
         input?.primaryAlphaMaskTexture = null
         input?.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE

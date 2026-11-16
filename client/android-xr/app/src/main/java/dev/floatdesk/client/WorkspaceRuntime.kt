@@ -75,6 +75,8 @@ import java.util.concurrent.atomic.AtomicReference
 internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(androidx.xr.runtime.Session?)->Unit) {
     val connection = remember { DeskConnection(dumpFile) }
     val context = LocalContext.current
+    val deviceInteractive by rememberDeviceInteractive(context)
+    val interactiveNow=rememberUpdatedState(deviceInteractive)
     LaunchedEffect(connection) { connection.start(context) }
     DisposableEffect(connection) { onDispose { connection.disconnect() } }
     val session = LocalSession.current
@@ -85,11 +87,11 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
     DisposableEffect(session,connection) {
         val current = session
         onSession(current)
-        sceneActive=current?.lifecycleOwner?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.STARTED)==true
+        sceneActive=interactiveNow.value && current?.lifecycleOwner?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.STARTED)==true
         val observer = LifecycleEventObserver { _, event ->
             if(event==Lifecycle.Event.ON_PAUSE || event==Lifecycle.Event.ON_STOP) store.save(workspaceAtLifecycle.value)
-            sceneActive=current?.lifecycleOwner?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.STARTED)==true
-            connection.setRenderingActive(current?.lifecycleOwner?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.STARTED)==true)
+            sceneActive=interactiveNow.value && current?.lifecycleOwner?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.STARTED)==true
+            connection.setRenderingActive(sceneActive)
             if (current != null && event == Lifecycle.Event.ON_RESUME) {
                 runCatching { current.configure(Config.Builder(current.config).setHandTracking(HandTrackingMode.BOTH).build()) }
                 runCatching { current.configure(Config.Builder(current.config).setDeviceTracking(DeviceTrackingMode.SPATIAL).build()) }
@@ -100,6 +102,10 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             current?.lifecycleOwner?.lifecycle?.removeObserver(observer)
             onSession(null)
         }
+    }
+    LaunchedEffect(session,deviceInteractive) {
+        sceneActive=deviceInteractive && session?.lifecycleOwner?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.STARTED)==true
+        connection.setRenderingActive(sceneActive)
     }
     LaunchedEffect(workspace.screenSpacing) {connection.configurePresentation(workspace.screenSpacing)}
     LaunchedEffect(workspace.encoderQuality,workspace.encoderMbps,workspace.sharpening,workspace.detailAreaPixels,workspace.detailTargetFps){connection.configureVideo(workspace.encoderQuality,workspace.encoderMbps,workspace.sharpening,workspace.denseFraction,workspace.detailAreaPixels,workspace.detailTargetFps)}
@@ -248,7 +254,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
         var frames=0
         var began=SystemClock.uptimeMillis()
         while(isActive) {
-            if(session?.lifecycleOwner?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.RESUMED)!=true) {
+            if(!connection.isRenderingActive() || session?.lifecycleOwner?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.RESUMED)!=true) {
                 delay(100);continue
             }
             androidx.compose.runtime.withFrameNanos { }
@@ -463,7 +469,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             delay(10)
             tick += 1
             val wantEyes = context.checkSelfPermission("android.permission.EYE_TRACKING_FINE") == android.content.pm.PackageManager.PERMISSION_GRANTED
-            val resumed = current.lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+            val resumed = connection.isRenderingActive() && current.lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
             updateEyeTracking(wantEyes,resumed)
             if(!resumed) {
                 magnification.dismiss(SystemClock.uptimeMillis());magnified=null;inPlaceWindow=null;connection.magnifierActive=false

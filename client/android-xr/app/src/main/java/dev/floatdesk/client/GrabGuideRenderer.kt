@@ -199,7 +199,7 @@ internal class GrabGuideRenderer private constructor(
         groups.forEach { group ->
             group.root.dispose()
         }
-        (aimBeams+grabBeams+grabPoints).forEach { it.parent=null }
+        (aimBeams+grabBeams+grabPoints).forEach { it.parent=null; it.dispose() }
         aimBeams.clear(); grabBeams.clear(); grabPoints.clear()
         pointerPoint?.dispose(); pointerPoint = null
         groups.clear()

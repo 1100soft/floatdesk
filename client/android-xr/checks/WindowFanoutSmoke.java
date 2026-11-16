@@ -24,7 +24,7 @@ public final class WindowFanoutSmoke {
   }SystemClock.sleep(10);}throw new AssertionError("Wrong shared-window output kind="+kind+" "+last);
  }
  public static void main(String[] args)throws Exception{
-  Looper.prepareMainLooper();
+  if(Looper.myLooper()==null)Looper.prepareMainLooper();
   var connection=new DeskConnection(null);
   Class.forName("androidx.compose.runtime.MutableState").getMethod("setValue",Object.class).invoke(DeskConnection.class.getMethod("getWorkspaceInfo").invoke(connection),WorkspaceInfo.Companion.parse("{\"type\":\"status\",\"available\":0,\"availableMemoryBytes\":8000000000,\"cpuThreads\":8,\"recommendedPixels\":8000000,\"targetFps\":60,\"estimate\":\"test\",\"setupRequired\":false,\"screens\":[{\"name\":\"screen\",\"width\":1024,\"height\":768,\"x\":0,\"y\":0,\"managed\":false,\"role\":0,\"primary\":true,\"modes\":[]}],\"windows\":[{\"id\":42,\"x\":256,\"y\":192,\"width\":512,\"height\":384}]}"));
   var server=new ServerSocket(0,1,InetAddress.getByName("127.0.0.1"));var done=new AtomicBoolean();var error=new AtomicReference<Throwable>();var count=new AtomicInteger();

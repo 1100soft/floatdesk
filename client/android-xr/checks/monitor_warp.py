@@ -50,6 +50,8 @@ internal open class Entity {
     fun removeComponent(value: InteractableComponent) { if(component === value) component=null }
     private var opacity = 1f
     private var pose = Pose()
+    var disposeCount = 0
+    fun dispose() { disposeCount++;check(disposeCount==1);parent=null;enabled=false }
     private var scale = 1f
     fun getAlpha() = opacity
     fun setAlpha(value: Float) { opacity = value }
@@ -104,7 +106,7 @@ internal class SurfaceEntity(var shape: Shape): Entity() {
 stubs += """
 internal class CurvedMonitorInput(var mesh: MonitorMesh,val entity: Entity) {
     fun update(next:MonitorMesh) {mesh=next}
-    fun close() { entity.parent=null }
+    fun close() { entity.dispose() }
     companion object {
         var last: CurvedMonitorInput? = null
         var afterCreate: (() -> Unit)? = null
@@ -177,7 +179,12 @@ suspend fun main() {
     check(curvedVideo.shape !== curved && warp.outputSurface === curvedVideo.getSurface())
     warp.update(session,root,floatArrayOf(.3f,0f,0f),screen,false,true)
     check(input.shape is SurfaceEntity.Shape.Quad && warp.mesh == null && curvedVideo.parent == null && warp.outputSurface === output)
+    check(curvedVideo.disposeCount == 1 && input.disposeCount == 0)
+    warp.update(session,root,floatArrayOf(.3f,0f,0f),screen,true,false)
+    val secondCurved=session.scene.entities.last()
+    check(secondCurved !== curvedVideo && secondCurved.disposeCount==0)
     warp.close(); warp.close()
+    check(secondCurved.disposeCount == 1 && input.disposeCount == 0)
     check(input.enabled && input.getAlpha() == .8f && input.parent === root)
     session.scene.activitySpace.setPose(Pose(Vector3(.3f,-.5f,1.2f)))
     val events = mutableListOf<SpatialInputEvent>()
@@ -239,7 +246,7 @@ suspend fun main() {
     SystemClock.now+=1000L
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false,viewDirection=floatArrayOf(.2f,0f,-1f))
     warp.syncCurvedInput(session)
-    check(CurvedMonitorInput.last===patch && patch.entity.enabled && patch.entity.parent===warp.displayEntity)
+    check(CurvedMonitorInput.last!==patch && patch.entity.disposeCount==1 && CurvedMonitorInput.last!!.entity.enabled && CurvedMonitorInput.last!!.entity.parent===warp.displayEntity)
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,false,false)
     warp.syncCurvedInput(session)
     warp.close(); check(input.component == null && input.parent === root && input.enabled)

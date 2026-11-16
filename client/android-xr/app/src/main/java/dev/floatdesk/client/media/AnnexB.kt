@@ -26,22 +26,27 @@ internal fun annexBParameterSets(sps: ByteArray, pps: ByteArray): ByteArray {
 
 internal fun nalType(nal: ByteArray): Int = if (nal.isEmpty()) 0 else nal[0].toInt() and 0x1F
 
-internal fun splitAnnexB(data: ByteArray): List<ByteArray> {
-    val marks = ArrayList<Pair<Int, Int>>()
-    var i = 0
-    while (i + 3 <= data.size) {
-        val len = startCodeLen(data, i)
-        if (len > 0) {
-            marks += i to (i + len)
-            i += len
-        } else {
-            i += 1
+/** Visit payload ranges; consumers copy only headers they actually retain. */
+internal fun visitAnnexB(data: ByteArray, visit: (Int, Int) -> Unit) {
+    var payload = -1
+    var offset = 0
+    while (offset + 3 <= data.size) {
+        val length = startCodeLen(data, offset)
+        if (length == 0) {
+            offset++
+            continue
         }
+        if (payload >= 0) visit(payload, offset)
+        payload = offset + length
+        offset += length
     }
-    return marks.mapIndexed { index, mark ->
-        val end = if (index + 1 < marks.size) marks[index + 1].first else data.size
-        data.copyOfRange(mark.second, end)
-    }
+    if (payload >= 0) visit(payload, data.size)
+}
+
+internal fun splitAnnexB(data: ByteArray): List<ByteArray> {
+    val result = ArrayList<ByteArray>()
+    visitAnnexB(data) { start, end -> result.add(data.copyOfRange(start, end)) }
+    return result
 }
 
 private fun startCodeLen(data: ByteArray, i: Int): Int {

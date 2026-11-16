@@ -161,6 +161,22 @@ fun main() {
  val toEye=FloatArray(3){-shifted.pose.position[it]/radius}
  check((0..2).sumOf{(normal[it]*toEye[it]).toDouble()}>.99999)
  check(fixedMagnifierGeometry(shifted,Pose()).mesh===shifted.mesh)
+ // Flat panes do not re-aim when the head translates; explicit movement does re-aim.
+ val fixedFlat=fixedMagnifier(record,deskAnchor,DesktopWindow(42,0,0,1600,900),Pose(),1f,false)
+ val sideHead=Pose(floatArrayOf(.3f,.1f,0f))
+ val passiveFlat=fixedMagnifierGeometry(fixedFlat,sideHead)
+ check(passiveFlat.pose.rotation.contentEquals(fixedFlat.pose.rotation))
+ val movedFlat=fixedMagnifierGeometry(fixedFlat,sideHead,floatArrayOf(.2f,0f,-.8f))
+ val movedNormal=rotateVector(movedFlat.pose.rotation,0f,0f,1f)
+ val toHead=normalize3(FloatArray(3){sideHead.position[it]-movedFlat.pose.position[it]})
+ check((0..2).sumOf{(movedNormal[it]*toHead[it]).toDouble()}>.99999)
+ val floatFlat=magnifierGeometry(magnifiedWindow(42,1600,900,Pose(),.6f,.5f,1f,false),Pose(),1f,floatArrayOf(.3f,.1f,-.8f))
+ val floatingSide=magnifierGeometry(floatFlat,sideHead,1f)
+ check(floatingSide.pose.rotation.contentEquals(floatFlat.pose.rotation))
+ // Flat input triangles are exactly coplanar and cover the same content rectangle.
+ val flatPatches=interactionPatches(1.2f,.7f,null,6,4)
+ check(flatPatches.size==48 && flatPatches.all{abs(it.center[2])<.000001f && it.scale.all{v->v.isFinite() && v>0f}})
+ check(abs(flatPatches.minOf{it.center[0]}+.6f)<.00001f && abs(flatPatches.maxOf{it.center[1]}-.35f)<.00001f)
  // Native gaze/hand rays drag from any contact without a generated movement handle.
  val drag=MagnifierRayDrag()
  val origin=floatArrayOf(0f,0f,0f);val rayContact=floatArrayOf(0f,0f,-MagnifierDistanceM)

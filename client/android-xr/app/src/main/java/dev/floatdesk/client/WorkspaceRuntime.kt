@@ -1119,4 +1119,3 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
         controls()
     }
 }
-

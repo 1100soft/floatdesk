@@ -448,4 +448,3 @@ internal fun ControlPanel(
         Text(anchorLabel, color = Color.White)
     }
 }
-

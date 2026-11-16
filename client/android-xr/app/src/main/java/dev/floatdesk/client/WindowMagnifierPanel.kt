@@ -46,7 +46,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                 val pointer=SpatialPointerComponent.create(session);entity.addComponent(pointer);pointer.spatialPointerIcon=SpatialPointerIcon.NONE
                 val listener:(InputEvent)->Unit=listener@{event->
                     val active=resources.rendered?.takeIf{resources.visible} ?: return@listener
-                    val expected=if(active.spherical)resources.curved?.entity else entity
+                    val expected=resources.curved?.entity
                     val hit=event.hitInfoList.firstOrNull{it.inputEntity===expected}
                     val mesh=resources.mesh
                     val local=hit?.hitPosition?.let{eventMatrixHit(floatArrayOf(it.x,it.y,it.z),hit.transform.data,active.width,active.height,mesh,entity.getScale(Space.ACTIVITY),rayDirection=if(mesh!=null)floatArrayOf(event.direction.x,event.direction.y,event.direction.z)else null,rayOrigin=floatArrayOf(event.origin.x,event.origin.y,event.origin.z))}
@@ -88,7 +88,6 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                     if(!resources.dragged)resources.taps.update(side,event.action.toString(),uv)?.let{if(!resources.tapCommitted){resources.tapCommitted=true;tapNow.value(it)}}
                 }
                 resources.listener=listener
-                val input=NativeMonitorInput.create(session,listener);resources.input=input;entity.addComponent(input);resources.flatInputAttached=true
 
             }
             val entity=resources.entity!!;val p=target.pose;val q=p.rotation
@@ -99,7 +98,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
             resources.mesh=target.mesh;resources.rendered=target
             logMagnifierSubmission("start",target,entity)
             if(reusedSurface){val nextShape=shape(target);resources.retain(nextShape);entity.shape=nextShape}
-            syncMagnifierInput(session,resources,entity,target.mesh)
+            syncMagnifierInput(session,resources,entity,target.mesh,target.width,target.height)
             entity.parent=root;entity.setPose(targetPose)
             val moveTarget=entity
             if(resources.resize==null){
@@ -125,7 +124,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
             val generation=++resources.generation
             var shown=false
             resources.stream=connection.windowCaptures.attach(target.id,entity.getSurface(),{
-                if(resources.generation==generation){shown=true;resources.visible=true;entity.setEnabled(true);resources.curved?.entity?.setEnabled(resources.rendered?.mesh!=null);readyNow.value()}
+                if(resources.generation==generation){shown=true;resources.visible=true;entity.setEnabled(true);resources.curved?.entity?.setEnabled(true);readyNow.value()}
             },{message->if(resources.generation==generation){resources.visible=false;entity.setEnabled(false);resources.curved?.entity?.setEnabled(false);hoverNow.value("LEFT",null);hoverNow.value("RIGHT",null);errorNow.value(message)}})
             resources.stream?.update(.005f*target.units/(target.width+.01f*target.units),.005f*target.units/(target.height+.01f*target.units),pinNow.value,target.width/target.height)
             var prior=target
@@ -179,7 +178,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                 }
                 if(modeChanged || meshChanged || sizeChanged){
                     val nextShape=shape(next);resources.retain(nextShape);entity.shape=nextShape;geometryAt=android.os.SystemClock.uptimeMillis()
-                    syncMagnifierInput(session,resources,entity,mesh)
+                    syncMagnifierInput(session,resources,entity,mesh,next.width,next.height)
                     if(modeChanged)logMagnifierSubmission("mode",next,entity)
                     if(!resources.resizing){
                         resources.resize?.affordanceSize=FloatSize3d(next.width,next.height,.001f)
@@ -203,28 +202,16 @@ private fun logMagnifierSubmission(reason:String,window:MagnifiedWindow,entity:S
 
 /** Bind input to the geometry actually rendered, without reopening the capture lease. */
 @android.annotation.SuppressLint("RestrictedApi")
-private suspend fun syncMagnifierInput(session:Session,resources:MagnifierResources,entity:SurfaceEntity,mesh:MonitorMesh?) {
-    if(mesh==null) {
-        resources.curved?.entity?.setEnabled(false)
-        if(!resources.flatInputAttached) {
-            resources.input?.let { check(entity.addComponent(it)) }
-            resources.flatInputAttached=true
-        }
-        return
-    }
-    if(resources.flatInputAttached) {
-        resources.input?.let { entity.removeComponent(it) }
-        resources.flatInputAttached=false
-    }
+private suspend fun syncMagnifierInput(session:Session,resources:MagnifierResources,entity:SurfaceEntity,mesh:MonitorMesh?,width:Float,height:Float) {
     if(resources.curved==null) {
         val generation=resources.generation
-        val next=CurvedMonitorInput.create(session,entity,mesh,6,4,resources.listener!!)
+        val next=CurvedMonitorInput.create(session,entity,mesh,6,4,width,height,resources.listener!!)
         if(resources.entity!==entity || resources.generation!=generation) {
             next.close()
             throw kotlinx.coroutines.CancellationException("Magnifier input owner changed")
         }
         resources.curved=next
-    } else resources.curved!!.update(mesh)
+    } else resources.curved!!.updateGeometry(mesh,width,height)
     resources.curved!!.entity.let {
         it.parent=entity;it.setPose(Pose());it.setEnabled(resources.visible)
     }
@@ -234,7 +221,6 @@ private suspend fun syncMagnifierInput(session:Session,resources:MagnifierResour
 private class MagnifierResources:AutoCloseable{
     var entity:SurfaceEntity?=null;var stream:dev.floatdesk.client.net.WindowCapturePool.Lease?=null
     var curved:CurvedMonitorInput?=null;var mesh:MonitorMesh?=null;var listener:((InputEvent)->Unit)?=null
-    var input:InteractableComponent?=null;var flatInputAttached=false
     var rendered:MagnifiedWindow?=null;var pending:MagnifiedWindow?=null
     var resize:ResizableComponent?=null;var resizeTarget:Entity?=null;var resizing=false;var resizeStart:MagnifiedWindow?=null;var resizeStartWidth=0f
     val drag=MagnifierRayDrag();var dragSide:String?=null;var dragHandSide:String?=null;var moving=false;var dragged=false;var tapCommitted=false

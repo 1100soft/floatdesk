@@ -231,3 +231,9 @@ Known checkpoint limitation: aiming and grab-preview beams can remain invisible 
 - Correct magnifier projection around the current binocular eye midpoint at its own fixed radius; share desktop view fitting, track the gaze projection centre, add native constrained grab movement, replace textual status cues with visuals and tighten the angular gaze-exit margin.
 
 - Separate magnifier grab/resize from tap-to-pin; follow head-relative placement and head-driven curvature, reset resize per activation, and draw the pin outline outside content. Sharpen already-large fully visible windows in the existing compositor instead of opening a magnifier. Remove ordinary head-motion mesh replacement after further native crash reports.
+
+## Flat magnifier interaction and orientation
+
+The user confirmed the mesh-only renderer corrected transition geometry, then reported loss of flat tap/grab input. The old flat path still attached an InteractableComponent directly to the native surface. Both modes now use the same independently owned transparent triangle input model; the existing curved grid/affine placement implementation accepts either spherical projection or an unprojected planar rectangle. One model is updated across mode and size changes, and both modes route hit coordinates through that model. Mesh-only video rendering is preserved.
+
+Flat fixed panes retain the saved desktop-relative orientation as the viewer translates. Only an explicit proposed position from manual movement recomputes viewer-facing orientation. Floating panes retain their head-relative orientation and continue following the head, with manual movement updating that relative orientation. Spherical facing/projection remains unchanged.

@@ -27,21 +27,19 @@ class SurfaceEntity:Entity(){
  fun addComponent(input:Input):Boolean {check(components.add(input));added++;return true}
  fun removeComponent(input:Input){check(components.remove(input));removed++}
 }
-class CurvedMonitorInput(var mesh:MonitorMesh){
+class CurvedMonitorInput(var mesh:MonitorMesh?,var width:Float,var height:Float){
  val entity=Entity();var closed=false
- fun update(next:MonitorMesh){check(!closed);mesh=next}
+ fun updateGeometry(next:MonitorMesh?,width:Float,height:Float){check(!closed);mesh=next;this.width=width;this.height=height}
  fun close(){check(!closed);closed=true;entity.enabled=false}
  companion object{
   var creates=0;var last:CurvedMonitorInput?=null;var afterCreate:(()->Unit)?=null
-  suspend fun create(session:Session,parent:SurfaceEntity,mesh:MonitorMesh,columns:Int,rows:Int,listener:()->Unit):CurvedMonitorInput{
-   creates++;return CurvedMonitorInput(mesh).also{last=it;afterCreate?.invoke()}
+  suspend fun create(session:Session,parent:SurfaceEntity,mesh:MonitorMesh?,columns:Int,rows:Int,width:Float,height:Float,listener:()->Unit):CurvedMonitorInput{
+   creates++;return CurvedMonitorInput(mesh,width,height).also{last=it;afterCreate?.invoke()}
   }
  }
 }
 class MagnifierResources{
  var curved:CurvedMonitorInput?=null
- var flatInputAttached=true
- var input:Input?=Input()
  var generation=0
  var entity:SurfaceEntity?=null
  var visible=true
@@ -50,26 +48,30 @@ class MagnifierResources{
 ''' + helper + r'''
 suspend fun main(){
  val session=Session();val surface=SurfaceEntity();val resources=MagnifierResources()
- resources.entity=surface;surface.addComponent(resources.input!!)
+ resources.entity=surface
  repeat(50){cycle->
-  syncMagnifierInput(session,resources,surface,null)
-  check(resources.flatInputAttached && surface.components.size==1)
-  check(resources.curved?.entity?.enabled!=true)
+  syncMagnifierInput(session,resources,surface,null,2f,1f)
+  check(surface.components.isEmpty()) // The CustomMesh itself is never the input target.
+  check(resources.curved!!.entity.enabled && resources.curved!!.mesh==null)
+  check(resources.curved!!.width==2f && resources.curved!!.height==1f)
   val mesh=MonitorMesh(cycle)
-  syncMagnifierInput(session,resources,surface,mesh)
-  check(!resources.flatInputAttached && surface.components.isEmpty())
+  syncMagnifierInput(session,resources,surface,mesh,2f,1f)
+  check(surface.components.isEmpty())
   check(resources.curved!!.mesh===mesh && resources.curved!!.entity.enabled)
   check(resources.curved!!.entity.parent===surface)
  }
  check(CurvedMonitorInput.creates==1)
  resources.visible=false
- syncMagnifierInput(session,resources,surface,MonitorMesh(100))
+ syncMagnifierInput(session,resources,surface,MonitorMesh(100),2f,1f)
  check(!resources.curved!!.entity.enabled)
- syncMagnifierInput(session,resources,surface,null)
- check(resources.flatInputAttached && surface.components.size==1)
- val late=MagnifierResources();val lateSurface=SurfaceEntity();late.entity=lateSurface;lateSurface.addComponent(late.input!!)
+ syncMagnifierInput(session,resources,surface,null,3f,2f)
+ check(!resources.curved!!.entity.enabled && resources.curved!!.width==3f)
+ resources.visible=true
+ syncMagnifierInput(session,resources,surface,null,3f,2f)
+ check(resources.curved!!.entity.enabled)
+ val late=MagnifierResources();val lateSurface=SurfaceEntity();late.entity=lateSurface
  CurvedMonitorInput.afterCreate={late.generation++}
- try{syncMagnifierInput(session,late,lateSurface,MonitorMesh(101));error("stale completion accepted")}
+ try{syncMagnifierInput(session,late,lateSurface,MonitorMesh(101),2f,1f);error("stale completion accepted")}
  catch(expected:java.util.concurrent.CancellationException){}
  check(CurvedMonitorInput.last!!.closed && late.curved==null)
  println("PASS repeated flat/curved input handoff, stable collider ownership, hidden state and cancelled creation")

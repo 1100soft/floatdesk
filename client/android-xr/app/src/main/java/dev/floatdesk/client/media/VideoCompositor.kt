@@ -3,6 +3,7 @@ package dev.floatdesk.client.media
 import dev.floatdesk.client.ViewProjection
 import android.graphics.SurfaceTexture
 import android.opengl.EGL14
+import android.opengl.EGLExt
 import android.opengl.GLES11Ext
 import android.opengl.GLES20
 import android.os.Handler
@@ -13,7 +14,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
+import android.view.Choreographer
 
 /** Normalized top-left video coordinates. At most 256 colored border segments and two contacts. */
 internal data class VideoAim @JvmOverloads constructor(
@@ -21,15 +22,37 @@ internal data class VideoAim @JvmOverloads constructor(
     val thickness: Float = 2f, val opacity: Float = .18f, val colors: FloatArray = floatArrayOf(),
 )
 
+internal data class VideoMirror(val surface:Surface,val padX:Float=0f,val padY:Float=0f,val pinned:Boolean=false,val aspect:Float=0f,val before:((Long)->Unit)?=null,val presented:(()->Unit)?=null)
+
 /** One GPU pass keeps aiming decorations and live video in the same compositor layer. */
 internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     private val baseWidth=width
     private val baseHeight=height
+    @Volatile var sourceAspect=width.toFloat()/height
     private val thread=HandlerThread("floatdesk-video-gl").also { it.start() }
     private val handler=Handler(thread.looper)
     private val ready=CountDownLatch(1)
-    private val redrawPosted=AtomicBoolean(false)
-    private val presentationPosted=AtomicBoolean(false)
+    private val uniformLocations=mutableMapOf<Int,MutableMap<String,Int>>()
+    private val attributeLocations=mutableMapOf<Int,MutableMap<String,Int>>()
+    private fun uniform(program:Int,name:String)=uniformLocations.getOrPut(program){mutableMapOf()}.getOrPut(name){GLES20.glGetUniformLocation(program,name)}
+    private fun attribute(program:Int,name:String)=attributeLocations.getOrPut(program){mutableMapOf()}.getOrPut(name){GLES20.glGetAttribLocation(program,name)}
+    // Bounded decoration geometry is rebuilt into reusable primitive storage, without boxing.
+    private val inkValues=FloatArray((256+2*24)*6*6)
+    private val inkBuffer=ByteBuffer.allocateDirect(inkValues.size*4).order(ByteOrder.nativeOrder()).asFloatBuffer()
+    // Latch all available sources first, then submit once at the next display frame.
+    private val afterDraw = linkedSetOf<() -> Unit>() // GL-thread owned.
+    private val redraw = CoalescedFrame(
+        schedule = { render -> handler.post {
+            if (!closed) Choreographer.getInstance().postFrameCallback { render() }
+        } },
+        render = { if (!closed) guard {
+            draw()
+            val callbacks = afterDraw.toList()
+            afterDraw.clear()
+            callbacks.forEach { it() }
+        } },
+    )
+    private fun requestDraw() { if (!closed) redraw.request() }
     @Volatile private var closed=false
     @Volatile private var failure: Throwable?=null
     @Volatile private var aim=VideoAim()
@@ -50,6 +73,61 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     private lateinit var viewTexture:SurfaceTexture
     lateinit var viewInput:Surface
         private set
+    private var windowTextureId=0
+    private lateinit var windowTexture:SurfaceTexture
+    private lateinit var windowInputSurface:Surface
+    private val windowTransform=FloatArray(16)
+    private val windowEpoch=java.util.concurrent.atomic.AtomicLong()
+    private val windowFrames=java.util.concurrent.ConcurrentSkipListMap<Long,Pair<Long,dev.floatdesk.client.FocusRect>>()
+    private val windowMasks=java.util.concurrent.ConcurrentSkipListMap<Long,FloatArray>()
+    private var windowMask=floatArrayOf()
+    @Volatile private var windowRect:dev.floatdesk.client.FocusRect?=null
+    @Volatile private var windowRequested=false
+    fun hasWindowDetail()=windowRequested
+    @Synchronized fun windowDestination(onReady:()->Unit):dev.floatdesk.client.net.WindowDestination {
+        check(!closed);windowRequested=true
+        val epoch=windowEpoch.incrementAndGet();val latch=CountDownLatch(1);var error:Throwable?=null
+        handler.post{try{
+            windowRect=null;windowFrames.clear()
+            if(windowTextureId==0){
+                check(EGL14.eglMakeCurrent(display,pbuffer,pbuffer,context))
+                val ids=IntArray(1);GLES20.glGenTextures(1,ids,0);windowTextureId=ids[0]
+                GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,windowTextureId)
+                GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,GLES20.GL_TEXTURE_MIN_FILTER,GLES20.GL_LINEAR)
+                GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,GLES20.GL_TEXTURE_MAG_FILTER,GLES20.GL_LINEAR)
+                GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,GLES20.GL_TEXTURE_WRAP_S,GLES20.GL_CLAMP_TO_EDGE)
+                GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,GLES20.GL_TEXTURE_WRAP_T,GLES20.GL_CLAMP_TO_EDGE)
+                windowTexture=SurfaceTexture(windowTextureId).also{it.setDefaultBufferSize(2048,1536)};windowInputSurface=Surface(windowTexture)
+            }
+            var first=true
+            windowTexture.setOnFrameAvailableListener({if(!closed)guard{
+                windowTexture.updateTexImage();val pts=windowTexture.timestamp/1000
+                val frame=windowFrames[pts];windowFrames.headMap(pts,false).clear()
+                if(frame?.first==windowEpoch.get()){
+                    windowTexture.getTransformMatrix(windowTransform);windowRect=frame.second;windowMask=windowMasks[pts] ?: floatArrayOf();windowMasks.headMap(pts,false).clear();requestDraw()
+                    if(first){first=false;afterDraw.add { if(windowEpoch.get()==epoch)onReady() }}
+                }else{windowRect=null;requestDraw()}
+            }},handler)
+        }catch(e:Throwable){error=e}finally{
+            val active=if(window!=EGL14.EGL_NO_SURFACE)window else pbuffer
+            EGL14.eglMakeCurrent(display,active,active,context);latch.countDown()
+        }}
+        if(!latch.await(5,TimeUnit.SECONDS)){windowRequested=false;throw IllegalStateException("Window compositor initialization timed out")}
+        error?.let{windowRequested=false;throw IllegalStateException("Window compositor unavailable",it)}
+        return dev.floatdesk.client.net.WindowDestination(windowInputSurface,{pts,rect->
+            if(windowEpoch.get()==epoch){windowFrames[pts]=epoch to rect;while(windowFrames.size>64)windowFrames.pollFirstEntry()}
+        },{if(windowEpoch.compareAndSet(epoch,epoch+1)){windowRequested=false;handler.post{windowRect=null;windowFrames.clear();requestDraw()}}},{w,h->windowTexture.setDefaultBufferSize(w,h)},{pts,mask->windowMasks[pts]=mask;while(windowMasks.size>64)windowMasks.pollFirstEntry()})
+    }
+    private data class Mirror(val value:VideoMirror,val egl:android.opengl.EGLSurface)
+    private var mirrors=emptyList<Mirror>()
+    private var activeMirror:VideoMirror?=null
+    fun mirrors(values:List<VideoMirror>){if(!closed)handler.post{if(!closed)guard{
+        check(EGL14.eglMakeCurrent(display,pbuffer,pbuffer,context))
+        val previous=mirrors
+        mirrors=values.filter{it.surface.isValid}.map{value->Mirror(value,previous.firstOrNull{it.value.surface===value.surface}?.egl ?: EGL14.eglCreateWindowSurface(display,config,value.surface,intArrayOf(EGL14.EGL_NONE),0))}
+        previous.filter{old->mirrors.none{it.egl===old.egl}}.forEach{EGL14.eglDestroySurface(display,it.egl)}
+        requestDraw()
+    }}}
     private val viewTransform=FloatArray(16)
     private val viewFrames=java.util.concurrent.ConcurrentSkipListMap<Long,dev.floatdesk.client.net.ViewFrame>()
     private var viewTimestamp=Long.MIN_VALUE
@@ -71,14 +149,17 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     private var uploadedProjection:ViewProjection?=null
     private var lookupSize=0 to 0
     @Volatile private var viewProjection:ViewProjection?=null
-    private val projectionPosted=AtomicBoolean(false)
     private var program=0
     private var inkProgram=0
     @Volatile var outputLimit:Int=4096
         private set
     private var hasFrame=false
     @Volatile private var sharpening=0f
-    fun sharpen(value:Float){val next=value.takeIf{it.isFinite()}?.coerceIn(0f,1.5f) ?: 0f;if(sharpening==next)return;sharpening=next;if(!closed)handler.post{if(!closed)guard{draw()}}}
+    fun sharpen(value:Float){val next=value.takeIf{it.isFinite()}?.coerceIn(0f,1.5f) ?: 0f;if(sharpening==next)return;sharpening=next;if(!closed)handler.post{if(!closed)guard{requestDraw()}}}
+    @Volatile private var outputPresented:(()->Unit)?=null
+    fun onOutputPresented(callback:()->Unit){outputPresented=callback}
+    private var basePresented:(()->Unit)?=null
+    fun onBasePresented(callback:()->Unit){if(!closed)handler.post{basePresented=callback}}
     private var baseFrames=0L
     private var swaps=0L
     private var submitNs=0L
@@ -118,7 +199,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                     if(!closed) guard {
                         texture.updateTexImage(); texture.getTransformMatrix(transform); hasFrame=true;baseFrames++
                         if(handoff){handoff=false;viewCurrent=null;viewLatched=false}
-                        draw()
+                        basePresented?.let { afterDraw.add(it) };requestDraw()
                     }
                 },handler)
                 val viewIds=IntArray(1);GLES20.glGenTextures(1,viewIds,0);viewTextureId=viewIds[0]
@@ -155,9 +236,9 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             viewTexture.getTransformMatrix(viewTransform)
             retainAtlas(next)
             viewCurrent=next;viewLatched=true;handoff=false
-            detailUploads++;viewPresented?.invoke()
+            detailUploads++;viewPresented?.let { afterDraw.add(it) }
         } else rejectedViews++ // Keep the last independently cached pixels AND their mapping.
-        draw()
+        requestDraw()
     }
 
     /** One bounded (at most 64 MiB) GPU atlas keeps valid pixels independent of decoder/SurfaceTexture lifetime. */
@@ -204,7 +285,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                     window=EGL14.eglCreateWindowSurface(display,config,surface,intArrayOf(EGL14.EGL_NONE),0)
                     check(window!=EGL14.EGL_NO_SURFACE) { "could not bind video output" }
                     check(EGL14.eglMakeCurrent(display,window,window,context))
-                    draw()
+                    requestDraw()
                 }
             }
         }
@@ -237,25 +318,20 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             before.segments.contentEquals(value.segments) && before.contacts.contentEquals(value.contacts) &&
             before.colors.contentEquals(value.colors)) return
         aim=value
-        if(!closed && redrawPosted.compareAndSet(false,true)) handler.post {
-            redrawPosted.set(false)
-            if(!closed && System.nanoTime()-lastDraw>12_000_000L) guard { draw() }
-        }
+        requestDraw()
     }
 
     fun presentation(value:ScreenPresentation) {
         val before=presentation
         if(before.spacing==value.spacing && before.rects.contentEquals(value.rects)) return
         presentation=value
-        if(!closed && presentationPosted.compareAndSet(false,true)) handler.post {presentationPosted.set(false);if(!closed) guard {draw()}}
+        requestDraw()
     }
 
     fun projection(value:ViewProjection?) {
         if(viewProjection===value)return
         viewProjection=value
-        if(!closed && projectionPosted.compareAndSet(false,true)) handler.post {
-            projectionPosted.set(false);if(!closed) guard {draw()}
-        }
+        requestDraw()
     }
 
     private fun guard(block: () -> Unit) {
@@ -263,6 +339,27 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     }
 
     private fun draw() {
+        val primaryWindow=window;val primaryTarget=target
+        try{
+            if(primaryWindow!=EGL14.EGL_NO_SURFACE && primaryTarget?.isValid==true){
+                check(EGL14.eglMakeCurrent(display,window,window,context));activeMirror=null;drawSurface()
+            }
+            if(hasFrame)for(mirror in mirrors){
+                if(!mirror.value.surface.isValid || mirror.egl==EGL14.EGL_NO_SURFACE)continue
+                window=mirror.egl;target=mirror.value.surface;activeMirror=mirror.value
+                check(EGL14.eglMakeCurrent(display,window,window,context))
+                val pts=texture.timestamp/1000
+                mirror.value.before?.invoke(pts)
+                EGLExt.eglPresentationTimeANDROID(display,window,pts*1000)
+                drawSurface();mirror.value.presented?.invoke()
+            }
+        }finally{
+            window=primaryWindow;target=primaryTarget;activeMirror=null
+            val restore=if(primaryWindow!=EGL14.EGL_NO_SURFACE && primaryTarget?.isValid==true)primaryWindow else pbuffer
+            EGL14.eglMakeCurrent(display,restore,restore,context)
+        }
+    }
+    private fun drawSurface() {
         if(window==EGL14.EGL_NO_SURFACE || target?.isValid!=true) return
         val drawStarted=System.nanoTime()
         val w=IntArray(1); val h=IntArray(1)
@@ -271,22 +368,22 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         val view=viewCurrent?.takeIf{viewLatched && (diagnostics.enabled || handoff)}
         if(view==null && !hasFrame)return
         GLES20.glViewport(0,0,w[0],h[0]); GLES20.glUseProgram(program)
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(program,"viewGutter"),view?.gutterPixels?.toFloat() ?: 0f)
-        GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"viewMode"),if(view?.tiles?.isNotEmpty()==true)2 else if(view!=null)1 else 0)
+        GLES20.glUniform1f(uniform(program,"viewGutter"),view?.gutterPixels?.toFloat() ?: 0f)
+        GLES20.glUniform1i(uniform(program,"viewMode"),if(view?.tiles?.isNotEmpty()==true)2 else if(view!=null)1 else 0)
         if(view!=null){
-            GLES20.glUniform4f(GLES20.glGetUniformLocation(program,"viewOuter"),view.outer.left,view.outer.top,view.outer.right,view.outer.bottom)
-            GLES20.glUniform4f(GLES20.glGetUniformLocation(program,"viewInner"),view.inner.left,view.inner.top,view.inner.right,view.inner.bottom)
+            GLES20.glUniform4f(uniform(program,"viewOuter"),view.outer.left,view.outer.top,view.outer.right,view.outer.bottom)
+            GLES20.glUniform4f(uniform(program,"viewInner"),view.inner.left,view.inner.top,view.inner.right,view.inner.bottom)
 
         }
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0); GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,if(view!=null)viewTextureId else textureId)
-        GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"video"),0)
-        GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"retainedVideo"),2)
-        GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"useRetained"),if(view!=null)1 else 0)
+        GLES20.glUniform1i(uniform(program,"video"),0)
+        GLES20.glUniform1i(uniform(program,"retainedVideo"),2)
+        GLES20.glUniform1i(uniform(program,"useRetained"),if(view!=null)1 else 0)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE2);GLES20.glBindTexture(GLES20.GL_TEXTURE_2D,retainedTexture)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(program,"textureMatrix"),1,false,if(view!=null)viewTransform else transform,0)
+        GLES20.glUniformMatrix4fv(uniform(program,"textureMatrix"),1,false,if(view!=null)viewTransform else transform,0)
         // Active sampler types must use distinct texture units even when the branch is off.
-        GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"projectionMap"),1)
+        GLES20.glUniform1i(uniform(program,"projectionMap"),1)
         if(lookupTexture==0) {
             GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
             val id=IntArray(1);GLES20.glGenTextures(1,id,0);lookupTexture=id[0]
@@ -296,10 +393,24 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D,0,GLES20.GL_RGBA,1,1,0,GLES20.GL_RGBA,GLES20.GL_UNSIGNED_BYTE,ByteBuffer.allocateDirect(4))
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         }
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(program,"sharpenStrength"),sharpening)
-        GLES20.glUniform2f(GLES20.glGetUniformLocation(program,"videoTexel"),if(view!=null)1f/view.atlasWidth else 1f/baseWidth,if(view!=null)1f/view.atlasHeight else 1f/baseHeight)
+        val mirror=activeMirror
+        GLES20.glUniform2f(uniform(program,"framePadding"),mirror?.padX ?: 0f,mirror?.padY ?: 0f)
+        GLES20.glUniform1i(uniform(program,"framePinned"),if(mirror?.pinned==true)1 else 0)
+        GLES20.glUniform1f(uniform(program,"paneAspect"),mirror?.aspect ?: 0f)
+        GLES20.glUniform1f(uniform(program,"sourceAspect"),sourceAspect)
+        GLES20.glUniform1i(uniform(program,"windowMaskCount"),minOf(16,windowMask.size/4))
+        if(windowMask.isNotEmpty())GLES20.glUniform4fv(uniform(program,"windowMasks[0]"),minOf(16,windowMask.size/4),windowMask,0)
+        val focusWindow=windowRect
+        GLES20.glUniform1i(uniform(program,"windowEnabled"),if(focusWindow==null)0 else 1)
+        GLES20.glUniform4f(uniform(program,"windowRect"),focusWindow?.left ?: 0f,focusWindow?.top ?: 0f,focusWindow?.right ?: 1f,focusWindow?.bottom ?: 1f)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE3);GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,windowTextureId)
+        GLES20.glUniform1i(uniform(program,"windowLayer"),3)
+        GLES20.glUniformMatrix4fv(uniform(program,"windowMatrix"),1,false,windowTransform,0)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glUniform1f(uniform(program,"sharpenStrength"),sharpening)
+        GLES20.glUniform2f(uniform(program,"videoTexel"),if(view!=null)1f/view.atlasWidth else 1f/baseWidth,if(view!=null)1f/view.atlasHeight else 1f/baseHeight)
         val projection=viewProjection
-        GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"projectionEnabled"),if(projection==null) 0 else 1)
+        GLES20.glUniform1i(uniform(program,"projectionEnabled"),if(projection==null) 0 else 1)
         if(projection!=null) {
             GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
             if(lookupTexture==0) {val id=IntArray(1);GLES20.glGenTextures(1,id,0);lookupTexture=id[0]}
@@ -317,8 +428,8 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                 } else GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D,0,0,0,size.first,size.second,GLES20.GL_RGBA,GLES20.GL_UNSIGNED_BYTE,bytes)
                 uploadedProjection=projection
             }
-            GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"projectionMap"),1)
-            GLES20.glUniform2f(GLES20.glGetUniformLocation(program,"projectionGrid"),projection.columns.toFloat(),projection.rows.toFloat())
+            GLES20.glUniform1i(uniform(program,"projectionMap"),1)
+            GLES20.glUniform2f(uniform(program,"projectionGrid"),projection.columns.toFloat(),projection.rows.toFloat())
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         }
         val mapping=presentation
@@ -329,17 +440,17 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             val bottom=kotlin.math.floor((1f-bounds.bottom)*h[0]).toInt().coerceIn(0,h[0]);val top=kotlin.math.ceil((1f-bounds.top)*h[0]).toInt().coerceIn(bottom,h[0])
             GLES20.glEnable(GLES20.GL_SCISSOR_TEST);GLES20.glScissor(left,bottom,right-left,top-bottom)
         }
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(program,"contentScale"),1f-mapping.spacing.coerceIn(0f,.15f))
-        val position=GLES20.glGetAttribLocation(program,"position")
+        GLES20.glUniform1f(uniform(program,"contentScale"),1f-mapping.spacing.coerceIn(0f,.15f))
+        val position=attribute(program,"position")
         GLES20.glEnableVertexAttribArray(position); GLES20.glVertexAttribPointer(position,2,GLES20.GL_FLOAT,false,0,vertices)
         // Draw one scissored region at a time: each fragment needs one lookup, regardless
         // of region count. Lower-priority coverage goes first so native detail wins.
         val tileCount=view?.tiles?.size?.div(8) ?: 0
         for(tile in (if(tileCount>0)tileCount-1 else 0) downTo 0){
-            GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"viewTileCount"),if(tileCount>0)1 else 0)
+            GLES20.glUniform1i(uniform(program,"viewTileCount"),if(tileCount>0)1 else 0)
             if(view!=null && tileCount>0){
-                GLES20.glUniform4fv(GLES20.glGetUniformLocation(program,"viewSources[0]"),1,view.tiles,tile*8)
-                GLES20.glUniform4fv(GLES20.glGetUniformLocation(program,"viewDestinations[0]"),1,view.tiles,tile*8+4)
+                GLES20.glUniform4fv(uniform(program,"viewSources[0]"),1,view.tiles,tile*8)
+                GLES20.glUniform4fv(uniform(program,"viewDestinations[0]"),1,view.tiles,tile*8+4)
                 val n=tile*8
                 val visible=dev.floatdesk.client.FocusRect(view.tiles[n],view.tiles[n+1],view.tiles[n+2],view.tiles[n+3]).intersect(view.outer) ?: continue
                 val bounds=mapping.displayBounds(visible) ?: continue
@@ -349,15 +460,15 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             }
             for(start in 0 until mapping.rects.size/4 step 6) {
                 val count=minOf(6,mapping.rects.size/4-start)
-                GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"screenCount"),count)
-                GLES20.glUniform4fv(GLES20.glGetUniformLocation(program,"screenRects[0]"),count,mapping.rects,start*4)
+                GLES20.glUniform1i(uniform(program,"screenCount"),count)
+                GLES20.glUniform4fv(uniform(program,"screenRects[0]"),count,mapping.rects,start*4)
                 GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP,0,4)
             }
         }
         GLES20.glDisable(GLES20.GL_SCISSOR_TEST)
         drawInk(w[0],h[0])
         check(EGL14.eglSwapBuffers(display,window)) { "video swap failed" }
-        lastDraw=System.nanoTime();submitNs+=lastDraw-drawStarted;swaps++
+        lastDraw=System.nanoTime();submitNs+=lastDraw-drawStarted;swaps++;outputPresented?.invoke()
     }
 
     private fun samplePresentation() {
@@ -373,10 +484,10 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     private fun drawInk(width: Int,height: Int) {
         val overlay=aim
         if(overlay.segments.isEmpty() && overlay.contacts.isEmpty()) return
-        val values=ArrayList<Float>()
+        val values=inkValues;var valueCount=0
         fun vertex(x: Float,y: Float,alpha: Float,red: Float,green: Float,blue: Float) {
-            values.add(x/width*2f-1f); values.add(1f-y/height*2f); values.add(alpha)
-            values.add(red); values.add(green); values.add(blue)
+            values[valueCount++]=x/width*2f-1f;values[valueCount++]=1f-y/height*2f;values[valueCount++]=alpha
+            values[valueCount++]=red;values[valueCount++]=green;values[valueCount++]=blue
         }
         fun line(ax: Float,ay: Float,bx: Float,by: Float,thickness: Float,alpha: Float,red: Float,green: Float,blue: Float) {
             val dx=bx-ax; val dy=by-ay; val length=kotlin.math.hypot(dx,dy)
@@ -401,19 +512,18 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                     x+kotlin.math.cos(b).toFloat()*5f,y+kotlin.math.sin(b).toFloat()*5f,2f,.4f,.4236f,.9777f,1f)
             }
         }
-        if(values.isEmpty()) return
-        val buffer=ByteBuffer.allocateDirect(values.size*4).order(ByteOrder.nativeOrder()).asFloatBuffer()
-            .put(values.toFloatArray()).also { it.position(0) }
+        if(valueCount==0) return
+        val buffer=inkBuffer.apply{clear();put(values,0,valueCount);flip()}
         GLES20.glUseProgram(inkProgram)
         GLES20.glEnable(GLES20.GL_BLEND); GLES20.glBlendFuncSeparate(GLES20.GL_SRC_ALPHA,GLES20.GL_ONE_MINUS_SRC_ALPHA,GLES20.GL_ONE,GLES20.GL_ONE_MINUS_SRC_ALPHA)
-        val p=GLES20.glGetAttribLocation(inkProgram,"position")
-        val a=GLES20.glGetAttribLocation(inkProgram,"alpha")
-        val c=GLES20.glGetAttribLocation(inkProgram,"color")
+        val p=attribute(inkProgram,"position")
+        val a=attribute(inkProgram,"alpha")
+        val c=attribute(inkProgram,"color")
         GLES20.glEnableVertexAttribArray(p); GLES20.glEnableVertexAttribArray(a); GLES20.glEnableVertexAttribArray(c)
         buffer.position(0); GLES20.glVertexAttribPointer(p,2,GLES20.GL_FLOAT,false,24,buffer)
         buffer.position(2); GLES20.glVertexAttribPointer(a,1,GLES20.GL_FLOAT,false,24,buffer)
         buffer.position(3); GLES20.glVertexAttribPointer(c,3,GLES20.GL_FLOAT,false,24,buffer)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES,0,values.size/6)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES,0,valueCount/6)
         GLES20.glDisableVertexAttribArray(p); GLES20.glDisableVertexAttribArray(a); GLES20.glDisableVertexAttribArray(c); GLES20.glDisable(GLES20.GL_BLEND)
     }
 
@@ -434,6 +544,9 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     override fun close() {
         closed=true
         handler.post {
+            mirrors.forEach{EGL14.eglDestroySurface(display,it.egl)};mirrors=emptyList()
+            if(::windowInputSurface.isInitialized)windowInputSurface.release()
+            if(::windowTexture.isInitialized)windowTexture.release()
             if(::viewInput.isInitialized)viewInput.release()
             if(::viewTexture.isInitialized)viewTexture.release()
             if(::input.isInitialized) input.release()
@@ -467,6 +580,12 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             precision highp float;
             uniform samplerExternalOES video;
             uniform mat4 textureMatrix;
+            uniform samplerExternalOES windowLayer;
+            uniform mat4 windowMatrix;
+            uniform vec4 windowRect;
+            uniform int windowEnabled;
+            uniform int windowMaskCount;
+            uniform vec4 windowMasks[16];
             uniform int screenCount;
             uniform vec4 screenRects[6];
             uniform float contentScale;
@@ -504,8 +623,20 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             uniform vec4 viewOuter;
             uniform vec4 viewInner;
             varying vec2 uv;
+            uniform vec2 framePadding;
+            uniform int framePinned;
+            uniform float paneAspect;
+            uniform float sourceAspect;
             void main() {
-                vec2 point=vec2(uv.x,1.0-uv.y);
+                vec2 point=(vec2(uv.x,1.0-uv.y)-framePadding)/(vec2(1.0)-2.0*framePadding);
+                if(any(lessThan(point,vec2(0.0))) || any(greaterThan(point,vec2(1.0)))){
+                    gl_FragColor=framePinned==1?vec4(1.0,0.65,0.02,1.0):vec4(0.015,0.02,0.03,1.0);return;
+                }
+                if(paneAspect>0.0){
+                    vec2 fit=vec2(min(1.0,sourceAspect/paneAspect),min(1.0,paneAspect/sourceAspect));
+                    point=(point-0.5)/fit+0.5;
+                    if(any(lessThan(point,vec2(0.0))) || any(greaterThan(point,vec2(1.0)))){gl_FragColor=vec4(0.015,0.02,0.03,1.0);return;}
+                }
                 bool found=false;
                 gl_FragColor=vec4(0.0);
                 for(int i=0;i<6;i++) {
@@ -522,6 +653,13 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                                 float weight=edge.x*edge.x*edge.y*edge.y;
                                 vec2 limit=0.04*(rect.zw-rect.xy)*contentScale;
                                 source=center+(point+clamp(mapped-point,-limit,limit)*weight-center)/contentScale;
+                            }
+                            bool windowHidden=false;
+                            for(int m=0;m<16;m++){if(m<windowMaskCount){vec4 c=windowMasks[m];if(source.x>=c.x && source.x<=c.z && source.y>=c.y && source.y<=c.w)windowHidden=true;}}
+                            if(windowEnabled==1 && !windowHidden && source.x>=windowRect.x && source.x<=windowRect.z && source.y>=windowRect.y && source.y<=windowRect.w){
+                                vec2 local=(source-windowRect.xy)/(windowRect.zw-windowRect.xy);
+                                gl_FragColor=vec4(texture2D(windowLayer,(windowMatrix*vec4(local.x,1.0-local.y,0.0,1.0)).xy).rgb,1.0);
+                                found=true;break;
                             }
                             if(viewMode==2){
                                 if(source.x<viewOuter.x || source.x>viewOuter.z || source.y<viewOuter.y || source.y>viewOuter.w)discard;

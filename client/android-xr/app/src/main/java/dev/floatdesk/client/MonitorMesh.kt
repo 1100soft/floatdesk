@@ -3,10 +3,13 @@ package dev.floatdesk.client
 import kotlin.math.sqrt
 
 /** Shared inner bounds for Focus and its surrounding HUD. */
-internal fun focusViewHalfAngles(horizontal:Float,vertical:Float):Pair<Float,Float> {
+internal fun viewHalfAngles(horizontal:Float,vertical:Float):Pair<Float,Float>{
     fun inset(value:Float,fallback:Double)=((value.takeIf{it.isFinite() && it>.05f} ?: Math.toRadians(fallback).toFloat())*.85f).coerceAtMost(1.2f)
-    return minOf(inset(horizontal,35.0),Math.toRadians(18.0).toFloat()) to
-        minOf(inset(vertical,30.0),Math.toRadians(12.0).toFloat())
+    return inset(horizontal,35.0) to inset(vertical,30.0)
+}
+internal fun focusViewHalfAngles(horizontal:Float,vertical:Float):Pair<Float,Float> {
+    val view=viewHalfAngles(horizontal,vertical)
+    return minOf(view.first,Math.toRadians(18.0).toFloat()) to minOf(view.second,Math.toRadians(12.0).toFloat())
 }
 
 /** Desk poses and image dimensions share units; do not send an already-local eye through another scene space. */
@@ -379,7 +382,10 @@ internal class ViewProjection(val columns:Int,val rows:Int,val sourceUV:FloatArr
 
 internal data class InteractionPatch(val center:FloatArray,val rotation:FloatArray,val scale:FloatArray,val childRotation:FloatArray)
 /** Exact triangle affine transform via two rotations and diagonal scale (2D SVD). */
-internal fun interactionPatches(mesh:MonitorMesh,columns:Int=12,rows:Int=8):List<InteractionPatch> {
+internal fun interactionPatches(mesh:MonitorMesh,columns:Int=12,rows:Int=8):List<InteractionPatch> =
+    interactionPatches(mesh.width,mesh.height,mesh,columns,rows)
+
+internal fun interactionPatches(width:Float,height:Float,mesh:MonitorMesh?,columns:Int=12,rows:Int=8):List<InteractionPatch> {
     fun sub(a:FloatArray,b:FloatArray)=FloatArray(3){a[it]-b[it]}
     fun dot(a:FloatArray,b:FloatArray)=(0..2).sumOf {(a[it]*b[it]).toDouble()}.toFloat()
     fun cross(a:FloatArray,b:FloatArray)=floatArrayOf(a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0])
@@ -406,7 +412,7 @@ internal fun interactionPatches(mesh:MonitorMesh,columns:Int=12,rows:Int=8):List
     }
     return buildList {
         for(row in 0 until rows) for(col in 0 until columns) {
-            fun p(x:Int,y:Int)=mesh.project(floatArrayOf(((col+x).toFloat()/columns-.5f)*mesh.width,(.5f-(row+y).toFloat()/rows)*mesh.height,0f))
+            fun p(x:Int,y:Int):FloatArray {val flat=floatArrayOf(((col+x).toFloat()/columns-.5f)*width,(.5f-(row+y).toFloat()/rows)*height,0f);return mesh?.project(flat) ?: flat}
             val a=p(0,0);val b=p(1,0);val c=p(0,1);val d=p(1,1)
             add(triangle(a,c,b));add(triangle(b,c,d))
         }

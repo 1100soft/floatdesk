@@ -82,29 +82,23 @@ fn lowest_mode(output: &Output, width: u16, height: u16) -> Option<&(String, u16
         .min_by(|a, b| a.3.total_cmp(&b.3))
 }
 fn desktop_limits() -> (u32, u32) {
-    let text = Command::new("xrandr")
-        .arg("--current")
-        .output()
-        .ok()
-        .map(|r| String::from_utf8_lossy(&r.stdout).into_owned())
-        .unwrap_or_default();
-    let words: Vec<_> = text
-        .lines()
-        .next()
-        .unwrap_or("")
-        .split_whitespace()
-        .collect();
-    words
-        .iter()
-        .position(|w| *w == "maximum")
-        .and_then(|i| {
-            Some((
-                words.get(i + 1)?.parse().ok()?,
-                words.get(i + 3)?.parse().ok()?,
-            ))
-        })
+    use x11rb::protocol::randr::ConnectionExt as _;
+    static LIMITS: std::sync::OnceLock<(u32, u32)> = std::sync::OnceLock::new();
+    *LIMITS.get_or_init(|| {
+        (|| -> Result<(u32, u32)> {
+            let link = super::X11Link::open()?;
+            let size = link
+                .conn
+                .randr_get_screen_size_range(link.root)
+                .map_err(Error::x11)?
+                .reply()
+                .map_err(Error::x11)?;
+            Ok((u32::from(size.max_width), u32::from(size.max_height)))
+        })()
         .unwrap_or((32767, 32767))
+    })
 }
+
 pub(super) fn query() -> Result<Vec<Output>> {
     let out = Command::new("xrandr").arg("--current").output()?;
     if !out.status.success() {
@@ -567,6 +561,7 @@ fn plasma_snapshot(
     let mut result = std::collections::BTreeMap::new();
     let Ok(reply) = Command::new("timeout")
         .args(["1", "kscreen-doctor", "-j"])
+        .env("QT_IM_MODULE", "none")
         .output()
     else {
         return None;
@@ -574,9 +569,7 @@ fn plasma_snapshot(
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(&reply.stdout) else {
         return None;
     };
-    let Some(rows) = value["outputs"].as_array() else {
-        return None;
-    };
+    let rows = value["outputs"].as_array()?;
     let active: BTreeSet<_> = outputs
         .iter()
         .filter(|o| o.geometry.is_some())
@@ -592,12 +585,9 @@ fn plasma_snapshot(
         return None;
     }
     for output in outputs.iter().filter(|o| o.geometry.is_some()) {
-        let Some(row) = rows
+        let row = rows
             .iter()
-            .find(|r| r["name"].as_str() == Some(output.name.as_str()))
-        else {
-            return None;
-        };
+            .find(|r| r["name"].as_str() == Some(output.name.as_str()))?;
         let (x, y, w, h) = output.geometry.unwrap();
         if row["pos"]["x"].as_i64() != Some(i64::from(x))
             || row["pos"]["y"].as_i64() != Some(i64::from(y))
@@ -630,6 +620,7 @@ fn plasma_transaction(
     );
     let result = Command::new("timeout")
         .args(["120", "kscreen-doctor"])
+        .env("QT_IM_MODULE", "none")
         .args(commands)
         .output()?;
     if !result.status.success() {
@@ -734,7 +725,7 @@ impl MonitorPool {
             .flat_map(|o| o.modes.iter().filter(|m| m.3 > 0.0).map(|m| (m.1, m.2)))
             .collect();
         let (window_focus, windows) = super::windows::observed_catalogue();
-        serde_json::json!({"type":"status","requestId":request_id,"busy":busy,"screens":screens,"windows":windows,"windowFocus":window_focus,"available":available,"modes":modes,"availableMemoryBytes":mem,"cpuThreads":cpus,"recommendedPixels":estimated,"targetFps":fps,"estimate":"Rough planning estimate: available memory / 128 bytes per desktop pixel and 1 megapixel per CPU thread at 60 FPS. Advisory only; GPU, content and network can dominate.","desktopLimits":desktop_limits(),"setupRequired":!outputs.iter().any(|o|virtual_name(&o.name))})
+        serde_json::json!({"type":"status","requestId":request_id,"busy":busy,"screens":screens,"windows":windows,"windowFocus":window_focus,"gazeFocus":window_focus,"windowMagnify":window_focus,"available":available,"modes":modes,"availableMemoryBytes":mem,"cpuThreads":cpus,"recommendedPixels":estimated,"targetFps":fps,"estimate":"Rough planning estimate: available memory / 128 bytes per desktop pixel and 1 megapixel per CPU thread at 60 FPS. Advisory only; GPU, content and network can dominate.","desktopLimits":desktop_limits(),"setupRequired":!outputs.iter().any(|o|virtual_name(&o.name))})
     }
     pub fn owned_mask(&self, sources: &[(String, MonitorRect)]) -> u8 {
         sources.iter().take(6).fold(0, |mask, (name, r)| {

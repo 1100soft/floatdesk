@@ -266,6 +266,7 @@ internal class MonitorDecoder(
     fun displayedQualityFocus():Pair<Float,Float>?=compositor?.displayedQualityFocus()
     fun hasViewedDetail():Boolean=compositor?.hasViewedDetail()==true
     fun qualityOutputLimit():Int=compositor?.outputLimit ?: 4096
+    fun windowRenderer():VideoCompositor?=compositor
     fun viewDestination():dev.floatdesk.client.net.ViewDestination?=compositor?.let{renderer->dev.floatdesk.client.net.ViewDestination(renderer.viewInput,renderer::viewFrame,renderer::clearView)}
     fun projection(value:ViewProjection?) {projection.set(value);compositor?.projection(value)}
     fun presentation(value:ScreenPresentation) {presentation.set(value);compositor?.presentation(value)}
@@ -322,10 +323,10 @@ internal class MonitorDecoder(
                 val accessUnit = depacketizer.push(copy, copy.size)
                 if (depacketizer.consumeLoss()) recover("RTP packet loss")
                 if (accessUnit == null) continue
-                for (nal in splitAnnexB(accessUnit)) {
-                    when (nalType(nal)) {
-                        7 -> sps.set(nal)
-                        8 -> pps.set(nal)
+                visitAnnexB(accessUnit) { start, end ->
+                    if (start < end) when (accessUnit[start].toInt() and 0x1F) {
+                        7 -> sps.set(accessUnit.copyOfRange(start, end))
+                        8 -> pps.set(accessUnit.copyOfRange(start, end))
                     }
                 }
                 val keyframe = isKeyframe(accessUnit)
@@ -545,49 +546,4 @@ internal class MonitorDecoder(
         }
         Log.i(TAG, "saved ${file.absolutePath} bytes=${file.length()} lumaVariance=${"%.1f".format(variance)}")
     }
-}
-
-internal fun isKeyframe(accessUnit: ByteArray): Boolean =
-    splitAnnexB(accessUnit).any { nalType(it) == 5 }
-
-internal fun annexBParameterSets(sps: ByteArray, pps: ByteArray): ByteArray {
-    val out = ByteArray(8 + sps.size + pps.size)
-    out[3] = 1
-    sps.copyInto(out, 4)
-    val ppsAt = 4 + sps.size
-    out[ppsAt + 3] = 1
-    pps.copyInto(out, ppsAt + 4)
-    return out
-}
-
-internal fun nalType(nal: ByteArray): Int = if (nal.isEmpty()) 0 else nal[0].toInt() and 0x1F
-
-internal fun splitAnnexB(data: ByteArray): List<ByteArray> {
-    val marks = ArrayList<Pair<Int, Int>>()
-    var i = 0
-    while (i + 3 <= data.size) {
-        val len = startCodeLen(data, i)
-        if (len > 0) {
-            marks += i to (i + len)
-            i += len
-        } else {
-            i += 1
-        }
-    }
-    return marks.mapIndexed { index, mark ->
-        val end = if (index + 1 < marks.size) marks[index + 1].first else data.size
-        data.copyOfRange(mark.second, end)
-    }
-}
-
-private fun startCodeLen(data: ByteArray, i: Int): Int {
-    if (i + 4 <= data.size && data[i] == 0.toByte() && data[i + 1] == 0.toByte() &&
-        data[i + 2] == 0.toByte() && data[i + 3] == 1.toByte()
-    ) {
-        return 4
-    }
-    if (i + 3 <= data.size && data[i] == 0.toByte() && data[i + 1] == 0.toByte() && data[i + 2] == 1.toByte()) {
-        return 3
-    }
-    return 0
 }

@@ -9,8 +9,10 @@ import subprocess
 import sys
 import tempfile
 
-source = (Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client/MainActivity.kt').read_text()
+from production_sources import application_sources
+source = application_sources()
 def section(start, end):
+    start=start.replace('private ','internal ');end=end.replace('private ','internal ')
     return source[source.index(start):source.index(end)]
 
 stub = '''

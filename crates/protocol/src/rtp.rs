@@ -80,6 +80,10 @@ impl RtpH264Packetizer {
     }
 }
 
+/// An unsupported or malformed RTP/H.264 datagram (not a recoverable sequence gap).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MalformedRtp;
+
 #[derive(Debug, Default)]
 pub struct RtpH264Depacketizer {
     expected_seq: Option<u16>,
@@ -95,13 +99,13 @@ impl RtpH264Depacketizer {
     }
 
     /// Feed one datagram. On [`Depacketized::AccessUnit`] the Annex-B bytes are in [`Self::take_access_unit`].
-    pub fn push(&mut self, packet: &[u8]) -> Result<Depacketized, ()> {
+    pub fn push(&mut self, packet: &[u8]) -> Result<Depacketized, MalformedRtp> {
         if packet.len() < RTP_HEADER || packet[0] >> 6 != 2 {
-            return Err(());
+            return Err(MalformedRtp);
         }
         if packet[0] & 0x3F != 0 {
             // CSRC, extension, or padding. The host does not send these.
-            return Err(());
+            return Err(MalformedRtp);
         }
         let marker = packet[1] & 0x80 != 0;
         let seq = u16::from_be_bytes([packet[2], packet[3]]);
@@ -115,7 +119,7 @@ impl RtpH264Depacketizer {
         self.expected_seq = Some(seq.wrapping_add(1));
         let payload = &packet[RTP_HEADER..];
         if payload.is_empty() {
-            return Err(());
+            return Err(MalformedRtp);
         }
         let nal_type = payload[0] & 0x1F;
         if nal_type == 28 {
@@ -128,7 +132,7 @@ impl RtpH264Depacketizer {
             self.nals.push(payload.to_vec());
             self.finish_if_marker(marker)
         } else {
-            Err(())
+            Err(MalformedRtp)
         }
     }
 
@@ -136,9 +140,9 @@ impl RtpH264Depacketizer {
         std::mem::take(&mut self.au)
     }
 
-    fn push_fu(&mut self, payload: &[u8], marker: bool) -> Result<Depacketized, ()> {
+    fn push_fu(&mut self, payload: &[u8], marker: bool) -> Result<Depacketized, MalformedRtp> {
         if payload.len() < 3 {
-            return Err(());
+            return Err(MalformedRtp);
         }
         let indicator = payload[0];
         let header = payload[1];
@@ -167,7 +171,7 @@ impl RtpH264Depacketizer {
         }
     }
 
-    fn finish_if_marker(&mut self, marker: bool) -> Result<Depacketized, ()> {
+    fn finish_if_marker(&mut self, marker: bool) -> Result<Depacketized, MalformedRtp> {
         if !marker {
             return Ok(Depacketized::NeedMore);
         }
@@ -248,11 +252,11 @@ mod tests {
     fn roundtrip_small_and_fragmented_access_unit() {
         let mut annex = vec![0, 0, 0, 1, 0x67, 0x42, 0x00];
         annex.extend_from_slice(&[0, 0, 0, 1, 0x65]);
-        annex.extend(std::iter::repeat(0x11).take(4000));
+        annex.extend(std::iter::repeat_n(0x11, 4000));
         let mut packetizer = RtpH264Packetizer::new(0xAABB_CCDD);
         let packets = packetizer.packetize(&annex, 9000);
         assert!(packets.len() > 2);
-        assert!(packets.iter().rev().nth(0).unwrap()[1] & 0x80 != 0);
+        assert!(packets.last().unwrap()[1] & 0x80 != 0);
         assert!(packets.iter().rev().nth(1).unwrap()[1] & 0x80 == 0);
 
         let mut de = RtpH264Depacketizer::new();
@@ -270,7 +274,7 @@ mod tests {
     #[test]
     fn a_missing_fragment_discards_the_access_unit() {
         let mut annex = vec![0, 0, 0, 1, 0x65];
-        annex.extend(std::iter::repeat(0x22).take(5000));
+        annex.extend(std::iter::repeat_n(0x22, 5000));
         let mut packetizer = RtpH264Packetizer::new(7);
         let packets = packetizer.packetize(&annex, 1);
         let mut de = RtpH264Depacketizer::new();

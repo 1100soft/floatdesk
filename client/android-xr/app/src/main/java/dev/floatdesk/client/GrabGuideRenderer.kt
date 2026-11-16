@@ -40,6 +40,8 @@ internal class GrabGuideRenderer private constructor(
     private class Group(val root: Entity, val parts: List<GltfModelEntity>)
     private val groups = mutableListOf<Group>()
     private var closed = false
+    private val nodeStates=java.util.IdentityHashMap<Entity,NativeNodeState>()
+    private fun state(entity:Entity)=nodeStates.getOrPut(entity){NativeNodeState(entity)}
     private var pointerPoint: GltfModelEntity? = null
     private val aimBeams=mutableListOf<SurfaceEntity>()
     private val grabBeams=mutableListOf<SurfaceEntity>()
@@ -118,21 +120,21 @@ internal class GrabGuideRenderer private constructor(
         }
         for((index,entity) in surfaces.withIndex()) {
             val ray=rays.getOrNull(index)
-            if(ray==null || eye==null) { entity.setEnabled(false); continue }
+            if(ray==null || eye==null) { state(entity).enabled(false); continue }
             val a=vector(ray.first); val b=vector(ray.second); val delta=b-a
-            if(delta.length<.00001f) { entity.setEnabled(false); continue }
+            if(delta.length<.00001f) { state(entity).enabled(false); continue }
             val along=delta.toNormalized(); val middle=(a+b)*.5f
             val toward=vector(eye)-middle
             val dot=toward.x*along.x+toward.y*along.y+toward.z*along.z
             val normal=toward-along*dot
-            if(normal.length<.00001f) { entity.setEnabled(false); continue }
+            if(normal.length<.00001f) { state(entity).enabled(false); continue }
             val up=Vector3(normal.y*along.z-normal.z*along.y,normal.z*along.x-normal.x*along.z,normal.x*along.y-normal.y*along.x)
             // Keep the native mesh allocation stable: replacing it every sample can
             // crash Impress and stall input on the UI thread. Transform the unit mesh.
-            entity.setScale(Vector3(delta.length,width,1f))
-            entity.setPose(Pose(middle,Quaternion.fromLookTowards(normal,up)))
-            entity.setAlpha(alpha)
-            entity.parent=parent; entity.setEnabled(true)
+            state(entity).scale(Vector3(delta.length,width,1f))
+            state(entity).pose(Pose(middle,Quaternion.fromLookTowards(normal,up)))
+            state(entity).alpha(alpha)
+            state(entity).parent(parent); state(entity).enabled(true)
         }
     }
 
@@ -154,10 +156,10 @@ internal class GrabGuideRenderer private constructor(
         }
         for((index,entity) in grabPoints.withIndex()) {
             val position=points.getOrNull(index)
-            if(position==null || eye==null) { entity.setEnabled(false); continue }
-            entity.setScale(diameter)
-            entity.setPose(Pose(vector(position),Quaternion.fromLookTowards(vector(eye)-vector(position),Vector3.Up)))
-            entity.parent=parent; entity.setEnabled(true)
+            if(position==null || eye==null) { state(entity).enabled(false); continue }
+            state(entity).scale(diameter)
+            state(entity).pose(Pose(vector(position),Quaternion.fromLookTowards(vector(eye)-vector(position),Vector3.Up)))
+            state(entity).parent(parent); state(entity).enabled(true)
         }
     }
 
@@ -193,10 +195,11 @@ internal class GrabGuideRenderer private constructor(
     override fun close() {
         if (closed) return
         closed = true
+        nodeStates.clear()
         groups.forEach { group ->
             group.root.dispose()
         }
-        (aimBeams+grabBeams+grabPoints).forEach { it.parent=null }
+        (aimBeams+grabBeams+grabPoints).forEach { it.parent=null; it.dispose() }
         aimBeams.clear(); grabBeams.clear(); grabPoints.clear()
         pointerPoint?.dispose(); pointerPoint = null
         groups.clear()

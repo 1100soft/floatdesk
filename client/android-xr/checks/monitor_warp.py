@@ -7,6 +7,7 @@ import tempfile
 
 folder = Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client'
 mesh = (folder/'MonitorMesh.kt').read_text().split('\n', 1)[1]+'\n'+(folder/'VideoGeometry.kt').read_text().split('\n',1)[1]
+mesh+='\n'+''.join('\n'.join(l for l in (folder/n).read_text().splitlines() if not l.startswith(('package ','import ','@android.annotation.SuppressLint')))+'\n' for n in ('BoundedHistory.kt','NativeSurfaceResources.kt'))
 warp = (folder/'MonitorWarp.kt').read_text()
 warp = warp[warp.index('internal class MonitorWarp'):].replace('@SuppressLint("RestrictedApi")', '').replace('androidx.xr.runtime.math.IntSize2d','IntSize2d').replace('android.os.SystemClock','SystemClock')
 stubs = '''
@@ -49,6 +50,8 @@ internal open class Entity {
     fun removeComponent(value: InteractableComponent) { if(component === value) component=null }
     private var opacity = 1f
     private var pose = Pose()
+    var disposeCount = 0
+    fun dispose() { disposeCount++;check(disposeCount==1);parent=null;enabled=false }
     private var scale = 1f
     fun getAlpha() = opacity
     fun setAlpha(value: Float) { opacity = value }
@@ -93,7 +96,7 @@ internal class SurfaceEntity(var shape: Shape): Entity() {
     interface Shape {
         class Quad(val extents: FloatSize2d): Shape
         class TriangleMesh(val positions: java.nio.FloatBuffer, val texCoords: java.nio.FloatBuffer, val indices: java.nio.IntBuffer? = null)
-        class CustomMesh(val mesh: TriangleMesh, val rightEye: TriangleMesh? = null): Shape
+        class CustomMesh(val mesh: TriangleMesh, val rightEye: TriangleMesh? = null): Shape {val leftEye get()=mesh}
     }
     companion object {
         fun create(session: Session, shape: Shape,pose: Pose=Pose(),parent: Entity?=null,superSampling: SuperSampling=SuperSampling.NONE) = SurfaceEntity(shape).also { it.setPose(pose); it.parent=parent; session.scene.entities.add(it) }
@@ -103,7 +106,7 @@ internal class SurfaceEntity(var shape: Shape): Entity() {
 stubs += """
 internal class CurvedMonitorInput(var mesh: MonitorMesh,val entity: Entity) {
     fun update(next:MonitorMesh) {mesh=next}
-    fun close() { entity.parent=null }
+    fun close() { entity.dispose() }
     companion object {
         var last: CurvedMonitorInput? = null
         var afterCreate: (() -> Unit)? = null
@@ -176,7 +179,12 @@ suspend fun main() {
     check(curvedVideo.shape !== curved && warp.outputSurface === curvedVideo.getSurface())
     warp.update(session,root,floatArrayOf(.3f,0f,0f),screen,false,true)
     check(input.shape is SurfaceEntity.Shape.Quad && warp.mesh == null && curvedVideo.parent == null && warp.outputSurface === output)
+    check(curvedVideo.disposeCount == 1 && input.disposeCount == 0)
+    warp.update(session,root,floatArrayOf(.3f,0f,0f),screen,true,false)
+    val secondCurved=session.scene.entities.last()
+    check(secondCurved !== curvedVideo && secondCurved.disposeCount==0)
     warp.close(); warp.close()
+    check(secondCurved.disposeCount == 1 && input.disposeCount == 0)
     check(input.enabled && input.getAlpha() == .8f && input.parent === root)
     session.scene.activitySpace.setPose(Pose(Vector3(.3f,-.5f,1.2f)))
     val events = mutableListOf<SpatialInputEvent>()
@@ -238,7 +246,7 @@ suspend fun main() {
     SystemClock.now+=1000L
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false,viewDirection=floatArrayOf(.2f,0f,-1f))
     warp.syncCurvedInput(session)
-    check(CurvedMonitorInput.last===patch && patch.entity.enabled && patch.entity.parent===warp.displayEntity)
+    check(CurvedMonitorInput.last!==patch && patch.entity.disposeCount==1 && CurvedMonitorInput.last!!.entity.enabled && CurvedMonitorInput.last!!.entity.parent===warp.displayEntity)
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,false,false)
     warp.syncCurvedInput(session)
     warp.close(); check(input.component == null && input.parent === root && input.enabled)

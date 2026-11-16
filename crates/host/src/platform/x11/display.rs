@@ -154,7 +154,7 @@ impl DisplayBackend for X11Display {
         if !(1..=6).contains(&count) {
             return Err(Error::Msg("monitor count must be 1 to 6".into()));
         }
-        if width < 160 || height < 160 || width % 2 != 0 || height % 2 != 0 {
+        if width < 160 || height < 160 || (width & 1) != 0 || (height & 1) != 0 {
             return Err(Error::Msg(
                 "virtual monitors need even width and height of at least 160".into(),
             ));

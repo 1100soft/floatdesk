@@ -8,7 +8,7 @@ import android.media.MediaFormat;
 import android.os.SystemClock;
 import dev.floatdesk.client.FocusRect;
 import dev.floatdesk.client.media.VideoCompositor;
-import dev.floatdesk.client.media.H264Kt;
+import dev.floatdesk.client.media.AnnexBKt;
 import dev.floatdesk.client.net.DetailDiagnostics;
 import dev.floatdesk.client.net.ViewFrame;
 import java.nio.ByteBuffer;
@@ -41,8 +41,8 @@ public final class OutputResolutionSmoke {
             compositor.output(low.getSurface());Canvas canvas=compositor.getInput().lockCanvas(null);canvas.drawColor(Color.GREEN);compositor.getInput().unlockCanvasAndPost(canvas);
             compositor.detailDebug(new DetailDiagnostics(true,new FocusRect(0f,0f,1f,1f),"pattern","H264",2f,2f,false));
             byte[] data=java.nio.file.Files.readAllBytes(java.nio.file.Path.of("/data/local/tmp/floatdesk-detail-pattern.h264"));
-            byte[] sps=null,pps=null;for(byte[] nal:H264Kt.splitAnnexB(data)){if(H264Kt.nalType(nal)==7)sps=nal;if(H264Kt.nalType(nal)==8)pps=nal;}
-            var format=MediaFormat.createVideoFormat("video/avc",2048,1536);format.setByteBuffer("csd-0",ByteBuffer.wrap(H264Kt.annexBParameterSets(sps,pps)));format.setInteger(MediaFormat.KEY_LOW_LATENCY,1);format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE,8*1024*1024);
+            byte[] sps=null,pps=null;for(byte[] nal:AnnexBKt.splitAnnexB(data)){if(AnnexBKt.nalType(nal)==7)sps=nal;if(AnnexBKt.nalType(nal)==8)pps=nal;}
+            var format=MediaFormat.createVideoFormat("video/avc",2048,1536);format.setByteBuffer("csd-0",ByteBuffer.wrap(AnnexBKt.annexBParameterSets(sps,pps)));format.setInteger(MediaFormat.KEY_LOW_LATENCY,1);format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE,8*1024*1024);
             codec=MediaCodec.createDecoderByType("video/avc");codec.configure(format,compositor.getViewInput(),null,0);codec.start();
             long pts=1000000;
             compositor.viewFrame(pts,new ViewFrame(new FocusRect(0f,0f,1f,1f),new FocusRect(.25f,.25f,.75f,.75f),SystemClock.uptimeMillis()));

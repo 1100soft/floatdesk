@@ -1,0 +1,1121 @@
+package dev.floatdesk.client
+
+import androidx.compose.runtime.key
+import androidx.compose.foundation.layout.fillMaxWidth
+import android.util.Log
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.xr.arcore.Eye
+import androidx.xr.runtime.EyeTrackingMode
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.height
+import android.os.SystemClock
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.dp
+import androidx.xr.arcore.ArDevice
+import androidx.xr.arcore.Hand
+import androidx.xr.arcore.HandJointType
+import androidx.xr.arcore.RenderViewpoint
+import androidx.xr.arcore.TrackingState
+import androidx.xr.compose.platform.LocalSession
+import androidx.xr.compose.platform.LocalSpatialCapabilities
+import androidx.xr.compose.spatial.Subspace
+import androidx.xr.compose.subspace.SpatialExternalSurface
+import androidx.xr.compose.subspace.SpatialPanel
+import androidx.xr.runtime.Config
+import androidx.xr.runtime.DeviceTrackingMode
+import androidx.xr.runtime.HandTrackingMode
+import androidx.xr.runtime.math.Vector3
+import androidx.xr.scenecore.Entity
+import androidx.xr.scenecore.Space
+import androidx.xr.scenecore.scene
+import dev.floatdesk.client.net.DeskConnection
+import dev.floatdesk.client.workspace.Pose
+import dev.floatdesk.client.workspace.WorkspaceStore
+import dev.floatdesk.client.workspace.focusDesktopRegion
+import dev.floatdesk.client.workspace.ViewLayers
+import dev.floatdesk.client.workspace.fixedDesktopDepth
+import dev.floatdesk.client.workspace.restoreViewer
+import dev.floatdesk.client.workspace.reconcileMonitors
+import dev.floatdesk.client.workspace.monitorPlaced
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import java.io.File
+import java.util.concurrent.atomic.AtomicReference
+
+@Composable
+internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(androidx.xr.runtime.Session?)->Unit) {
+    val connection = remember { DeskConnection(dumpFile) }
+    val context = LocalContext.current
+    val deviceInteractive by rememberDeviceInteractive(context)
+    val interactiveNow=rememberUpdatedState(deviceInteractive)
+    LaunchedEffect(connection) { connection.start(context) }
+    DisposableEffect(connection) { onDispose { connection.disconnect() } }
+    val session = LocalSession.current
+    var sceneActive by remember { mutableStateOf(false) }
+    var workspace by remember { mutableStateOf(store.load()) }
+    val workspaceAtLifecycle=rememberUpdatedState(workspace)
+    var restoreViewerPending by remember {mutableStateOf(true)}
+    DisposableEffect(session,connection) {
+        val current = session
+        onSession(current)
+        sceneActive=interactiveNow.value && current?.lifecycleOwner?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.STARTED)==true
+        val observer = LifecycleEventObserver { _, event ->
+            if(event==Lifecycle.Event.ON_PAUSE || event==Lifecycle.Event.ON_STOP) store.save(workspaceAtLifecycle.value)
+            sceneActive=interactiveNow.value && current?.lifecycleOwner?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.STARTED)==true
+            connection.setRenderingActive(sceneActive)
+            if (current != null && event == Lifecycle.Event.ON_RESUME) {
+                runCatching { current.configure(Config.Builder(current.config).setHandTracking(HandTrackingMode.BOTH).build()) }
+                runCatching { current.configure(Config.Builder(current.config).setDeviceTracking(DeviceTrackingMode.SPATIAL).build()) }
+            }
+        }
+        current?.lifecycleOwner?.lifecycle?.addObserver(observer)
+        onDispose {
+            current?.lifecycleOwner?.lifecycle?.removeObserver(observer)
+            onSession(null)
+        }
+    }
+    LaunchedEffect(session,deviceInteractive) {
+        sceneActive=deviceInteractive && session?.lifecycleOwner?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.STARTED)==true
+        connection.setRenderingActive(sceneActive)
+    }
+    LaunchedEffect(workspace.screenSpacing) {connection.configurePresentation(workspace.screenSpacing)}
+    LaunchedEffect(workspace.encoderQuality,workspace.encoderMbps,workspace.sharpening,workspace.detailAreaPixels,workspace.detailTargetFps){connection.configureVideo(workspace.encoderQuality,workspace.encoderMbps,workspace.sharpening,workspace.denseFraction,workspace.detailAreaPixels,workspace.detailTargetFps)}
+    val pointerControl = remember { PointerControl() }
+    val gazeStabilizer = remember { GazeStabilizer() }
+    val gazeWindowFocus=remember{GazeWindowFocus()}
+    val magnification=remember{WindowMagnification()}
+    var inPlaceWindow by remember { mutableStateOf<Long?>(null) }
+    var magnified by remember { mutableStateOf<MagnifiedWindow?>(null) }
+    val magnifierViewer=remember { AtomicReference<Pose?>(null) }
+    var magnifierMoving by remember { mutableStateOf(false) }
+    var magnifierPinned by remember { mutableStateOf(false) }
+    var typingLocked by remember { mutableStateOf(false) }
+    var magnifierMesh by remember { mutableStateOf<MonitorMesh?>(null) }
+    var magnifierReady by remember { mutableStateOf(false) }
+    var magnifierFailed by remember { mutableStateOf(false) }
+    val magnifierHands=remember { MagnifierContacts() }
+    val fixedWindows=remember { AtomicReference<List<Pair<String,MagnifiedWindow>>>(emptyList()) }
+    val fixedRuntime=remember { androidx.compose.runtime.mutableStateMapOf<String,MagnifiedWindow>() }
+    val fixedPins=remember { androidx.compose.runtime.mutableStateMapOf<String,Long>() }
+    val fixedReady=remember { androidx.compose.runtime.mutableStateMapOf<String,Boolean>() }
+    val fixedEditing=remember { mutableSetOf<String>() }
+    var lastFixedWindow by remember { mutableStateOf<Long?>(null) }
+    var magnifierMenu by remember { mutableStateOf<String?>(null) }
+    val pinchSettings=rememberUpdatedState(workspace.pinchThresholds)
+    val mouseGestures = remember { MouseGestures(thresholds={pinchSettings.value}) { Log.i("Floatdesk",it) } }
+    val panelInput = remember { PanelGazeInput(palmButtons.map { PanelButtonArea(it.action.ordinal,it.x,it.y,it.w,it.h) }) }
+    var panelFocused by remember { mutableStateOf<PalmAction?>(null) }
+    var panelPressed by remember { mutableStateOf<PalmAction?>(null) }
+    var feedbackAt by remember { mutableStateOf(0L) }
+    var panelEyePermissionAsked by remember { mutableStateOf(false) }
+    val clickView=LocalView.current
+    LaunchedEffect(feedbackAt) { if(feedbackAt>0) { delay(180); panelPressed=null } }
+    var handInputAllowed by remember { mutableStateOf(true) }
+    var palmInteractionEpoch by remember { mutableIntStateOf(0) }
+    var dimPointer by remember { mutableStateOf(false) }
+    val eyePermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (!granted) android.widget.Toast.makeText(context,"Gaze permission was not granted. Hand pointing remains available.",android.widget.Toast.LENGTH_LONG).show()
+    }
+    LaunchedEffect(workspace.experimentalViewedDetail,workspace.sphericalWarp,workspace.gazeToFocus,workspace.magnifyWindow) {
+        if((workspace.experimentalViewedDetail || workspace.sphericalWarp || workspace.gazeToFocus || workspace.magnifyWindow) && context.checkSelfPermission("android.permission.EYE_TRACKING_FINE")!=android.content.pm.PackageManager.PERMISSION_GRANTED)
+            eyePermission.launch("android.permission.EYE_TRACKING_FINE")
+    }
+    val monitors by connection.monitors
+    val status by connection.status
+    val spatial = LocalSpatialCapabilities.current.isSpatialUiEnabled
+    var note by remember { mutableStateOf("") }
+    var latchedFollow by remember { mutableStateOf(false) }
+    var holdingFist by remember { mutableStateOf(false) }
+    var suppressFist by remember { mutableStateOf(false) }
+    var manipulating by remember { mutableStateOf(false) }
+    var followGeneration by remember { mutableIntStateOf(0) }
+    var gestureNote by remember { mutableStateOf("Waiting for hand tracking…") }
+    var focusFollowUntil by remember {mutableStateOf(0L)}
+    var pendingFocusMonitor by remember {mutableStateOf<Int?>(null)}
+    val focusGestures=remember {FocusGestures {pinchSettings.value}}
+    val following = latchedFollow || focusFollowUntil>SystemClock.uptimeMillis() || (holdingFist && !suppressFist)
+    LaunchedEffect(focusFollowUntil) {
+        if(focusFollowUntil>0) {delay((focusFollowUntil-SystemClock.uptimeMillis()).coerceAtLeast(0));focusFollowUntil=0;followGeneration+=1}
+    }
+    val grabs = remember { mutableMapOf<Int, TwoHandState>() }
+    DisposableEffect(session) {
+        session?.scene?.panelClippingConfig=androidx.xr.scenecore.PanelClippingConfig(isDepthTestEnabled=false)
+        val current = session
+        val listener = Runnable {
+            Log.w("Floatdesk","XR activity origin changed; cancelling gestures")
+            workspace=workspace.copy(viewerReference=store.viewerReference ?: workspace.viewerReference)
+            restoreViewerPending=true
+            grabs.values.forEach { it.cancel() }
+            manipulating = false
+            suppressFist = true
+            followGeneration += 1
+        }
+        current?.scene?.activitySpace?.addOriginChangedListener(listener)
+        onDispose { runCatching { current?.scene?.activitySpace?.removeOriginChangedListener(listener) } }
+    }
+    val handTracking = remember { GrabTracking() }
+    val grips = handTracking.points
+    val deskSpace = remember { AtomicReference<Entity?>(null) }
+    val displayHead=remember { AtomicReference<Pose?>(null) }
+    val viewHalfAngles=remember {AtomicReference(floatArrayOf(Math.toRadians(35.0).toFloat(),Math.toRadians(30.0).toFloat()))}
+    fun addFixedMagnifier(){
+        val desktop=workspace.monitorAt(0) ?: return
+        val viewer=magnifierViewer.get() ?: displayHead.get() ?: return
+        val id=java.util.UUID.randomUUID().toString()
+        val source=connection.workspaceInfo.value?.windows?.firstOrNull{it.id==(magnified?.id ?: inPlaceWindow ?: lastFixedWindow)} ?: connection.workspaceInfo.value?.windows?.firstOrNull()
+        if(lastFixedWindow==null)lastFixedWindow=source?.id
+        val window=magnifiedWindow(source?.id ?: 0,source?.width ?: 1280,source?.height ?: 800,viewer,viewHalfAngles.get()[0],viewHalfAngles.get()[1],handTracking.unitsPerMeter,workspace.sphericalWarp)
+        val record=saveFixedMagnifier(id,window,desktop,handTracking.unitsPerMeter)
+        workspace=workspace.copy(fixedMagnifiers=workspace.fixedMagnifiers+record);store.save(workspace)
+    }
+    LaunchedEffect(workspace.magnifierMode,workspace.magnifyWindow){
+        if(workspace.magnifierMode=="fixed")lastFixedWindow=magnified?.id ?: inPlaceWindow ?: lastFixedWindow
+        magnification.dismiss(SystemClock.uptimeMillis());magnified=null;inPlaceWindow=null;magnifierReady=false
+        if(workspace.magnifyWindow && workspace.magnifierMode=="fixed"){
+            while(workspace.fixedMagnifiers.isEmpty() && (workspace.monitorAt(0)==null || magnifierViewer.get()==null))delay(100)
+            if(workspace.fixedMagnifiers.isEmpty())addFixedMagnifier()
+        }
+    }
+    fun resetDesk() {
+        magnification.dismiss(SystemClock.uptimeMillis());magnified=null;inPlaceWindow=null;connection.magnifierActive=false
+        pendingFocusMonitor=null;focusFollowUntil=0
+        grabs.values.forEach {it.cancel()};pointerControl.clear()
+        manipulating=false;holdingFist=false;suppressFist=true
+        val head=store.viewerReference ?: displayHead.get() ?: Pose()
+        val viewer=Pose(handTracking.points["VIEWER"]?.copyOf() ?: head.position.copyOf(),head.rotation.copyOf())
+        val angles=viewHalfAngles.get()
+        workspace=workspace.reset(monitors,store,viewer,angles,handTracking.unitsPerMeter)
+        restoreViewerPending=false
+        followGeneration+=1
+    }
+    val focusReply by connection.focusResult
+    LaunchedEffect(focusReply) {
+        val reply=focusReply ?: return@LaunchedEffect
+        val index=pendingFocusMonitor ?: return@LaunchedEffect
+        pendingFocusMonitor=null
+        if(!workspace.focusMode)return@LaunchedEffect
+        val rect=reply.rect
+        if(!reply.ok || rect==null) {gestureNote=reply.message.ifEmpty{"Could not focus target"};return@LaunchedEffect}
+        val pieces=connection.workspaceInfo.value?.visibleRects(rect,workspace.screenSpacing).orEmpty()
+        if(pieces.isEmpty())return@LaunchedEffect
+        val screen=workspace.monitorAt(index) ?: return@LaunchedEffect
+        val head=store.viewerReference ?: displayHead.get() ?: return@LaunchedEffect
+        val viewer=Pose(handTracking.points["VIEWER"]?.copyOf() ?: head.position.copyOf(),head.rotation.copyOf())
+        val angles=viewHalfAngles.get()
+        val bounds=floatArrayOf(pieces.minOf{it.left},pieces.minOf{it.top},pieces.maxOf{it.right},pieces.maxOf{it.bottom})
+        grabs.values.forEach{it.cancel()};pointerControl.clear();manipulating=false
+        val fitted=focusDesktopRegion(screen,bounds,viewer,angles[0],angles[1],handTracking.unitsPerMeter,workspace.sphericalWarp)
+        workspace=workspace.monitorPlaced(index,fitted,store,true)
+        gestureNote="";restoreViewerPending=false;suppressFist=true;focusFollowUntil=SystemClock.uptimeMillis()+3000;followGeneration+=1
+        clickView.playSoundEffect(android.view.SoundEffectConstants.CLICK)
+    }
+    var displayControlsOpen by remember { mutableStateOf(false) }
+    LaunchedEffect(displayControlsOpen,sceneActive){if(displayControlsOpen || !sceneActive)magnifierMenu=null}
+    var displayControlsPose by remember { mutableStateOf(workspace.control.pose) }
+    fun toggleDisplays() {
+        displayControlsOpen=!displayControlsOpen
+        if(displayControlsOpen) {
+            displayHead.get()?.let { head-> displayControlsPose=Pose(transformPoint(head,floatArrayOf(0f,-.15f,-.9f)),head.rotation.copyOf()) }
+            connection.requestDisplays()
+        }
+    }
+
+    val redrawAim=remember { AtomicReference<()->Unit>({}) }
+    LaunchedEffect(session) {
+        var frames=0
+        var began=SystemClock.uptimeMillis()
+        while(isActive) {
+            if(!connection.isRenderingActive() || session?.lifecycleOwner?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.RESUMED)!=true) {
+                delay(100);continue
+            }
+            androidx.compose.runtime.withFrameNanos { }
+            frames++
+            val now=SystemClock.uptimeMillis()
+            if(now-began>=5000) {
+                Log.i("Floatdesk","ray display frames=$frames windowMs=${now-began}")
+                frames=0;began=now
+            }
+            runCatching { redrawAim.get().invoke() }.onFailure { Log.w("Floatdesk","Ray frame update failed",it) }
+        }
+    }
+    var guideRenderer by remember(session) { mutableStateOf<GrabGuideRenderer?>(null) }
+    LaunchedEffect(session) {
+        val current = session ?: return@LaunchedEffect
+        val renderer = try {
+            GrabGuideRenderer.create(current)
+        } catch (failure: Exception) {
+            if (failure is CancellationException) throw failure
+            Log.e("Floatdesk", "Could not load grab guide meshes", failure)
+            return@LaunchedEffect
+        }
+        guideRenderer = renderer
+        try { awaitCancellation() } finally {
+            guideRenderer = null
+            renderer.close()
+        }
+    }
+    var palmPanel by remember { mutableStateOf<PalmPanelState?>(null) }
+    val poke = remember { PalmPoke() }
+    var lastPalmAction by remember { mutableStateOf(0L) }
+    val palmAction: (PalmAction) -> Unit = { action ->
+        val now = SystemClock.uptimeMillis()
+        if (handInputAllowed && palmPanel!=null && now - lastPalmAction > 450) {
+            lastPalmAction = now
+            panelPressed=action; feedbackAt=now
+            clickView.playSoundEffect(android.view.SoundEffectConstants.CLICK)
+            when (action) {
+                PalmAction.FOLLOW -> { focusFollowUntil=0;latchedFollow = !latchedFollow; suppressFist = true; followGeneration += 1 }
+                PalmAction.RESET -> resetDesk()
+                PalmAction.MODE -> {
+                    pendingFocusMonitor=null;grabs.values.forEach{it.cancel()};pointerControl.clear();manipulating=false
+                    workspace=workspace.copy(focusMode=!workspace.focusMode);store.save(workspace)
+                }
+                PalmAction.SEARCH -> { connection.disconnect(); connection.start(context) }
+                PalmAction.SPACE -> { session?.scene?.requestFullSpace();toggleDisplays() }
+                PalmAction.GESTURES -> {
+                    workspace=workspace.copy(mouseGestures = !workspace.mouseGestures)
+                    store.save(workspace)
+                }
+                PalmAction.EYES -> {
+                    workspace = workspace.copy(eyeAiming = !workspace.eyeAiming)
+                    store.save(workspace)
+                    if (workspace.eyeAiming && context.checkSelfPermission("android.permission.EYE_TRACKING_FINE") != android.content.pm.PackageManager.PERMISSION_GRANTED)
+                        eyePermission.launch("android.permission.EYE_TRACKING_FINE")
+                }
+                PalmAction.WARP -> {
+                    grabs.values.forEach { it.cancel() }
+                    manipulating = false
+                    followGeneration += 1
+                    workspace = workspace.copy(sphericalWarp = !workspace.sphericalWarp)
+                    store.save(workspace)
+                }
+            }
+        }
+    }
+    val palmActionNow = rememberUpdatedState(palmAction)
+    fun updateManipulation(active: Boolean) {
+        manipulating = active
+        holdingFist = false
+        suppressFist = true
+        followGeneration += 1
+    }
+    val density = LocalDensity.current
+    val pixelDensity = session?.scene?.virtualPixelDensity
+    LaunchedEffect(session) {
+        val current = session ?: return@LaunchedEffect
+        current.scene.requestFullSpace()
+        // Hand tracking and head tracking are separate. One rejection used to
+        // roll the whole config back, which left the hands disabled.
+        val handsConfigured = runCatching {
+            current.configure(
+                Config.Builder(current.config)
+                    .setHandTracking(HandTrackingMode.BOTH)
+                    .build(),
+            )
+        }
+        val headConfigured = runCatching {
+            current.configure(
+                Config.Builder(current.config)
+                    .setDeviceTracking(DeviceTrackingMode.SPATIAL)
+                    .build(),
+            )
+        }
+        Log.i("Floatdesk", "tracking configure hands=$handsConfigured head=$headConfigured")
+        var hands = emptyList<Pair<String, Hand>>()
+        val sampledHands=java.util.concurrent.atomic.AtomicReference<List<Pair<String,Hand>>>(emptyList())
+        val pinchFrames=PinchFrameBuffer()
+        fun fingerSample(state: Hand.State): FingerPinch? {
+            if(state.trackingState!=TrackingState.TRACKING) return null
+            val joints=state.handJoints
+            val thumb=joints[HandJointType.THUMB_TIP]?.translation ?: return null
+            val index=joints[HandJointType.INDEX_TIP]?.translation ?: return null
+            val middle=joints[HandJointType.MIDDLE_TIP]?.translation ?: return null
+            return FingerPinch(distance(thumb,index),distance(thumb,middle),
+                (joints[HandJointType.PALM]?.translation ?: joints[HandJointType.WRIST]?.translation)?.toArray())
+        }
+        launch(Dispatchers.Default) {
+            val observers=mutableMapOf<String,Pair<Hand,kotlinx.coroutines.Job>>()
+            val flowFrames=java.util.concurrent.atomic.AtomicInteger()
+            var polledFrames=0
+            var captureStatsAt=SystemClock.uptimeMillis()
+            val observedAt=mutableMapOf<String,java.util.concurrent.atomic.AtomicLong>()
+            while(isActive) {
+                val sources=sampledHands.get()
+                val active=sources.toMap()
+                for(side in observers.keys.toList()) if(active[side] !== observers[side]?.first) {
+                    observers.remove(side)?.second?.cancel()
+                    observedAt.remove(side)
+                    pinchFrames.offerHand(side,null,SystemClock.uptimeMillis())
+                }
+                for((side,hand) in sources) {
+                    if(side !in observers) {
+                        val received=java.util.concurrent.atomic.AtomicLong(0)
+                        observedAt[side]=received
+                        // Copy only joint scalars here; never mutate scene/UI on the publisher thread.
+                        val job=launch(Dispatchers.Unconfined) {
+                            hand.state.collect { state ->
+                                if(sampledHands.get().any { it.first==side && it.second===hand }) {
+                                    val now=SystemClock.uptimeMillis()
+                                    received.set(now)
+                                    flowFrames.incrementAndGet()
+                                    pinchFrames.offerHand(side,fingerSample(state),now)
+                                }
+                            }
+                        }
+                        observers[side]=hand to job
+                    }
+                    val received=observedAt.getValue(side)
+                    val before=received.get()
+                    if(SystemClock.uptimeMillis()-before>30) {
+                        // Some SDK runtimes mutate their joint buffer without a flow emission.
+                        val state=hand.state.value
+                        val sample=fingerSample(state)
+                        if(received.get()==before && state===hand.state.value) {
+                            polledFrames++
+                            pinchFrames.offerHand(side,sample,SystemClock.uptimeMillis())
+                        }
+                    }
+                }
+                val now=SystemClock.uptimeMillis()
+                if(now-captureStatsAt>=5000) {
+                    if(sources.isNotEmpty()) Log.i("Floatdesk","pinch capture sdkFrames=${flowFrames.getAndSet(0)} fallbackFrames=$polledFrames windowMs=${now-captureStatsAt}")
+                    else flowFrames.set(0)
+                    polledFrames=0;captureStatsAt=now
+                }
+                delay(if(sources.isEmpty()) 100 else 5)
+            }
+        }
+        // This headset is stereo, so the mono viewpoint is not created. The left
+        // eye, then the device pose, is the head.
+        var viewpoint = openViewpoint(current)
+        val rightViewpoint = runCatching { RenderViewpoint.right(current) }.getOrNull()
+        var device = runCatching { ArDevice.getInstance(current) }.getOrNull()
+        Log.i("Floatdesk", "head source view=${viewpoint != null} device=${device != null}")
+        val trackingGuard = TrackingGuard()
+        val trackingRecovery = TrackingRecovery()
+        val handQuality=HandTrackingQuality()
+        var lastHandRejection=emptySet<String>()
+        var lastHandOverlap=false
+        val eyeLifecycle=EyeTrackingLifecycle()
+        var gazeEyes = emptyList<Eye>()
+        var eyeRequestAt=SystemClock.uptimeMillis()
+        var eyeNoticeShown = false
+        var lastPointerMode: PointerMode? = null
+        var lastMouseDragging = false
+        val lastMouseContact=mutableMapOf<String,Int>()
+        var lastFocusGate="<initial>"
+        var lastDetailAt=0L
+        val qualityGaze=QualityGazeTracker()
+        var inputWasResumed=true
+        var fistHeld = 0
+        var panelHand: String? = null
+        var lastPalmSeen = 0L
+        var followLock: FollowLock? = null
+        var seenGeneration = followGeneration
+        var tick = 0
+        // Keep platform maintenance outside the gesture coroutine's bytecode body.
+        // ART refuses to JIT oversized methods, leaving this hot loop interpreted.
+        fun updateEyeTracking(wantEyes: Boolean, resumed: Boolean) {
+            val eyeAction=eyeLifecycle.update(SystemClock.uptimeMillis(),resumed,wantEyes,
+                current.config.eyeTracking==EyeTrackingMode.FINE_TRACKING,gazeEyes.size==2,
+                wantEyes && resumed && gazeEyes.any { it.state.value.trackingState==TrackingState.TRACKING })
+            if(eyeAction.clearResources) {
+                gazeEyes=emptyList();eyeNoticeShown=false;eyeRequestAt=SystemClock.uptimeMillis()
+            }
+            eyeAction.configureFine?.let { fine ->
+                val result=runCatching { current.configure(Config.Builder(current.config)
+                    .setEyeTracking(if(fine) EyeTrackingMode.FINE_TRACKING else EyeTrackingMode.DISABLED).build()) }
+                Log.i("Floatdesk","eye tracking configured enabled=$fine result=$result")
+            }
+            if(eyeAction.refreshResources) {
+                gazeEyes=listOfNotNull(runCatching { Eye.left(current) }.getOrNull(),runCatching { Eye.right(current) }.getOrNull())
+                Log.i("Floatdesk","eye resources refreshed count=${gazeEyes.size}")
+            }
+            if(wantEyes && resumed && gazeEyes.isEmpty() && SystemClock.uptimeMillis()-eyeRequestAt>=1500 && !eyeNoticeShown) {
+                eyeNoticeShown=true
+                android.widget.Toast.makeText(context,"Eye tracking is unavailable. Hand pointing remains available.",android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
+        while (isActive) {
+            delay(10)
+            tick += 1
+            val wantEyes = context.checkSelfPermission("android.permission.EYE_TRACKING_FINE") == android.content.pm.PackageManager.PERMISSION_GRANTED
+            val resumed = connection.isRenderingActive() && current.lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+            updateEyeTracking(wantEyes,resumed)
+            if(!resumed) {
+                magnification.dismiss(SystemClock.uptimeMillis());magnified=null;inPlaceWindow=null;connection.magnifierActive=false
+                sampledHands.set(emptyList())
+                if(inputWasResumed) {
+                    pinchFrames.drain(SystemClock.uptimeMillis())
+                    if(handInputAllowed) palmInteractionEpoch++
+                    handInputAllowed=false
+                    val release=mouseGestures.update(SystemClock.uptimeMillis(),false,true,emptyMap(),null)
+                    release.target?.let { connection.movePointer(it.monitor,it.u,it.v,false) }
+                    release.scroll?.let { connection.touchpad(it.fingers,it.x,it.y) }
+                    grabs.values.forEach { it.cancel() }
+                    pointerControl.clear(resetAiming=true);palmPanel=null;holdingFist=false;followLock=null
+                    deskSpace.get()?.let { parent ->
+                        guideRenderer?.update(parent,emptyList())
+                        guideRenderer?.updateRays(parent,emptyMap(),null,1f,true)
+                    }
+                }
+                inputWasResumed=false
+                delay(100);continue
+            }
+            inputWasResumed=true
+            if (followGeneration != seenGeneration) {
+                followLock = null
+                seenGeneration = followGeneration
+            }
+            if (hands.size < 2 && tick % 50 == 1) {
+                hands = listOfNotNull(
+                    runCatching { "LEFT" to Hand.left(current) }.getOrNull(),
+                    runCatching { "RIGHT" to Hand.right(current) }.getOrNull(),
+                )
+            }
+            if(tick%25==1) {
+                if(viewpoint==null) viewpoint=openViewpoint(current)
+                if(device==null) device=runCatching { ArDevice.getInstance(current) }.getOrNull()
+            }
+            val deviceState = device?.state?.value
+            // Joints and the raw viewpoint live in perception space. The desk is
+            // stored in the Compose root, so follow must convert into that same space.
+            val trackingAvailable = current.lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
+                (deviceState == null || deviceState.trackingState == TrackingState.TRACKING)
+            val perceived = viewpoint?.state?.value?.pose ?: deviceState?.devicePose?.takeIf { trackingAvailable }
+            val fovs=listOfNotNull(viewpoint?.state?.value?.fieldOfView,rightViewpoint?.state?.value?.fieldOfView)
+            val horizontal=fovs.flatMap {listOf(kotlin.math.abs(it.angleLeft),kotlin.math.abs(it.angleRight))}.filter {it.isFinite() && it>.05f}.minOrNull()
+            val vertical=fovs.flatMap {listOf(kotlin.math.abs(it.angleUp),kotlin.math.abs(it.angleDown))}.filter {it.isFinite() && it>.05f}.minOrNull()
+            if(horizontal!=null && vertical!=null)viewHalfAngles.set(floatArrayOf(horizontal,vertical))
+
+            // SpatialExternalSurface is under Compose's recommended root, whose scale/pose
+            // are independent of ActivitySpace. Always target the actual surface parent.
+            val root = findDeskSpace(current) ?: deskSpace.get()
+            if (root == null) { palmPanel = null; grips.clear(); pointerControl.clear(); continue }
+            if (root !== deskSpace.get()) {
+                deskSpace.set(root)
+                Log.i("Floatdesk", "desk root pose=${root.getPose(Space.ACTIVITY)} scale=${root.getScale(Space.ACTIVITY)}")
+            }
+            val unitsPerMeter = current.scene.perceptionSpace.transformVectorTo(Vector3.Right, root).length
+            if (!unitsPerMeter.isFinite() || unitsPerMeter <= 0f) continue
+            handTracking.unitsPerMeter = unitsPerMeter
+            handTracking.nowMs = SystemClock.uptimeMillis()
+            handTracking.pinched.clear()
+            val candidateHead = perceived?.let { deskPose(current, root, it) }
+            displayHead.set(candidateHead?.toWorkspacePose())
+            val reliable = trackingGuard.update(handTracking.nowMs, candidateHead?.takeIf { trackingAvailable }?.translation?.toArray(),
+                candidateHead?.let { floatArrayOf(it.rotation.x,it.rotation.y,it.rotation.z,it.rotation.w) },unitsPerMeter)
+            val head = candidateHead?.takeIf { reliable }
+            if(head!=null) {
+                val reference=head.toWorkspacePose()
+                val recovery=trackingRecovery.update(handTracking.nowMs,true,reference.position,reference.rotation,unitsPerMeter)
+                if(recovery!=null && !restoreViewerPending && workspace.anchorUuid==null) {
+                    workspace=workspace.copy(viewerReference=Pose(recovery.first,recovery.second)).restoreViewer(reference)
+                    grabs.values.forEach { it.cancel() };pointerControl.clear()
+                    manipulating=false;suppressFist=true;followLock=null
+                    magnification.dismiss(handTracking.nowMs);magnified=null;inPlaceWindow=null;connection.magnifierActive=false
+                    Log.w("Floatdesk","Recovered workspace after tracking discontinuity")
+                }
+                if(restoreViewerPending && !workspace.layouts[workspace.activeLayout].isNullOrEmpty()) {
+                    workspace=workspace.restoreViewer(reference)
+                    restoreViewerPending=false
+                }
+                store.viewerReference=reference
+                store.viewerUnitsPerMeter=unitsPerMeter
+                val active=workspace.layouts[workspace.activeLayout]
+                if(active!=null){
+                    val fixed=active.map{fixedDesktopDepth(it,reference,unitsPerMeter,workspace.sphericalWarp)}
+                    if(fixed.indices.any{fixed[it] !== active[it]})workspace=workspace.copy(layouts=workspace.layouts.toMutableMap().also{it[workspace.activeLayout]=fixed.toMutableList()})
+                }
+            }
+            if (!reliable) {
+                trackingRecovery.update(handTracking.nowMs,false,null,null,unitsPerMeter)
+                // Head quality controls follow, not availability of independently tracked hands.
+                followLock = null
+            }
+            val eyeRays = if (trackingAvailable && deviceState != null) gazeEyes.mapNotNull { eye ->
+                val state=eye.state.value
+                if(!state.isOpen || state.trackingState!=TrackingState.TRACKING) null else {
+                    val gaze=deskPose(current,root,deviceState.devicePose.compose(state.pose))
+                    val q=gaze.rotation
+                    gaze.translation.toArray() to rotateVector(floatArrayOf(q.x,q.y,q.z,q.w),0f,0f,-1f)
+                }
+            } else emptyList()
+            val screen=workspace.monitorAt(0)
+            val qualityTargets=if(!workspace.experimentalViewedDetail || screen==null)emptyList() else eyeRays.mapNotNull{(origin,direction)->
+                val local=viewerInMonitor(origin,screen.pose.position,screen.pose.rotation)
+                val endpoint=viewerInMonitor(add(origin,direction),screen.pose.position,screen.pose.rotation)
+                extendedQualityTarget(local,subtract(endpoint,local),screen.physicalWidthM,screen.physicalHeightM,pointerControl.meshes[0])
+                    ?.let{connection.presentation().extendedDesktopPoint(it.first,it.second)}
+            }
+            val raw=if(qualityTargets.isEmpty())null else qualityTargets.map{it.first}.average().toFloat() to qualityTargets.map{it.second}.average().toFloat()
+            val sharedGaze=qualityGaze.update(raw,handTracking.nowMs)
+            connection.detailDebug(workspace.experimentalViewedDetail,workspace.viewDetailDebug,workspace.showResources)
+            if(displayControlsOpen || head==null || manipulating || !workspace.experimentalViewedDetail) {
+                connection.viewedDetail(null,when {
+                    displayControlsOpen->"Paused: Workspace open"
+                    head==null->"Paused: head tracking unavailable"
+                    manipulating->"Paused: desktop manipulation"
+                    else->"Normal full-desktop streaming"
+                })
+            } else if(handTracking.nowMs-lastDetailAt>=50){
+                lastDetailAt=handTracking.nowMs
+                val angles=viewHalfAngles.get()
+                val view=if(screen==null)null else viewedRegion(screen.physicalWidthM,screen.physicalHeightM,pointerControl.meshes[0],angles[0],angles[1]) {point->
+                    viewerInMonitor(transformPoint(screen.pose,point),head.translation.toArray(),floatArrayOf(head.rotation.x,head.rotation.y,head.rotation.z,head.rotation.w))
+                }
+                connection.viewedDetail(view?.let{connection.presentation().desktopBounds(it)},center=sharedGaze,
+                    targeting=if(raw!=null)"GAZE" else if(sharedGaze!=null)"GAZE LOST: holding target" else "GAZE unavailable: initial view center")
+            }
+            var anyFist = false
+            var anyOpen = false
+            var palmShown = false
+            val palmCandidates = mutableMapOf<String, PalmPanelState>()
+            val aimPoses=mutableMapOf<String,HandAimPose>()
+            val fingerTips = mutableMapOf<String, FloatArray>()
+            val mouseSamples = mutableMapOf<String,FingerPinch>()
+            grips.clear()
+            head?.let {
+                grips["HEAD"] = it.translation.toArray()
+                val q=it.rotation
+                grips["VIEW_DIRECTION"] = floatArrayOf(-2f*(q.x*q.z+q.w*q.y),2f*(q.w*q.x-q.y*q.z),-1f+2f*(q.x*q.x+q.y*q.y))
+            }
+            // A sphere can be equidistant from one point: use the midpoint between the eyes.
+            val rightEye = rightViewpoint?.state?.value?.pose
+            val viewer = if (perceived != null && rightEye != null) {
+                androidx.xr.runtime.math.Pose((perceived.translation + rightEye.translation) * 0.5f)
+            } else perceived
+            viewer?.takeIf { reliable }?.let { grips["VIEWER"] = deskPose(current, root, it).translation.toArray() }
+            displayHead.get()?.let{reference->if(reliable)magnifierViewer.set(Pose(grips["VIEWER"]?.copyOf() ?: reference.position,reference.rotation))}
+            sampledHands.set(hands)
+            val handStates=hands.map { (side,hand)->val state=hand.state.value;Triple(side,state,snapshotHandJoints(state)) }
+            val handSamples=handStates.mapNotNull { (side,state,joints) ->
+                if(state.trackingState!=TrackingState.TRACKING) null else {
+                    val wrist=joints[HandJointType.WRIST];val palm=joints[HandJointType.PALM]
+                    val thumb=joints[HandJointType.THUMB_TIP];val index=joints[HandJointType.INDEX_TIP];val middle=joints[HandJointType.MIDDLE_TIP]
+                    if(wrist==null || palm==null || thumb==null || index==null || middle==null) null else {
+                        val q=wrist.rotation
+                        side to HandTrackingSample(wrist.translation.toArray(),palm.translation.toArray(),thumb.translation.toArray(),
+                            index.translation.toArray(),middle.translation.toArray(),floatArrayOf(q.x,q.y,q.z,q.w))
+                    }
+                }
+            }.toMap()
+            val quality=handQuality.update(handTracking.nowMs,handSamples)
+            val allowed=quality.rejected.isEmpty() && handSamples.isNotEmpty()
+            if(handInputAllowed && !allowed) palmInteractionEpoch++
+            handInputAllowed=allowed
+            for(side in quality.rejected) pointerControl.rejectHand(side)
+            if(quality.rejected!=lastHandRejection || quality.overlapping!=lastHandOverlap) {
+                Log.i("Floatdesk","hand quality rejected=${quality.rejected} overlap=${quality.overlapping} owner=${quality.continuousOwner} reasons=${quality.reasons}")
+                lastHandRejection=quality.rejected;lastHandOverlap=quality.overlapping
+            }
+            var tracking = 0
+            var rawTracking = 0
+            for ((side,state,joints) in handStates) {
+                if(state.trackingState==TrackingState.TRACKING) rawTracking++
+                if(side in quality.rejected || side !in handSamples) continue
+                if (state.trackingState == TrackingState.TRACKING) {
+                    joints[HandJointType.WRIST]?.let { pose ->
+                        val q=pose.rotation
+                        aimPoses[side]=HandAimPose(pose.translation.toArray(),floatArrayOf(q.x,q.y,q.z,q.w))
+                    }
+                    val thumb = joints[HandJointType.THUMB_TIP]?.translation
+                    val index = joints[HandJointType.INDEX_TIP]?.translation
+                    val middle = joints[HandJointType.MIDDLE_TIP]?.translation
+                    if(thumb != null && index != null && middle != null) {
+                        val q=perceived?.rotation
+                        val quaternion=if(q==null) floatArrayOf(0f,0f,0f,1f) else floatArrayOf(q.x,q.y,q.z,q.w)
+                        mouseSamples[side]=FingerPinch(distance(thumb,index),distance(thumb,middle),
+                            (joints[HandJointType.PALM]?.translation ?: joints[HandJointType.WRIST]?.translation)?.toArray(),rotateVector(quaternion,1f,0f,0f),rotateVector(quaternion,0f,1f,0f))
+                    }
+                    if (thumb != null && index != null) {
+                        if (workspace.pinchThresholds.indexClosed(side,distance(thumb,index))) handTracking.pinched.add(side)
+                        grips[side] = deskPose(current, root, androidx.xr.runtime.math.Pose((thumb + index) * 0.5f)).translation.toArray()
+                        fingerTips[side] = deskPose(current, root, androidx.xr.runtime.math.Pose(index)).translation.toArray()
+                    }
+                    palmControls(state, perceived, side, tick % 100 == 0, panelHand==side,joints)?.let { palmCandidates[side] = it.copy(pose = deskPose(current, root, it.pose.toRuntimePose()).toWorkspacePose(), unitsPerMeter = unitsPerMeter) }
+                }
+                val read = readHand(state,joints)
+                if(read == null) continue
+                tracking += 1
+                if (read.fist) anyFist = true
+                if (read.open) anyOpen = true
+                if (palmCandidates.isNotEmpty()) palmShown = true
+            }
+            if (tick % 100 == 0) {
+                val note = when {
+                    hands.isEmpty() -> "This app is not receiving hand joints from the system."
+                    rawTracking == 0 -> "Hand joints are paused, even though the system hands are visible."
+                    head == null -> "Head pose is not updating, so follow cannot move the desk."
+                    else -> ""
+                }
+                if (note.isNotEmpty()) {
+                    gestureNote = note
+                } else if (
+                    gestureNote.startsWith("Hand") ||
+                    gestureNote.startsWith("This") ||
+                    gestureNote.startsWith("Waiting") ||
+                    gestureNote.startsWith("Head")
+                ) {
+                    gestureNote = ""
+                }
+                Log.i(
+                    "Floatdesk",
+                    "hands=${hands.size} raw=$rawTracking read=$tracking fist=$anyFist palm=$palmShown head=${head?.translation}",
+                )
+            }
+            if (anyOpen && !anyFist) suppressFist = false
+            val fingerContact=mouseSamples.any{(side,sample)->workspace.pinchThresholds.indexClosed(side,sample.indexMetres) || workspace.pinchThresholds.middleClosed(side,sample.middleMetres)}
+            if (anyFist && !suppressFist && !fingerContact) {
+                fistHeld += 1
+                holdingFist = fistHeld >= 16
+            } else {
+                fistHeld = 0
+                holdingFist = false
+            }
+            if(quality.overlapping) palmCandidates.clear()
+            val candidate = palmCandidates[panelHand] ?: palmCandidates.values.firstOrNull()
+            if (candidate == null) {
+                val hostTracked = hands.any { (side, hand) ->
+                    side == panelHand && hand.state.value.trackingState == TrackingState.TRACKING
+                }
+                // Brief joint dropouts should not repeatedly destroy/recreate the Android panel.
+                // A tracked hand turning away still hides it immediately. Never poke a stale pose.
+                if (hostTracked || SystemClock.uptimeMillis() - lastPalmSeen > 120) {
+                    panelHand = null
+                    palmPanel = null
+                }
+                poke.clear()
+            } else {
+                if (panelHand != candidate.side) poke.clear()
+                if (palmPanel == null) Log.i("Floatdesk", "palm panel shown side=${candidate.side} unitsPerMeter=${candidate.unitsPerMeter} pose=${candidate.pose.toRuntimePose()}")
+                panelHand = candidate.side
+                lastPalmSeen = SystemClock.uptimeMillis()
+                val centered=candidate.copy(pose=palmPanel?.pose ?: (head ?: candidate.pose.toRuntimePose()).compose(
+                    androidx.xr.runtime.math.Pose(Vector3(0f,0f,-ViewLayers.ControlsDistanceM*unitsPerMeter))).toWorkspacePose())
+                palmPanel = centered
+                val other = if (candidate.side == "LEFT") "RIGHT" else "LEFT"
+                poke.update(centered, fingerTips[other])?.let { palmActionNow.value(it) }
+                // A platform click may arrive on release after our direct-contact press.
+                if (poke.latchedContact) lastPalmAction = SystemClock.uptimeMillis()
+            }
+            if(palmPanel!=null && !panelEyePermissionAsked && context.checkSelfPermission("android.permission.EYE_TRACKING_FINE") != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                panelEyePermissionAsked=true
+                eyePermission.launch("android.permission.EYE_TRACKING_FINE")
+            }
+            for ((index, grab) in grabs) {
+                val wasBusy = grab.busy
+                val file = workspace
+                val placement = file.monitorAt(index) ?: continue
+                grab.advance(handTracking, placement)?.let { workspace = file.monitorPlaced(index, it, store, false) }
+                if (wasBusy && !grab.busy) {
+                    updateManipulation(false)
+                    store.save(workspace)
+                }
+            }
+            val hoverHands = pointerControl.hands(grips.keys,handTracking.nowMs,aimPoses).filterValues {connection.desktopPoint(it.monitor,it.u,it.v)!=null}
+            // Preview and acquisition share current validated surface UVs. Do not
+            // require a second native DOWN after both physical pinches are already down.
+            if(magnifierMenu==null && listOf("LEFT","RIGHT").none{it in magnifierHands} && listOf("LEFT","RIGHT").all {it in handTracking.pinched} && palmPanel==null) {
+                val left=hoverHands["LEFT"];val right=hoverHands["RIGHT"]
+                if(left!=null && right!=null && left.monitor==right.monitor) {
+                    val placement=workspace.monitorAt(left.monitor)
+                    val grab=grabs[left.monitor]
+                    if(placement!=null && grab!=null && !grab.engaged) {
+                        val wasBusy=grab.busy;val mesh=pointerControl.meshes[left.monitor]
+                        for((side,hit) in listOf("LEFT" to left,"RIGHT" to right))
+                            grab.acquire(side,pointerSurfacePoint(hit,placement.physicalWidthM,placement.physicalHeightM,mesh),placement,handTracking,mesh)
+                        if(wasBusy!=grab.busy) updateManipulation(grab.busy)
+                    }
+                }
+            }
+            val panel=palmPanel
+            val panelHits=if(panel==null) emptyList() else eyeRays.mapNotNull { (origin,direction) -> palmRayPoint(panel,origin,direction) }
+            val panelGaze=if(panelHits.isEmpty()) null else floatArrayOf(panelHits.map {it[0]}.average().toFloat(),panelHits.map {it[1]}.average().toFloat())
+            val activate=panelInput.update(handTracking.nowMs,panel?.side,panelGaze,panel?.let { mouseSamples[it.side]?.middleMetres })
+            panelFocused=panelInput.focused?.let { PalmAction.entries.getOrNull(it) }
+            if(activate!=null) PalmAction.entries.getOrNull(activate)?.let { palmActionNow.value(it) }
+            if(panel!=null && tick%50==0) Log.i("Floatdesk","panel gaze resources=${gazeEyes.size} tracked=${gazeEyes.count { it.state.value.trackingState==TrackingState.TRACKING }} open=${gazeEyes.count { it.state.value.isOpen }} device=${deviceState?.trackingState} rays=${eyeRays.size} hits=${panelHits.size}")
+            fun magnifiedTarget(uv:Pair<Float,Float>,windowId:Long?=magnified?.id):PointerTarget? {
+                val win=connection.workspaceInfo.value?.windows?.firstOrNull{it.id==windowId} ?: return null
+                val bounds=connection.workspaceInfo.value?.bounds() ?: return null
+                val sourceU=(win.x-bounds[0]+uv.first*win.width)/bounds[2]
+                val sourceV=(win.y-bounds[1]+uv.second*win.height)/bounds[3]
+                val mapped=connection.presentation().extendedDisplayPoint(sourceU,sourceV) ?: return null
+                return PointerTarget(0,mapped.first,mapped.second,floatArrayOf(0f,0f,0f))
+            }
+            val desktopHands=(if(workspace.focusMode)pointerControl.focusHands(hoverHands) else hoverHands).filterKeys{it !in magnifierHands}
+            val panelHands=magnifierHands.mapNotNull{(side,uv)->magnifiedTarget(uv,magnifierHands.window(side))?.let{side to it}}.toMap()
+            val contextHands=if(workspace.focusMode)desktopHands else desktopHands+panelHands
+            val nativeFocusGazeEnabled=workspace.focusMode && pointerControl.systemGazeEnabled
+            val nativeFocusGaze=if(nativeFocusGazeEnabled)pointerControl.systemGaze() else null
+            val gazeTargets=if((workspace.eyeAiming || nativeFocusGazeEnabled || workspace.gazeToFocus || workspace.magnifyWindow) && reliable) eyeRays.mapNotNull { (origin,direction) -> gazePointerTarget(origin,direction,workspace,pointerControl.meshes) } else emptyList()
+            // Average binocular contacts on the same monitor; a valid single eye can still aim.
+            val rawDesktopGazeTarget = gazeTargets.firstOrNull()?.let { first ->
+                val same = gazeTargets.filter { it.monitor == first.monitor }
+                first.copy(u=same.map { it.u }.average().toFloat(),v=same.map { it.v }.average().toFloat())
+            }
+            val visibleMagnifiers=buildList {
+                if(magnifierSurfacesAllowed(workspace.magnifyWindow,sceneActive,displayControlsOpen) && magnifierReady)magnified?.let{add(it.copy(mesh=magnifierMesh))}
+                if(workspace.magnifierMode=="fixed")fixedWindows.get().filter{fixedReady[it.first]==true}.forEach{add(it.second)}
+            }
+            val paneGaze=visibleMagnifiers.mapNotNull{window->eyeRays.firstNotNullOfOrNull{(o,d)->
+                val depth=surfaceRayDistance(window.pose,window.width,window.height,window.mesh,o,d)
+                val desktopDepth=gazePointerTarget(o,d,workspace,pointerControl.meshes)?.takeIf{connection.desktopPoint(it.monitor,it.u,it.v)!=null}?.let{hit->workspace.monitorAt(hit.monitor)?.let{surfaceRayDistance(it.pose,it.physicalWidthM,it.physicalHeightM,pointerControl.meshes[hit.monitor],o,d)}}
+                if(depth==null || desktopDepth!=null && desktopDepth+.002f*handTracking.unitsPerMeter<depth)null
+                else magnifierPoint(window,o,d)?.let{uv->depth to (window to uv)}
+            }}.minByOrNull{it.first}?.second
+            val gazeBlockedByPane=paneGaze!=null
+            val magnifierGaze=paneGaze?.let{(window,uv)->magnifiedTarget(magnifierContentPoint(window,uv),window.id)}
+            val rawGazeTarget=if(gazeBlockedByPane)magnifierGaze else rawDesktopGazeTarget
+            val gazeTarget=if(contextHands.isEmpty()) gazeStabilizer.update(rawGazeTarget?.takeIf {connection.desktopPoint(it.monitor,it.u,it.v)!=null},handTracking.nowMs) else { gazeStabilizer.reset(); null }
+            val monitorGrab=grabs.values.any { it.engaged }
+            val nativeManipulation=pointerControl.nativeManipulating
+            val choice = pointerControl.choose(workspace.eyeAiming || nativeFocusGazeEnabled,gazeTarget ?: nativeFocusGaze?.takeUnless{gazeBlockedByPane},contextHands,monitorGrab || nativeManipulation,handTracking.nowMs)
+            if (choice.mode != lastPointerMode) {
+                Log.i("Floatdesk","mouse source=${choice.mode} hands=${hoverHands.mapValues {it.value.monitor}} eyes=${gazeTargets.size} native=$nativeManipulation palm=${palmPanel!=null}")
+                lastPointerMode = choice.mode
+            }
+            dimPointer = choice.mode == PointerMode.HAND
+            val focusInfo=connection.workspaceInfo.value
+            connection.typingQuietMs=workspace.typingQuietMs
+            if(workspace.gazeToFocus || workspace.magnifyWindow)connection.pollTyping(handTracking.nowMs)
+            typingLocked=connection.typingLocked(handTracking.nowMs)
+            val autoFocusBlocked=typingLocked || magnifierMoving || magnifierMenu!=null || !reliable || !resumed || displayControlsOpen || palmPanel!=null ||
+                choice.mode.reservesDesktop || monitorGrab || nativeManipulation || mouseGestures.engaged || connection.focusBusy.value || focusInfo?.gazeFocus!=true
+            val autoFocusWindow=if(!autoFocusBlocked && workspace.gazeToFocus)paneGaze?.first?.id?.takeIf{it>0} ?: rawGazeTarget?.takeIf{it.monitor==0}?.let{hit->
+                connection.desktopPoint(hit.monitor,hit.u,hit.v)?.let{(u,v)->focusInfo?.hover(u,v)?.window?.windowId}
+            }else null
+            gazeWindowFocus.update(handTracking.nowMs,workspace.gazeToFocus,autoFocusBlocked,autoFocusWindow)?.let{connection.requestGazeFocus(it)}
+            if(autoFocusBlocked || !workspace.gazeToFocus)connection.cancelGazeFocus()
+            val magnifyTarget=if(gazeBlockedByPane)null else rawDesktopGazeTarget?.let{hit->connection.desktopPoint(hit.monitor,hit.u,hit.v)?.let{(u,v)->focusInfo?.hover(u,v)?.window?.windowId}}
+            magnified?.let { panel ->
+                val source=focusInfo?.windows?.firstOrNull { it.id==panel.id }
+                val width=source?.width ?: panel.sourceWidth
+                val height=source?.height ?: panel.sourceHeight
+                if(panel.spherical!=workspace.sphericalWarp || width!=panel.sourceWidth || height!=panel.sourceHeight) {
+                    val ref=magnifierViewer.get() ?: store.viewerReference ?: displayHead.get() ?: Pose()
+                    magnified=magnifiedWindow(panel.id,width,height,ref,viewHalfAngles.get()[0],viewHalfAngles.get()[1],
+                        unitsPerMeter,workspace.sphericalWarp,previous=panel)
+                    magnifierMesh=magnified?.mesh
+                    magnification.refresh(handTracking.nowMs)
+                }
+            }
+            fun eligibleInPlace(id:Long):FocusRect? {
+                val info=focusInfo ?: return null;val placement=screen ?: return null
+                val viewer=magnifierViewer.get() ?: return null;val angles=viewHalfAngles.get()
+                return inPlaceWindowRect(info,id,placement,pointerControl.meshes[0],viewer,angles[0],angles[1],unitsPerMeter,workspace.screenSpacing)
+            }
+            if(workspace.magnifierMode=="floating" && inPlaceWindow?.let{eligibleInPlace(it)==null}==true){magnification.dismiss(handTracking.nowMs);inPlaceWindow=null;magnifierReady=false}
+            val currentMagnifier=magnified?.id ?: inPlaceWindow
+            val magnifierChanged=currentMagnifier?.let{id->focusInfo?.windows?.none{it.id==id} ?: true}==true
+            val magnifyBlocked=(typingLocked && currentMagnifier==null) || magnifierChanged || (currentMagnifier==null && (choice.mode.reservesDesktop || mouseGestures.engaged)) || !resumed || (!magnification.pinned && (!reliable || displayControlsOpen || palmPanel!=null || monitorGrab || nativeManipulation)) || magnifierFailed || focusInfo?.windowMagnify!=true
+            val insideMagnifier=if(inPlaceWindow!=null)magnifyTarget==inPlaceWindow else magnified?.let{window->eyeRays.any{(o,d)->magnifierContainsGaze(window.copy(mesh=magnifierMesh),o,d)}}==true
+            val activeMagnifier=magnification.update(handTracking.nowMs,workspace.magnifyWindow,magnifyBlocked,magnifyTarget,
+                insideMagnifier,magnifierReady,mouseGestures.engaged || typingLocked || magnifierMoving || magnifierMenu!=null,eyeRays.isNotEmpty(),retain=workspace.magnifierMode=="fixed")
+            if(activeMagnifier!=currentMagnifier){
+                magnified=null;inPlaceWindow=null
+                activeMagnifier?.let{id->focusInfo?.windows?.firstOrNull{it.id==id}?.let{win->
+                    connection.requestGazeFocus(id)
+                    if(workspace.magnifierMode=="fixed" || eligibleInPlace(id)!=null)inPlaceWindow=id else {
+                        val ref=magnifierViewer.get() ?: store.viewerReference ?: displayHead.get() ?: Pose()
+                        magnified=magnifiedWindow(id,win.width,win.height,ref,viewHalfAngles.get()[0],viewHalfAngles.get()[1],unitsPerMeter,workspace.sphericalWarp)
+                    }
+                }}
+                magnifierReady=false;magnifierMesh=magnified?.mesh;magnifierHands.clear()
+            }
+            if(workspace.magnifierMode=="fixed" && activeMagnifier!=null)lastFixedWindow=activeMagnifier
+            if(lastFixedWindow!=null && focusInfo!=null && focusInfo.windows.none{it.id==lastFixedWindow})lastFixedWindow=null
+            magnifierPinned=magnification.pinned
+            magnifierFailed=false;connection.magnifierActive=magnified!=null
+            val focusContacts=focusAimContacts(desktopHands,if(nativeFocusGazeEnabled && !gazeBlockedByPane)gazeTarget ?: nativeFocusGaze else null)
+            val focusHover=if(workspace.focusMode && focusInfo!=null)focusContacts.mapNotNull {(side,hit)->
+                if(hit.monitor!=0)return@mapNotNull null
+                connection.desktopPoint(hit.monitor,hit.u,hit.v)?.let{(u,v)->focusInfo.hover(u,v)}?.let{side to it}
+            }.toMap() else emptyMap()
+            val focusGate=buildList {
+                if(magnifierMoving || magnifierMenu!=null)add("magnifier interaction")
+                if(choice.mode.reservesDesktop)add("two-hand manipulation")
+                if(mouseSamples.isEmpty())add("hands unavailable")
+                if(displayControlsOpen)add("workspace panel")
+                if(palmPanel!=null)add("palm panel")
+                if(nativeManipulation)add("native handle")
+                if(connection.focusBusy.value)add("host request pending")
+                if(quality.overlapping && quality.continuousOwner==null)add("ambiguous hand identities")
+            }.joinToString(",")
+            val focusGateKey="$focusGate|${workspace.pinchThresholds}"
+            if(workspace.focusMode && focusGateKey!=lastFocusGate) {
+                Log.i("Floatdesk","focus input gate=${focusGate.ifEmpty{"open"}} thresholds=${workspace.pinchThresholds}")
+                lastFocusGate=focusGateKey
+            }
+            val gestureBlocked=magnifierMoving || magnifierMenu!=null || displayControlsOpen || choice.mode.reservesDesktop || palmPanel!=null
+            for(frame in pinchFrames.drain(handTracking.nowMs)) {
+                val samples=frame.samples.filterKeys { it in mouseSamples }.mapValues { (side,sample) ->
+                    val basis=mouseSamples.getValue(side)
+                    sample.copy(right=basis.right,up=basis.up)
+                }
+                if(workspace.mouseGestures) for((side,sample) in frame.samples) {
+                    val contact=(if(workspace.pinchThresholds.indexClosed(side,sample.indexMetres)) 1 else 0) or (if(workspace.pinchThresholds.middleClosed(side,sample.middleMetres)) 2 else 0)
+                    if(lastMouseContact.put(side,contact)!=contact) Log.i("Floatdesk",
+                        "mouse contact side=$side fingers=$contact indexMm=${sample.indexMetres*1000} middleMm=${sample.middleMetres*1000} accepted=${side in samples} blocked=$gestureBlocked sampleAge=${handTracking.nowMs-frame.at}")
+                }
+                val uncertain=quality.overlapping && quality.continuousOwner==null
+                val selected=focusGestures.update(workspace.focusMode,
+                    focusGate.isNotEmpty(),samples,focusHover)
+                if(selected?.resetDesktop==true)resetDesk()
+                else if(selected!=null && connection.requestFocus(selected))pendingFocusMonitor=0
+                val mouse=mouseGestures.update(frame.at,workspace.mouseGestures && !workspace.focusMode,
+                    gestureBlocked || uncertain || workspace.focusMode,samples,if(workspace.focusMode)null else choice.target)
+                mouse.scroll?.let {
+                    if(it.fingers==0) Log.i("Floatdesk","mouse scroll released at=${frame.at}")
+                    connection.touchpad(it.fingers,it.x,it.y)
+                }
+                if(mouse.dragging != lastMouseDragging) {
+                    Log.i("Floatdesk","mouse drag=${mouse.dragging}")
+                    lastMouseDragging=mouse.dragging
+                }
+                mouse.target?.let {target->connection.desktopPoint(target.monitor,target.u,target.v)?.let {(u,v)->connection.movePointer(target.monitor,u,v,mouse.dragging)}}
+                mouse.click?.let {
+                    if(it.button==3) clickView.playSoundEffect(android.view.SoundEffectConstants.CLICK)
+                    Log.i("Floatdesk","mouse click button=${it.button}")
+                    connection.desktopPoint(it.target.monitor,it.target.u,it.target.v)?.let {(u,v)->connection.clickPointer(it.target.monitor,u,v,it.button)}
+                }
+            }
+            handTracking.pointerHeld=mouseGestures.engaged
+            for((index,placement) in workspace.layouts[workspace.activeLayout].orEmpty().withIndex()) {
+                val segments=ArrayList<Float>();val colors=ArrayList<Float>()
+                if(index==0 && workspace.focusMode && palmPanel==null && !displayControlsOpen && focusInfo!=null) {
+                    val targets=focusHover.values.flatMap{listOfNotNull(it.screen,it.window)}.distinct()
+                    for(target in targets)for(rect in focusInfo.visibleRects(target.rect,workspace.screenSpacing)) {
+                        val rgb=if(target.windowId==null)floatArrayOf(.4236f,.9777f,1f) else floatArrayOf(.757f,.502f,1f)
+                        for(edge in listOf(floatArrayOf(rect.left,rect.top,rect.right,rect.top),floatArrayOf(rect.right,rect.top,rect.right,rect.bottom),
+                            floatArrayOf(rect.right,rect.bottom,rect.left,rect.bottom),floatArrayOf(rect.left,rect.bottom,rect.left,rect.top))) {
+                            segments.addAll(edge.toList());colors.addAll(rgb.toList())
+                        }
+                    }
+                }
+                connection.aimOverlay(index,dev.floatdesk.client.media.VideoAim(segments.toFloatArray(),floatArrayOf(),maxOf(2f,placement.pixelWidth*.001f),.85f,colors.toFloatArray()))
+            }
+            val previews = if (choice.mode == PointerMode.PREVIEW) hoverHands.values.groupBy { it.monitor }.mapNotNull { (index,points) ->
+                val left=hoverHands["LEFT"]?.takeIf { it.monitor == index }
+                val right=hoverHands["RIGHT"]?.takeIf { it.monitor == index }
+                val placement=workspace.monitorAt(index)
+                if(points.size != 2 || left == null || right == null || placement == null) null else
+                    previewGrabGuide(placement,
+                        pointerSurfacePoint(left,placement.physicalWidthM,placement.physicalHeightM,pointerControl.meshes[index]),
+                        pointerSurfacePoint(right,placement.physicalWidthM,placement.physicalHeightM,pointerControl.meshes[index]),
+                        handTracking,pointerControl.meshes[index])?.let { index to it }
+            }.toMap() else emptyMap()
+            guideRenderer?.let { renderer ->
+                runCatching { renderer.update(root, grabs.mapNotNull { (index,grab) -> workspace.monitorAt(index)?.let {grab.displayGuide(it,pointerControl.meshes[index])} ?: previews[index] })
+                    // The desktop cursor is the target marker; avoid a second dot over it.
+                    renderer.updatePointer(root,null,handTracking.points["HEAD"],handTracking.unitsPerMeter)
+                    val draw: ()->Unit = {
+                        val contactsNow=pointerControl.hands(grips.keys,SystemClock.uptimeMillis(),aimPoses).filterValues {connection.desktopPoint(it.monitor,it.u,it.v)!=null}
+                        val show=contactsNow.keys.none{it in magnifierHands} && contactsNow.isNotEmpty() && handPreviewMonitor(contactsNow)==null && palmPanel==null && !monitorGrab && !nativeManipulation
+                        val rays=(if(show) contactsNow else emptyMap()).mapNotNull { (side,hit) ->
+                            val origin=grips[side]; val placement=workspace.monitorAt(hit.monitor)
+                            if(origin==null || placement==null) null else {
+                                val local=pointerSurfacePoint(hit,placement.physicalWidthM,placement.physicalHeightM,pointerControl.meshes[hit.monitor])
+                                val contact=transformPoint(placement.pose,local)
+                                side to (origin to visibleGrabContact(contact,handTracking.points["VIEWER"] ?: handTracking.points["HEAD"],handTracking.unitsPerMeter))
+                            }
+                        }.toMap()
+                        renderer.updateRays(root,rays,handTracking.points["VIEWER"] ?: handTracking.points["HEAD"],handTracking.unitsPerMeter,true)
+                    }
+                    redrawAim.set(draw)
+                     }.onFailure {
+                    Log.e("Floatdesk", "Could not update grab guides", it)
+                    guideRenderer = null
+                    renderer.close()
+                }
+            }
+            val wantFollow = !manipulating && head != null && (latchedFollow || focusFollowUntil>SystemClock.uptimeMillis() || (holdingFist && !suppressFist))
+            if (!wantFollow) {
+                if (followLock != null) {
+                    store.save(workspace)
+                    followLock = null
+                }
+            } else if (followLock == null) {
+                followLock = FollowLock.capture(head, workspace)
+                gestureNote = if (latchedFollow) {
+                    "Following, latched with the button. Use Unlock follow to stop."
+                } else {
+                    "Following while the fist stays closed."
+                }
+            } else {
+                workspace = followLock.advance(head, workspace)
+            }
+        }
+    }
+    LaunchedEffect(monitors) {
+        if(monitors.isNotEmpty()) {
+            grabs.values.forEach { it.cancel() };pointerControl.clear()
+            val next=workspace.reconcileMonitors(monitors.map { Triple(it.name,it.width,it.height) })
+            if(next!=workspace) {workspace=next;store.save(next)}
+        }
+    }
+
+    val controls = @Composable {
+        ControlPanel(
+            status = status,
+            spatial = spatial,
+            anchorLabel = note.ifEmpty {
+                workspace.anchorUuid?.let { "Workspace anchor $it" } ?: "No room anchor yet"
+            },
+            onDisconnect = {
+                connection.disconnect()
+                connection.start(context)
+            },
+            onAnchor = {
+                note = "Room anchor is not available on this headset yet. The monitors still connect without it."
+            },
+            onOpenWorkspace = { session?.scene?.requestFullSpace();toggleDisplays() },
+            onReset = { resetDesk() },
+            headLocked = following,
+            latchedFollow = latchedFollow,
+            gestureNote = gestureNote,
+            onToggleHead = {
+                latchedFollow = !latchedFollow
+                suppressFist = false
+                followGeneration += 1
+            },
+        )
+    }
+
+    if (session != null && pixelDensity != null) {
+        val actionEpoch=palmInteractionEpoch
+        val desk: @Composable () -> Unit = {
+            DeskContent(
+                connection = connection,
+                viewer=displayHead,
+                viewerAngles=viewHalfAngles,
+                workspace = workspace,
+                onWorkspace = {
+                    workspace = it
+                    followGeneration += 1
+                },
+                monitors = monitors,
+                store = store,
+                density = density,
+                pixelDensity = pixelDensity,
+                palmPanel = palmPanel,
+                latchedFollow = latchedFollow,
+                onPalmAction = { action-> if(actionEpoch==palmInteractionEpoch) palmAction(action) },
+                handInputAllowed = handInputAllowed,
+                displayControlsOpen=displayControlsOpen,
+                displayControlsPose=displayControlsPose,
+                onCloseDisplays={displayControlsOpen=false},
+                onAddFixed={addFixedMagnifier()},
+                grabs = grabs,
+                handTracking = handTracking,
+                pointerControl = pointerControl,
+                dimPointer = dimPointer,
+                panelFocused = panelFocused,
+                panelPressed = panelPressed,
+                onManipulate = { updateManipulation(it) },
+            )
+        }
+        Subspace { desk() }
+        InPlaceWindowDetail(connection,if(!magnifierSurfacesAllowed(workspace.magnifyWindow,sceneActive,displayControlsOpen))null else if(workspace.magnifierMode=="fixed" && workspace.fixedMagnifiers.isEmpty())null else magnified?.id ?: inPlaceWindow ?: if(workspace.magnifierMode=="fixed")lastFixedWindow else null,{if(magnified==null)magnifierReady=true},{message->magnifierFailed=true;Log.w("Floatdesk",message)})
+        val magnifierRoot=deskSpace.get()
+        if(magnifierRoot!=null) {
+            WindowMagnifierPanel(session,magnifierRoot,magnified.takeIf{magnifierSurfacesAllowed(workspace.magnifyWindow,sceneActive,displayControlsOpen)},connection,magnifierPinned,magnifierViewer,{handTracking.unitsPerMeter},handTracking,
+                {magnifierReady=true},{message->magnifierFailed=true;Log.w("Floatdesk",message)},
+                {side,uv->magnifierHands.update("floating",side,uv,magnified?.id)},
+                {uv->
+                    magnification.togglePin();magnifierPinned=magnification.pinned
+                    if(magnifierPinned){
+                        val info=connection.workspaceInfo.value
+                        val win=info?.windows?.firstOrNull{it.id==magnified?.id};val bounds=info?.bounds()
+                        val point=magnified?.let{magnifierContentPoint(it,uv)} ?: uv
+                        if(win!=null && bounds!=null)connection.movePointer(0,(win.x-bounds[0]+point.first*win.width)/bounds[2],(win.y-bounds[1]+point.second*win.height)/bounds[3])
+                    }
+                },{next,_->magnified=next;magnifierMesh=next.mesh},{moving->magnifierMoving=moving},onHidden={magnifierReady=false})
+        }
+        val fixedDesktop=workspace.monitorAt(0)
+        val fixedViewer=magnifierViewer.get()
+        val renderedFixed=mutableListOf<Pair<String,MagnifiedWindow>>()
+        if(session!=null && magnifierRoot!=null && fixedDesktop!=null && fixedViewer!=null){
+            for(record in workspace.fixedMagnifiers) key(record.id){
+                val selected=fixedPins[record.id] ?: inPlaceWindow ?: lastFixedWindow
+                val source=connection.workspaceInfo.value?.windows?.firstOrNull{it.id==selected}
+                val paneEnabled=workspace.magnifierMode=="fixed" && magnifierSurfacesAllowed(workspace.magnifyWindow,sceneActive,displayControlsOpen)
+                val pane=if(paneEnabled)fixedMagnifier(record,fixedDesktop,source,fixedViewer,handTracking.unitsPerMeter,workspace.sphericalWarp,previous=fixedRuntime[record.id])else fixedRuntime[record.id] ?: fixedMagnifier(record,fixedDesktop,source,fixedViewer,handTracking.unitsPerMeter,false)
+                if(paneEnabled)renderedFixed.add(record.id to pane)
+                DisposableEffect(record.id,pane.id){fixedReady[record.id]=false;onDispose{fixedReady.remove(record.id)}}
+                WindowMagnifierPanel(session,magnifierRoot,pane.takeIf{paneEnabled},connection,record.id in fixedPins,magnifierViewer,{handTracking.unitsPerMeter},handTracking,
+                    {fixedReady[record.id]=true;magnifierReady=true},{message->fixedReady[record.id]=false;Log.w("Floatdesk",message)},
+                    {side,uv->magnifierHands.update(record.id,side,uv?.let{magnifierContentPoint(pane,it)},pane.id)},
+                    {uv->
+                        if(record.id in fixedPins)fixedPins.remove(record.id)else if(pane.id!=0L)fixedPins[record.id]=pane.id
+                        val bounds=connection.workspaceInfo.value?.bounds();val point=magnifierContentPoint(pane,uv)
+                        if(source!=null && bounds!=null)connection.movePointer(0,(source.x-bounds[0]+point.first*source.width)/bounds[2],(source.y-bounds[1]+point.second*source.height)/bounds[3])
+                    },{next,manipulated->
+                        fixedRuntime[record.id]=next
+                        if(manipulated && record.id in fixedEditing){
+                            val desktop=workspace.monitorAt(0)
+                            if(desktop!=null){val saved=saveFixedMagnifier(record.id,next,desktop,handTracking.unitsPerMeter);workspace=workspace.copy(fixedMagnifiers=workspace.fixedMagnifiers.map{if(it.id==record.id)saved else it})}
+                        }
+                    },{editing->
+                        if(editing)fixedEditing.add(record.id)else{fixedEditing.remove(record.id);store.save(workspace)}
+                        magnifierMoving=fixedEditing.isNotEmpty()
+                    },{magnifierMenu=record.id},onHidden={fixedReady[record.id]=false})
+            }
+        }
+        SideEffect{fixedWindows.set(renderedFixed)}
+        magnifierMenu?.let{selected->displayHead.get()?.let{head->
+            val pose=Pose(transformPoint(head,floatArrayOf(0f,-.06f,-.40f)),head.rotation)
+            Subspace{SpatialPanel(modifier=placedPanel(pose,.28f,.18f,density,pixelDensity)){
+                Column(Modifier.fillMaxSize().background(Color(0xF0202936)).padding(12.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){
+                    Button(onClick={addFixedMagnifier();magnifierMenu=null},modifier=Modifier.fillMaxWidth()){Text("Add")}
+                    Button(onClick={workspace=workspace.copy(fixedMagnifiers=workspace.fixedMagnifiers.filter{it.id!=selected});fixedPins.remove(selected);fixedRuntime.remove(selected);store.save(workspace);magnifierMenu=null},modifier=Modifier.fillMaxWidth()){Text("Remove")}
+                    Button(onClick={magnifierMenu=null},modifier=Modifier.fillMaxWidth()){Text("×")}
+                }
+            }}
+        }}
+        if(typingLocked) displayHead.get()?.let{head->
+            val units=handTracking.unitsPerMeter
+            val statusPose=Pose(transformPoint(head,floatArrayOf(0f,-.14f*units,-.5f*units)),head.rotation)
+            Subspace { SpatialPanel(modifier=placedPanel(statusPose,.042f*units,.042f*units,density,pixelDensity)){
+                androidx.compose.foundation.Canvas(Modifier.fillMaxSize()){
+                    val amber=Color(0xFFFFCA55);val w=size.width;val h=size.height
+                    drawArc(amber,180f,180f,false,androidx.compose.ui.geometry.Offset(w*.28f,h*.12f),androidx.compose.ui.geometry.Size(w*.44f,h*.58f),style=androidx.compose.ui.graphics.drawscope.Stroke(w*.085f))
+                    drawRoundRect(amber,androidx.compose.ui.geometry.Offset(w*.19f,h*.40f),androidx.compose.ui.geometry.Size(w*.62f,h*.49f),androidx.compose.ui.geometry.CornerRadius(w*.08f))
+                    drawCircle(Color(0xFF26303E),w*.065f,androidx.compose.ui.geometry.Offset(w*.5f,h*.61f))
+                }
+            }}
+        }
+    } else {
+        controls()
+    }
+}

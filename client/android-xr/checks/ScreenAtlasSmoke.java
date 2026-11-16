@@ -40,8 +40,8 @@ public final class ScreenAtlasSmoke {
    int[] colors={Color.RED,Color.GREEN,Color.YELLOW,Color.BLUE};
    for(int i=0;i<4;i++){paint.setColor(colors[i]);canvas.drawRect((i%2)*32,(i/2)*32,(i%2+1)*32,(i/2+1)*32,paint);}video.getInput().unlockCanvasAndPost(canvas);
    await(reader,false);
-   byte[] sps=null,pps=null;for(byte[] nal:H264Kt.splitAnnexB(ScreenFrameFixture.ALL)){if(H264Kt.nalType(nal)==7)sps=nal;if(H264Kt.nalType(nal)==8)pps=nal;}
-   var format=MediaFormat.createVideoFormat("video/avc",2048,1536);format.setByteBuffer("csd-0",ByteBuffer.wrap(H264Kt.annexBParameterSets(sps,pps)));format.setInteger(MediaFormat.KEY_LOW_LATENCY,1);
+   byte[] sps=null,pps=null;for(byte[] nal:AnnexBKt.splitAnnexB(ScreenFrameFixture.ALL)){if(AnnexBKt.nalType(nal)==7)sps=nal;if(AnnexBKt.nalType(nal)==8)pps=nal;}
+   var format=MediaFormat.createVideoFormat("video/avc",2048,1536);format.setByteBuffer("csd-0",ByteBuffer.wrap(AnnexBKt.annexBParameterSets(sps,pps)));format.setInteger(MediaFormat.KEY_LOW_LATENCY,1);
    codec=MediaCodec.createDecoderByType("video/avc");codec.configure(format,video.getViewInput(),null,0);codec.start();
    video.detailDebug(new DetailDiagnostics(true,new FocusRect(0f,0f,1f,1f),"screens","",1,1,false));
    submit(codec,video,1000000,false);await(reader,false);

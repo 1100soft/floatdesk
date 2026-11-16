@@ -72,7 +72,7 @@ internal class DeskConnection(
         val format=currentMonitors.singleOrNull()
         val target=bounds?.let{qualityOutputSize(it[2],it[3],qualityOutputLimit())}
         val fraction=if(rect!=null && target!=null)qualityDenseFraction(denseFraction,rect,target.first,target.second) else denseFraction
-        val request=if(detailDiagnostics.get().enabled && rect!=null && renderingActive && remote!=null && bounds!=null && format!=null)DetailRequest(remote,detailSession,rect,bounds,center ?: (rect.centerU to rect.centerV),videoQuality,videoMbps,fraction,nativeAreaPixels,detailTargetFps) else null
+        val request=if(detailDiagnostics.get().enabled && rect!=null && renderingActive && remote!=null && bounds!=null && format!=null)DetailRequest(remote,detailSession,rect,bounds,center ?: (rect.centerU to rect.centerV),videoQuality,videoMbps,fraction,if(magnifierActive)4096 else nativeAreaPixels,detailTargetFps) else null
         val reason=when {
             !detailDiagnostics.get().enabled->"Normal full-desktop streaming"
             rect==null->blockedReason
@@ -96,6 +96,8 @@ internal class DeskConnection(
     val focusResult=mutableStateOf<FocusResult?>(null)
     val focusBusy=mutableStateOf(false)
     private val focusPending=AtomicInteger()
+    private val gazeFocusPending=AtomicInteger()
+    val gazeFocusError=mutableStateOf("")
     private val screenPresentation=AtomicReference(ScreenPresentation())
     private var screenSpacing=0f
     val reloading=mutableStateOf(false)
@@ -161,7 +163,7 @@ internal class DeskConnection(
             acquire()
         }
         running = true
-        localResources=LocalResources {message->
+        localResources=LocalResources(thermalStatus={context.applicationContext.getSystemService(android.os.PowerManager::class.java)?.currentThermalStatus ?: -1}) {message->
             val value=detailDiagnostics.updateAndGet{it.copy(localResources=message)};decoders[0]?.detailDebug(value);publishResources()
         }
         outgoingThread = HandlerThread("floatdesk-input").also { it.start(); outgoing = Handler(it.looper) }
@@ -187,7 +189,7 @@ internal class DeskConnection(
         decoders.clear()
         currentMonitors=emptyList()
         screenPresentation.set(ScreenPresentation())
-        monitorPending.set(0);focusPending.set(0)
+        monitorPending.set(0);focusPending.set(0);gazeFocusPending.set(0)
         videoPending.set(false);decoderGeneration.incrementAndGet()
         videos.forEach { runCatching { it.close() } }
         videos = emptyList()
@@ -209,10 +211,12 @@ internal class DeskConnection(
         }
     }
 
+    fun isRenderingActive(): Boolean = renderingActive
+
     @Synchronized
     fun setRenderingActive(active: Boolean) {
         renderingActive=active
-        if(!active)viewedDetail(null)
+        if(!active){viewedDetail(null);cancelGazeFocus()}
         decoders.values.forEach { it.setRenderingActive(active) }
     }
 
@@ -236,6 +240,39 @@ internal class DeskConnection(
 
     }
 
+    val windowCaptures by lazy{WindowCapturePool(this)}
+    fun captureWindow(id:Long,video:dev.floatdesk.client.media.VideoCompositor,failed:(String)->Unit,frame:(Long,org.json.JSONObject)->Unit):WindowVideo?{
+        val remote=pendingRemote ?: return null
+        return WindowVideo(java.net.InetSocketAddress(remote.address,remote.port+2),detailSession,id,detailTargetFps,video,failed,video.input,frame,false)
+    }
+    fun windowRenderer()=decoders[0]?.windowRenderer()
+    fun hasWindowDetail()=decoders[0]?.windowRenderer()?.hasWindowDetail()==true
+    @Volatile var magnifierActive=false
+    fun openWindowVideo(id:Long,video:dev.floatdesk.client.media.VideoCompositor,failed:(String)->Unit,output:WindowDestination?=null):WindowVideo?{
+        val remote=pendingRemote ?: return null
+        return WindowVideo(java.net.InetSocketAddress(remote.address,remote.port+2),detailSession,id,detailTargetFps,video,failed,output?.surface ?: video.input,if(output==null)null else {pts,meta->
+            val bounds=workspaceInfo.value?.bounds()
+            val win=workspaceInfo.value?.windows?.firstOrNull{it.id==id}
+            if(bounds!=null && win!=null){
+                val x=meta.optInt("sourceX",win.x);val y=meta.optInt("sourceY",win.y)
+                val w=meta.optInt("sourceWidth",win.width);val h=meta.optInt("sourceHeight",win.height)
+                output.frame(pts,FocusRect((x-bounds[0]).toFloat()/bounds[2],(y-bounds[1]).toFloat()/bounds[3],(x+w-bounds[0]).toFloat()/bounds[2],(y+h-bounds[1]).toFloat()/bounds[3]))
+            }
+        },output!=null)
+    }
+    @Volatile private var lastTypingAt=0L
+    private var lastTypingPoll=0L
+    var typingQuietMs=1000L
+    fun typingLocked(now:Long=android.os.SystemClock.uptimeMillis()):Boolean=lastTypingAt>0 && now-lastTypingAt<typingQuietMs
+    fun pollTyping(now:Long){if(now-lastTypingPoll>=150){lastTypingPoll=now;send(Protocol.workspace(org.json.JSONObject().put("type","typingState").toString()))}}
+    fun cancelGazeFocus(){gazeFocusPending.set(0)}
+    fun requestGazeFocus(window:Long){
+        val handler=outgoing ?: return
+        val id=monitorSequence.incrementAndGet();gazeFocusPending.set(id);gazeFocusError.value=""
+        val packet=Protocol.workspace(org.json.JSONObject().put("type","gazeFocus").put("quietMs",typingQuietMs).put("requestId",id).put("windowId",window).toString())
+        for(delay in listOf(0L,300L,900L))handler.postDelayed({if(gazeFocusPending.get()==id)send(packet)},delay)
+        main.postDelayed({if(gazeFocusPending.compareAndSet(id,0))gazeFocusError.value="Gaze focus request timed out"},2000)
+    }
     fun requestFocus(target:FocusTarget):Boolean {
         val handler=outgoing ?: return false
         if(!focusPending.compareAndSet(0,-1))return false
@@ -331,6 +368,12 @@ internal class DeskConnection(
                     }
                     is Packet.Workspace -> {
                         if(incoming.address==pendingRemote?.address && incoming.port==pendingRemote?.port) {
+                            runCatching{org.json.JSONObject(decoded.json)}.getOrNull()?.takeIf{it.optString("type")=="typingState"}?.let{reply->
+                                if(reply.optBoolean("available"))lastTypingAt=(android.os.SystemClock.uptimeMillis()-reply.optLong("ageMs",60000)).coerceAtLeast(1)
+                            }
+                            runCatching{org.json.JSONObject(decoded.json)}.getOrNull()?.takeIf{it.optString("type")=="gazeFocusResult"}?.let{reply->
+                                if(gazeFocusPending.compareAndSet(reply.optInt("requestId"),0))main.post{gazeFocusError.value=if(reply.optBoolean("ok"))"" else reply.optString("message","Could not focus window")}
+                            }
                             runCatching {org.json.JSONObject(decoded.json)}.getOrNull()?.takeIf{it.optString("type")=="focusResult"}?.let {reply->
                                 val id=reply.optInt("requestId")
                                 if(id>0 && focusPending.compareAndSet(id,0))main.post {

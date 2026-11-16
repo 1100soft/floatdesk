@@ -66,3 +66,19 @@ internal class FocusGestures(private val thresholds:()->PinchThresholds={PinchTh
         return null
     }
 }
+
+/** Dwell on window identity rather than noisy pixel coordinates. No desktop transform side effects. */
+internal class GazeWindowFocus(private val dwellMs:Long=250){
+    private var candidate:Long?=null
+    private var since=0L
+    private var selected:Long?=null
+    private var lastAt=Long.MIN_VALUE
+    fun update(now:Long,enabled:Boolean,blocked:Boolean,window:Long?):Long?{
+        if(lastAt!=Long.MIN_VALUE && (now<lastAt || now-lastAt>150)){candidate=null;selected=null}
+        lastAt=now
+        if(!enabled || blocked || window==null){candidate=null;selected=null;return null}
+        if(candidate!=window){candidate=window;since=now;return null}
+        if(selected==window || now-since<dwellMs)return null
+        selected=window;return window
+    }
+}

@@ -14,18 +14,22 @@ import androidx.xr.scenecore.InteractableComponent
 
 /** Shared transparent triangles; update node transforms without replacing native models/materials. */
 internal class CurvedMonitorInput private constructor(
-    var mesh: MonitorMesh,
+    var mesh: MonitorMesh?,
+    private var width:Float,private var height:Float,
     val entity: GltfModelEntity,
     private val model: GltfModel,
     private val component: InteractableComponent,
     private val pointer: SpatialPointerComponent,
+    private val columns:Int,private val rows:Int,
 ) : AutoCloseable {
     private var closed = false
 
-    fun update(next:MonitorMesh) {
-        if(closed || mesh===next)return
-        updateMeshPatches(entity,next)
-        mesh=next
+    fun update(next:MonitorMesh) = updateGeometry(next,next.width,next.height)
+
+    fun updateGeometry(next:MonitorMesh?,width:Float,height:Float) {
+        if(closed || mesh===next && this.width==width && this.height==height)return
+        updateMeshPatches(entity,next,columns,rows,width,height)
+        mesh=next;this.width=width;this.height=height
     }
 
     override fun close() {
@@ -38,21 +42,21 @@ internal class CurvedMonitorInput private constructor(
 
     companion object {
         @android.annotation.SuppressLint("RestrictedApi")
-        suspend fun create(session: Session, parent: Entity, mesh: MonitorMesh,
-                           listener: (InputEvent) -> Unit): CurvedMonitorInput {
+        suspend fun create(session: Session, parent: Entity, mesh: MonitorMesh?,
+                           columns:Int=12,rows:Int=8,width:Float=requireNotNull(mesh).width,height:Float=requireNotNull(mesh).height,listener: (InputEvent) -> Unit): CurvedMonitorInput {
             val pixel = java.util.Base64.getDecoder().decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII=")
-            val model = GltfModel.create(session, interactionGridGlb(pixel), "floatdesk-curved-input-${System.nanoTime()}")
+            val model = GltfModel.create(session, interactionGridGlb(pixel,columns,rows), "floatdesk-curved-input-${System.nanoTime()}")
             var entity: GltfModelEntity? = null
             try {
                 val created = GltfModelEntity.create(session, model, parent = parent)
                 entity = created
-                updateMeshPatches(created,mesh)
+                updateMeshPatches(created,mesh,columns,rows,width,height)
                 val component = NativeMonitorInput.create(session, listener)
                 check(created.addComponent(component)) { "Could not attach curved monitor interaction" }
                 val pointer=SpatialPointerComponent.create(session)
                 check(created.addComponent(pointer)) { "Could not set curved monitor pointer" }
                 pointer.spatialPointerIcon=SpatialPointerIcon.NONE
-                return CurvedMonitorInput(mesh, created, model, component,pointer)
+                return CurvedMonitorInput(mesh,width,height, created, model, component,pointer,columns,rows)
             } catch (failure: Throwable) {
                 releaseOwnedGltf(model, entity)
                 throw failure
@@ -61,8 +65,8 @@ internal class CurvedMonitorInput private constructor(
     }
 }
 
-internal fun updateMeshPatches(entity:GltfModelEntity,mesh:MonitorMesh,columns:Int=12,rows:Int=8) {
-    val patches=interactionPatches(mesh,columns,rows)
+internal fun updateMeshPatches(entity:GltfModelEntity,mesh:MonitorMesh?,columns:Int=12,rows:Int=8,width:Float=requireNotNull(mesh).width,height:Float=requireNotNull(mesh).height) {
+    val patches=interactionPatches(width,height,mesh,columns,rows)
     check(entity.nodes.size==patches.size*2)
     patches.forEachIndexed {i,p->
         val q=p.rotation;val child=p.childRotation

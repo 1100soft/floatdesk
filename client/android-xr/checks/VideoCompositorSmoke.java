@@ -43,6 +43,15 @@ public final class VideoCompositorSmoke {
             require(reloaded.load().getViewerReference()!=null && reloaded.load().getViewerReference().getPosition()[2]==3f,"Viewer reference lost on disk reload");
             require(!new java.io.File(workspaceFile+".tmp").exists(),"Workspace save did not atomically replace file");
             org.json.JSONObject saved=new org.json.JSONObject(new String(java.nio.file.Files.readAllBytes(workspaceFile.toPath()),java.nio.charset.StandardCharsets.UTF_8));
+            saved.put("gaze_to_focus",true);
+            saved.put("magnifier_mode","fixed").put("fixed_magnifiers",new org.json.JSONArray().put(new org.json.JSONObject().put("id","pane").put("pose",new org.json.JSONObject().put("position",new org.json.JSONArray("[0.2,0.3,0.4]")).put("rotation",new org.json.JSONArray("[0,0,0,1]"))).put("width_m",.7).put("height_m",.4)));
+            java.nio.file.Files.write(workspaceFile.toPath(),saved.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            var gazeStore=new WorkspaceStore(workspaceFile);
+            require(gazeStore.load().getGazeToFocus(),"Gaze-to-focus preference was lost on reload");
+            require(gazeStore.load().getMagnifierMode().equals("fixed") && gazeStore.load().getFixedMagnifiers().size()==1,"Fixed magnifier settings lost");
+            gazeStore.save(gazeStore.load());
+            require(new WorkspaceStore(workspaceFile).load().getFixedMagnifiers().get(0).getWidthM()==.7f,"Fixed magnifier size lost on save");
+            require(new WorkspaceStore(workspaceFile).load().getGazeToFocus(),"Gaze-to-focus preference did not survive save");
             org.json.JSONObject monitor=new org.json.JSONObject().put("logical_monitor_uuid","focus-test").put("host_source_id","desktop").put("pixel_width",3840).put("pixel_height",2160).put("view_center_u",.8).put("view_center_v",.25);
             saved.put("pinch_thresholds_mm",new org.json.JSONArray().put(8.0).put(9.0).put(10.0).put(11.0));
             saved.put("experimental_viewed_detail",true).put("view_detail_debug",false);
@@ -80,6 +89,33 @@ public final class VideoCompositorSmoke {
                 require(top[0]>220 && top[2]<20,"Video top is flipped or corrupt");
                 require(bottom[2]>220 && bottom[0]<20,"Video bottom is flipped or corrupt");
             }
+            // Independent producers must share the actual display cadence, not each submit a full image.
+            var handlerField=VideoCompositor.class.getDeclaredField("handler");handlerField.setAccessible(true);
+            android.os.Handler gl=(android.os.Handler)handlerField.get(compositor);
+            var swapField=VideoCompositor.class.getDeclaredField("swaps");swapField.setAccessible(true);
+            var ticks=new java.util.concurrent.atomic.AtomicLong();
+            var ticking=new java.util.concurrent.atomic.AtomicBoolean(true);
+            var started=new java.util.concurrent.CountDownLatch(1);
+            gl.post(()->android.view.Choreographer.getInstance().postFrameCallback(new android.view.Choreographer.FrameCallback(){
+                public void doFrame(long at){ticks.incrementAndGet();started.countDown();if(ticking.get())android.view.Choreographer.getInstance().postFrameCallback(this);}
+            }));
+            require(started.await(3,java.util.concurrent.TimeUnit.SECONDS),"Display clock did not start");
+            first.setOnImageAvailableListener(reader->{try(Image ignored=reader.acquireLatestImage()){}},gl);
+            long ticksBefore=ticks.get(),swapsBefore=swapField.getLong(compositor);
+            for(int i=0;i<250;i++){
+                compositor.presentation(new ScreenPresentation(new float[]{0f,0f,1f,1f},i%2==0 ? .001f : 0f));
+                compositor.overlay(new VideoAim(new float[]{.1f,.25f,.9f,.25f},new float[]{},2f,i%2==0 ? .18f : .2f));
+                SystemClock.sleep(1);
+            }
+            compositor.presentation(new ScreenPresentation());compositor.overlay(new VideoAim());
+            SystemClock.sleep(100);ticking.set(false);
+            var finished=new java.util.concurrent.CountDownLatch(1);gl.post(finished::countDown);
+            require(finished.await(3,java.util.concurrent.TimeUnit.SECONDS),"Render queue stalled");
+            long rendered=swapField.getLong(compositor)-swapsBefore,displayFrames=ticks.get()-ticksBefore;
+            require(rendered>1 && rendered<=displayFrames+2,"Redraw producers exceeded display cadence: swaps="+rendered+" frames="+displayFrames);
+            first.setOnImageAvailableListener(null,null);
+            try(Image ignored=first.acquireLatestImage()){}
+            System.out.println("PASS coalesced producers: "+rendered+" redraws across "+displayFrames+" display frames");
             float[] lookup=new float[18];
             for(int i=0;i<9;i++){lookup[i*2]=(i%3)/2f;lookup[i*2+1]=.75f;}
             java.lang.reflect.Field lookupId=VideoCompositor.class.getDeclaredField("lookupTexture");lookupId.setAccessible(true);

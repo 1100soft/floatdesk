@@ -1,13 +1,264 @@
 #!/usr/bin/env python3
 """Focus pinch arbitration, window stacking, spacing and view-fit geometry without XR dependencies."""
 from pathlib import Path
-import subprocess,sys,tempfile
+from production_sources import application_sources
+import subprocess,sys,tempfile,re
 root=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
 def body(path):return '\n'.join(l for l in (root/path).read_text().splitlines() if not l.startswith(('import ','package ')))
 workspace=body('workspace/Workspace.kt');workspace=workspace[workspace.index('internal data class Pose'):workspace.index('internal class WorkspaceStore')]
 metadata=body('net/WorkspaceInfo.kt');metadata=metadata[:metadata.index('    companion object')]+'}\n'
-code='import kotlin.math.*\n'+body('MonitorMesh.kt')+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+body('workspace/WorkspacePlacement.kt')+metadata+r'''
+code='import kotlin.math.*\n'+body('MonitorMesh.kt')+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+re.search(r'internal fun deskLayout\(.*?\n}',(root/'workspace/Workspace.kt').read_text(),re.S).group(0)+body('workspace/WorkspacePlacement.kt')+metadata+body('WindowMagnification.kt')+body('VideoGeometry.kt')+body('MagnifierContacts.kt')+body('BoundedHistory.kt')+body('net/WindowCaptureFormat.kt')+''.join(re.search(r'internal fun '+name+r'\(.*?\n}',application_sources(),re.S).group(0) for name in ('transformPoint','rotateVector','quaternionBetween','multiplyQuaternion','normalize3','normalize4'))+re.search(r'internal fun dot\(a: FloatArray[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun cross3\(.*',application_sources()).group(0)+'\n'+r'''
 fun main() {
+ for(enabled in listOf(false,true))for(active in listOf(false,true))for(open in listOf(false,true)){
+   check(magnifierSurfacesAllowed(enabled,active,open)==(enabled && active && !open))
+ }
+ val history=BoundedHistory<ByteArray>(4,10){it.size.toLong()}
+ repeat(100){history.retain(ByteArray(4));check(history.bytes<=10 && history.size<=4)}
+ val huge=ByteArray(30);history.retain(huge);check(history.size==1 && history.bytes==30L)
+ history.retain(huge);check(history.size==1)
+ val contacts=MagnifierContacts()
+ contacts.update("first","LEFT",.2f to .3f,42)
+ contacts.update("second","LEFT",.6f to .7f,43)
+ contacts.update("first","LEFT",null,null)
+ check(contacts["LEFT"]==(.6f to .7f) && contacts.window("LEFT")==43L)
+ contacts.clear();check(contacts.isEmpty() && contacts.window("LEFT")==null)
+ for((width,height) in listOf(800 to 600,7680 to 4320,2048 to 2048,1 to 100000)){
+   val size=WindowCaptureFormat.size(width,height)
+   check(WindowCaptureFormat.valid(size.first,size.second) && size.first%2==0 && size.second%2==0)
+ }
+ val tap=NativeSurfaceTap()
+ check(tap.update("LEFT","DOWN",.5f to .4f)==null)
+ check(tap.update("LEFT","UP",null)==(.5f to .4f))
+ check(tap.update("LEFT","UP",null)==null)
+ tap.update("LEFT","DOWN",.5f to .4f);tap.update("LEFT","HOVER_EXIT",null)
+ check(tap.update("LEFT","UP",null)==null)
+ tap.update("RIGHT","DOWN",.2f to .2f);tap.update("RIGHT","HOVER_MOVE",.6f to .5f)
+ check(tap.update("RIGHT","UP",null)==null)
+ tap.update("LEFT","DOWN",.5f to .4f);tap.clear();check(tap.update("LEFT","UP",null)==null)
+
+ val zoom=magnifiedWindow(42,1600,900,Pose(),.6f,.5f,1f,true)
+ val sphere=zoom.mesh!!
+ for(i in sphere.positions.indices step 3){val radius=sqrt((0..2).sumOf{val d=sphere.positions[i+it]-sphere.eye[it];(d*d).toDouble()}).toFloat();check(abs(radius-sphere.radius)<.00001f)}
+ for(uv in listOf(.5f to .5f,.05f to .05f,.95f to .95f)){
+   val contact=sphere.project(floatArrayOf((uv.first-.5f)*zoom.width,(.5f-uv.second)*zoom.height,0f))
+   val point=transformPoint(zoom.pose,contact)
+   val result=magnifierPoint(zoom,floatArrayOf(0f,0f,0f),point)!!
+   check(abs(result.first-uv.first)<.002f && abs(result.second-uv.second)<.002f)
+ }
+
+ // A cold curved start and entering curved from flat use identical fitting and projection.
+ fun sameGeometry(a:MagnifiedWindow,b:MagnifiedWindow){
+   check(abs(a.width-b.width)<.00001f && abs(a.height-b.height)<.00001f)
+   for(axis in 0..2)check(abs(a.pose.position[axis]-b.pose.position[axis])<.00001f)
+   for(axis in 0..3)check(abs(a.pose.rotation[axis]-b.pose.rotation[axis])<.00001f)
+   check((a.mesh==null)==(b.mesh==null))
+   if(a.mesh!=null){
+     check(a.mesh!!.positions.size==b.mesh!!.positions.size)
+     a.mesh!!.positions.indices.forEach{check(abs(a.mesh!!.positions[it]-b.mesh!!.positions[it])<.00001f)}
+   }
+ }
+ for(head in listOf(Pose(),Pose(floatArrayOf(.4f,-.2f,.3f),floatArrayOf(0f,sin(.3f),0f,cos(.3f)))))for(unit in listOf(.7f,1f,1.8f)){
+   var floating=magnifiedWindow(42,1600,900,head,.6f,.5f,unit,false)
+   repeat(10){
+     floating=magnifiedWindow(42,1600,900,head,.6f,.5f,unit,true,previous=floating)
+     sameGeometry(floating,magnifiedWindow(42,1600,900,head,.6f,.5f,unit,true))
+     floating=magnifiedWindow(42,1600,900,head,.6f,.5f,unit,false,previous=floating)
+     sameGeometry(floating,magnifiedWindow(42,1600,900,head,.6f,.5f,unit,false))
+   }
+   val resized=resizedMagnifier(floating,1.4f)
+   val moved=magnifierGeometry(resized,head,unit,transformPoint(head,floatArrayOf(.2f*unit,.1f*unit,-.85f*unit)))
+   val switched=magnifiedWindow(42,1600,900,head,.6f,.5f,unit,true,previous=moved)
+   val cold=resizedMagnifier(magnifiedWindow(42,1600,900,head,.6f,.5f,unit,true),1.4f)
+   sameGeometry(switched,magnifierGeometry(cold.copy(headOffset=moved.headOffset),head,unit))
+   val desktop=MonitorPlacement("desktop","desktop",Pose(floatArrayOf(.2f,.1f,-1.2f)),1.2f,.7f,0f,1600,900,60)
+   val saved=saveFixedMagnifier("fixed",moved,desktop,unit)
+   val source=DesktopWindow(42,0,0,1600,900)
+   var fixed=fixedMagnifier(saved,desktop,source,head,unit,false)
+   val laterHead=head.copy(position=FloatArray(3){head.position[it]+floatArrayOf(.2f,-.1f,.15f)[it]*unit})
+   val afterViewerChange=magnifierFrame(fixed.copy(spherical=true),fixed,laterHead,unit,true)
+   sameGeometry(afterViewerChange,fixedMagnifier(saved,desktop,source,laterHead,unit,true))
+   val relocated=desktop.copy(pose=desktop.pose.copy(position=FloatArray(3){desktop.pose.position[it]+floatArrayOf(.4f,.2f,-.3f)[it]*unit}))
+   val pending=fixedMagnifier(saved,relocated,source,head,unit,false)
+   sameGeometry(magnifierFrame(pending.copy(spherical=true),pending,laterHead,unit,true),fixedMagnifier(saved,relocated,source,laterHead,unit,true))
+   repeat(10){
+     fixed=fixedMagnifier(saved,desktop,source,head,unit,true,previous=fixed)
+     sameGeometry(fixed,fixedMagnifier(saved,desktop,source,head,unit,true))
+     fixed=fixedMagnifier(saved,desktop,source,head,unit,false,previous=fixed)
+     sameGeometry(fixed,fixedMagnifier(saved,desktop,source,head,unit,false))
+   }
+ }
+ // Switch live projection in both directions while the ordinary update budget is closed.
+ for(fixed in listOf(false,true)){
+   var rendered=magnifiedWindow(42,1600,900,Pose(),.6f,.5f,1f,false).copy(fixed=fixed)
+   repeat(30){
+     val curved=magnifierFrame(rendered.copy(spherical=true),rendered,Pose(),1f,false)
+     check(curved.spherical && curved.mesh!=null)
+     check(curved.id==rendered.id && curved.width==rendered.width && curved.height==rendered.height)
+     val flat=magnifierFrame(curved.copy(spherical=false),curved,Pose(),1f,false)
+     check(!flat.spherical && flat.mesh==null && flat.id==curved.id)
+     rendered=flat
+   }
+ }
+ // Magnifier uses precisely the desktop's central fit at its own distance.
+ val base=deskLayout(listOf(Triple("Window",1600,900)))
+ val desktopFit=fitDesktopInView(base,Pose(),.6f,.5f,1f,true,centralView=true).single()
+ check(abs(zoom.width/desktopFit.physicalWidthM-MagnifierDistanceM/ViewLayers.DesktopDistanceM)<.00001f)
+ val limits=focusViewHalfAngles(.6f,.5f)
+ for(vertex in sphere.outline){val world=transformPoint(zoom.pose,vertex)
+   check(abs(atan2(world[0],-world[2]))<=limits.first+.00001f)
+   check(abs(atan2(world[1],-world[2]))<=limits.second+.00001f)
+ }
+ // Eye translation, head rotation, root scale and native depth changes cannot change radial distance.
+ for(units in listOf(.56f,1f,2f)){
+   val head=Pose(floatArrayOf(.15f,-.04f,.12f),floatArrayOf(0f,sin(.3f),0f,cos(.3f)))
+   val moved=magnifierGeometry(zoom,head,units,floatArrayOf(.4f,.1f,-3f))
+   val m=moved.mesh!!
+   for(j in m.positions.indices step 3){val world=transformPoint(moved.pose,m.positions.copyOfRange(j,j+3))
+     val r=sqrt((0..2).sumOf{val delta=world[it]-head.position[it];(delta*delta).toDouble()}).toFloat()
+     check(abs(r-MagnifierDistanceM*units)<.00001f)
+   }
+   val face=rotateVector(moved.pose.rotation,0f,0f,1f)
+   val distance=MagnifierDistanceM*units
+   check((0..2).sumOf{(face[it]*(head.position[it]-moved.pose.position[it])/distance).toDouble()}>.9999)
+   check(abs(moved.width/zoom.width-units)<.00001f)
+ }
+ // Head-relative pose and head-driven curvature reuse geometry through ordinary head motion.
+ val anchored=magnifierGeometry(zoom,Pose(),1f,floatArrayOf(.3f,.1f,-.85f))
+ val headMoved=Pose(floatArrayOf(.4f,.2f,.3f),floatArrayOf(0f,sin(.4f),0f,cos(.4f)))
+ val followed=magnifierGeometry(anchored,headMoved,1f)
+ check(followed.mesh===anchored.mesh)
+ check(magnifierGeometry(anchored,headMoved,1.000001f).mesh===anchored.mesh)
+ val offset=viewerInMonitor(followed.pose.position,headMoved.position,headMoved.rotation)
+ for(axis in 0..2)check(abs(offset[axis]-anchored.headOffset[axis]*MagnifierDistanceM)<.00001f)
+ val enlarged=magnifierGeometry(resizedMagnifier(zoom,1.5f),Pose(),1f)
+ check(abs(enlarged.width/zoom.width-1.5f)<.00001f && enlarged.sizeScale==1.5f)
+ check(magnifiedWindow(42,1600,900,Pose(),.6f,.5f,1f,true).sizeScale==1f)
+ for(point in magnifierPinOutline(zoom))check(zoom.mesh!!.unproject(point)==null)
+ // Flat and curved rendering both submit mesh geometry, including the exterior padding.
+ val flatPane=magnifiedWindow(42,1600,900,Pose(),.6f,.5f,1f,false)
+ val flatGeometry=framedMagnifierGeometry(flatPane)
+ check(flatGeometry.positions.filterIndexed{index,_->index%3==2}.all{it==0f})
+ check(abs(flatGeometry.positions.filterIndexed{index,_->index%3==0}.max()-flatPane.width*.5f-.005f)<.00001f)
+ check(abs(flatGeometry.positions.filterIndexed{index,_->index%3==1}.max()-flatPane.height*.5f-.005f)<.00001f)
+ check(flatGeometry.indices.size==6 && flatGeometry.texCoords.min()==0f && flatGeometry.texCoords.max()==1f)
+ // The exterior pin bezel must preserve every content vertex and triangle exactly.
+ val framed=framedMagnifierGeometry(zoom)
+ check(framed.positions.copyOfRange(0,sphere.positions.size).contentEquals(sphere.positions))
+ check(framed.indices.copyOfRange(0,sphere.indices.size).contentEquals(sphere.indices))
+ check(framed.positions.size>sphere.positions.size)
+ val deskAnchor=MonitorPlacement("desk","desktop",Pose(floatArrayOf(.2f,.1f,-1.2f)),1.2f,.7f,0f,1600,900,60)
+ val record=saveFixedMagnifier("pane",zoom,deskAnchor,1f)
+ val restored=fixedMagnifier(record,deskAnchor,DesktopWindow(42,0,0,1600,900),Pose(),1f,true)
+ for(axis in 0..2)check(abs(restored.pose.position[axis]-zoom.pose.position[axis])<.00001f)
+ check(abs(restored.width-zoom.width)<.00001f)
+ val shifted=fixedMagnifier(record,deskAnchor.copy(pose=Pose(floatArrayOf(.7f,.1f,-1.2f))),DesktopWindow(42,0,0,1600,900),Pose(),1f,true)
+ check(shifted.pose.position[0]>restored.pose.position[0])
+ val radius=sqrt(shifted.pose.position.sumOf{(it*it).toDouble()}).toFloat()
+ check(abs(radius-MagnifierDistanceM)<.00001f)
+ val radial=fixedMagnifierGeometry(shifted,Pose(),FloatArray(3){shifted.pose.position[it]*4f})
+ for(axis in 0..2)check(abs(radial.pose.position[axis]-shifted.pose.position[axis])<.00001f)
+ val normal=rotateVector(shifted.pose.rotation,0f,0f,1f)
+ val toEye=FloatArray(3){-shifted.pose.position[it]/radius}
+ check((0..2).sumOf{(normal[it]*toEye[it]).toDouble()}>.99999)
+ check(fixedMagnifierGeometry(shifted,Pose()).mesh===shifted.mesh)
+ // Flat panes do not re-aim when the head translates; explicit movement does re-aim.
+ val fixedFlat=fixedMagnifier(record,deskAnchor,DesktopWindow(42,0,0,1600,900),Pose(),1f,false)
+ val sideHead=Pose(floatArrayOf(.3f,.1f,0f))
+ val passiveFlat=fixedMagnifierGeometry(fixedFlat,sideHead)
+ check(passiveFlat.pose.rotation.contentEquals(fixedFlat.pose.rotation))
+ val movedFlat=fixedMagnifierGeometry(fixedFlat,sideHead,floatArrayOf(.2f,0f,-.8f))
+ val movedNormal=rotateVector(movedFlat.pose.rotation,0f,0f,1f)
+ val toHead=normalize3(FloatArray(3){sideHead.position[it]-movedFlat.pose.position[it]})
+ check((0..2).sumOf{(movedNormal[it]*toHead[it]).toDouble()}>.99999)
+ val floatFlat=magnifierGeometry(magnifiedWindow(42,1600,900,Pose(),.6f,.5f,1f,false),Pose(),1f,floatArrayOf(.3f,.1f,-.8f))
+ val floatingSide=magnifierGeometry(floatFlat,sideHead,1f)
+ check(floatingSide.pose.rotation.contentEquals(floatFlat.pose.rotation))
+ // Flat input triangles are exactly coplanar and cover the same content rectangle.
+ val flatPatches=interactionPatches(1.2f,.7f,null,6,4)
+ check(flatPatches.size==48 && flatPatches.all{abs(it.center[2])<.000001f && it.scale.all{v->v.isFinite() && v>0f}})
+ check(abs(flatPatches.minOf{it.center[0]}+.6f)<.00001f && abs(flatPatches.maxOf{it.center[1]}-.35f)<.00001f)
+ // Native gaze/hand rays drag from any contact without a generated movement handle.
+ val drag=MagnifierRayDrag()
+ val origin=floatArrayOf(0f,0f,0f);val rayContact=floatArrayOf(0f,0f,-MagnifierDistanceM)
+ drag.begin(zoom,Pose(),origin,floatArrayOf(0f,0f,-1f),rayContact)
+ check(drag.move(Pose(),origin,floatArrayOf(0f,0f,-1f))==null)
+ val movedByRay=drag.move(Pose(),origin,floatArrayOf(.3f,.2f,-1f))!!
+ check(movedByRay[0]>0f && movedByRay[1]>0f)
+ check(abs(sqrt(movedByRay.sumOf{(it*it).toDouble()}).toFloat()-MagnifierDistanceM)<.00001f)
+ // Offset-reference regression: an unchanged MOVE must be identity even if the hit is above the ray.
+ val offsetOrigin=floatArrayOf(.1f,-.2f,.15f)
+ drag.begin(zoom,Pose(),offsetOrigin,floatArrayOf(0f,0f,-1f),floatArrayOf(0f,.25f,-.85f))
+ repeat(5){check(drag.move(Pose(),offsetOrigin,floatArrayOf(0f,0f,-1f))==null)}
+ check(drag.move(Pose(),offsetOrigin,floatArrayOf(.2f,0f,-1f))!=null)
+ // Distance gain comes from the actual pinch anchor, for either hand and any scene scale.
+ for(units in listOf(.5f,1f,2f))for(handX in listOf(-.1f,.1f)){
+   val panel=zoom.copy(units=units,pose=Pose(floatArrayOf(0f,0f,-.85f*units)),width=zoom.width*units,height=zoom.height*units)
+   val hand=floatArrayOf(handX*units,0f,-.35f*units)
+   val pixel=floatArrayOf(0f,0f,-.85f*units)
+   drag.begin(panel,Pose(),origin,floatArrayOf(0f,0f,-1f),pixel,hand)
+   val handRange=sqrt(hand.sumOf{(it*it).toDouble()}).toFloat()
+   check(abs(drag.gain-.85f*units/handRange)<.00001f)
+   check(drag.moveHand(Pose(),hand)==null)
+   check(drag.moveHand(Pose(),floatArrayOf(hand[0]+.002f*units,hand[1],hand[2]))==null)
+   val result=drag.moveHand(Pose(),floatArrayOf(hand[0]+.05f*units,hand[1],hand[2]))!!
+   check(abs(result[0]/-result[2]-(.05f*units/handRange))<.00001f)
+   check(abs(sqrt(result.sumOf{(it*it).toDouble()}).toFloat()-.85f*units)<.00001f)
+ }
+ val immediate=magnifierGeometry(zoom,Pose(),1f,floatArrayOf(.2f,0f,-.85f),updateMesh=false)
+ check(immediate.pose.position[0]>0f && immediate.mesh===zoom.mesh)
+ val level=facingMagnifierRotation(movedByRay,Pose(),floatArrayOf(0f,0f,0f,1f))
+ check(abs(rotateVector(level,1f,0f,0f)[1])<.00001f)
+ drag.clear();check(drag.move(Pose(),origin,floatArrayOf(.5f,0f,-1f))==null)
+ drag.begin(zoom,Pose(),origin,floatArrayOf(0f,0f,-1f),rayContact)
+ check(drag.move(Pose(),origin,floatArrayOf(0f,0f,-1f))==null)
+ val held=WindowMagnification()
+ held.update(1,true,false,42,false,false,retain=true)
+ check(held.update(601,true,false,42,false,false,retain=true)==42L)
+ check(held.update(1000,true,false,null,false,true,retain=true)==42L)
+ check(held.update(5000,true,false,null,false,true,retain=true)==42L)
+ val whole=WorkspaceInfo(listOf(DesktopOutput("screen",1000,1000,0,0,false,true,3,emptyList())),0,emptyList(),0,8,8000000,60,"",false,windowFocus=true,windows=listOf(DesktopWindow(42,0,0,1000,1000)))
+ val surface=MonitorPlacement("desk","desktop",Pose(floatArrayOf(0f,0f,-1.2f)),1.2f,1.2f,0f,1000,1000,60)
+ for(curved in listOf(false,true)){
+   val m=if(curved)MonitorMesh(1.2f,1.2f,floatArrayOf(0f,0f,1.2f),focus=floatArrayOf(0f,0f)) else null
+   check(inPlaceWindowRect(whole,42,surface,m,Pose(),.65f,.65f,1f,0f)!=null)
+   check(inPlaceWindowRect(whole,42,surface.copy(physicalWidthM=.3f,physicalHeightM=.3f),null,Pose(),.65f,.65f,1f,0f)==null)
+   check(inPlaceWindowRect(whole,42,surface.copy(pose=Pose(floatArrayOf(1f,0f,-1.2f))),m,Pose(),.65f,.65f,1f,0f)==null)
+   val occluded=whole.copy(windows=listOf(DesktopWindow(43,100,100,100,100))+whole.windows)
+   check(inPlaceWindowRect(occluded,42,surface,m,Pose(),.65f,.65f,1f,0f)==null)
+ }
+ for(curved in listOf(false,true)){
+   val w=magnifiedWindow(42,1600,900,Pose(),.6f,.5f,1f,curved)
+   val edge=floatArrayOf(w.width*.5f,0f,0f)
+   val ray=transformPoint(w.pose,w.mesh?.project(edge) ?: edge)
+   fun outside(degrees:Double):FloatArray{val half=Math.toRadians(-degrees).toFloat()/2;return rotateVector(floatArrayOf(0f,sin(half),0f,cos(half)),ray[0],ray[1],ray[2])}
+   check(magnifierContainsGaze(w,floatArrayOf(0f,0f,0f),outside(1.0)))
+   check(!magnifierContainsGaze(w,floatArrayOf(0f,0f,0f),outside(3.5)))
+ }
+
+ val magnify=WindowMagnification()
+ check(magnify.update(1,true,false,42,false,false)==null)
+ check(magnify.update(601,true,false,42,false,false)==42L)
+ check(magnify.update(1000,true,false,43,false,false)==42L)
+ check(magnify.update(1200,true,false,43,false,true)==42L)
+ check(magnify.update(2099,true,false,43,false,true)==42L)
+ // A blink neither dismisses the image nor completes a pending dwell.
+ check(magnify.update(2500,true,false,null,false,true,validGaze=false)==42L)
+ check(magnify.update(3000,true,false,43,false,true)==42L)
+ check(magnify.update(3600,true,false,43,false,true)==43L) // Direct switch, no intermediate close.
+ check(magnify.update(3700,true,false,42,true,true)==43L)
+ check(magnify.update(5500,true,false,42,false,true,hold=true)==43L && !magnify.pinned) // A grab holds presentation, never pins it.
+ magnify.togglePin();check(magnify.pinned)
+ check(magnify.update(6000,true,false,42,false,true)==43L)
+ check(magnify.update(9000,true,false,42,false,true)==43L)
+ magnify.togglePin();check(!magnify.pinned)
+ check(magnify.update(9100,true,false,null,false,true)==43L)
+ check(magnify.update(9600,true,false,null,false,true,validGaze=false)==43L)
+ check(magnify.update(10000,true,false,null,false,true)==43L)
+ check(magnify.update(11000,true,false,null,false,true)==null) // One second of active distant gaze.
+ check(magnify.update(11001,true,false,42,false,false)==null)
+ check(magnify.update(11601,true,false,42,false,false)==42L) // Dwell alone, no cooldown.
+ check(magnify.update(11602,true,true,42,true,true)==null)
+
  val routing=PointerControl();routing.hover(0,"GAZE",floatArrayOf(0f,0f,0f),floatArrayOf(0f,0f,0f),2f,2f,1)
  val eye=routing.systemGaze()!!
  check(routing.systemGazeEnabled)
@@ -42,6 +293,24 @@ fun main() {
 
  routing.hover(0,"GAZE",null,null,2f,2f,5);check(routing.systemGaze()==null)
 
+ val auto=GazeWindowFocus()
+ check(auto.update(0,true,false,42)==null)
+ for(t in 50L..200L step 50)check(auto.update(t,true,false,42)==null)
+ check(auto.update(250,true,false,42)==42L)
+ for(t in 300L..500L step 50)check(auto.update(t,true,false,42)==null)
+ check(auto.update(550,true,false,43)==null);check(auto.update(600,true,false,42)==null)
+ for(t in 650L..800L step 50)check(auto.update(t,true,false,42)==null)
+ check(auto.update(850,true,false,42)==null) // A brief glance elsewhere did not change focus.
+ check(auto.update(900,true,true,43)==null)
+ check(auto.update(950,true,false,43)==null)
+ for(t in 1000L..1150L step 50)check(auto.update(t,true,false,43)==null)
+ check(auto.update(1200,true,false,43)==43L)
+ check(auto.update(1250,false,false,44)==null)
+ check(auto.update(1300,true,false,44)==null)
+ check(auto.update(2000,true,false,44)==null) // Tracking/pause gap starts a fresh dwell.
+ for(t in 2050L..2200L step 50)check(auto.update(t,true,false,44)==null)
+ check(auto.update(2250,true,false,44)==44L)
+ check(auto.update(2300,true,false,null)==null)
  val screen=FocusTarget(FocusRect(0f,0f,.5f,1f),"screen")
  val window=FocusTarget(FocusRect(.1f,.2f,.3f,.5f),"screen",42)
  val hover=mapOf("LEFT" to FocusHover(screen,window));val input=FocusGestures()

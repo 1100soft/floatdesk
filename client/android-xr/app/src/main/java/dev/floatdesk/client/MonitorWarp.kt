@@ -40,6 +40,8 @@ internal class MonitorWarp : AutoCloseable {
     private var flatWidth = 0f
     private var flatHeight = 0f
     private var appliedShape: SurfaceEntity.Shape? = null
+    // Native rendering may consume direct mesh buffers after the Java setter returns.
+    private val recentShapes=RetainedSurfaceShapes()
     private var interaction: InteractableComponent? = null
     private val sequences = mutableSetOf<String>()
     private var curvedInput: CurvedMonitorInput? = null
@@ -65,7 +67,10 @@ internal class MonitorWarp : AutoCloseable {
     private fun videoShape(width:Float,height:Float,sphere:MonitorMesh?):SurfaceEntity.Shape {
         if(sphere==null && videoCoverageIsFull(screenRects,spacing)) return SurfaceEntity.Shape.Quad(FloatSize2d(width,height))
         val geometry=clippedVideoGeometry(width,height,sphere,screenRects,spacing)
-        return SurfaceEntity.Shape.CustomMesh(SurfaceEntity.Shape.TriangleMesh(FloatBuffer.wrap(geometry.positions),FloatBuffer.wrap(geometry.texCoords),IntBuffer.wrap(geometry.indices)))
+        val valid=geometry.indices.isNotEmpty() && geometry.positions.size%3==0 && geometry.texCoords.size*3==geometry.positions.size*2 && geometry.indices.size%3==0 &&
+            geometry.positions.all{it.isFinite()} && geometry.texCoords.all{it.isFinite()} && geometry.indices.all{it>=0 && it<geometry.positions.size/3}
+        if(!valid)return appliedShape ?: SurfaceEntity.Shape.Quad(FloatSize2d(.001f,.001f))
+        return nativeVideoMesh(geometry)
     }
     private var hoverWindow=0L
     private val hoverActions=mutableMapOf<String,Int>()
@@ -104,7 +109,7 @@ internal class MonitorWarp : AutoCloseable {
         val target = live ?: return
         val listener = inputListener ?: return
         val owner = input
-        val next = CurvedMonitorInput.create(session, target, sphere, listener)
+        val next = CurvedMonitorInput.create(session, target, sphere, listener=listener)
         // Loading suspends. A monitor removal/resize can close this owner meanwhile.
         if (input !== owner || live !== target || mesh !== sphere) {
             next.close()
@@ -117,6 +122,8 @@ internal class MonitorWarp : AutoCloseable {
     }
 
     private fun applyShape(target: SurfaceEntity, shape: SurfaceEntity.Shape) {
+        if(target===live && appliedShape===shape)return
+        recentShapes.retain(shape)
         target.shape = shape
         appliedShape = shape
     }
@@ -248,7 +255,11 @@ internal class MonitorWarp : AutoCloseable {
         if (enabled && viewer == null) return
         val usable = enabled
         if (!usable) {
-            if (live !== original) { live?.parent = null; live = original }
+            if (live !== original) {
+                curvedInput?.close(); curvedInput = null
+                live?.let { it.parent = null; it.dispose() }
+                live = original
+            }
             if (presentationDirty || mesh != null || flatWidth != placement.physicalWidthM || flatHeight != placement.physicalHeightM) {
                 val shape = videoShape(placement.physicalWidthM,placement.physicalHeightM,null)
                 applyShape(original, shape)
@@ -293,7 +304,7 @@ internal class MonitorWarp : AutoCloseable {
         val changed = focusChanged || previous?.center?.contentEquals(center)!=true || presentationDirty || previous == null || previous.width != placement.physicalWidthM || previous.height != placement.physicalHeightM ||
             viewer.indices.any { kotlin.math.abs(viewer[it] - previous.eye[it]) > 0.01f }
         if (changed) {
-            val next = MonitorMesh(placement.physicalWidthM, placement.physicalHeightM, viewer,focus=selectedFocus,center=center)
+            val next = MonitorMesh(placement.physicalWidthM, placement.physicalHeightM, viewer,columns=32,rows=20,focus=selectedFocus,center=center)
             if (previous == null || previous.width != next.width || previous.height != next.height) {
                 val sdkEye = eye?.let { root.transformPoseTo(Pose(Vector3(it[0],it[1],it[2])),original).translation }
                 val h=next.project(floatArrayOf(next.width*.5f,0f,0f))
@@ -302,6 +313,7 @@ internal class MonitorWarp : AutoCloseable {
                 Log.i("Floatdesk","warp geometry map=geodesic viewer=${viewer.contentToString()} sdkViewer=$sdkEye radius=${next.radius} radiusActivity=${next.radius*original.getScale(Space.ACTIVITY)} image=${placement.pixelWidth}x${placement.pixelHeight} extent=${next.width}x${next.height} horizontalSag=${sag(h)} verticalSag=${sag(v)}")
             }
             val shape = videoShape(next.width,next.height,next)
+            recentShapes.retain(shape)
             val target = if (live === original) SurfaceEntity.create(session,
                 shape = shape, pose = original.getPose(), parent = original.parent,
                 superSampling = SurfaceEntity.SuperSampling.NONE).also {
@@ -311,11 +323,12 @@ internal class MonitorWarp : AutoCloseable {
                 val pointer=SpatialPointerComponent.create(session)
                 check(it.addComponent(pointer))
                 pointer.spatialPointerIcon=SpatialPointerIcon.NONE
-                live = it
+                live = it;appliedShape=shape
+                recentShapes.retain(shape)
             } else live!!
             applyShape(target, shape)
             flatWidth = next.width; flatHeight = next.height
-            mesh = next;presentationDirty=false;geometryUpdatedAt=now
+            mesh = next;presentationDirty=false;geometryUpdatedAt=android.os.SystemClock.uptimeMillis()
         } else if (live?.shape !== appliedShape) {
             appliedShape?.let { applyShape(live!!, it) }
         }
@@ -325,7 +338,7 @@ internal class MonitorWarp : AutoCloseable {
     override fun close() {
         // Restore the Compose-owned surface before releasing our independent curved resources.
         curvedInput?.close(); curvedInput = null
-        if (live !== input) live?.parent = null
+        if (live !== input) live?.let { it.parent = null; it.dispose() }
         input?.setEnabled(ownerEnabled)
         input?.primaryAlphaMaskTexture = null
         input?.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE

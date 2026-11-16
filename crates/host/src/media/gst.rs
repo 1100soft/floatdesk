@@ -83,7 +83,7 @@ fn api() -> Result<&'static Api> {
     if let Some(api) = API.get() {
         return Ok(api);
     }
-    let loaded = load_api().map_err(|err| Error::Encoder(err))?;
+    let loaded = load_api().map_err(Error::Encoder)?;
     let _ = API.set(loaded);
     Ok(API.get().expect("gstreamer api"))
 }

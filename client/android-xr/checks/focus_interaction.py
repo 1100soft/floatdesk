@@ -9,6 +9,25 @@ workspace=body('workspace/Workspace.kt');workspace=workspace[workspace.index('in
 metadata=body('net/WorkspaceInfo.kt');metadata=metadata[:metadata.index('    companion object')]+'}\n'
 code='import kotlin.math.*\n'+body('MonitorMesh.kt')+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+re.search(r'internal fun deskLayout\(.*?\n}',(root/'workspace/Workspace.kt').read_text(),re.S).group(0)+body('workspace/WorkspacePlacement.kt')+metadata+body('WindowMagnification.kt')+body('VideoGeometry.kt')+body('MagnifierContacts.kt')+body('BoundedHistory.kt')+body('net/WindowCaptureFormat.kt')+''.join(re.search(r'internal fun '+name+r'\(.*?\n}',application_sources(),re.S).group(0) for name in ('transformPoint','rotateVector','quaternionBetween','multiplyQuaternion','normalize3','normalize4'))+re.search(r'internal fun dot\(a: FloatArray[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun cross3\(.*',application_sources()).group(0)+'\n'+r'''
 fun main() {
+ // All flat/curved magnifier vertices remain inside their own radial layer,
+ // including large tilted panes; the planar projection preserves viewing rays.
+ val layerViewer=Pose()
+ for(curved in listOf(false,true))for(distance in listOf(ViewLayers.MagnifierDistanceM,ViewLayers.ShellDistanceM)) for(tilted in listOf(false,true)) {
+  val original=magnifiedWindow(1,1200,800,layerViewer,.7f,.5f,1f,curved,layerDistanceM=distance)
+  val request=original.copy(width=distance*4,height=distance*2.5f,fixed=tilted,pose=if(tilted)original.pose.copy(rotation=normalize4(floatArrayOf(.3f,.4f,.1f,.86f)))else original.pose)
+  val pane=magnifierFrame(request,original,layerViewer,1f,true)
+  val geometry=pane.mesh!!
+  for(i in geometry.positions.indices step 3){
+   val point=transformPoint(pane.pose,floatArrayOf(geometry.positions[i],geometry.positions[i+1],geometry.positions[i+2]))
+   check(abs(kotlin.math.sqrt(point.sumOf{(it*it).toDouble()}).toFloat()-distance)<.0001f)
+  }
+  val source=DesktopWindow(1,100,100,1200,800)
+  val popup=DesktopWindow(2,1250,700,300,240)
+  val note=stickyMagnifier(pane,source,popup,layerViewer)
+  check(note.sourceWidth==300 && note.sourceHeight==240 && note.layerDistanceM<pane.layerDistanceM)
+  check(pane.sourceWidth==1200 && pane.width==distance*4)
+  check(magnifierFrame(pane,pane,Pose(floatArrayOf(.02f,0f,0f)),1f,false).mesh===pane.mesh)
+ }
  for(enabled in listOf(false,true))for(active in listOf(false,true))for(open in listOf(false,true)){
    check(magnifierSurfacesAllowed(enabled,active,open)==(enabled && active && !open))
  }
@@ -95,7 +114,7 @@ fun main() {
      check(curved.spherical && curved.mesh!=null)
      check(curved.id==rendered.id && curved.width==rendered.width && curved.height==rendered.height)
      val flat=magnifierFrame(curved.copy(spherical=false),curved,Pose(),1f,false)
-     check(!flat.spherical && flat.mesh==null && flat.id==curved.id)
+     check(!flat.spherical && flat.mesh?.planar==true && flat.id==curved.id)
      rendered=flat
    }
  }
@@ -137,10 +156,18 @@ fun main() {
  // Flat and curved rendering both submit mesh geometry, including the exterior padding.
  val flatPane=magnifiedWindow(42,1600,900,Pose(),.6f,.5f,1f,false)
  val flatGeometry=framedMagnifierGeometry(flatPane)
- check(flatGeometry.positions.filterIndexed{index,_->index%3==2}.all{it==0f})
- check(abs(flatGeometry.positions.filterIndexed{index,_->index%3==0}.max()-flatPane.width*.5f-.005f)<.00001f)
- check(abs(flatGeometry.positions.filterIndexed{index,_->index%3==1}.max()-flatPane.height*.5f-.005f)<.00001f)
- check(flatGeometry.indices.size==6 && flatGeometry.texCoords.min()==0f && flatGeometry.texCoords.max()==1f)
+ check(flatPane.mesh?.planar==true)
+ check(flatGeometry.positions.copyOfRange(0,flatPane.mesh!!.positions.size).contentEquals(flatPane.mesh!!.positions))
+ check(flatGeometry.indices.size>6 && flatGeometry.texCoords.min()==0f && flatGeometry.texCoords.max()==1f)
+ val eyeFlat=flatPane.mesh!!.eye
+ for(i in flatPane.mesh!!.positions.indices step 3){
+  val p=flatPane.mesh!!.positions.copyOfRange(i,i+3)
+  val t=-eyeFlat[2]/(p[2]-eyeFlat[2])
+  val x=eyeFlat[0]+(p[0]-eyeFlat[0])*t;val y=eyeFlat[1]+(p[1]-eyeFlat[1])*t
+  val vertex=i/3
+  check(abs(x-(flatPane.mesh!!.texCoords[vertex*2]-.5f)*flatPane.width)<.0001f)
+  check(abs(y-(.5f-flatPane.mesh!!.texCoords[vertex*2+1])*flatPane.height)<.0001f)
+ }
  // The exterior pin bezel must preserve every content vertex and triangle exactly.
  val framed=framedMagnifierGeometry(zoom)
  check(framed.positions.copyOfRange(0,sphere.positions.size).contentEquals(sphere.positions))

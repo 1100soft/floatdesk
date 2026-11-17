@@ -14,6 +14,7 @@ pub struct FocusWindow {
     pub y: i32,
     pub width: u32,
     pub height: u32,
+    pub panel: bool,
 }
 fn atom(link: &X11Link, name: &[u8]) -> Result<u32> {
     Ok(link
@@ -110,6 +111,7 @@ pub fn catalogue() -> Result<(bool, Vec<FocusWindow>)> {
                 y: i32::from(p.dst_y),
                 width: u32::from(g.width),
                 height: u32::from(g.height),
+                panel: false,
             }))
         })();
         // Windows can disappear between catalogue queries.
@@ -244,6 +246,7 @@ pub fn window_popups(link: &X11Link, client: u32) -> Result<Vec<FocusWindow>> {
                 y: p.dst_y.into(),
                 width: g.width.into(),
                 height: g.height.into(),
+                panel: false,
             }))
         })();
         if let Ok(Some(window)) = item {
@@ -336,6 +339,7 @@ pub fn system_catalogue() -> Result<Vec<FocusWindow>> {
                 y: p.dst_y.into(),
                 width: g.width.into(),
                 height: g.height.into(),
+                panel: kinds.contains(&dock),
             }))
         })();
         if let Ok(Some(row)) = row {

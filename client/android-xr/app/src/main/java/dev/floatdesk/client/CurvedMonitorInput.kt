@@ -32,11 +32,11 @@ internal class CurvedMonitorInput private constructor(
         mesh=next;this.width=width;this.height=height
     }
 
+    @android.annotation.SuppressLint("RestrictedApi")
     override fun close() {
         if (closed) return
         closed = true
-        entity.removeComponent(pointer)
-        entity.removeComponent(component)
+        if(!entity.isDisposed){entity.removeComponent(pointer);entity.removeComponent(component)}
         releaseOwnedGltf(model, entity)
     }
 

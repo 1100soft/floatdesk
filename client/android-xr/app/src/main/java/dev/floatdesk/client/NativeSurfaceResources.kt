@@ -10,8 +10,11 @@ internal fun nativeVideoMesh(geometry:VideoGeometry):SurfaceEntity.Shape{
     require(geometry.indices.size>=3 && geometry.indices.size%3==0 && geometry.indices.all{it in 0 until vertices})
     require(geometry.positions.all{it.isFinite()} && geometry.texCoords.all{it.isFinite()})
     fun floats(values:FloatArray)=java.nio.ByteBuffer.allocateDirect(values.size*4).order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer().apply{put(values);rewind()}
-    val indices=java.nio.ByteBuffer.allocateDirect(geometry.indices.size*4).order(java.nio.ByteOrder.nativeOrder()).asIntBuffer().apply{put(geometry.indices);rewind()}
-    return SurfaceEntity.Shape.CustomMesh(SurfaceEntity.Shape.TriangleMesh(floats(geometry.positions),floats(geometry.texCoords),indices))
+    // Submit independent triangles. Avoid the SDK's indexed native upload/lifetime
+    // path as a mitigation for the observed native mesh-upload faults.
+    val positions=FloatArray(geometry.indices.size*3){i->geometry.positions[geometry.indices[i/3]*3+i%3]}
+    val texCoords=FloatArray(geometry.indices.size*2){i->geometry.texCoords[geometry.indices[i/2]*2+i%2]}
+    return SurfaceEntity.Shape.CustomMesh(SurfaceEntity.Shape.TriangleMesh(floats(positions),floats(texCoords),null))
 }
 
 @android.annotation.SuppressLint("RestrictedApi")

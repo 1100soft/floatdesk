@@ -225,6 +225,7 @@ internal class DeskConnection(
     @Synchronized
     fun setRenderingActive(active: Boolean) {
         renderingActive=active
+        if(windowCapturesLazy.isInitialized())windowCaptures.setActive(active)
         if(!active){viewedDetail(null);cancelGazeFocus()}
         decoders.values.forEach { it.setRenderingActive(active && desktopVisible) }
     }
@@ -263,7 +264,8 @@ internal class DeskConnection(
 
     }
 
-    val windowCaptures by lazy{WindowCapturePool(this)}
+    private val windowCapturesLazy=lazy{WindowCapturePool(this)}
+    val windowCaptures by windowCapturesLazy
     fun captureWindow(id:Long,video:dev.floatdesk.client.media.VideoCompositor,failed:(String)->Unit,frame:(Long,org.json.JSONObject)->Unit):WindowVideo?{
         val remote=pendingRemote ?: return null
         return WindowVideo(java.net.InetSocketAddress(remote.address,remote.port+2),detailSession,id,detailTargetFps,video,failed,video.input,frame,false)

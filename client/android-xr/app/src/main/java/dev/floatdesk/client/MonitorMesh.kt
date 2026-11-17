@@ -29,6 +29,7 @@ internal class MonitorMesh(
     val rows: Int = 40,
     focus:FloatArray?=null,
     val center:FloatArray=floatArrayOf(0f,0f,0f),
+    val planar:Boolean=false,
 ) {
     val radius = sqrt((0..2).sumOf { val d=eye[it]-center[it];(d*d).toDouble() }).toFloat()
     val normal = FloatArray(3) { (eye[it]-center[it]) / radius }
@@ -150,6 +151,12 @@ internal class MonitorMesh(
                 val vertex=row*(columns+1)+col
                 for(axis in 0..2) positions[vertex*3+axis]=eye[axis]+radius*(-cosine*n[axis]+sinc*(x*tx[axis]+y*ty[axis]))
             }
+        }
+        if(planar) for(row in 0..rows) for(col in 0..columns) {
+            val flat=floatArrayOf((horizontalGrid[col]-.5f)*width,(.5f-verticalGrid[row])*height,0f)
+            val length=sqrt((0..2).sumOf{val d=flat[it]-eye[it];(d*d).toDouble()}).toFloat()
+            val vertex=row*(columns+1)+col
+            for(axis in 0..2)positions[vertex*3+axis]=eye[axis]+(flat[axis]-eye[axis])*radius/length
         }
         var offset=0
         for (row in 0 until rows) for (col in 0 until columns) {

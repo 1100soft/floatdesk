@@ -53,11 +53,12 @@ internal class FrozenMonitor private constructor(
 
     fun suspendVisibility(){entity.setEnabled(false);hidden=false}
 
+    @android.annotation.SuppressLint("RestrictedApi")
     override fun close() {
         if (closed) return
         closed = true
         try {
-            if (hidden) live.setEnabled(originallyEnabled)
+            if (hidden && !live.isDisposed) live.setEnabled(originallyEnabled)
         } finally {
             releaseOwnedGltf(model, entity)
         }

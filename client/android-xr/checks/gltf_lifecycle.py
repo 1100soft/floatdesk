@@ -29,6 +29,7 @@ internal fun frozenFrameGlb(pixel:ByteArray,mesh:MonitorMesh,interactionOnly:Boo
 internal open class Entity {
  var parent:Entity?=null
  var disposed=false
+ val isDisposed get()=disposed
  open fun dispose(){check(!disposed);disposed=true}
 }
 internal class GltfModel {
@@ -60,6 +61,9 @@ suspend fun main() {
   patch.close();patch.close()
   check(patch.entity.disposed)
  }
+ val tornDown=CurvedMonitorInput.create(session,parent,MonitorMesh()) {}
+ tornDown.entity.dispose();GltfModel.all.last().close() // XR session disposed resources first.
+ tornDown.close();tornDown.close()
  val flat=CurvedMonitorInput.create(session,parent,null,width=2f,height=1f) {}
  val original=flat.entity
  repeat(20){

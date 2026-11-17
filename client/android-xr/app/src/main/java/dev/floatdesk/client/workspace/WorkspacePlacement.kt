@@ -7,6 +7,7 @@ import dev.floatdesk.client.focusViewHalfAngles
 internal object ViewLayers {
     const val DesktopDistanceM=1.2f
     const val MagnifierDistanceM=.85f
+    const val ShellDistanceM=.55f
     const val ControlsDistanceM=.40f
     const val DiagnosticsDistanceM=.35f
 }

@@ -25,6 +25,7 @@ internal data class Pose(val translation:Vector3=Vector3(),val rotation:Quaterni
 internal class Session { val entities=mutableListOf<Entity>() }
 internal class ResizeEvent(val resizeState:ResizeState,val newSize:FloatSize3d) { enum class ResizeState { START,ONGOING,END } }
 internal open class Entity {
+    var isDisposed=false
     var parent:Entity?=null
     @JvmField var pose=Pose(); @JvmField var scale=1f; @JvmField var enabled=true
     var resize:ResizableComponent?=null

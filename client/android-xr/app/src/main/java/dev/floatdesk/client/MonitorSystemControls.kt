@@ -144,7 +144,7 @@ internal class MonitorSystemControls : AutoCloseable {
     override fun close() {
         generation++;moving=false;submitted=null
         frameMesh=null;curvedFrame=null
-        component?.let { entity?.removeComponent(it) };movable?.let { entity?.removeComponent(it) }
+        component?.let { entity?.takeUnless{it.isDisposed}?.removeComponent(it) };movable?.let { entity?.takeUnless{it.isDisposed}?.removeComponent(it) }
         entity?.dispose()
         entity=null;component=null;movable=null;listener=null;moveListener=null;resizeStartWidth=null
         shapeWidth=Float.NaN;shapeHeight=Float.NaN;canonicalWidth=Float.NaN;canonicalHeight=Float.NaN

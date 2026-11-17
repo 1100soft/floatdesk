@@ -15,6 +15,8 @@ internal data class WindowDestination(val surface:android.view.Surface,val frame
 
 internal class WindowVideo @JvmOverloads constructor(private val host:InetSocketAddress,private val session:Long,private val id:Long,private val fps:Int,
     private val video:VideoCompositor,private val failed:(String)->Unit,private val destination:android.view.Surface=video.input,private val beforeFrame:((Long,JSONObject)->Unit)?=null,private val rootCapture:Boolean=false):AutoCloseable{
+    @Volatile private var active=true
+    fun setActive(value:Boolean){active=value}
     @Volatile private var running=true
     @Volatile private var socket:Socket?=null
     private val thread=Thread({
@@ -22,12 +24,15 @@ internal class WindowVideo @JvmOverloads constructor(private val host:InetSocket
         try{Socket().use{connection->
             socket=connection;connection.connect(host,1000);connection.soTimeout=2000;connection.tcpNoDelay=true
             val input=DataInputStream(connection.getInputStream());val output=DataOutputStream(connection.getOutputStream())
-            fun drain(c:MediaCodec){val info=MediaCodec.BufferInfo();while(true){val n=c.dequeueOutputBuffer(info,0);if(n<0)return;c.releaseOutputBuffer(n,true)}}
+            fun drain(c:MediaCodec){val info=MediaCodec.BufferInfo();while(true){val n=c.dequeueOutputBuffer(info,0);if(n<0)return;c.releaseOutputBuffer(n,active)}}
             while(running){
-                val bytes=JSONObject().put("sessionId",session).put("windowId",id).put("fps",fps).put("rootCapture",rootCapture).toString().toByteArray()
+                if(!active)Thread.sleep(250)
+                val bytes=JSONObject().put("sessionId",session).put("windowId",id).put("fps",fps).put("rootCapture",rootCapture).put("paused",!active).toString().toByteArray()
                 output.writeInt(bytes.size);output.write(bytes);output.flush()
                 val n=input.readInt();require(n in 1..4096);val header=ByteArray(n);input.readFully(header);val meta=JSONObject(String(header))
-                require(meta.getLong("windowId")==id);val w=meta.getInt("width");val h=meta.getInt("height");require(WindowCaptureFormat.valid(w,h))
+                require(meta.getLong("windowId")==id)
+                if(meta.optString("type")=="window-paused-v1"){codec?.let{drain(it)};continue}
+                val w=meta.getInt("width");val h=meta.getInt("height");require(WindowCaptureFormat.valid(w,h))
                 val length=meta.getInt("bytes");require(length in 1..8*1024*1024);val data=ByteArray(length);input.readFully(data)
                 if(codec==null || size!=(w to h)){
                     codec?.stop();codec?.release();codec=null;size=w to h

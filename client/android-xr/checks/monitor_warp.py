@@ -35,6 +35,7 @@ internal data class WorkspacePose(val position: FloatArray=floatArrayOf(.1f,0f,-
 internal data class MonitorPlacement(val physicalWidthM: Float, val physicalHeightM: Float,val pose: WorkspacePose=WorkspacePose(),val pixelWidth: Int=2560,val pixelHeight: Int=1600,val viewCenterU:Float=.5f,val viewCenterV:Float=.5f)
 internal class NativeHit(val hitPosition: Vector3,val distance: Float)
 internal open class Entity {
+    var isDisposed=false
     suspend fun hitTest(origin: Vector3,direction: Vector3): NativeHit? = null
     var colliderAttachments = 0
     var parent: Entity? = null
@@ -120,6 +121,11 @@ internal class CurvedMonitorInput(var mesh: MonitorMesh,val entity: Entity) {
 """
 checks = '''
 suspend fun main() {
+    val geometry=VideoGeometry(floatArrayOf(0f,0f,0f,1f,0f,0f,0f,1f,0f),floatArrayOf(0f,0f,1f,0f,0f,1f),intArrayOf(2,0,1))
+    val triangles=(nativeVideoMesh(geometry) as SurfaceEntity.Shape.CustomMesh).leftEye
+    check(triangles.indices==null && triangles.positions.capacity()==9 && triangles.texCoords.capacity()==6)
+    for(i in 0 until 9)check(triangles.positions.get(i)==geometry.positions[geometry.indices[i/3]*3+i%3])
+
     val session = Session(); val root = Entity(); val screen = MonitorPlacement(.8f,.45f)
     val input = SurfaceEntity.create(session,SurfaceEntity.Shape.Quad(FloatSize2d(.8f,.45f)))
     input.parent = root; input.setPose(Pose(Vector3(.1f,0f,-1f))); input.setAlpha(.8f)

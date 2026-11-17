@@ -89,6 +89,12 @@ pub(super) fn start(
                             .as_u64()
                             .and_then(|v| u32::try_from(v).ok())
                             .ok_or_else(|| Error::Msg("Missing window".into()))?;
+                        if request["paused"].as_bool() == Some(true) {
+                            let header=serde_json::json!({"type":"window-paused-v1","windowId":id,"bytes":0}).to_string();
+                            socket.write_all(&(header.len() as u32).to_be_bytes())?;
+                            socket.write_all(header.as_bytes())?;
+                            continue;
+                        }
                         let (_, windows) = crate::platform::x11::windows::observed_catalogue();
                         let system_windows =
                             crate::platform::x11::windows::observed_system_catalogue();
@@ -148,8 +154,8 @@ pub(super) fn start(
                             .min(
                                 (2_097_152. / (source_width as f64 * source_height as f64)).sqrt(),
                             );
-                        let w = ((source_width as f64 * scale) as u32 / 2 * 2).max(32) as u16;
-                        let h = ((source_height as f64 * scale) as u32 / 2 * 2).max(32) as u16;
+                        let w = ((source_width as f64 * scale) as u32 / 2 * 2).max(128) as u16;
+                        let h = ((source_height as f64 * scale) as u32 / 2 * 2).max(128) as u16;
                         if capture.is_none()
                             || native != (source_width, source_height)
                             || root_mode != root_capture
@@ -351,7 +357,7 @@ pub(super) fn start(
                             mask_at = Instant::now();
                         }
                         frame += 1;
-                        let header=serde_json::json!({"type":"window-h264-v1","windowId":id,"frame":frame,"width":w,"height":h,"occluders":mask,"sourceX":source_x,"sourceY":source_y,"sourceWidth":source_width,"sourceHeight":source_height,"bytes":encoded.bytes.len()}).to_string();
+                        let header=serde_json::json!({"type":"window-h264-v1","windowId":id,"frame":frame,"width":w,"height":h,"occluders":mask,"ownerX":position.dst_x,"ownerY":position.dst_y,"ownerWidth":geometry.width,"ownerHeight":geometry.height,"popups":popups,"sourceX":source_x,"sourceY":source_y,"sourceWidth":source_width,"sourceHeight":source_height,"bytes":encoded.bytes.len()}).to_string();
                         socket.write_all(&(header.len() as u32).to_be_bytes())?;
                         socket.write_all(header.as_bytes())?;
                         socket.write_all(&encoded.bytes)?;

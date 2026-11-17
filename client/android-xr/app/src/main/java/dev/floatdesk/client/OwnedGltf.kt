@@ -11,6 +11,7 @@ internal fun releaseOwnedGltf(model: GltfModel, entity: Entity?) {
     // Detaching only changes visibility/parentage. GC may reclaim the native instance
     // much later, after model.close() has destroyed its materials in SplitEngine.
     // The pinned SDK's explicit dispose clears its Cleaner reference too.
+    if(entity?.isDisposed==true)return // Session teardown already owns the native model resources.
     entity?.dispose()
     model.close()
 }

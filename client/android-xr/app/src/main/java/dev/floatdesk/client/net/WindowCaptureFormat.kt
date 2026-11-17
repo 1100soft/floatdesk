@@ -4,7 +4,7 @@ package dev.floatdesk.client.net
 internal object WindowCaptureFormat {
     const val MaxDimension=2048
     const val MaxPixels=2_097_152L
-    const val MinDimension=32
+    const val MinDimension=128
     fun size(width:Int,height:Int):Pair<Int,Int>{
         require(width>0 && height>0)
         val scale=minOf(1.0,MaxDimension.toDouble()/width,MaxDimension.toDouble()/height,kotlin.math.sqrt(MaxPixels.toDouble()/(width.toDouble()*height)))

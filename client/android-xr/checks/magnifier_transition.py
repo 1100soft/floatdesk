@@ -16,6 +16,7 @@ class Pose
 class MonitorMesh(val id:Int)
 class Input
 open class Entity {
+    var isDisposed=false
  var parent:Entity?=null
  @JvmField var enabled=false
  fun setPose(value:Pose){}

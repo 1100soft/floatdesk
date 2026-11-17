@@ -197,13 +197,13 @@ internal class GrabGuideRenderer private constructor(
         closed = true
         nodeStates.clear()
         groups.forEach { group ->
-            group.root.dispose()
+            if(!group.root.isDisposed)group.root.dispose()
         }
-        (aimBeams+grabBeams+grabPoints).forEach { it.parent=null; it.dispose() }
+        (aimBeams+grabBeams+grabPoints).forEach { if(!it.isDisposed){it.parent=null; it.dispose()} }
         aimBeams.clear(); grabBeams.clear(); grabPoints.clear()
         pointerPoint?.dispose(); pointerPoint = null
         groups.clear()
-        models.forEach { it.close() }
+        if(session.lifecycleOwner.lifecycle.currentState!=androidx.lifecycle.Lifecycle.State.DESTROYED)models.forEach { it.close() }
     }
 
     companion object {
@@ -215,7 +215,7 @@ internal class GrabGuideRenderer private constructor(
                 }
                 return GrabGuideRenderer(session, loaded)
             } catch (failure: Throwable) {
-                loaded.forEach { it.close() }
+                if(session.lifecycleOwner.lifecycle.currentState!=androidx.lifecycle.Lifecycle.State.DESTROYED)loaded.forEach { it.close() }
                 throw failure
             }
         }

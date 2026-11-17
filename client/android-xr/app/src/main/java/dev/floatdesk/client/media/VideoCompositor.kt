@@ -22,7 +22,8 @@ internal data class VideoAim @JvmOverloads constructor(
     val thickness: Float = 2f, val opacity: Float = .18f, val colors: FloatArray = floatArrayOf(),
 )
 
-internal data class VideoMirror(val surface:Surface,val padX:Float=0f,val padY:Float=0f,val pinned:Boolean=false,val aspect:Float=0f,val before:((Long)->Unit)?=null,val presented:(()->Unit)?=null)
+internal data class VideoCrop(val left:Float,val top:Float,val right:Float,val bottom:Float,val aspect:Float)
+internal data class VideoMirror @JvmOverloads constructor(val surface:Surface,val padX:Float=0f,val padY:Float=0f,val pinned:Boolean=false,val aspect:Float=0f,val before:((Long)->Unit)?=null,val presented:(()->Unit)?=null,val crop:(()->VideoCrop?)?=null)
 
 /** One GPU pass keeps aiming decorations and live video in the same compositor layer. */
 internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
@@ -128,6 +129,12 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         previous.filter{old->mirrors.none{it.egl===old.egl}}.forEach{EGL14.eglDestroySurface(display,it.egl)}
         requestDraw()
     }}}
+    /** Finish queued output detach operations before the XR owner frees a native canvas. */
+    fun flushOutputs(){
+        if(closed || android.os.Looper.myLooper()==handler.looper)return
+        val done=CountDownLatch(1)
+        if(handler.post{done.countDown()})done.await(250,TimeUnit.MILLISECONDS)
+    }
     private val viewTransform=FloatArray(16)
     private val viewFrames=java.util.concurrent.ConcurrentSkipListMap<Long,dev.floatdesk.client.net.ViewFrame>()
     private var viewTimestamp=Long.MIN_VALUE
@@ -289,6 +296,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                 }
             }
         }
+        if(surface==null)flushOutputs()
     }
 
     fun viewFrame(ptsUs:Long,value:dev.floatdesk.client.net.ViewFrame){
@@ -397,7 +405,9 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         GLES20.glUniform2f(uniform(program,"framePadding"),mirror?.padX ?: 0f,mirror?.padY ?: 0f)
         GLES20.glUniform1i(uniform(program,"framePinned"),if(mirror?.pinned==true)1 else 0)
         GLES20.glUniform1f(uniform(program,"paneAspect"),mirror?.aspect ?: 0f)
-        GLES20.glUniform1f(uniform(program,"sourceAspect"),sourceAspect)
+        val crop=mirror?.crop?.invoke()
+        GLES20.glUniform1f(uniform(program,"sourceAspect"),crop?.aspect ?: sourceAspect)
+        GLES20.glUniform4f(uniform(program,"videoCrop"),crop?.left ?: 0f,crop?.top ?: 0f,crop?.right ?: 1f,crop?.bottom ?: 1f)
         GLES20.glUniform1i(uniform(program,"windowMaskCount"),minOf(16,windowMask.size/4))
         if(windowMask.isNotEmpty())GLES20.glUniform4fv(uniform(program,"windowMasks[0]"),minOf(16,windowMask.size/4),windowMask,0)
         val focusWindow=windowRect
@@ -596,7 +606,9 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             uniform vec2 videoTexel;
             uniform sampler2D retainedVideo;
             uniform int useRetained;
+            uniform vec4 videoCrop;
             vec3 videoAt(vec2 point){
+                point=mix(videoCrop.xy,videoCrop.zw,point);
                 if(useRetained==1)return texture2D(retainedVideo,vec2(point.x,1.0-point.y)).rgb;
                 return texture2D(video,(textureMatrix*vec4(point.x,1.0-point.y,0.0,1.0)).xy).rgb;
             }

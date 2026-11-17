@@ -33,7 +33,7 @@ public final class WindowFanoutSmoke {
    while(!done.get()){
     int n=input.readInt();byte[] b=new byte[n];input.readFully(b);var request=new org.json.JSONObject(new String(b));
     if(request.getBoolean("rootCapture"))throw new AssertionError("Shared source must be unobscured XComposite capture");
-    byte[] header=new org.json.JSONObject().put("windowId",42).put("width",512).put("height",384).put("sourceX",256).put("sourceY",192).put("sourceWidth",512).put("sourceHeight",384).put("occluders",new org.json.JSONArray("[[400,300,200,160]]")).put("bytes",WindowFrameFixture.DATA.length).toString().getBytes();
+    byte[] header=new org.json.JSONObject().put("windowId",42).put("width",512).put("height",384).put("sourceX",256).put("sourceY",192).put("sourceWidth",512).put("sourceHeight",384).put("ownerX",256).put("ownerY",192).put("ownerWidth",400).put("ownerHeight",300).put("popups",new org.json.JSONArray("[{\"id\":77,\"x\":650,\"y\":200,\"width\":112,\"height\":100}]")).put("occluders",new org.json.JSONArray("[[400,300,200,160]]")).put("bytes",WindowFrameFixture.DATA.length).toString().getBytes();
     output.writeInt(header.length);output.write(header);output.write(WindowFrameFixture.DATA);output.flush();Thread.sleep(30);
    }
   }catch(Throwable e){if(!done.get())error.set(e);}});serving.start();
@@ -48,8 +48,13 @@ public final class WindowFanoutSmoke {
   try{
    await(plain,0);await(pinned,1);await(desktop,2);
    var captured=pool.source(42L);var panel=pool.source(43L);
-   if(captured==null||captured.getWidth()!=512||captured.getHeight()!=384)throw new AssertionError("Popup-expanded capture bounds not retained for input mapping");
+   if(captured==null||captured.getWidth()!=400||captured.getHeight()!=300)throw new AssertionError("Popup changed the owner capture bounds");
+   if(pool.popups(42L).size()!=1||pool.owner(77L)!=42L)throw new AssertionError("Popup ownership metadata missing");
    if(panel==null||panel.getWidth()!=1024||panel.getHeight()!=38)throw new AssertionError("System panel source not parsed independently of normal windows");
+   pool.setActive(false);SystemClock.sleep(300);
+   try(var old=plain.acquireLatestImage()){}SystemClock.sleep(400);
+   try(var paused=plain.acquireLatestImage()){if(paused!=null)throw new AssertionError("Hidden capture kept presenting video");}
+   pool.setActive(true);await(plain,0);
    if(count.get()!=1)throw new AssertionError("Capture/decoder duplicated "+count.get());
    a.close();await(pinned,1);await(desktop,2);
    c.close();await(desktop,3);await(pinned,1);

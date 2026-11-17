@@ -133,7 +133,9 @@ internal class MonitorWarp : AutoCloseable {
         input?.setEnabled(false)
     }
 
+    @SuppressLint("RestrictedApi")
     private fun applyShape(target: SurfaceEntity, shape: SurfaceEntity.Shape) {
+        if(target.isDisposed)return
         if(target===live && appliedShape===shape)return
         recentShapes.retain(shape)
         target.shape = shape
@@ -351,10 +353,8 @@ internal class MonitorWarp : AutoCloseable {
     override fun close() {
         // Restore the Compose-owned surface before releasing our independent curved resources.
         curvedInput?.close(); curvedInput = null
-        if (live !== input) live?.let { it.parent = null; it.dispose() }
-        input?.setEnabled(ownerEnabled)
-        input?.primaryAlphaMaskTexture = null
-        input?.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE
+        if (live !== input) live?.takeUnless{it.isDisposed}?.let { it.parent = null; it.dispose() }
+        input?.takeUnless{it.isDisposed}?.let{it.setEnabled(ownerEnabled);it.primaryAlphaMaskTexture=null;it.mediaBlendingMode=SurfaceEntity.MediaBlendingMode.OPAQUE}
         mask?.close(); mask = null
         inputListener = null
         interaction?.let { component -> runCatching { input?.removeComponent(component) } }

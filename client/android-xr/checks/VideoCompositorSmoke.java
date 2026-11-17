@@ -56,15 +56,17 @@ public final class VideoCompositorSmoke {
             saved.put("pinch_thresholds_mm",new org.json.JSONArray().put(8.0).put(9.0).put(10.0).put(11.0));
             saved.put("experimental_viewed_detail",true).put("view_detail_debug",false);
             saved.put("encoder_quality",2).put("encoder_mbps",24.5).put("sharpening",.6).put("dense_fraction",.3).put("show_resources",false);
-            saved.put("focus_mode",true).put("layouts",new org.json.JSONObject().put("Desk",new org.json.JSONArray().put(monitor)));
+            saved.put("magnify_system_panels",true).put("focus_mode",true).put("layouts",new org.json.JSONObject().put("Desk",new org.json.JSONArray().put(monitor)));
             java.nio.file.Files.write(workspaceFile.toPath(),saved.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
             require(reloaded.load().getFocusMode(),"Focus mode not restored");
+            require(reloaded.load().getMagnifySystemPanels(),"Independent shell magnification setting not restored");
             require(reloaded.load().getExperimentalViewedDetail(),"Experimental viewed detail setting not restored");
             require(!reloaded.load().getViewDetailDebug(),"Independent quality diagnostics setting not restored");
             require(reloaded.load().getPinchThresholds().getRightIndexMm()==9f,"Shared pinch settings not restored");
             require(Math.abs(reloaded.load().getLayouts().get("Desk").get(0).getViewCenterU()-.8f)<.00001f,"Selected spherical source center not restored");
             reloaded.save(reloaded.load());
             require(reloaded.load().getEncoderQuality()==2 && reloaded.load().getEncoderMbps()==24.5f && reloaded.load().getSharpening()==.6f && reloaded.load().getDenseFraction()==.3f && !reloaded.load().getShowResources(),"Streaming settings not preserved on disk");
+            require(reloaded.load().getMagnifySystemPanels(),"Shell magnification setting not saved");
             require(reloaded.load().getPinchThresholds().getLeftMiddleMm()==10f,"Shared pinch settings not saved");
             require(Math.abs(reloaded.load().getLayouts().get("Desk").get(0).getViewCenterV()-.25f)<.00001f,"Selected source center not saved");
         } finally {workspaceFile.delete();}

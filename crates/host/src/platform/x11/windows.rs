@@ -119,6 +119,248 @@ pub fn catalogue() -> Result<(bool, Vec<FocusWindow>)> {
     }
     Ok((true, windows))
 }
+/// A popup can extend beyond its owner; preserve that extent in capture and input mapping.
+pub fn capture_bounds(base: (i32, i32, u32, u32), popups: &[FocusWindow]) -> (i32, i32, u32, u32) {
+    let mut left = base.0;
+    let mut top = base.1;
+    let mut right = i64::from(base.0) + i64::from(base.2);
+    let mut bottom = i64::from(base.1) + i64::from(base.3);
+    for p in popups {
+        left = left.min(p.x);
+        top = top.min(p.y);
+        right = right.max(i64::from(p.x) + i64::from(p.width));
+        bottom = bottom.max(i64::from(p.y) + i64::from(p.height));
+    }
+    (
+        left,
+        top,
+        (right - i64::from(left)) as u32,
+        (bottom - i64::from(top)) as u32,
+    )
+}
+
+/// Separately mapped menus are not part of a client's Composite backing pixmap.
+/// Include only menus owned by this client (transient chain or same PID), never
+/// unrelated application windows merely because they overlap its rectangle.
+pub fn window_popups(link: &X11Link, client: u32) -> Result<Vec<FocusWindow>> {
+    let pid_atom = atom(link, b"_NET_WM_PID")?;
+    let owner_pid = values(link, client, pid_atom, AtomEnum::CARDINAL)?
+        .first()
+        .copied();
+    let active = values(
+        link,
+        link.root,
+        atom(link, b"_NET_ACTIVE_WINDOW")?,
+        AtomEnum::WINDOW,
+    )?
+    .first()
+    .copied();
+    let transient = atom(link, b"WM_TRANSIENT_FOR")?;
+    let types = atom(link, b"_NET_WM_WINDOW_TYPE")?;
+    let menu_types = [
+        b"_NET_WM_WINDOW_TYPE_POPUP_MENU".as_slice(),
+        b"_NET_WM_WINDOW_TYPE_DROPDOWN_MENU",
+        b"_NET_WM_WINDOW_TYPE_MENU",
+        b"_NET_WM_WINDOW_TYPE_COMBO",
+    ]
+    .iter()
+    .map(|name| atom(link, name))
+    .collect::<Result<Vec<_>>>()?;
+    let clients = values(
+        link,
+        link.root,
+        atom(link, b"_NET_CLIENT_LIST_STACKING")?,
+        AtomEnum::WINDOW,
+    )?;
+    let tree = link
+        .conn
+        .query_tree(link.root)
+        .map_err(Error::x11)?
+        .reply()
+        .map_err(Error::x11)?;
+    let mut result = Vec::new();
+    for id in tree.children.into_iter().chain(clients) {
+        if id == client || result.iter().any(|w: &FocusWindow| w.id == id) {
+            continue;
+        }
+        let item = (|| -> Result<Option<FocusWindow>> {
+            let a = link
+                .conn
+                .get_window_attributes(id)
+                .map_err(Error::x11)?
+                .reply()
+                .map_err(Error::x11)?;
+            if a.map_state != MapState::VIEWABLE
+                || a.class != x11rb::protocol::xproto::WindowClass::INPUT_OUTPUT
+            {
+                return Ok(None);
+            }
+            let kinds = values(link, id, types, AtomEnum::ATOM)?;
+            let mut parent = values(link, id, transient, AtomEnum::WINDOW)?
+                .first()
+                .copied();
+            let has_parent = parent.is_some_and(|p| p != link.root);
+            let mut owned = false;
+            for _ in 0..12 {
+                match parent {
+                    Some(p) if p == client => {
+                        owned = true;
+                        break;
+                    }
+                    Some(p) if p != id => {
+                        parent = values(link, p, transient, AtomEnum::WINDOW)?
+                            .first()
+                            .copied()
+                    }
+                    _ => break,
+                }
+            }
+            let menu = kinds.iter().any(|t| menu_types.contains(t));
+            let same_pid = owner_pid.is_some()
+                && owner_pid
+                    == values(link, id, pid_atom, AtomEnum::CARDINAL)?
+                        .first()
+                        .copied();
+            if !(owned && (menu || a.override_redirect)
+                || menu && same_pid && !has_parent && active == Some(client))
+            {
+                return Ok(None);
+            }
+            let g = link
+                .conn
+                .get_geometry(id)
+                .map_err(Error::x11)?
+                .reply()
+                .map_err(Error::x11)?;
+            let p = link
+                .conn
+                .translate_coordinates(id, link.root, 0, 0)
+                .map_err(Error::x11)?
+                .reply()
+                .map_err(Error::x11)?;
+            Ok((g.width > 0 && g.height > 0).then_some(FocusWindow {
+                id,
+                x: p.dst_x.into(),
+                y: p.dst_y.into(),
+                width: g.width.into(),
+                height: g.height.into(),
+            }))
+        })();
+        if let Ok(Some(window)) = item {
+            result.push(window);
+        }
+        if result.len() >= 16 {
+            break;
+        }
+    }
+    Ok(result)
+}
+
+/// Panels and Plasma launcher surfaces live outside the normal focus catalogue.
+pub fn system_catalogue() -> Result<Vec<FocusWindow>> {
+    let link = X11Link::open()?;
+    let types = atom(&link, b"_NET_WM_WINDOW_TYPE")?;
+    let dock = atom(&link, b"_NET_WM_WINDOW_TYPE_DOCK")?;
+    let desktop = atom(&link, b"_NET_WM_WINDOW_TYPE_DESKTOP")?;
+    let tooltip = atom(&link, b"_NET_WM_WINDOW_TYPE_TOOLTIP")?;
+    let class = atom(&link, b"WM_CLASS")?;
+    let mut ids = values(
+        &link,
+        link.root,
+        atom(&link, b"_NET_CLIENT_LIST_STACKING")?,
+        AtomEnum::WINDOW,
+    )?;
+    ids.extend(
+        link.conn
+            .query_tree(link.root)
+            .map_err(Error::x11)?
+            .reply()
+            .map_err(Error::x11)?
+            .children,
+    );
+    ids.sort_unstable();
+    ids.dedup();
+    let mut result = Vec::new();
+    for id in ids {
+        let row = (|| -> Result<Option<FocusWindow>> {
+            let a = link
+                .conn
+                .get_window_attributes(id)
+                .map_err(Error::x11)?
+                .reply()
+                .map_err(Error::x11)?;
+            if a.map_state != MapState::VIEWABLE
+                || a.class != x11rb::protocol::xproto::WindowClass::INPUT_OUTPUT
+            {
+                return Ok(None);
+            }
+            let kinds = values(&link, id, types, AtomEnum::ATOM)?;
+            if kinds.contains(&desktop) || kinds.contains(&tooltip) {
+                return Ok(None);
+            }
+            let wmclass = link
+                .conn
+                .get_property(false, id, class, AtomEnum::STRING, 0, 128)
+                .map_err(Error::x11)?
+                .reply()
+                .map_err(Error::x11)?
+                .value;
+            let plasma = wmclass
+                .split(|v| *v == 0)
+                .any(|v| v.eq_ignore_ascii_case(b"plasmashell"));
+            if !kinds.contains(&dock) && !plasma {
+                return Ok(None);
+            }
+            let g = link
+                .conn
+                .get_geometry(id)
+                .map_err(Error::x11)?
+                .reply()
+                .map_err(Error::x11)?;
+            let root = &link.conn.setup().roots[link.screen];
+            if g.width == 0
+                || g.height == 0
+                || (g.width >= root.width_in_pixels && g.height >= root.height_in_pixels)
+            {
+                return Ok(None);
+            }
+            let p = link
+                .conn
+                .translate_coordinates(id, link.root, 0, 0)
+                .map_err(Error::x11)?
+                .reply()
+                .map_err(Error::x11)?;
+            Ok(Some(FocusWindow {
+                id,
+                x: p.dst_x.into(),
+                y: p.dst_y.into(),
+                width: g.width.into(),
+                height: g.height.into(),
+            }))
+        })();
+        if let Ok(Some(row)) = row {
+            result.push(row);
+        }
+        if result.len() >= 16 {
+            break;
+        }
+    }
+    Ok(result)
+}
+
+fn observed_system_snapshot() -> &'static std::sync::RwLock<Vec<FocusWindow>> {
+    static SYSTEM: std::sync::OnceLock<std::sync::RwLock<Vec<FocusWindow>>> =
+        std::sync::OnceLock::new();
+    SYSTEM.get_or_init(|| std::sync::RwLock::new(Vec::new()))
+}
+pub fn observed_system_catalogue() -> Vec<FocusWindow> {
+    let _ = observed_catalogue();
+    observed_system_snapshot()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
 /// Metadata collection never blocks the control/input loop. Selection validates live state separately.
 pub fn observed_catalogue() -> (bool, Vec<FocusWindow>) {
     type Snapshot = std::sync::Arc<std::sync::RwLock<(bool, Vec<FocusWindow>)>>;
@@ -128,6 +370,11 @@ pub fn observed_catalogue() -> (bool, Vec<FocusWindow>) {
         let worker = std::sync::Arc::clone(&snapshot);
         std::thread::spawn(move || loop {
             let mut value = catalogue().unwrap_or_default();
+            let system = system_catalogue().unwrap_or_default();
+            value.1.retain(|w| !system.iter().any(|s| s.id == w.id));
+            *observed_system_snapshot()
+                .write()
+                .unwrap_or_else(|e| e.into_inner()) = system;
             value.1.truncate(256);
             *worker.write().unwrap_or_else(|e| e.into_inner()) = value;
             std::thread::sleep(std::time::Duration::from_millis(500));

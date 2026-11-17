@@ -697,22 +697,26 @@ fn run(
                                     }
                                     let id = u32::try_from(v["requestId"].as_u64()?).ok()?;
                                     let action = u8::try_from(v["action"].as_u64()?).ok()?;
-                                    if action > 4 {
+                                    if action > 5 {
                                         return None;
                                     }
-                                    let index = if action == 0 || action == 1 {
+                                    let index = if action == 0 || action == 1 || action == 5 {
                                         0
                                     } else {
                                         sources.iter().position(|(n, _)| {
                                             Some(n.as_str()) == v["name"].as_str()
                                         })?
                                     };
-                                    let width = if action == 4 {
+                                    let width = if action == 5 {
+                                        0
+                                    } else if action == 4 {
                                         i16::try_from(v["width"].as_i64()?).ok()? as u16
                                     } else {
                                         u16::try_from(v["width"].as_u64()?).ok()?
                                     };
-                                    let height = if action == 4 {
+                                    let height = if action == 5 {
+                                        0
+                                    } else if action == 4 {
                                         i16::try_from(v["height"].as_i64()?).ok()? as u16
                                     } else {
                                         u16::try_from(v["height"].as_u64()?).ok()?
@@ -748,14 +752,31 @@ fn run(
                                 let source_snapshot = sources.clone();
                                 pointer.release();
                                 send_reload(&shared, &socket, true);
+                                let arrangement = if action == 5 {
+                                    match &packet {
+                                        Ok(ControlPacket::Workspace { json }) => {
+                                            serde_json::from_str::<serde_json::Value>(json)
+                                                .ok()
+                                                .map(|v| v["positions"].clone())
+                                        }
+                                        _ => None,
+                                    }
+                                } else {
+                                    None
+                                };
                                 let worker = thread::spawn(move || {
-                                    let result = worker_pool.apply(
-                                        action,
-                                        index,
-                                        width,
-                                        height,
-                                        &source_snapshot,
-                                    );
+                                    let result = if action == 5 {
+                                        worker_pool
+                                            .apply_arrangement(&arrangement.unwrap_or_default())
+                                    } else {
+                                        worker_pool.apply(
+                                            action,
+                                            index,
+                                            width,
+                                            height,
+                                            &source_snapshot,
+                                        )
+                                    };
                                     (worker_pool, result)
                                 });
                                 pending_display = Some((from, request_id, worker));

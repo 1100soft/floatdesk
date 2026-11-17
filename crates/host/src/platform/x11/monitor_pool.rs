@@ -278,6 +278,79 @@ fn validate_connectivity(
     }
     Err(Error::Msg("Screens must stay connected to the primary through shared edges. This change would leave a disconnected screen.".into()))
 }
+// Include every active output with its original dimensions to reject stale drafts.
+fn arrangement_draft(
+    outputs: &[Output],
+    rows: &serde_json::Value,
+    limits: (u32, u32),
+) -> Result<Vec<Output>> {
+    let invalid = || Error::Msg("Screen arrangement changed; refresh before applying".into());
+    let rows = rows.as_array().ok_or_else(invalid)?;
+    let active = outputs.iter().filter(|o| o.geometry.is_some()).count();
+    if rows.len() != active || active == 0 {
+        return Err(invalid());
+    }
+    let mut proposed = outputs.to_vec();
+    let mut seen = BTreeSet::new();
+    for row in rows {
+        let name = row["name"].as_str().ok_or_else(invalid)?;
+        if !seen.insert(name) {
+            return Err(invalid());
+        }
+        let target = proposed
+            .iter_mut()
+            .find(|o| o.name == name)
+            .ok_or_else(invalid)?;
+        let g = target.geometry.ok_or_else(invalid)?;
+        if row["width"].as_u64() != Some(g.2.into()) || row["height"].as_u64() != Some(g.3.into()) {
+            return Err(invalid());
+        }
+        let x = row["x"]
+            .as_i64()
+            .and_then(|v| i16::try_from(v).ok())
+            .ok_or_else(invalid)?;
+        let y = row["y"]
+            .as_i64()
+            .and_then(|v| i16::try_from(v).ok())
+            .ok_or_else(invalid)?;
+        target.geometry = Some((x.into(), y.into(), g.2, g.3));
+    }
+    let first = proposed
+        .iter()
+        .find(|o| o.geometry.is_some())
+        .ok_or_else(invalid)?;
+    validate_connectivity(&proposed, &first.name, first.geometry)?;
+    // Unlike a single repair move, Apply requires a wholly connected layout.
+    let rects: Vec<_> = proposed
+        .iter()
+        .filter_map(|o| {
+            o.geometry.map(|g| MonitorRect {
+                index: 0,
+                x: g.0,
+                y: g.1,
+                width: g.2,
+                height: g.3,
+            })
+        })
+        .collect();
+    if reachable_screens(&rects, 0).iter().any(|v| !*v) {
+        return Err(Error::Msg("Screens must share edges without gaps".into()));
+    }
+    let positions = moved_positions(
+        &proposed,
+        &first.name,
+        first.geometry.unwrap().0,
+        first.geometry.unwrap().1,
+        limits,
+    )?;
+    for (name, x, y) in positions {
+        let o = proposed.iter_mut().find(|o| o.name == name).unwrap();
+        let g = o.geometry.unwrap();
+        o.geometry = Some((x, y, g.2, g.3));
+    }
+    Ok(proposed)
+}
+
 // X11 needs nonnegative positions: moving past top/left translates the entire
 // proposed layout in one transaction, preserving relative placement and priority.
 fn moved_positions(
@@ -725,7 +798,8 @@ impl MonitorPool {
             .flat_map(|o| o.modes.iter().filter(|m| m.3 > 0.0).map(|m| (m.1, m.2)))
             .collect();
         let (window_focus, windows) = super::windows::observed_catalogue();
-        serde_json::json!({"type":"status","requestId":request_id,"busy":busy,"screens":screens,"windows":windows,"windowFocus":window_focus,"gazeFocus":window_focus,"windowMagnify":window_focus,"available":available,"modes":modes,"availableMemoryBytes":mem,"cpuThreads":cpus,"recommendedPixels":estimated,"targetFps":fps,"estimate":"Rough planning estimate: available memory / 128 bytes per desktop pixel and 1 megapixel per CPU thread at 60 FPS. Advisory only; GPU, content and network can dominate.","desktopLimits":desktop_limits(),"setupRequired":!outputs.iter().any(|o|virtual_name(&o.name))})
+        let system_windows = super::windows::observed_system_catalogue();
+        serde_json::json!({"type":"status","requestId":request_id,"busy":busy,"screens":screens,"windows":windows,"systemWindows":system_windows,"windowFocus":window_focus,"gazeFocus":window_focus,"windowMagnify":window_focus,"available":available,"modes":modes,"availableMemoryBytes":mem,"cpuThreads":cpus,"recommendedPixels":estimated,"targetFps":fps,"estimate":"Rough planning estimate: available memory / 128 bytes per desktop pixel and 1 megapixel per CPU thread at 60 FPS. Advisory only; GPU, content and network can dominate.","desktopLimits":desktop_limits(),"setupRequired":!outputs.iter().any(|o|virtual_name(&o.name))})
     }
     pub fn owned_mask(&self, sources: &[(String, MonitorRect)]) -> u8 {
         sources.iter().take(6).fold(0, |mask, (name, r)| {
@@ -762,10 +836,29 @@ impl MonitorPool {
         )?;
         let positions =
             moved_positions(&outputs, name, i32::from(x), i32::from(y), desktop_limits())?;
+        self.commit_positions(&outputs, positions)
+    }
+
+    /// Validate the complete draft before one native display transaction.
+    pub fn apply_arrangement(&self, rows: &serde_json::Value) -> Result<()> {
+        let outputs = query()?;
+        let proposed = arrangement_draft(&outputs, rows, desktop_limits())?;
+        let positions = proposed
+            .iter()
+            .filter_map(|o| o.geometry.map(|g| (o.name.clone(), g.0, g.1)))
+            .collect();
+        self.commit_positions(&outputs, positions)
+    }
+
+    fn commit_positions(
+        &self,
+        outputs: &[Output],
+        positions: Vec<(String, i32, i32)>,
+    ) -> Result<()> {
         if super::arrange::move_positions(&positions)? {
             return Ok(());
         }
-        if let Some((_, priorities)) = plasma_snapshot(&outputs) {
+        if let Some((_, priorities)) = plasma_snapshot(outputs) {
             return plasma_transaction(
                 positions
                     .iter()
@@ -1067,6 +1160,27 @@ impl Drop for MonitorPool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn applies_whole_arrangement_without_invalid_intermediate_states() {
+        let rows=parse_outputs("eDP-1 connected primary 100x100+0+0\nVirtual-1-1 connected 100x100+100+0\nVirtual-1-2 connected 100x100+200+0\n");
+        let draft = serde_json::json!([
+            {"name":"eDP-1","x":0,"y":0,"width":100,"height":100},
+            {"name":"Virtual-1-1","x":-100,"y":0,"width":100,"height":100},
+            {"name":"Virtual-1-2","x":-200,"y":0,"width":100,"height":100}]);
+        let placed = arrangement_draft(&rows, &draft, (1000, 1000)).unwrap();
+        assert_eq!(placed[0].geometry, Some((200, 0, 100, 100)));
+        assert!(placed[0].primary);
+        assert!(!placed[1].primary);
+        for (field, value) in [("x", -201), ("x", -199), ("width", 99)] {
+            let mut invalid = draft.clone();
+            invalid[2][field] = value.into();
+            assert!(arrangement_draft(&rows, &invalid, (1000, 1000)).is_err());
+        }
+        let mut duplicate = draft.clone();
+        duplicate[2]["name"] = "eDP-1".into();
+        assert!(arrangement_draft(&rows, &duplicate, (1000, 1000)).is_err());
+        assert!(arrangement_draft(&rows, &draft, (299, 1000)).is_err());
+    }
     #[test]
     fn explicit_resume_only_adopts_active_virtual_outputs() {
         let rows=parse_outputs("eDP-1 connected primary 100x100+0+0\nVirtual-1-1 connected 100x100+100+0\nVirtual-1-2 connected\n");

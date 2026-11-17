@@ -26,7 +26,7 @@ public final class WindowFanoutSmoke {
  public static void main(String[] args)throws Exception{
   if(Looper.myLooper()==null)Looper.prepareMainLooper();
   var connection=new DeskConnection(null);
-  Class.forName("androidx.compose.runtime.MutableState").getMethod("setValue",Object.class).invoke(DeskConnection.class.getMethod("getWorkspaceInfo").invoke(connection),WorkspaceInfo.Companion.parse("{\"type\":\"status\",\"available\":0,\"availableMemoryBytes\":8000000000,\"cpuThreads\":8,\"recommendedPixels\":8000000,\"targetFps\":60,\"estimate\":\"test\",\"setupRequired\":false,\"screens\":[{\"name\":\"screen\",\"width\":1024,\"height\":768,\"x\":0,\"y\":0,\"managed\":false,\"role\":0,\"primary\":true,\"modes\":[]}],\"windows\":[{\"id\":42,\"x\":256,\"y\":192,\"width\":512,\"height\":384}]}"));
+  Class.forName("androidx.compose.runtime.MutableState").getMethod("setValue",Object.class).invoke(DeskConnection.class.getMethod("getWorkspaceInfo").invoke(connection),WorkspaceInfo.Companion.parse("{\"type\":\"status\",\"available\":0,\"availableMemoryBytes\":8000000000,\"cpuThreads\":8,\"recommendedPixels\":8000000,\"targetFps\":60,\"estimate\":\"test\",\"setupRequired\":false,\"screens\":[{\"name\":\"screen\",\"width\":1024,\"height\":768,\"x\":0,\"y\":0,\"managed\":false,\"role\":0,\"primary\":true,\"modes\":[]}],\"windows\":[{\"id\":42,\"x\":256,\"y\":192,\"width\":400,\"height\":300}],\"systemWindows\":[{\"id\":43,\"x\":0,\"y\":730,\"width\":1024,\"height\":38}]}"));
   var server=new ServerSocket(0,1,InetAddress.getByName("127.0.0.1"));var done=new AtomicBoolean();var error=new AtomicReference<Throwable>();var count=new AtomicInteger();
   var serving=new Thread(()->{try(var socket=server.accept()){
    var input=new DataInputStream(socket.getInputStream());var output=new DataOutputStream(socket.getOutputStream());
@@ -47,6 +47,9 @@ public final class WindowFanoutSmoke {
   var c=pool.attach(42,output.getSurface(),()->Unit.INSTANCE,message->{error.set(new AssertionError(message));return Unit.INSTANCE;},output);
   try{
    await(plain,0);await(pinned,1);await(desktop,2);
+   var captured=pool.source(42L);var panel=pool.source(43L);
+   if(captured==null||captured.getWidth()!=512||captured.getHeight()!=384)throw new AssertionError("Popup-expanded capture bounds not retained for input mapping");
+   if(panel==null||panel.getWidth()!=1024||panel.getHeight()!=38)throw new AssertionError("System panel source not parsed independently of normal windows");
    if(count.get()!=1)throw new AssertionError("Capture/decoder duplicated "+count.get());
    a.close();await(pinned,1);await(desktop,2);
    c.close();await(desktop,3);await(pinned,1);

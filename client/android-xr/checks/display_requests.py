@@ -7,7 +7,7 @@ import tempfile
 root=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
 protocol=(root/'net/Protocol.kt').read_text().split('\n',1)[1]
 source=(root/'net/DeskConnection.kt').read_text()
-method=source[source.index('    fun requestDisplays('):source.index('    val windowCaptures')]
+method=source[source.index('    fun requestDisplays('):source.index('    fun requestArrangement(')]+source[source.index('    private fun submitDisplayRequest('):source.index('    val windowCaptures')]
 code=protocol+'''
 class State<T>(var value:T)
 class Handler {

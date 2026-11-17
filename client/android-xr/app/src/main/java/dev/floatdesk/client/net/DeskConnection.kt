@@ -234,11 +234,25 @@ internal class DeskConnection(
         if(!monitorPending.compareAndSet(0,-1)) return
         val id=monitorSequence.incrementAndGet()
         monitorPending.set(id);displayBusy.value=true
-        val packet=monitorCommand(id,action,index,width,height)
+        submitDisplayRequest(id,monitorCommand(id,action,index,width,height),action==0)
+    }
+
+    fun requestArrangement(positions:List<Pair<Int,Int>>) {
+        val info=workspaceInfo.value ?: return
+        if(positions.size!=info.screens.size || outgoing==null || !monitorPending.compareAndSet(0,-1))return
+        val id=monitorSequence.incrementAndGet();monitorPending.set(id);displayBusy.value=true
+        val rows=org.json.JSONArray()
+        info.screens.forEachIndexed {i,s->rows.put(org.json.JSONObject().put("name",s.name).put("x",positions[i].first).put("y",positions[i].second).put("width",s.width).put("height",s.height))}
+        val packet=Protocol.workspace(org.json.JSONObject().put("type","command").put("action",5).put("requestId",id).put("positions",rows).toString())
+        submitDisplayRequest(id,packet,false)
+    }
+
+    private fun submitDisplayRequest(id:Int,packet:ByteArray,readOnly:Boolean) {
+        val handler=outgoing ?: return
         handler.post { send(packet) }
         for(delay in listOf(300L,900L,1800L,3000L,5000L,8000L,12000L,18000L)) handler.postDelayed({ if(monitorPending.get()==id) send(packet) },delay)
         main.postDelayed({ if(monitorPending.get()==id) {
-            displayState.value=displayState.value.copy(ok=true,message=if(action==0) "Checking screen state…" else "Applying screen changes…")
+            displayState.value=displayState.value.copy(ok=true,message=if(readOnly) "Checking screen state…" else "Applying screen changes…")
         } },3000)
         main.postDelayed({ if(monitorPending.compareAndSet(id,0)) {
             // An uncertain mutation is never reissued under a new ID. Reconcile

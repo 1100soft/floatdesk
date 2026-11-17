@@ -8,7 +8,7 @@ import dev.floatdesk.client.FocusTarget
 internal data class DesktopWindow(val id:Long,val x:Int,val y:Int,val width:Int,val height:Int)
 
 internal data class DesktopOutput(val name:String,val width:Int,val height:Int,val x:Int,val y:Int,val managed:Boolean,val primary:Boolean,val role:Int,val modes:List<Pair<Int,Int>>,val refreshHz:Double=0.0)
-internal data class WorkspaceInfo(val screens:List<DesktopOutput>,val available:Int,val modes:List<Pair<Int,Int>>,val memoryBytes:Long,val cpuThreads:Int,val recommendedPixels:Long,val fps:Int,val estimate:String,val setupRequired:Boolean,val limits:Pair<Int,Int> = 32767 to 32767,val windowFocus:Boolean=false,val windows:List<DesktopWindow> = emptyList(),val gazeFocus:Boolean=false,val windowMagnify:Boolean=false) {
+internal data class WorkspaceInfo(val screens:List<DesktopOutput>,val available:Int,val modes:List<Pair<Int,Int>>,val memoryBytes:Long,val cpuThreads:Int,val recommendedPixels:Long,val fps:Int,val estimate:String,val setupRequired:Boolean,val limits:Pair<Int,Int> = 32767 to 32767,val windowFocus:Boolean=false,val windows:List<DesktopWindow> = emptyList(),val gazeFocus:Boolean=false,val windowMagnify:Boolean=false,val systemWindows:List<DesktopWindow> = emptyList()) {
     fun bounds():IntArray? {
         if(screens.isEmpty())return null
         val x=screens.minOf{it.x};val y=screens.minOf{it.y}
@@ -48,7 +48,10 @@ internal data class WorkspaceInfo(val screens:List<DesktopOutput>,val available:
             WorkspaceInfo(screens,j.getInt("available"),modes(j),j.getLong("availableMemoryBytes"),j.getInt("cpuThreads"),j.getLong("recommendedPixels"),j.getInt("targetFps"),j.getString("estimate"),j.getBoolean("setupRequired"),j.optJSONArray("desktopLimits")?.let {it.getInt(0) to it.getInt(1)} ?: (32767 to 32767),j.optBoolean("windowFocus",false),j.optJSONArray("windows")?.let {a->
                 (0 until a.length()).mapNotNull {i->val w=a.getJSONObject(i);val id=w.getLong("id");val width=w.getInt("width");val height=w.getInt("height")
                     if(id<=0 || width<=0 || height<=0)null else DesktopWindow(id,w.getInt("x"),w.getInt("y"),width,height)}
-            } ?: emptyList(),j.optBoolean("gazeFocus",false),j.optBoolean("windowMagnify",false))
+            } ?: emptyList(),j.optBoolean("gazeFocus",false),j.optBoolean("windowMagnify",false),j.optJSONArray("systemWindows")?.let {rows->
+                (0 until rows.length()).mapNotNull {i->val w=rows.getJSONObject(i);val id=w.getLong("id");val width=w.getInt("width");val height=w.getInt("height")
+                    if(id<=0 || width<=0 || height<=0)null else DesktopWindow(id,w.getInt("x"),w.getInt("y"),width,height)}
+            } ?: emptyList())
         }.getOrNull()
     }
 }

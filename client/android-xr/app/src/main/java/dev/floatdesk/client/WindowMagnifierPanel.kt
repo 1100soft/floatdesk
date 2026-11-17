@@ -26,8 +26,8 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
     val contextNow=rememberUpdatedState(onContext)
     val hiddenNow=rememberUpdatedState(onHidden)
     val resources=remember(session,root){MagnifierResources()}
-    DisposableEffect(resources){onDispose{resources.close()}}
-    LaunchedEffect(resources,window?.id,window?.sourceWidth,window?.sourceHeight){
+    DisposableEffect(resources){onDispose{hoverNow.value("LEFT",null);hoverNow.value("RIGHT",null);hiddenNow.value();movingNow.value(false);resources.close()}}
+    LaunchedEffect(resources,window?.id){
         hiddenNow.value();resources.visible=false;resources.stream?.close();resources.stream=null;resources.entity?.setEnabled(false);resources.curved?.entity?.setEnabled(false)
         hoverNow.value("LEFT",null);hoverNow.value("RIGHT",null)
         val initial=window ?: return@LaunchedEffect

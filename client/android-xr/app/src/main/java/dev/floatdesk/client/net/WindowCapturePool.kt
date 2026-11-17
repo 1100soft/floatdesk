@@ -15,11 +15,20 @@ internal class WindowCapturePool @JvmOverloads constructor(private val connectio
     private val capture:(Long,VideoCompositor,(String)->Unit,(Long,JSONObject)->Unit)->WindowVideo?={id,video,error,frame->connection.captureWindow(id,video,error,frame)}){
     private val main=Handler(Looper.getMainLooper())
     private val sources=mutableMapOf<Long,Source>()
+    private val capturedBounds=ConcurrentHashMap<Long,DesktopWindow>()
+    private val boundsRevision=androidx.compose.runtime.mutableIntStateOf(0)
+    fun source(id:Long?):DesktopWindow? {
+        boundsRevision.intValue
+        if(id==null)return null
+        val info=connection.workspaceInfo.value
+        val live=info?.windows?.firstOrNull{it.id==id} ?: info?.systemWindows?.firstOrNull{it.id==id} ?: return null
+        return capturedBounds[id] ?: live
+    }
     private class Member(var mirror:VideoMirror,val ready:()->Unit,val error:(String)->Unit,val output:WindowDestination?=null){val shown=AtomicBoolean()}
     private inner class Source(val id:Long){
         val members=ConcurrentHashMap<Any,Member>()
         val frames=java.util.concurrent.ConcurrentSkipListMap<Long,JSONObject>()
-        val info=connection.workspaceInfo.value?.windows?.firstOrNull{it.id==id}
+        val info=source(id)
         val width=info?.width ?: 1280;val height=info?.height ?: 800
         val size=WindowCaptureFormat.size(width,height)
         val w=size.first;val h=size.second
@@ -38,6 +47,10 @@ internal class WindowCapturePool @JvmOverloads constructor(private val connectio
         fun update(){video.mirrors(members.values.map{member->member.mirror.copy(before={pts->
             val output=member.output
             val meta=frames[pts]
+            if(meta!=null){
+                val bounds=DesktopWindow(id,meta.optInt("sourceX",info?.x ?: 0),meta.optInt("sourceY",info?.y ?: 0),meta.optInt("sourceWidth",width),meta.optInt("sourceHeight",height))
+                if(capturedBounds.put(id,bounds)!=bounds)main.post{boundsRevision.intValue++}
+            }
             if(meta!=null)video.sourceAspect=meta.optInt("sourceWidth",width).toFloat()/meta.optInt("sourceHeight",height).coerceAtLeast(1)
             if(output!=null && meta!=null){
                 val b=connection.workspaceInfo.value?.bounds()
@@ -62,7 +75,7 @@ internal class WindowCapturePool @JvmOverloads constructor(private val connectio
         val member=Member(VideoMirror(surface),onReady,onError,output);source.members[key]=member;source.update()
         return Lease({x,y,pin,aspect->if(member.mirror.padX!=x || member.mirror.padY!=y || member.mirror.pinned!=pin || member.mirror.aspect!=aspect){member.mirror=member.mirror.copy(padX=x,padY=y,pinned=pin,aspect=aspect);source.update()}},{
             source.members.remove(key);output?.clear?.invoke()
-            if(source.members.isEmpty()){sources.remove(id);source.stream?.stop();source.video.mirrors(emptyList());BackgroundRelease.close(AutoCloseable{source.close()})}else source.update()
+            if(source.members.isEmpty()){sources.remove(id);capturedBounds.remove(id);source.stream?.stop();source.video.mirrors(emptyList());BackgroundRelease.close(AutoCloseable{source.close()})}else source.update()
         })
     }
 }

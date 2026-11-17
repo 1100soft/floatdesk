@@ -144,6 +144,39 @@ else:
         print(
             f"PASS: control heartbeat at {heartbeat:.2f}s during slow low-rate operation ({completed:.2f}s); lowest rate retained in workspace metadata"
         )
+        # Exercise the batch command through the real parser/worker. A partial
+        # draft must fail before changing any output; a complete draft applies.
+        for request_id, rows, expected in [
+            (101, metadata["screens"][:1], False),
+            (102, metadata["screens"], True),
+        ]:
+            send(
+                15,
+                json.dumps(
+                    {
+                        "type": "command",
+                        "requestId": request_id,
+                        "action": 5,
+                        "positions": rows,
+                    }
+                ).encode(),
+            )
+            until = time.monotonic() + 8
+            while True:
+                assert time.monotonic() < until, "Batch arrangement response timed out"
+                try:
+                    reply, _ = s.recvfrom(65535)
+                except socket.timeout:
+                    continue
+                if (
+                    reply[5] == 12
+                    and struct.unpack_from("<I", reply, 16)[0] == request_id
+                ):
+                    assert bool(reply[20]) == expected, reply
+                    break
+        print(
+            "PASS: incomplete arrangement rejected; complete named draft applied through the display worker"
+        )
     finally:
         host.send_signal(signal.SIGTERM)
         try:

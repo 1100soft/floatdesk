@@ -82,6 +82,10 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
             Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){
                 listOf("floating" to "Floating","fixed" to "Fixed").forEach{(mode,label)->Button(onClick={onQuality(quality.copy(magnifierMode=mode))}){Text(if(quality.magnifierMode==mode)"✓ $label" else label)}}
             }
+            Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
+                Text("Panels & system menu",color=Color.White)
+                androidx.compose.material3.Switch(checked=quality.magnifySystemPanels,onCheckedChange={onQuality(quality.copy(magnifySystemPanels=it))})
+            }
             if(quality.magnifierMode=="fixed")Button(onClick=onAddFixed){Text("Add fixed magnifier")}
             if(quality.gazeToFocus && connection.gazeFocusError.value.isNotEmpty())Text(connection.gazeFocusError.value,color=Color(0xFFFFB4AB),fontSize=12.sp)
             var quiet by remember(quality.typingQuietMs){mutableStateOf((quality.typingQuietMs/1000f).toString())}
@@ -110,7 +114,7 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
             Text("On the computer, run: python3 scripts/virtual-display-setup.py --check\nIf no pool is available, use --write-bundle to prepare installation files. A compatible VKMS configfs kernel, administrator setup and a graphical-session restart are required. Existing pools are reused; Floatdesk never rebuilds kernel topology during use.",color=Color(0xFFB8D9EA),fontSize=13.sp)
         }
         if(section=="Screens") {
-        ScreenArrangementEditor(sizes,positions,busy,screens?.indexOfFirst {it.primary}?.coerceAtLeast(0) ?: if(state.primary==0) 0 else Integer.numberOfTrailingZeros(state.primary),info?.limits ?: (32767 to 32767)) {index,x,y->connection.requestDisplays(4,index,x,y)}
+        ScreenArrangementEditor(sizes,positions,busy,screens?.indexOfFirst {it.primary}?.coerceAtLeast(0) ?: if(state.primary==0) 0 else Integer.numberOfTrailingZeros(state.primary),info?.limits ?: (32767 to 32767)) {draft->connection.requestArrangement(draft)}
         if(sizes.isNotEmpty()) {
             Text(String.format(Locale.ROOT,"Visual spacing: %.1f%%",spacing*100),color=Color.White)
             androidx.compose.material3.Slider(value=spacing,onValueChange={onSpacing((it*1000).roundToInt()/1000f)},onValueChangeFinished=onSpacingFinished,valueRange=0f..0.15f,steps=149,enabled=!busy)

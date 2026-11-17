@@ -26,10 +26,13 @@ public final class ControlRecoverySmoke {
             if(!stats(connection,"11"))throw new AssertionError("Initial telemetry not received");
             send(host,first,new byte[]{1,2,3});
             send(host,first,Protocol.INSTANCE.workspace("not-json"));
+            java.util.concurrent.atomic.AtomicInteger pending=(java.util.concurrent.atomic.AtomicInteger)field("monitorPending").get(connection);
+            pending.set(123);
             first.close();
             DatagramSocket replacement=null;
             for(int i=0;i<80;i++){replacement=(DatagramSocket)field("control").get(connection);if(replacement!=first&&!replacement.isClosed())break;SystemClock.sleep(25);}
             if(replacement==first||replacement==null||replacement.isClosed())throw new AssertionError("Control socket did not reopen");
+            if(pending.get()==123)throw new AssertionError("Uncertain mutation retained across endpoint replacement");
             for(int i=0;i<40&&!stats(connection,"22");i++){send(host,replacement,Protocol.INSTANCE.workspace("{\"type\":\"resourceStats\",\"cpuPct\":22}"));SystemClock.sleep(25);}
             if(!worker.isAlive()||!stats(connection,"22"))throw new AssertionError("Telemetry failed after socket replacement");
             // An unchanged hello must rebuild dead workers, then retain the healthy replacement.
@@ -51,6 +54,11 @@ public final class ControlRecoverySmoke {
             if(!(Boolean)decoderType.getMethod("isHealthy").invoke(recovered))throw new AssertionError("Replacement decoder not healthy");
             hello.invoke(connection,packet,new InetSocketAddress(InetAddress.getLoopbackAddress(),host.getLocalPort()));
             if(decoders.get(0)!=recovered)throw new AssertionError("Healthy decoder unnecessarily replaced");
+            DatagramSocket beforeSilence=(DatagramSocket)field("control").get(connection),afterSilence=beforeSilence;
+            for(int i=0;i<600;i++){afterSilence=(DatagramSocket)field("control").get(connection);if(afterSilence!=beforeSilence)break;SystemClock.sleep(25);}
+            if(afterSilence==beforeSilence)throw new AssertionError("Silent host did not trigger transport recovery");
+            for(int i=0;i<40&&!stats(connection,"33");i++){send(host,afterSilence,Protocol.INSTANCE.workspace("{\"type\":\"resourceStats\",\"cpuPct\":33}"));SystemClock.sleep(25);}
+            if(!stats(connection,"33"))throw new AssertionError("Telemetry did not recover after silence");
         }finally{for(Object decoder:((java.util.Map<?,?>)field("decoders").get(connection)).values())decoder.getClass().getMethod("stop").invoke(decoder);field("running").set(connection,false);((DatagramSocket)field("control").get(connection)).close();host.close();worker.join(1500);}
         if(worker.isAlive()||failure.get()!=null)throw new AssertionError("Control worker failed shutdown",failure.get());
         System.out.println("PASS actual control recovery, resumed telemetry, decoder reconciliation and immediate shutdown");

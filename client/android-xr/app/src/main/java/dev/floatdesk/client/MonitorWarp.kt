@@ -54,9 +54,12 @@ internal class MonitorWarp : AutoCloseable {
     fun setVisible(visible:Boolean) {
         if(shown==visible)return
         shown=visible
-        input?.setEnabled(visible && ownerEnabled && mesh==null)
-        if(live!==input)live?.setEnabled(visible)
-        curvedInput?.entity?.setEnabled(visible && mesh!=null)
+        applyVisibility()
+    }
+    private fun applyVisibility() {
+        input?.setEnabled(shown && ownerEnabled && mesh==null)
+        if(live!==input)live?.setEnabled(shown)
+        curvedInput?.entity?.setEnabled(shown && mesh!=null)
     }
     private var ownerEnabled=true
     private var directInteraction = false
@@ -239,6 +242,7 @@ internal class MonitorWarp : AutoCloseable {
             inputPointer=pointer;ownsInputPointer=existingPointer==null
             directInteraction = true
         }
+        applyVisibility()
         return inputSurface
     }
 

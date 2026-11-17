@@ -27,7 +27,7 @@ public final class SharpenSmoke {
   int hudLit=0;
   for(int y=0;y<hud.getHeight();y++)for(int x=0;x<hud.getWidth();x++)if(Color.alpha(hud.getPixel(x,y))>0){
     hudLit++;boolean inside=false;
-    for(var region:hudLayout.getRegions())if(region.contains((float)x/hud.getWidth(),(float)y/hud.getHeight()))inside=true;
+    for(var region:hudLayout.getRegions())if(x>=Math.floor(region.getLeft()*hud.getWidth()) && x<Math.ceil(region.getRight()*hud.getWidth()) && y>=Math.floor(region.getTop()*hud.getHeight()) && y<Math.ceil(region.getBottom()*hud.getHeight()))inside=true;
     if(!inside)throw new AssertionError("Single curved HUD draws outside its geometry");
   }
   if(hudLit<1000 || Color.alpha(hud.getPixel(hud.getWidth()/2,hud.getHeight()/2))!=0)throw new AssertionError("Single HUD is empty or obstructs the focus center");

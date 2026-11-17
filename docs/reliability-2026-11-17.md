@@ -1,0 +1,11 @@
+# XR reliability review — 2026-11-17
+
+A captured Workspace-return crash overflowed Filament’s native command stream while creating an input model. Desktop assets now remain allocated and disabled during Workspace, and hidden decoding pauses. Scene updates require RESUMED rather than STARTED; this also avoids feeding native geometry while the renderer is paused. Newer captured crashes were in native mesh upload. The lifecycle gate addresses a concrete risk but does not prove those native failures eliminated.
+
+The control receiver previously terminated on a packet-handler exception while the app remained marked connected. It now rejects bad packets, reopens failed or silent transport, and rebuilds dead decoder workers on handshake. Device recovery testing additionally exposed a receiver startup/shutdown race around socket options; initialization now handles a socket closed concurrently by shutdown. Pending display mutations are cancelled and reconciled read-only after endpoint replacement because host deduplication includes the source endpoint.
+
+Diagnostics have translucent backgrounds only within rendered clusters. Eye rays intersect those same warped footprints before desktop, magnifier or palm targeting; the transparent central region remains available. Normal streaming hides dynamic-only controls. Existing user preferences are preserved.
+
+Thermal severity is the Android-reported status, not an FPS estimate. These changes do not establish that severe thermal throttling is resolved. Sustained real-world use is still required to verify thermal behavior and native-engine stability.
+
+Validation: Android debug build and lint passed; six targeted JVM suites passed (curved resize, display requests, focus interaction, monitor warp, viewed detail and Workspace regressions), with focus rerun after the final HUD interaction adjustment. Four headset probes passed: control recovery, sharpening/HUD pixels, decoder idle/resume and window fan-out. Control recovery was rerun against the final APK, including cancellation of pending mutations across endpoint replacement. The APK was installed and reopened. These checks are not a sustained thermal soak or proof that every native crash is eliminated.

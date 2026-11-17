@@ -338,17 +338,41 @@ internal class DeskConnection(
         val incoming = DatagramPacket(buffer, buffer.size)
         val broadcast = InetSocketAddress("255.255.255.255", 47000)
         var lastHello = 0L
+        var lastReplyAt=android.os.SystemClock.elapsedRealtime()
+        val replyTimeoutMs=10_000L
+        fun reopenControl(reason:String):Boolean {
+            if(!running)return false
+            val next=try{DatagramSocket().apply{this.broadcast=true;soTimeout=200}}catch(error:Exception){
+                Log.e("Floatdesk","Control socket reopen failed",error);return false
+            }
+            val previous=socket
+            socket=next;control=next;previous.close()
+            // Host mutation deduplication includes the source endpoint. Never
+            // resend an uncertain mutation after changing our ephemeral port.
+            val reconcile=monitorPending.getAndSet(0)!=0
+            focusPending.set(0);gazeFocusPending.set(0)
+            if(reconcile)main.post {
+                displayBusy.value=false
+                requestDisplays()
+            }
+            lastHello=0L;lastReplyAt=android.os.SystemClock.elapsedRealtime()
+            Log.w("Floatdesk","Control socket reopened: $reason")
+            return true
+        }
         while (running) {
             try {
             pollBeacon()
             val discoveryNow=android.os.SystemClock.elapsedRealtime()
+            if(pendingRemote!=null && currentMonitors.isNotEmpty() && discoveryNow-lastReplyAt>=replyTimeoutMs) {
+                if(!reopenControl("host replies timed out"))Thread.sleep(250)
+            }
             val selected=hostDiscovery.select(pendingRemote,currentMonitors.isNotEmpty() && discoveryNow-lastAcceptedHello<5000,discoveryNow)
             if(selected!=null && selected!=pendingRemote) {
                 Log.i("Floatdesk","Retrying host interface $pendingRemote -> $selected")
                 pendingRemote=selected
                 lastHello=0L
             }
-            val now = System.currentTimeMillis()
+            val now = discoveryNow
             if (pendingRemote == null && now - lastHello > 1000) {
                 val hello = Protocol.clientHello("floatdesk", 48000)
                 runCatching { socket.send(DatagramPacket(hello, hello.size, broadcast)) }
@@ -360,6 +384,7 @@ internal class DeskConnection(
                 incoming.setLength(buffer.size)
                 socket.receive(incoming)
                 val decoded = Protocol.decode(buffer.copyOf(incoming.length)) ?: continue
+                if(incoming.address==pendingRemote?.address && incoming.port==pendingRemote?.port)lastReplyAt=android.os.SystemClock.elapsedRealtime()
                 when (decoded) {
                     is Packet.HostHello -> {
                         if(pendingRemote!=null && (incoming.address!=pendingRemote?.address || incoming.port!=pendingRemote?.port)) continue
@@ -408,12 +433,8 @@ internal class DeskConnection(
             } catch (_: SocketTimeoutException) {
             } catch (error:java.net.SocketException) {
                 if(!running)break
-                Log.w("Floatdesk","Control socket failed; reopening",error)
-                socket.close()
-                try {
-                    socket=DatagramSocket().apply{this.broadcast=true;soTimeout=200}
-                    control=socket;lastHello=0L
-                } catch(retry:Exception){Log.e("Floatdesk","Control socket reopen failed",retry);Thread.sleep(250)}
+                Log.w("Floatdesk","Control socket failed",error)
+                if(!reopenControl("socket failure"))Thread.sleep(250)
             } catch (error: Exception) {
                 // A malformed/unexpected reply must not permanently stop heartbeats and telemetry.
                 if(!running)break

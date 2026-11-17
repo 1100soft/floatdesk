@@ -124,7 +124,7 @@ internal fun DeskContent(
             PalmControls(latchedFollow, workspace.sphericalWarp, workspace.eyeAiming, workspace.mouseGestures, panelFocused, panelPressed, workspace.focusMode, onPalmAction)
         }
     }
-    // Remove desktop render/input surfaces while Workspace is open so no surface can occlude it.
+    // Retain native assets across Workspace visits; hide them instead of destroying/re-instancing glTF.
     val controlsOpenNow=rememberUpdatedState(displayControlsOpen)
     layout.forEachIndexed { index, placement ->
         androidx.compose.runtime.key(placement.hostSourceId,placement.pixelWidth,placement.pixelHeight) {
@@ -147,7 +147,6 @@ internal fun DeskContent(
             var outputResizePending=false
             while (isActive) {
                 delay(20)
-                if(!connection.isRenderingActive() || !current.lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) { delay(100);continue }
                 if(controlsOpenNow.value) {
                     warp.setVisible(false);systemControls.setVisible(false)
                     hands.cancel();pointerControl.clearMonitor(index)
@@ -156,6 +155,7 @@ internal fun DeskContent(
                     frozenMonitor?.suspendVisibility()
                     delay(100);continue
                 }
+                if(!connection.isRenderingActive() || !current.lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) { delay(100);continue }
                 warp.setVisible(true);systemControls.setVisible(true)
                 if (videoSurface.get() == null) continue
                 val root = findDeskSpace(current) ?: continue

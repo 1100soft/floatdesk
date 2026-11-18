@@ -53,7 +53,7 @@ internal class MonitorSystemControls : AutoCloseable {
     @SuppressLint("RestrictedApi")
     @OptIn(androidx.xr.scenecore.ExperimentalSurfaceEntityPixelDimensionsApi::class)
     fun update(session: Session,video: Entity?,mesh: MonitorMesh?,width: Float,height: Float,viewer: FloatArray?,
-               unitsPerMeter: Float,enabled: Boolean,onResize: (ResizeEvent,Float)->Unit,onMove: (SystemMovePhase,Pose)->Unit) {
+               unitsPerMeter: Float,enabled: Boolean,onResize: (ResizeEvent,Float)->Unit,onMove: (SystemMovePhase,Pose)->Unit,allowMove:Boolean=true,minimumWidth:Float=.28f,minimumHeight:Float=.16f) {
         listener=onResize;moveListener=onMove
         if(video==null || (!enabled && (resizeStartWidth!=null || moving))) { close();return }
         // Do not feed the app's changing geometry back into an active native controller.
@@ -99,7 +99,7 @@ internal class MonitorSystemControls : AutoCloseable {
                     }
                 }
             })
-            resize.affordanceSize=FloatSize3d(frame.width,frame.height,.001f)
+            resize.affordanceSize=FloatSize3d(nextWidth,nextHeight,.001f)
             resize.isFixedAspectRatioEnabled=true;resize.isAutoHideContentWhileResizingEnabled=false
             resize.isAlwaysShowOverlayEnabled=true
             check(root.addComponent(resize))
@@ -117,8 +117,8 @@ internal class MonitorSystemControls : AutoCloseable {
                     if(visible && token==generation && moving) { moveListener?.invoke(SystemMovePhase.END,finalPose);moving=false }
                 }
             })
-            check(root.addComponent(move))
-            entity=root;submitted=NativeNodeState(root);component=resize;movable=move
+            if(allowMove)check(root.addComponent(move))
+            entity=root;submitted=NativeNodeState(root);component=resize;movable=if(allowMove)move else null
         }
         val scale=video.getScale()
         val offset=Vector3(frame.center[0]*scale,frame.center[1]*scale,frame.center[2]*scale)
@@ -130,11 +130,11 @@ internal class MonitorSystemControls : AutoCloseable {
         }
         if(boundsChanged) component?.let {
             val x=frame.width/width;val y=frame.height/height
-            it.minimumEntitySize=FloatSize3d(.28f*x,.16f*y,.001f)
+            it.minimumEntitySize=FloatSize3d(minimumWidth*x,minimumHeight*y,.001f)
             // A two-hand grab can exceed the old 2.4 x 1.5 bounds. Never set a
             // native maximum below the current frame; grow the next gesture's range.
             it.maximumEntitySize=FloatSize3d(maxOf(10f*unitsPerMeter,frame.width*16f),maxOf(10f*unitsPerMeter,frame.height*16f),.001f)
-            it.affordanceSize=FloatSize3d(frame.width,frame.height,.001f)
+            it.affordanceSize=FloatSize3d(nextWidth,nextHeight,.001f)
         }
         if(geometryChanged) movable?.size=FloatSize3d(nextWidth,nextHeight,.001f)
         if(geometryChanged) {shapeWidth=nextWidth;shapeHeight=nextHeight};canonicalWidth=width;canonicalHeight=height

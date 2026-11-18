@@ -92,10 +92,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             if(event==Lifecycle.Event.ON_PAUSE || event==Lifecycle.Event.ON_STOP) store.save(workspaceAtLifecycle.value)
             sceneActive=interactiveNow.value && current?.lifecycleOwner?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.RESUMED)==true
             connection.setRenderingActive(sceneActive)
-            if (current != null && event == Lifecycle.Event.ON_RESUME) {
-                runCatching { current.configure(Config.Builder(current.config).setHandTracking(HandTrackingMode.BOTH).build()) }
-                runCatching { current.configure(Config.Builder(current.config).setDeviceTracking(DeviceTrackingMode.SPATIAL).build()) }
-            }
+
         }
         current?.lifecycleOwner?.lifecycle?.addObserver(observer)
         onDispose {
@@ -106,6 +103,15 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
     LaunchedEffect(session,deviceInteractive) {
         sceneActive=deviceInteractive && session?.lifecycleOwner?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.RESUMED)==true
         connection.setRenderingActive(sceneActive)
+    }
+    LaunchedEffect(session,sceneActive) {
+        val current=session ?: return@LaunchedEffect
+        if(sceneActive) {
+            current.scene.requestFullSpace()
+            val hands=runCatching { current.configure(Config.Builder(current.config).setHandTracking(HandTrackingMode.BOTH).build()) }
+            val head=runCatching { current.configure(Config.Builder(current.config).setDeviceTracking(DeviceTrackingMode.SPATIAL).build()) }
+            Log.i("Floatdesk","tracking activation hands=$hands head=$head")
+        }
     }
     LaunchedEffect(workspace.screenSpacing) {connection.configurePresentation(workspace.screenSpacing)}
     LaunchedEffect(workspace.encoderQuality,workspace.encoderMbps,workspace.sharpening,workspace.detailAreaPixels,workspace.detailTargetFps){connection.configureVideo(workspace.encoderQuality,workspace.encoderMbps,workspace.sharpening,workspace.denseFraction,workspace.detailAreaPixels,workspace.detailTargetFps)}
@@ -339,24 +345,6 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
     val pixelDensity = session?.scene?.virtualPixelDensity
     LaunchedEffect(session) {
         val current = session ?: return@LaunchedEffect
-        current.scene.requestFullSpace()
-        // Hand tracking and head tracking are separate. One rejection used to
-        // roll the whole config back, which left the hands disabled.
-        val handsConfigured = runCatching {
-            current.configure(
-                Config.Builder(current.config)
-                    .setHandTracking(HandTrackingMode.BOTH)
-                    .build(),
-            )
-        }
-        val headConfigured = runCatching {
-            current.configure(
-                Config.Builder(current.config)
-                    .setDeviceTracking(DeviceTrackingMode.SPATIAL)
-                    .build(),
-            )
-        }
-        Log.i("Floatdesk", "tracking configure hands=$handsConfigured head=$headConfigured")
         var hands = emptyList<Pair<String, Hand>>()
         val sampledHands=java.util.concurrent.atomic.AtomicReference<List<Pair<String,Hand>>>(emptyList())
         val pinchFrames=PinchFrameBuffer()
@@ -424,7 +412,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
         // This headset is stereo, so the mono viewpoint is not created. The left
         // eye, then the device pose, is the head.
         var viewpoint = openViewpoint(current)
-        val rightViewpoint = runCatching { RenderViewpoint.right(current) }.getOrNull()
+        var rightViewpoint = runCatching { RenderViewpoint.right(current) }.getOrNull()
         var device = runCatching { ArDevice.getInstance(current) }.getOrNull()
         Log.i("Floatdesk", "head source view=${viewpoint != null} device=${device != null}")
         val trackingGuard = TrackingGuard()
@@ -498,6 +486,14 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 }
                 inputWasResumed=false
                 delay(100);continue
+            }
+            if(!inputWasResumed) {
+                hands=emptyList()
+                viewpoint=openViewpoint(current)
+                rightViewpoint=runCatching { RenderViewpoint.right(current) }.getOrNull()
+                device=runCatching { ArDevice.getInstance(current) }.getOrNull()
+                tick=1
+                Log.i("Floatdesk","tracking resources reacquired after wake")
             }
             inputWasResumed=true
             if (followGeneration != seenGeneration) {
@@ -582,7 +578,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             val hudReading=hudHead!=null && eyeRays.any{(origin,direction)->
                 val local=viewerInMonitor(origin,hudHead.position,hudHead.rotation).map{it/unitsPerMeter}.toFloatArray()
                 val end=viewerInMonitor(add(origin,direction),hudHead.position,hudHead.rotation).map{it/unitsPerMeter}.toFloatArray()
-                hudGaze.hit(local,subtract(end,local),viewHalfAngles.get()[0],viewHalfAngles.get()[1],workspace.showResources,workspace.viewDetailDebug)
+                hudGaze.hit(local,subtract(end,local),viewHalfAngles.get()[0],viewHalfAngles.get()[1],workspace.showResources,workspace.viewDetailDebug,workspace.sphericalWarp)
             }
             val contentEyeRays=if(hudReading)emptyList() else eyeRays
             val screen=workspace.monitorAt(0)
@@ -1115,7 +1111,14 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
         val renderedSystem=mutableListOf<MagnifiedWindow>()
         val systemInfo by connection.workspaceInfo
         if(session!=null && magnifierRoot!=null && fixedDesktop!=null && fixedViewer!=null && workspace.magnifySystemPanels) {
-            systemInfo?.systemWindows.orEmpty().sortedBy{!it.panel}.forEach {live-> key("system",live.id) {
+            val shellRows=systemInfo?.systemWindows.orEmpty().sortedWith(compareBy<dev.floatdesk.client.net.DesktopWindow>{!it.panel}.thenBy{it.id})
+            var shellSlots by remember{mutableIntStateOf(0)}
+            if(shellRows.size>shellSlots)shellSlots=shellRows.size
+            repeat(shellSlots){slot->key("system-slot",slot){
+                val row=shellRows.getOrNull(slot)
+                var retainedRow by remember{mutableStateOf(row)}
+                if(row!=null)retainedRow=row
+                val live=row ?: requireNotNull(retainedRow)
                 val source=connection.windowCaptures.source(live.id) ?: live
                 val record=systemPlacements.getOrPut(live.id){
                     val initial=magnifiedWindow(live.id,source.width,source.height,fixedViewer,viewHalfAngles.get()[0],viewHalfAngles.get()[1],handTracking.unitsPerMeter,workspace.sphericalWarp,layerDistanceM=dev.floatdesk.client.workspace.ViewLayers.ShellDistanceM)
@@ -1126,6 +1129,13 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     val shifted=initial.copy(pose=initial.pose.copy(position=transformPoint(fixedViewer,floatArrayOf(x*handTracking.unitsPerMeter,y*handTracking.unitsPerMeter,-dev.floatdesk.client.workspace.ViewLayers.ShellDistanceM*handTracking.unitsPerMeter))))
                     saveFixedMagnifier("system:${live.id}",shifted,fixedDesktop,handTracking.unitsPerMeter)
                 }
+                // Capture metadata can trim a panel's shadow after the first frame.
+                // Preserve its long-axis size while matching the actual content aspect.
+                val contentRecord=if(live.panel){
+                    val extent=maxOf(record.widthM,record.heightM)
+                    val ratio=source.width.toFloat()/source.height.coerceAtLeast(1)
+                    record.copy(widthM=extent*minOf(1f,ratio),heightM=extent*minOf(1f,1f/ratio))
+                }else record
                 val attachedPanel=if(live.panel)null else renderedSystem.filter{p->systemInfo?.systemWindows?.any{it.id==p.id && it.panel}==true}.minByOrNull{p->
                     val b=connection.windowCaptures.source(p.id)!!
                     val dx=maxOf(b.x-source.x-source.width,source.x-b.x-b.width,0)
@@ -1133,8 +1143,8 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     dx.toLong()*dx+dy.toLong()*dy
                 }
                 val pane=if(attachedPanel!=null)stickyMagnifier(attachedPanel,connection.windowCaptures.source(attachedPanel.id)!!,source,fixedViewer)
-                    else fixedMagnifier(record,fixedDesktop,source,fixedViewer,handTracking.unitsPerMeter,workspace.sphericalWarp,systemRuntime[live.id],dev.floatdesk.client.workspace.ViewLayers.ShellDistanceM)
-                val enabled=magnifierSurfacesAllowed(true,sceneActive,displayControlsOpen)
+                    else fixedMagnifier(contentRecord,fixedDesktop,source,fixedViewer,handTracking.unitsPerMeter,workspace.sphericalWarp,systemRuntime[live.id],dev.floatdesk.client.workspace.ViewLayers.ShellDistanceM)
+                val enabled=row!=null && magnifierSurfacesAllowed(true,sceneActive,displayControlsOpen)
                 if(enabled)renderedSystem.add(pane)
                 DisposableEffect(live.id){onDispose{systemReady.remove(live.id);systemRuntime.remove(live.id);systemPlacements.remove(live.id)}}
                 WindowMagnifierPanel(session,magnifierRoot,pane.takeIf{enabled},connection,false,magnifierViewer,{handTracking.unitsPerMeter},handTracking,

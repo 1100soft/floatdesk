@@ -37,6 +37,7 @@ internal class MonitorWarp : AutoCloseable {
     }
     private var input: SurfaceEntity? = null
     private var live: SurfaceEntity? = null
+    private var retainedCurved:SurfaceEntity?=null
     private var flatWidth = 0f
     private var flatHeight = 0f
     private var appliedShape: SurfaceEntity.Shape? = null
@@ -271,8 +272,8 @@ internal class MonitorWarp : AutoCloseable {
         val usable = enabled
         if (!usable) {
             if (live !== original) {
-                curvedInput?.close(); curvedInput = null
-                live?.let { it.parent = null; it.dispose() }
+                curvedInput?.entity?.setEnabled(false)
+                live?.let { it.setEnabled(false);it.parent=null }
                 live = original
             }
             if (presentationDirty || mesh != null || flatWidth != placement.physicalWidthM || flatHeight != placement.physicalHeightM) {
@@ -329,7 +330,10 @@ internal class MonitorWarp : AutoCloseable {
             }
             val shape = videoShape(next.width,next.height,next)
             recentShapes.retain(shape)
-            val target = if (live === original) SurfaceEntity.create(session,
+            val target = if (live === original && retainedCurved!=null) retainedCurved!!.also {
+                it.parent=original.parent;it.setPose(original.getPose());it.setScale(original.getScale())
+                it.setEnabled(shown);live=it;applyPixels(it,placement)
+            } else if(live === original) SurfaceEntity.create(session,
                 shape = shape, pose = original.getPose(), parent = original.parent,
                 superSampling = SurfaceEntity.SuperSampling.NONE).also {
                 it.setScale(original.getScale())
@@ -338,7 +342,7 @@ internal class MonitorWarp : AutoCloseable {
                 val pointer=SpatialPointerComponent.create(session)
                 check(it.addComponent(pointer))
                 pointer.spatialPointerIcon=SpatialPointerIcon.NONE
-                live = it;appliedShape=shape
+                live = it;retainedCurved=it;appliedShape=shape
                 recentShapes.retain(shape)
             } else live!!
             applyShape(target, shape)
@@ -353,7 +357,7 @@ internal class MonitorWarp : AutoCloseable {
     override fun close() {
         // Restore the Compose-owned surface before releasing our independent curved resources.
         curvedInput?.close(); curvedInput = null
-        if (live !== input) live?.takeUnless{it.isDisposed}?.let { it.parent = null; it.dispose() }
+        retainedCurved?.takeUnless{it.isDisposed}?.let { it.parent = null; it.dispose() };retainedCurved=null
         input?.takeUnless{it.isDisposed}?.let{it.setEnabled(ownerEnabled);it.primaryAlphaMaskTexture=null;it.mediaBlendingMode=SurfaceEntity.MediaBlendingMode.OPAQUE}
         mask?.close(); mask = null
         inputListener = null

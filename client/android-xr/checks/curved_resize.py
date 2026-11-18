@@ -155,7 +155,7 @@ fun main() {
     check(root!==video && root.parent===parent && root.scale==.8f && video.move==null && !move.scaleInZ)
     near(root.pose.translation.x,.2f+frame.center[0]*.8f)
     check(component.isFixedAspectRatioEnabled && !component.isAutoHideContentWhileResizingEnabled && component.isAlwaysShowOverlayEnabled)
-    near(component.affordanceSize.width,frame.width)
+    near(component.affordanceSize.width,(root.shape as SurfaceEntity.Shape.Quad).size.width)
     fun event(state:ResizeEvent.ResizeState,factor:Float)=ResizeEvent(state,FloatSize3d(frame.width*factor,frame.height*factor,.001f))
     component.listener.accept(event(ResizeEvent.ResizeState.ONGOING,1.1f));check(events.isEmpty())
     component.listener.accept(event(ResizeEvent.ResizeState.START,1f))
@@ -198,6 +198,16 @@ fun main() {
     update(enabled=false)
     check(active.parent==null && active.move==null && active.resize==null)
     handles.close()
+    // UI panes reuse the projected frame without a second native movement path.
+    val paneSession=Session();val paneControls=MonitorSystemControls()
+    paneControls.update(paneSession,video,mesh,mesh.width,mesh.height,mesh.eye,1f,true,
+        onResize={_,_->},onMove={_,_->error("Pane movement belongs to direct input")},
+        allowMove=false,minimumWidth=.01f,minimumHeight=.02f)
+    val paneRoot=paneSession.entities.single() as SurfaceEntity
+    check(paneRoot.move==null && paneRoot.resize!=null)
+    near(paneRoot.resize!!.affordanceSize.width,(paneRoot.shape as SurfaceEntity.Shape.Quad).size.width)
+    paneControls.setVisible(false);check(!paneRoot.enabled)
+    paneControls.close()
     val bigSession=Session();val bigHandles=MonitorSystemControls()
     val initialWidth=3.328259f;val initialHeight=2.0801616f
     val initialBig=MonitorMesh(initialWidth,initialHeight,floatArrayOf(0f,0f,1.887f),focus=floatArrayOf(0f,0f))

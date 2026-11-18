@@ -133,15 +133,15 @@ internal data class HudForegroundPatch(val width:Float,val height:Float,val posi
         for(r in rows-1 downTo 1)edge[i++]=r*(columns+1)
     }
 }
-internal fun hudForegroundPatches(horizontal:Float,vertical:Float,distance:Float):List<HudForegroundPatch>{
+internal fun hudForegroundPatches(horizontal:Float,vertical:Float,distance:Float,spherical:Boolean=true):List<HudForegroundPatch>{
     val layout=hudSurfaceLayout(horizontal,vertical,distance)
-    val sphere=MonitorMesh(layout.width,layout.height,floatArrayOf(0f,0f,distance),focus=floatArrayOf(0f,0f))
+    val sphere=MonitorMesh(layout.width,layout.height,floatArrayOf(0f,0f,distance),focus=floatArrayOf(0f,0f),planar=!spherical)
     fun dot(a:FloatArray,b:FloatArray)=(0..2).sumOf{(a[it]*b[it]).toDouble()}.toFloat()
     fun cross(a:FloatArray,b:FloatArray)=floatArrayOf(a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0])
     fun unit(a:FloatArray):FloatArray{val n=kotlin.math.sqrt(dot(a,a));return FloatArray(3){a[it]/n}}
     fun point(x:Float,y:Float)=sphere.project(floatArrayOf(x,y,0f)).let{floatArrayOf(it[0],it[1],it[2]-distance)}
     return peripheralHudPanels(horizontal,vertical,distance).map{box->
-        val center=point(box.x,box.y);val normal=unit(FloatArray(3){-center[it]})
+        val center=point(box.x,box.y);val normal=if(spherical)unit(FloatArray(3){-center[it]})else floatArrayOf(0f,0f,1f)
         val right=unit(cross(floatArrayOf(0f,1f,0f),normal));val up=cross(normal,right)
         val coordinates=FloatArray(17*9*2)
         for(row in 0..8)for(col in 0..16){
@@ -185,10 +185,11 @@ internal fun hudPatchHit(origin:FloatArray,direction:FloatArray,patch:HudForegro
 internal class HudGazeRegions(private val distance:Float){
     private var angles=Float.NaN to Float.NaN
     private var patches=emptyList<HudForegroundPatch>()
-    fun hit(origin:FloatArray,direction:FloatArray,horizontal:Float,vertical:Float,resources:Boolean,visible:Boolean):Boolean {
+    private var curved=true
+    fun hit(origin:FloatArray,direction:FloatArray,horizontal:Float,vertical:Float,resources:Boolean,visible:Boolean,spherical:Boolean=true):Boolean {
         if(!visible)return false
         val next=kotlin.math.round(horizontal*100f)/100f to kotlin.math.round(vertical*100f)/100f
-        if(next!=angles){angles=next;patches=hudForegroundPatches(next.first,next.second,distance)}
+        if(next!=angles || curved!=spherical){angles=next;curved=spherical;patches=hudForegroundPatches(next.first,next.second,distance,spherical)}
         return patches.withIndex().any{(index,patch)->(index>=2 || resources) && hudPatchHit(origin,direction,patch)}
     }
 }

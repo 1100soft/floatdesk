@@ -154,9 +154,8 @@ internal class MonitorMesh(
         }
         if(planar) for(row in 0..rows) for(col in 0..columns) {
             val flat=floatArrayOf((horizontalGrid[col]-.5f)*width,(.5f-verticalGrid[row])*height,0f)
-            val length=sqrt((0..2).sumOf{val d=flat[it]-eye[it];(d*d).toDouble()}).toFloat()
             val vertex=row*(columns+1)+col
-            for(axis in 0..2)positions[vertex*3+axis]=eye[axis]+(flat[axis]-eye[axis])*radius/length
+            for(axis in 0..2)positions[vertex*3+axis]=flat[axis]
         }
         var offset=0
         for (row in 0 until rows) for (col in 0 until columns) {
@@ -190,7 +189,7 @@ internal class MonitorMesh(
         val verts=if(x+y<=1f) intArrayOf(a,a+columns+1,a+1) else intArrayOf(a+1,a+columns+1,a+columns+2)
         val weights=if(x+y<=1f) floatArrayOf(1f-x-y,y,x) else floatArrayOf(1f-y,1f-x,x+y-1f)
         val direction=FloatArray(3) { axis -> (0..2).sumOf { (positions[verts[it]*3+axis]*weights[it]).toDouble() }.toFloat()-eye[axis] }
-        if(onTriangles) return FloatArray(3){eye[it]+direction[it]}
+        if(onTriangles || planar) return FloatArray(3){eye[it]+direction[it]}
         val length=sqrt(direction.sumOf { (it*it).toDouble() }).toFloat()
         return FloatArray(3) { eye[it]+direction[it]*radius/length }
     }

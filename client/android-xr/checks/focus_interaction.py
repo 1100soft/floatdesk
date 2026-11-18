@@ -9,8 +9,8 @@ workspace=body('workspace/Workspace.kt');workspace=workspace[workspace.index('in
 metadata=body('net/WorkspaceInfo.kt');metadata=metadata[:metadata.index('    companion object')]+'}\n'
 code='import kotlin.math.*\n'+body('MonitorMesh.kt')+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+re.search(r'internal fun deskLayout\(.*?\n}',(root/'workspace/Workspace.kt').read_text(),re.S).group(0)+body('workspace/WorkspacePlacement.kt')+metadata+body('WindowMagnification.kt')+body('VideoGeometry.kt')+body('MagnifierContacts.kt')+body('BoundedHistory.kt')+body('net/WindowCaptureFormat.kt')+''.join(re.search(r'internal fun '+name+r'\(.*?\n}',application_sources(),re.S).group(0) for name in ('transformPoint','rotateVector','quaternionBetween','multiplyQuaternion','normalize3','normalize4'))+re.search(r'internal fun dot\(a: FloatArray[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun cross3\(.*',application_sources()).group(0)+'\n'+r'''
 fun main() {
- // All flat/curved magnifier vertices remain inside their own radial layer,
- // including large tilted panes; the planar projection preserves viewing rays.
+ // Curved panes keep a constant radius; flat panes stay exactly coplanar.
+ // Both use the same native mesh representation across transitions.
  val layerViewer=Pose()
  for(curved in listOf(false,true))for(distance in listOf(ViewLayers.MagnifierDistanceM,ViewLayers.ShellDistanceM)) for(tilted in listOf(false,true)) {
   val original=magnifiedWindow(1,1200,800,layerViewer,.7f,.5f,1f,curved,layerDistanceM=distance)
@@ -19,7 +19,8 @@ fun main() {
   val geometry=pane.mesh!!
   for(i in geometry.positions.indices step 3){
    val point=transformPoint(pane.pose,floatArrayOf(geometry.positions[i],geometry.positions[i+1],geometry.positions[i+2]))
-   check(abs(kotlin.math.sqrt(point.sumOf{(it*it).toDouble()}).toFloat()-distance)<.0001f)
+   if(curved)check(abs(kotlin.math.sqrt(point.sumOf{(it*it).toDouble()}).toFloat()-distance)<.0001f)
+   else check(abs(geometry.positions[i+2])<.000001f)
   }
   val source=DesktopWindow(1,100,100,1200,800)
   val popup=DesktopWindow(2,1250,700,300,240)

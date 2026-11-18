@@ -26,7 +26,7 @@ import dev.floatdesk.client.workspace.ViewLayers
 @androidx.compose.runtime.Composable
 internal fun DiagnosticsPanel(connection:dev.floatdesk.client.net.DeskConnection,
     viewer:java.util.concurrent.atomic.AtomicReference<dev.floatdesk.client.workspace.Pose?>,
-    units:()->Float,angles:()->FloatArray,resources:Boolean,quality:Boolean,qualityDebug:Boolean) {
+    units:()->Float,angles:()->FloatArray,resources:Boolean,quality:Boolean,qualityDebug:Boolean,spherical:Boolean) {
     if(!qualityDebug)return
     val session=androidx.xr.compose.platform.LocalSession.current ?: return
     val density=androidx.compose.ui.platform.LocalDensity.current
@@ -45,7 +45,7 @@ internal fun DiagnosticsPanel(connection:dev.floatdesk.client.net.DeskConnection
     }
     val pose=head ?: return
     val fov=angles();val h=kotlin.math.round(fov[0]*100f)/100f;val v=kotlin.math.round(fov[1]*100f)/100f
-    val patches=androidx.compose.runtime.remember(h,v){hudForegroundPatches(h,v,ViewLayers.DiagnosticsDistanceM)}
+    val patches=androidx.compose.runtime.remember(h,v,spherical){hudForegroundPatches(h,v,ViewLayers.DiagnosticsDistanceM,spherical)}
     val state=androidx.compose.runtime.remember(snapshot,resources,quality,qualityDebug){snapshot.copy(frame=if(quality)snapshot.frame else null,state=snapshot.state.copy(enabled=quality,showOverlay=qualityDebug,showResources=resources))}
     val unit=units().takeIf{it.isFinite() && it>0f} ?: 1f
     // Only this parent follows the head. Text refreshes never update individual block poses.

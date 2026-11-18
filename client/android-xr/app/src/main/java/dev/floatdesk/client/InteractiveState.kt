@@ -6,6 +6,8 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.PowerManager
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import kotlinx.coroutines.delay
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
@@ -31,6 +33,14 @@ internal fun rememberDeviceInteractive(context: Context): State<Boolean> {
         // Cover a transition between the initial read and receiver registration.
         interactive.value = power?.isInteractive ?: true
         onDispose { app.unregisterReceiver(receiver) }
+    }
+    // SCREEN_ON can precede PowerManager becoming interactive. Reconcile even
+    // when XR leaves the Activity resumed across sleep.
+    LaunchedEffect(power) {
+        while (true) {
+            interactive.value = power?.isInteractive ?: true
+            delay(250)
+        }
     }
     return interactive
 }

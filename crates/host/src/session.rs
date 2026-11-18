@@ -501,6 +501,7 @@ fn run(
         std::collections::VecDeque::new();
     let mut resources = resources::Sampler::new();
     let mut last_hello = Instant::now() - Duration::from_secs(2);
+    let mut shell_revision = crate::platform::x11::windows::system_revision();
     let mut last_stats = Instant::now();
     let mut last_progress = [0u64; 6];
     let started = Instant::now();
@@ -926,6 +927,18 @@ fn run(
             }
         }
         pointer.expire();
+        let shell_now = crate::platform::x11::windows::system_revision();
+        if pending_display.is_none() && shell_now != shell_revision {
+            if let Some(client) = shared
+                .client
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+            {
+                publish_workspace(pool.as_deref(), &socket, client.control, 0, false, opts.fps);
+            }
+            shell_revision = shell_now;
+        }
         if last_hello.elapsed() >= Duration::from_secs(1) {
             send_hello(&shared, &socket, &hellos);
             let stats = resources.sample(&shared);

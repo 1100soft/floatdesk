@@ -20,7 +20,10 @@ public final class VideoCropSmoke {
     }SystemClock.sleep(10);}
     if(!matched)throw new AssertionError("Wrong atlas crop: right="+right);
    }
-   System.out.println("PASS independent owner/menu UV crops share one GPU source");
+   video.mirrors(java.util.List.of(new VideoMirror(reader.getSurface(),0f,0f,false,1f,null,null,()->new VideoCrop(0f,0f,0f,0f,1f))));
+   video.flushOutputs();try(var stale=reader.acquireLatestImage()){}SystemClock.sleep(150);
+   try(var missing=reader.acquireLatestImage()){if(missing!=null)throw new AssertionError("Missing menu region rendered the full atlas");}
+   System.out.println("PASS independent owner/menu UV crops share one GPU source; missing regions never render the atlas");
   }finally{video.close();reader.close();}
  }
 }

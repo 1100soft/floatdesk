@@ -882,6 +882,42 @@ mod scaled_checks {
             .unwrap()
             .check()
             .unwrap();
+        let started = std::time::Instant::now();
+        while !crate::platform::x11::windows::observed_system_catalogue()
+            .iter()
+            .any(|p| p.id == cover)
+        {
+            assert!(
+                started.elapsed() < std::time::Duration::from_millis(500),
+                "Shell map observation waited for periodic catalogue refresh"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        // Qt may map a one-pixel helper before its first real menu geometry.
+        link.conn.unmap_window(cover).unwrap().check().unwrap();
+        link.conn
+            .configure_window(cover, &ConfigureWindowAux::new().width(1).height(1))
+            .unwrap()
+            .check()
+            .unwrap();
+        link.conn.map_window(cover).unwrap().check().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(70));
+        link.conn
+            .configure_window(cover, &ConfigureWindowAux::new().width(128).height(96))
+            .unwrap()
+            .check()
+            .unwrap();
+        let started = std::time::Instant::now();
+        while !crate::platform::x11::windows::observed_system_catalogue()
+            .iter()
+            .any(|p| p.id == cover && p.width == 128)
+        {
+            assert!(
+                started.elapsed() < std::time::Duration::from_millis(500),
+                "Mapped helper's final menu geometry was missed"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         let panels = crate::platform::x11::windows::system_catalogue().unwrap();
         assert!(panels.iter().any(|p| p.id == cover));
         assert!(!panels.iter().any(|p| p.id == window));
@@ -900,6 +936,18 @@ mod scaled_checks {
             .unwrap()
             .iter()
             .any(|p| p.id == cover));
+        let started = std::time::Instant::now();
+        while crate::platform::x11::windows::observed_system_catalogue()
+            .iter()
+            .any(|p| p.id == cover)
+        {
+            assert!(
+                started.elapsed() < std::time::Duration::from_millis(500),
+                "Shell property observation did not update immediately"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
         assert!(crate::platform::x11::windows::window_popups(&link, window)
             .unwrap()
             .is_empty());

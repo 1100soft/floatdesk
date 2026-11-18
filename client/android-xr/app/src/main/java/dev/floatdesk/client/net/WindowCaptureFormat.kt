@@ -10,5 +10,11 @@ internal object WindowCaptureFormat {
         val scale=minOf(1.0,MaxDimension.toDouble()/width,MaxDimension.toDouble()/height,kotlin.math.sqrt(MaxPixels.toDouble()/(width.toDouble()*height)))
         return ((width*scale).toInt()/2*2).coerceAtLeast(MinDimension) to ((height*scale).toInt()/2*2).coerceAtLeast(MinDimension)
     }
+    /** Immutable native canvas: bounded headroom avoids replacing borrowed textures on menu changes. */
+    fun canvasSize(width:Int,height:Int):Pair<Int,Int> {
+        val coded=size(width,height)
+        val minimum=kotlin.math.sqrt(MaxPixels/2.0).toInt()
+        return maxOf(minimum,coded.first) to maxOf(minimum,coded.second)
+    }
     fun valid(width:Int,height:Int)=width in MinDimension..MaxDimension && height in MinDimension..MaxDimension && width.toLong()*height<=MaxPixels
 }

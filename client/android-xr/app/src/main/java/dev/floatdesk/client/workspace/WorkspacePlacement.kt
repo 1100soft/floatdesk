@@ -10,6 +10,10 @@ internal object ViewLayers {
     const val ShellDistanceM=.55f
     const val ControlsDistanceM=.40f
     const val DiagnosticsDistanceM=.35f
+    fun popupDistance(owner:Float,level:Int=0):Float {
+        val near=if(owner>ShellDistanceM)ShellDistanceM else DiagnosticsDistanceM
+        return near+(owner-near)*Math.pow(.5,level.coerceAtMost(8)+1.0).toFloat()
+    }
 }
 
 /** Without a restored room anchor, keep the saved arrangement relative to the startup viewer. */

@@ -19,7 +19,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
     pinned:Boolean,viewer:java.util.concurrent.atomic.AtomicReference<dev.floatdesk.client.workspace.Pose?>,
     units:()->Float,tracking:GrabTracking,
     onReady:()->Unit,onError:(String)->Unit,onHover:(String,Pair<Float,Float>?)->Unit,onTap:(Pair<Float,Float>)->Unit,
-    onPlacement:(MagnifiedWindow,Boolean)->Unit,onMoving:(Boolean)->Unit,onContext:()->Unit={},onHidden:()->Unit={},captureId:Long?=null,regionId:Long?=null,allowManipulation:Boolean=true){
+    onPlacement:(MagnifiedWindow,Boolean)->Unit,onMoving:(Boolean)->Unit,onContext:()->Unit={},onHidden:()->Unit={},captureId:Long?=null,regionId:Long?=null,allowManipulation:Boolean=true,showFrame:Boolean=true){
     val readyNow=rememberUpdatedState(onReady);val errorNow=rememberUpdatedState(onError);val hoverNow=rememberUpdatedState(onHover)
     val tapNow=rememberUpdatedState(onTap);val windowNow=rememberUpdatedState(window);val placementNow=rememberUpdatedState(onPlacement);val movingNow=rememberUpdatedState(onMoving)
     val pinNow=rememberUpdatedState(pinned)
@@ -35,7 +35,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
         try{
             fun shape(surface:MagnifiedWindow):SurfaceEntity.Shape{
                 // Keep the native canvas type identical across cold starts and mode changes.
-                return nativeVideoMesh(framedMagnifierGeometry(surface))
+                return nativeVideoMesh(if(showFrame)framedMagnifierGeometry(surface)else surface.mesh?.let{VideoGeometry(it.positions,it.videoTexCoords,it.indices)} ?: clippedVideoGeometry(surface.width,surface.height,null,floatArrayOf(0f,0f,1f,1f),0f))
             }
             val reusedSurface=resources.entity!=null
             if(resources.entity==null){
@@ -91,8 +91,10 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
 
             }
             val entity=resources.entity!!;val p=target.pose;val q=p.rotation
-            val pixelSize=dev.floatdesk.client.net.WindowCaptureFormat.size(target.sourceWidth,target.sourceHeight)
-            entity.setSurfacePixelDimensions(IntSize2d(pixelSize.first,pixelSize.second))
+            val pixelSize=dev.floatdesk.client.net.WindowCaptureFormat.canvasSize(target.sourceWidth,target.sourceHeight)
+            // Replacing an in-use native canvas texture can race its borrowed model material.
+            // Keep the allocation stable as retained menu slots change their source bounds.
+            if(!reusedSurface)entity.setSurfacePixelDimensions(IntSize2d(pixelSize.first,pixelSize.second))
 
             val targetPose=Pose(Vector3(p.position[0],p.position[1],p.position[2]),Quaternion(q[0],q[1],q[2],q[3]))
             resources.mesh=target.mesh;resources.rendered=target
@@ -119,7 +121,8 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
             }
             if(resources.resizeTarget!==moveTarget){resources.resizeTarget?.removeComponent(resources.resize!!);check(moveTarget.addComponent(resources.resize!!));resources.resizeTarget=moveTarget}
             val maxWidth=(2*Math.PI.toFloat()-.04f)*target.layerDistanceM*units()/kotlin.math.sqrt(1f+target.height*target.height/(target.width*target.width))
-            resources.resize!!.minimumEntitySize=FloatSize3d(.05f*units(),.05f*units()*target.height/target.width,.001f)
+            val minimumWidth=.05f*units()*minOf(1f,target.width/target.height)
+            resources.resize!!.minimumEntitySize=FloatSize3d(minimumWidth,minimumWidth*target.height/target.width,.001f)
             resources.resize!!.maximumEntitySize=FloatSize3d(maxWidth,maxWidth*target.height/target.width,.001f)
             resources.resize!!.affordanceSize=FloatSize3d(target.width,target.height,.001f)
             }
@@ -128,7 +131,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
             resources.stream=connection.windowCaptures.attach(captureId ?: target.id,entity.getSurface(),{
                 if(resources.generation==generation && !entity.isDisposed){shown=true;resources.visible=true;entity.setEnabled(true);resources.curved?.entity?.setEnabled(true);readyNow.value()}
             },{message->if(resources.generation==generation){resources.visible=false;entity.setEnabled(false);resources.curved?.entity?.setEnabled(false);hoverNow.value("LEFT",null);hoverNow.value("RIGHT",null);errorNow.value(message)}},regionId=regionId)
-            resources.stream?.update(.005f*target.units/(target.width+.01f*target.units),.005f*target.units/(target.height+.01f*target.units),pinNow.value,target.width/target.height)
+            resources.stream?.update(if(showFrame).005f*target.units/(target.width+.01f*target.units)else 0f,if(showFrame).005f*target.units/(target.height+.01f*target.units)else 0f,showFrame && pinNow.value,target.width/target.height)
             var prior=target
             var geometryAt=0L
             while(isActive){
@@ -168,7 +171,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                     (0..3).any{kotlin.math.abs(next.pose.rotation[it]-prior.pose.rotation[it])>.0005f}
                 val meshChanged=mesh!==previous && mesh!=null && (previous==null || mesh.positions.indices.any{kotlin.math.abs(mesh.positions[it]-previous.positions[it])>.0005f})
                 val sizeChanged=next.width!=prior.width || next.height!=prior.height
-                resources.stream?.update(.005f*next.units/(next.width+.01f*next.units),.005f*next.units/(next.height+.01f*next.units),pinNow.value,next.width/next.height)
+                resources.stream?.update(if(showFrame).005f*next.units/(next.width+.01f*next.units)else 0f,if(showFrame).005f*next.units/(next.height+.01f*next.units)else 0f,showFrame && pinNow.value,next.width/next.height)
                 if(next.fixed && resources.holdAt>0 && !resources.dragged && !resources.resizing && !resources.contextShown && now-resources.holdAt>=700){
                     resources.contextShown=true;resources.tapCommitted=true;resources.taps.clear();contextNow.value()
                 }

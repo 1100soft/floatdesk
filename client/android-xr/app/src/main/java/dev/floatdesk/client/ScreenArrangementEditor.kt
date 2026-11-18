@@ -39,7 +39,7 @@ internal fun ScreenArrangementEditor(sizes:List<Pair<Int,Int>>,positions:List<Pa
     if(overlaps.any {it}) Text("Overlapping screens: move them apart.",color=Color(0xFFFFB4AB),fontSize=13.sp)
     if(connected.any {!it}) Text("Disconnected screens: reconnect them to the main group.",color=Color(0xFFFFB4AB),fontSize=13.sp)
     BoxWithConstraints(Modifier.fillMaxWidth().height(220.dp).clipToBounds().background(Color(0xFF101720))) {
-        val viewport=arrangementViewport(screens,maxWidth.value,220f)
+        val viewport=arrangementViewport(screens,maxWidth.value,(maxHeight-64.dp).value)
         val scale=viewport.scale
         screens.forEachIndexed {index,screen ->
             val interaction=remember(index){MutableInteractionSource()}
@@ -73,10 +73,10 @@ internal fun ScreenArrangementEditor(sizes:List<Pair<Int,Int>>,positions:List<Pa
                 Text("${index+1}",color=Color.White,fontSize=14.sp,maxLines=1)
             }
         }
-    }
-    Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-        Button(enabled=!busy && screens!=original && canApplyArrangement(screens,primary,limits) && dragging<0,onClick={onApply(screens.map{it.x to it.y})}){Text("Apply")}
-        TextButton(enabled=!busy && screens!=original,onClick={screens=original;preview=null;dragging=-1}){Text("Revert")}
+        Row(Modifier.align(Alignment.BottomEnd).padding(8.dp).zIndex(2f).background(Color(0xF01C2430)).padding(horizontal=8.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+            Button(enabled=!busy && screens!=original && canApplyArrangement(screens,primary,limits) && dragging<0,onClick={onApply(screens.map{it.x to it.y})}){Text("Apply")}
+            TextButton(enabled=!busy && screens!=original,onClick={screens=original;preview=null;dragging=-1}){Text("Revert")}
+        }
     }
     preview?.let {Text(if(validPreview) "Screen ${dragging+1}: ${it.x}, ${it.y}" else "Screens must share an edge without overlapping.",color=if(validPreview) Color.Cyan else Color(0xFFFF6B6B),fontSize=12.sp)}
 }

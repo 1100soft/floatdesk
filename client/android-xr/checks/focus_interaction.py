@@ -44,6 +44,8 @@ fun main() {
  for((width,height) in listOf(800 to 600,7680 to 4320,2048 to 2048,1 to 100000)){
    val size=WindowCaptureFormat.size(width,height)
    check(WindowCaptureFormat.valid(size.first,size.second) && size.first%2==0 && size.second%2==0)
+   val canvas=WindowCaptureFormat.canvasSize(width,height)
+   check(WindowCaptureFormat.valid(canvas.first,canvas.second) && canvas.first>=size.first && canvas.second>=size.second)
  }
  val tap=NativeSurfaceTap()
  check(tap.update("LEFT","DOWN",.5f to .4f)==null)

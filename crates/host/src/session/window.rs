@@ -115,10 +115,28 @@ pub(super) fn start(
                             .map_err(Error::x11)?
                             .reply()
                             .map_err(Error::x11)?;
-                        let (source_x, source_y) =
-                            (i32::from(position.dst_x), i32::from(position.dst_y));
-                        let (source_width, source_height) =
-                            (u32::from(geometry.width), u32::from(geometry.height));
+                        let owner_x = if _window.panel {
+                            _window.x
+                        } else {
+                            position.dst_x.into()
+                        };
+                        let owner_y = if _window.panel {
+                            _window.y
+                        } else {
+                            position.dst_y.into()
+                        };
+                        let owner_width = if _window.panel {
+                            _window.width
+                        } else {
+                            geometry.width.into()
+                        };
+                        let owner_height = if _window.panel {
+                            _window.height
+                        } else {
+                            geometry.height.into()
+                        };
+                        let (source_x, source_y, source_width, source_height) =
+                            (owner_x, owner_y, owner_width, owner_height);
                         let root_capture = request["rootCapture"].as_bool().unwrap_or(false);
                         if !root_capture
                             && (current_id != id
@@ -249,12 +267,8 @@ pub(super) fn start(
                                     }
                                 }
                             }
-                            let (x, y, pw, ph) = pixel_rect(
-                                position.dst_x.into(),
-                                position.dst_y.into(),
-                                geometry.width.into(),
-                                geometry.height.into(),
-                            );
+                            let (x, y, pw, ph) =
+                                pixel_rect(owner_x, owner_y, owner_width, owner_height);
                             // Fill only the extra popup canvas with the current desktop,
                             // then overlay unobscured owner/menu pixmaps. This prevents
                             // black margins from erasing the shared in-place desktop patch.
@@ -294,10 +308,10 @@ pub(super) fn start(
                                 base,
                                 MonitorRect {
                                     index: 0,
-                                    x: 0,
-                                    y: 0,
-                                    width: geometry.width.into(),
-                                    height: geometry.height.into(),
+                                    x: owner_x - i32::from(position.dst_x),
+                                    y: owner_y - i32::from(position.dst_y),
+                                    width: owner_width,
+                                    height: owner_height,
                                 },
                                 x,
                                 y,
@@ -357,7 +371,7 @@ pub(super) fn start(
                             mask_at = Instant::now();
                         }
                         frame += 1;
-                        let header=serde_json::json!({"type":"window-h264-v1","windowId":id,"frame":frame,"width":w,"height":h,"occluders":mask,"ownerX":position.dst_x,"ownerY":position.dst_y,"ownerWidth":geometry.width,"ownerHeight":geometry.height,"popups":popups,"sourceX":source_x,"sourceY":source_y,"sourceWidth":source_width,"sourceHeight":source_height,"bytes":encoded.bytes.len()}).to_string();
+                        let header=serde_json::json!({"type":"window-h264-v1","windowId":id,"frame":frame,"width":w,"height":h,"occluders":mask,"ownerX":owner_x,"ownerY":owner_y,"ownerWidth":owner_width,"ownerHeight":owner_height,"popups":popups,"sourceX":source_x,"sourceY":source_y,"sourceWidth":source_width,"sourceHeight":source_height,"bytes":encoded.bytes.len()}).to_string();
                         socket.write_all(&(header.len() as u32).to_be_bytes())?;
                         socket.write_all(header.as_bytes())?;
                         socket.write_all(&encoded.bytes)?;

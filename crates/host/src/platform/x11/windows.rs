@@ -7,7 +7,7 @@ use x11rb::protocol::xproto::{
     AtomEnum, ClientMessageEvent, ConnectionExt as _, EventMask, MapState,
 };
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct FocusWindow {
     pub id: u32,
     pub x: i32,
@@ -159,6 +159,8 @@ pub fn window_popups(link: &X11Link, client: u32) -> Result<Vec<FocusWindow>> {
     .copied();
     let transient = atom(link, b"WM_TRANSIENT_FOR")?;
     let types = atom(link, b"_NET_WM_WINDOW_TYPE")?;
+    let owner_is_dock = values(link, client, types, AtomEnum::ATOM)?
+        .contains(&atom(link, b"_NET_WM_WINDOW_TYPE_DOCK")?);
     let menu_types = [
         b"_NET_WM_WINDOW_TYPE_POPUP_MENU".as_slice(),
         b"_NET_WM_WINDOW_TYPE_DROPDOWN_MENU",
@@ -218,6 +220,9 @@ pub fn window_popups(link: &X11Link, client: u32) -> Result<Vec<FocusWindow>> {
                 }
             }
             let menu = kinds.iter().any(|t| menu_types.contains(t));
+            if owner_is_dock && !menu {
+                return Ok(None);
+            }
             let same_pid = owner_pid.is_some()
                 && owner_pid
                     == values(link, id, pid_atom, AtomEnum::CARDINAL)?
@@ -259,6 +264,59 @@ pub fn window_popups(link: &X11Link, client: u32) -> Result<Vec<FocusWindow>> {
     Ok(result)
 }
 
+/// Trim a dock's transparent/shadow canvas to its declared reserved strip.
+/// The same intersection rule handles horizontal and vertical panels.
+fn dock_content_bounds(window: [i32; 4], root: (u32, u32), strut: &[u32]) -> [i32; 4] {
+    if strut.len() < 4 {
+        return window;
+    }
+    let (rw, rh) = (i64::from(root.0), i64::from(root.1));
+    let range = |start: usize, end: usize, extent: i64| {
+        if strut.len() >= 12 {
+            (
+                i64::from(strut[start]),
+                (i64::from(strut[end]) + 1).min(extent),
+            )
+        } else {
+            (0, extent)
+        }
+    };
+    let mut best = window;
+    let mut area = 0;
+    for side in 0..4 {
+        if strut[side] == 0 {
+            continue;
+        }
+        let (x0, y0, x1, y1) = match side {
+            0 => {
+                let (a, b) = range(4, 5, rh);
+                (0, a, i64::from(strut[0]).min(rw), b)
+            }
+            1 => {
+                let (a, b) = range(6, 7, rh);
+                ((rw - i64::from(strut[1])).max(0), a, rw, b)
+            }
+            2 => {
+                let (a, b) = range(8, 9, rw);
+                (a, 0, b, i64::from(strut[2]).min(rh))
+            }
+            _ => {
+                let (a, b) = range(10, 11, rw);
+                (a, (rh - i64::from(strut[3])).max(0), b, rh)
+            }
+        };
+        let left = x0.max(i64::from(window[0]));
+        let top = y0.max(i64::from(window[1]));
+        let width = x1.min(i64::from(window[0]) + i64::from(window[2])) - left;
+        let height = y1.min(i64::from(window[1]) + i64::from(window[3])) - top;
+        if width > 0 && height > 0 && width * height > area {
+            area = width * height;
+            best = [left as i32, top as i32, width as i32, height as i32];
+        }
+    }
+    best
+}
+
 /// Panels and Plasma launcher surfaces live outside the normal focus catalogue.
 pub fn system_catalogue() -> Result<Vec<FocusWindow>> {
     let link = X11Link::open()?;
@@ -266,6 +324,9 @@ pub fn system_catalogue() -> Result<Vec<FocusWindow>> {
     let dock = atom(&link, b"_NET_WM_WINDOW_TYPE_DOCK")?;
     let desktop = atom(&link, b"_NET_WM_WINDOW_TYPE_DESKTOP")?;
     let tooltip = atom(&link, b"_NET_WM_WINDOW_TYPE_TOOLTIP")?;
+    let notification = atom(&link, b"_NET_WM_WINDOW_TYPE_NOTIFICATION")?;
+    let osd = atom(&link, b"_KDE_NET_WM_WINDOW_TYPE_ON_SCREEN_DISPLAY")?;
+    let strut = atom(&link, b"_NET_WM_STRUT_PARTIAL")?;
     let class = atom(&link, b"WM_CLASS")?;
     let mut ids = values(
         &link,
@@ -298,7 +359,11 @@ pub fn system_catalogue() -> Result<Vec<FocusWindow>> {
                 return Ok(None);
             }
             let kinds = values(&link, id, types, AtomEnum::ATOM)?;
-            if kinds.contains(&desktop) || kinds.contains(&tooltip) {
+            if kinds.contains(&desktop)
+                || kinds.contains(&tooltip)
+                || kinds.contains(&notification)
+                || kinds.contains(&osd)
+            {
                 return Ok(None);
             }
             let wmclass = link
@@ -321,8 +386,8 @@ pub fn system_catalogue() -> Result<Vec<FocusWindow>> {
                 .reply()
                 .map_err(Error::x11)?;
             let root = &link.conn.setup().roots[link.screen];
-            if g.width == 0
-                || g.height == 0
+            if g.width <= 1
+                || g.height <= 1
                 || (g.width >= root.width_in_pixels && g.height >= root.height_in_pixels)
             {
                 return Ok(None);
@@ -333,12 +398,27 @@ pub fn system_catalogue() -> Result<Vec<FocusWindow>> {
                 .map_err(Error::x11)?
                 .reply()
                 .map_err(Error::x11)?;
+            let raw = [
+                i32::from(p.dst_x),
+                i32::from(p.dst_y),
+                i32::from(g.width),
+                i32::from(g.height),
+            ];
+            let bounds = if kinds.contains(&dock) {
+                dock_content_bounds(
+                    raw,
+                    (root.width_in_pixels.into(), root.height_in_pixels.into()),
+                    &values(&link, id, strut, AtomEnum::CARDINAL)?,
+                )
+            } else {
+                raw
+            };
             Ok(Some(FocusWindow {
                 id,
-                x: p.dst_x.into(),
-                y: p.dst_y.into(),
-                width: g.width.into(),
-                height: g.height.into(),
+                x: bounds[0],
+                y: bounds[1],
+                width: bounds[2] as u32,
+                height: bounds[3] as u32,
                 panel: kinds.contains(&dock),
             }))
         })();
@@ -357,8 +437,106 @@ fn observed_system_snapshot() -> &'static std::sync::RwLock<Vec<FocusWindow>> {
         std::sync::OnceLock::new();
     SYSTEM.get_or_init(|| std::sync::RwLock::new(Vec::new()))
 }
+static SYSTEM_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+fn start_system_observer() {
+    static WATCH: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    WATCH.get_or_init(|| {
+        std::thread::spawn(|| loop {
+            let Ok(link) = X11Link::open() else {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                continue;
+            };
+            let selected = link
+                .conn
+                .change_window_attributes(
+                    link.root,
+                    &x11rb::protocol::xproto::ChangeWindowAttributesAux::new()
+                        .event_mask(EventMask::SUBSTRUCTURE_NOTIFY),
+                )
+                .ok()
+                .and_then(|c| c.check().ok());
+            if selected.is_none() {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                continue;
+            }
+            let mut dirty = true;
+            let mut recent_maps = std::collections::HashMap::new();
+            let mut rows = Vec::<FocusWindow>::new();
+            let mut sampled = std::time::Instant::now() - std::time::Duration::from_secs(1);
+            loop {
+                let mut failed = false;
+                loop {
+                    match link.conn.poll_for_event() {
+                        Ok(Some(event)) => {
+                            use x11rb::protocol::Event;
+                            match event {
+                                Event::MapNotify(e) => {
+                                    dirty = true;
+                                    recent_maps.insert(e.window, std::time::Instant::now());
+                                }
+                                Event::UnmapNotify(_)
+                                | Event::DestroyNotify(_)
+                                | Event::ReparentNotify(_) => dirty = true,
+                                Event::ConfigureNotify(e)
+                                    if rows.iter().any(|r| r.id == e.window)
+                                        || recent_maps.contains_key(&e.window) =>
+                                {
+                                    dirty = true
+                                }
+                                Event::PropertyNotify(e)
+                                    if rows.iter().any(|r| r.id == e.window) =>
+                                {
+                                    dirty = true
+                                }
+                                _ => {}
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(_) => {
+                            failed = true;
+                            break;
+                        }
+                    }
+                }
+                if failed {
+                    break;
+                }
+                recent_maps.retain(|_, at| at.elapsed() < std::time::Duration::from_secs(1));
+                if dirty && sampled.elapsed() >= std::time::Duration::from_millis(40) {
+                    if let Ok(next) = system_catalogue() {
+                        if next != rows {
+                            for row in &next {
+                                let _ = link.conn.change_window_attributes(
+                                    row.id,
+                                    &x11rb::protocol::xproto::ChangeWindowAttributesAux::new()
+                                        .event_mask(
+                                            EventMask::PROPERTY_CHANGE
+                                                | EventMask::STRUCTURE_NOTIFY,
+                                        ),
+                                );
+                            }
+                            let _ = link.conn.flush();
+                            *observed_system_snapshot()
+                                .write()
+                                .unwrap_or_else(|e| e.into_inner()) = next.clone();
+                            SYSTEM_REVISION.fetch_add(1, std::sync::atomic::Ordering::Release);
+                            rows = next;
+                        }
+                        dirty = false;
+                    }
+                    sampled = std::time::Instant::now();
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        });
+    });
+}
+pub fn system_revision() -> u64 {
+    start_system_observer();
+    SYSTEM_REVISION.load(std::sync::atomic::Ordering::Acquire)
+}
 pub fn observed_system_catalogue() -> Vec<FocusWindow> {
-    let _ = observed_catalogue();
+    start_system_observer();
     observed_system_snapshot()
         .read()
         .unwrap_or_else(|e| e.into_inner())
@@ -374,11 +552,8 @@ pub fn observed_catalogue() -> (bool, Vec<FocusWindow>) {
         let worker = std::sync::Arc::clone(&snapshot);
         std::thread::spawn(move || loop {
             let mut value = catalogue().unwrap_or_default();
-            let system = system_catalogue().unwrap_or_default();
+            let system = observed_system_catalogue();
             value.1.retain(|w| !system.iter().any(|s| s.id == w.id));
-            *observed_system_snapshot()
-                .write()
-                .unwrap_or_else(|e| e.into_inner()) = system;
             value.1.truncate(256);
             *worker.write().unwrap_or_else(|e| e.into_inner()) = value;
             std::thread::sleep(std::time::Duration::from_millis(500));
@@ -656,6 +831,29 @@ mod tests {
     use super::*;
     use x11rb::protocol::xproto::{CreateWindowAux, PropMode, WindowClass};
     use x11rb::wrapper::ConnectionExt as _;
+    #[test]
+    fn dock_strips_trim_both_orientations_consistently() {
+        let mut strut = vec![0; 12];
+        strut[1] = 46;
+        strut[6] = 0;
+        strut[7] = 1599;
+        assert_eq!(
+            dock_content_bounds([5058, 0, 62, 1600], (5120, 3200), &strut),
+            [5074, 0, 46, 1600]
+        );
+        strut.fill(0);
+        strut[2] = 36;
+        strut[8] = 4529;
+        strut[9] = 5119;
+        assert_eq!(
+            dock_content_bounds([4529, 0, 591, 36], (5120, 3200), &strut),
+            [4529, 0, 591, 36]
+        );
+        assert_eq!(
+            dock_content_bounds([5058, 0, 62, 1600], (5120, 3200), &[]),
+            [5058, 0, 62, 1600]
+        );
+    }
     #[test]
     #[ignore = "requires private Xvfb with KWin and FLOATDESK_SYNTHETIC_DISPLAY=1"]
     fn focus_without_raise_private_kwin() {

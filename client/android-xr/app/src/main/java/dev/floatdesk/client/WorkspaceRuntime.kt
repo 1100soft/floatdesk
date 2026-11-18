@@ -1150,26 +1150,31 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     },{moving->
                         if(moving)fixedEditing.add("system:${live.id}")else fixedEditing.remove("system:${live.id}")
                         magnifierMoving=fixedEditing.isNotEmpty()
-                    },onHidden={systemReady[live.id]=false})
+                    },onHidden={systemReady[live.id]=false},showFrame=false)
             }}
         }
         val renderedPopups=mutableListOf<MagnifiedWindow>()
         if(session!=null && magnifierRoot!=null && fixedViewer!=null && sceneActive && !displayControlsOpen){
-            val owners=renderedFixed.map{it.second}+listOfNotNull(magnified)+renderedSystem
-            for(owner in owners) for(popup in connection.windowCaptures.popups(owner.id)) key("popup",owner.id,popup.id){
-                val source=connection.windowCaptures.source(owner.id)
-                if(source!=null && systemInfo?.systemWindows?.none{it.id==popup.id}!=false){
-                    val pane=stickyMagnifier(owner,source,popup,fixedViewer)
-                    val name="popup:${owner.id}:${popup.id}"
-                    if(popupReady[name]==true)renderedPopups.add(pane)
-                    DisposableEffect(name){onDispose{popupReady.remove(name)}}
+            val owners=renderedFixed+listOfNotNull(magnified?.let{"floating" to it})+renderedSystem.map{"system:${it.id}" to it}
+            for((ownerKey,owner) in owners) key("popup-owner",ownerKey){
+                val popups=connection.windowCaptures.popups(owner.id).filter{p->systemInfo?.systemWindows?.none{it.id==p.id}!=false}
+                var retainedSlots by remember {mutableIntStateOf(0)}
+                val count=maxOf(retainedSlots,popups.size)
+                SideEffect{retainedSlots=count}
+                for(slot in 0 until count) key(slot){
+                    val popup=popups.getOrNull(slot)
+                    val source=connection.windowCaptures.source(owner.id)
+                    val pane=if(source!=null && popup!=null)stickyMagnifier(owner,source,popup,fixedViewer,slot)else null
+                    val name="popup:$ownerKey:$slot"
+                    DisposableEffect(name,popup?.id){popupReady[name]=false;onDispose{popupReady.remove(name)}}
+                    if(pane!=null && popupReady[name]==true)renderedPopups.add(pane)
                     WindowMagnifierPanel(session,magnifierRoot,pane,connection,false,magnifierViewer,{handTracking.unitsPerMeter},handTracking,
                         {popupReady[name]=true},{message->popupReady[name]=false;Log.w("Floatdesk",message)},
-                        {side,uv->magnifierHands.update(name,side,uv?.let{magnifierContentPoint(pane,it)},pane.id)},
-                        {uv->val b=connection.workspaceInfo.value?.bounds();val p=magnifierContentPoint(pane,uv)
-                            if(b!=null){val u=(popup.x-b[0]+p.first*popup.width)/b[2];val v=(popup.y-b[1]+p.second*popup.height)/b[3]
+                        {side,uv->magnifierHands.update(name,side,if(pane!=null)uv?.let{magnifierContentPoint(pane,it)}else null,pane?.id)},
+                        {uv->if(popup!=null && pane!=null){val b=connection.workspaceInfo.value?.bounds();val point=magnifierContentPoint(pane,uv)
+                            if(b!=null){val u=(popup.x-b[0]+point.first*popup.width)/b[2];val v=(popup.y-b[1]+point.second*popup.height)/b[3]
                                 if(workspace.focusMode || !workspace.mouseGestures)connection.clickPointer(0,u,v,1)else connection.movePointer(0,u,v)}
-                        },{_,_->},{},onHidden={popupReady[name]=false},captureId=owner.id,regionId=popup.id,allowManipulation=false)
+                        }},{_,_->},{},onHidden={popupReady[name]=false},captureId=owner.id,regionId=popup?.id,allowManipulation=false,showFrame=false)
                 }
             }
         }

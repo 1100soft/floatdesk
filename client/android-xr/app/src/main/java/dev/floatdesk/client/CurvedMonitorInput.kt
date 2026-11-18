@@ -1,6 +1,8 @@
 package dev.floatdesk.client
 
 import androidx.xr.runtime.Session
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 import androidx.xr.runtime.math.Vector3
 import androidx.xr.runtime.math.Pose
 import androidx.xr.runtime.math.Quaternion
@@ -17,7 +19,6 @@ internal class CurvedMonitorInput private constructor(
     var mesh: MonitorMesh?,
     private var width:Float,private var height:Float,
     val entity: GltfModelEntity,
-    private val model: GltfModel,
     private val component: InteractableComponent,
     private val pointer: SpatialPointerComponent,
     private val columns:Int,private val rows:Int,
@@ -37,15 +38,42 @@ internal class CurvedMonitorInput private constructor(
         if (closed) return
         closed = true
         if(!entity.isDisposed){entity.removeComponent(pointer);entity.removeComponent(component)}
-        releaseOwnedGltf(model, entity)
+        if(!entity.isDisposed)entity.dispose()
     }
 
     companion object {
+        // One immutable input asset per grid/session. Menu slots instance it; they
+        // never repeatedly create/free its shared texture and material objects.
+        private val assets=java.util.WeakHashMap<Session,MutableMap<Pair<Int,Int>,kotlinx.coroutines.CompletableDeferred<GltfModel>>>()
+        @android.annotation.SuppressLint("RestrictedApi")
+        private suspend fun inputModel(session:Session,columns:Int,rows:Int):GltfModel {
+            var load=false
+            val key=columns to rows
+            val result=synchronized(assets){
+                val entries=assets.getOrPut(session){
+                    session.lifecycleOwner.lifecycle.addObserver(androidx.lifecycle.LifecycleEventObserver{_,event->
+                        if(event==androidx.lifecycle.Lifecycle.Event.ON_DESTROY)android.os.Handler(android.os.Looper.getMainLooper()).post{synchronized(assets){assets.remove(session)}}
+                    })
+                    mutableMapOf()
+                }
+                entries.getOrPut(key){load=true;kotlinx.coroutines.CompletableDeferred()}
+            }
+            if(load)session.lifecycleOwner.lifecycleScope.launch { try{
+                val pixel=java.util.Base64.getDecoder().decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII=")
+                result.complete(GltfModel.create(session,interactionGridGlb(pixel,columns,rows),"floatdesk-input-$columns-$rows-${System.nanoTime()}"))
+            }catch(error:Throwable){
+                result.completeExceptionally(error)
+                synchronized(assets){assets[session]?.remove(key)}
+            }}
+            return result.await()
+        }
+
         @android.annotation.SuppressLint("RestrictedApi")
         suspend fun create(session: Session, parent: Entity, mesh: MonitorMesh?,
                            columns:Int=12,rows:Int=8,width:Float=requireNotNull(mesh).width,height:Float=requireNotNull(mesh).height,listener: (InputEvent) -> Unit): CurvedMonitorInput {
-            val pixel = java.util.Base64.getDecoder().decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII=")
-            val model = GltfModel.create(session, interactionGridGlb(pixel,columns,rows), "floatdesk-curved-input-${System.nanoTime()}")
+            if(parent.isDisposed)throw java.util.concurrent.CancellationException("Input owner disposed")
+            val model=inputModel(session,columns,rows)
+            if(parent.isDisposed)throw java.util.concurrent.CancellationException("Input owner disposed during load")
             var entity: GltfModelEntity? = null
             try {
                 val created = GltfModelEntity.create(session, model, parent = parent)
@@ -56,9 +84,9 @@ internal class CurvedMonitorInput private constructor(
                 val pointer=SpatialPointerComponent.create(session)
                 check(created.addComponent(pointer)) { "Could not set curved monitor pointer" }
                 pointer.spatialPointerIcon=SpatialPointerIcon.NONE
-                return CurvedMonitorInput(mesh,width,height, created, model, component,pointer,columns,rows)
+                return CurvedMonitorInput(mesh,width,height, created, component,pointer,columns,rows)
             } catch (failure: Throwable) {
-                releaseOwnedGltf(model, entity)
+                entity?.takeUnless{it.isDisposed}?.dispose()
                 throw failure
             }
         }

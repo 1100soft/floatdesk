@@ -29,7 +29,7 @@ internal class WindowCapturePool @JvmOverloads constructor(private val connectio
         val live=info?.windows?.firstOrNull{it.id==id} ?: info?.systemWindows?.firstOrNull{it.id==id} ?: popupBounds.values.firstNotNullOfOrNull{rows->rows.firstOrNull{it.id==id}} ?: return null
         return capturedBounds[id] ?: live
     }
-    private class Member(var mirror:VideoMirror,val ready:()->Unit,val error:(String)->Unit,val output:WindowDestination?=null,val regionId:Long?=null){var crop:VideoCrop?=null;val shown=AtomicBoolean()}
+    private class Member(var mirror:VideoMirror,val ready:()->Unit,val error:(String)->Unit,val output:WindowDestination?=null,val regionId:Long?=null){var crop:VideoCrop?=if(regionId==null)null else VideoCrop(0f,0f,0f,0f,1f);val shown=AtomicBoolean()}
     private inner class Source(val id:Long){
         val members=ConcurrentHashMap<Any,Member>()
         val frames=java.util.concurrent.ConcurrentSkipListMap<Long,JSONObject>()
@@ -62,7 +62,7 @@ internal class WindowCapturePool @JvmOverloads constructor(private val connectio
                 val prior=capturedBounds.put(id,bounds);val priorPopups=popupBounds.put(id,popups)
                 if(prior!=bounds || priorPopups!=popups)main.post{boundsRevision.intValue++}
                 val region=if(member.regionId==null)bounds else popups.firstOrNull{it.id==member.regionId}
-                member.crop=if(output!=null)null else region?.let{VideoCrop((it.x-x).toFloat()/sw,(it.y-y).toFloat()/sh,(it.x+it.width-x).toFloat()/sw,(it.y+it.height-y).toFloat()/sh,it.width.toFloat()/it.height)}
+                member.crop=if(output!=null)null else (region?.let{VideoCrop((it.x-x).toFloat()/sw,(it.y-y).toFloat()/sh,(it.x+it.width-x).toFloat()/sw,(it.y+it.height-y).toFloat()/sh,it.width.toFloat()/it.height)} ?: VideoCrop(0f,0f,0f,0f,1f))
             }
             if(meta!=null)video.sourceAspect=meta.optInt("sourceWidth",width).toFloat()/meta.optInt("sourceHeight",height).coerceAtLeast(1)
             if(output!=null && meta!=null){

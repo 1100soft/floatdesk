@@ -358,6 +358,8 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                 check(EGL14.eglMakeCurrent(display,window,window,context))
                 val pts=texture.timestamp/1000
                 mirror.value.before?.invoke(pts)
+                val crop=mirror.value.crop?.invoke()
+                if(crop!=null && (crop.right<=crop.left || crop.bottom<=crop.top))continue
                 EGLExt.eglPresentationTimeANDROID(display,window,pts*1000)
                 drawSurface();mirror.value.presented?.invoke()
             }

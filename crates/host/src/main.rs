@@ -25,6 +25,11 @@ struct Cli {
 enum Command {
     /// Open the desktop tray with service controls, output status and virtual-display setup.
     Tray,
+    /// Save and disable all virtual screens, or restore their saved arrangement.
+    VirtualScreens {
+        #[arg(value_parser = ["disable", "restore"])]
+        action: String,
+    },
     /// Report RandR, capture extensions, and H.264 encoders. Does not change the screen.
     Doctor,
     /// Create logical monitors and stream them until Ctrl-C.
@@ -37,7 +42,7 @@ enum Command {
         width: u16,
         #[arg(long, default_value_t = 1080)]
         height: u16,
-        #[arg(long, default_value_t = 60)]
+        #[arg(long, default_value_t = 30)]
         fps: u32,
         /// Total video bitrate shared across monitors.
         #[arg(long, default_value_t = 12_000_000)]
@@ -95,6 +100,9 @@ fn main() {
 
 fn run(cli: Cli) -> Result<()> {
     match cli.command {
+        Command::VirtualScreens { action } => {
+            platform::x11::monitor_pool::set_virtual_screens_disabled(action == "disable")?
+        }
         Command::Tray => {
             let root = std::env::var_os("FLOATDESK_DATA_DIR")
                 .map(PathBuf::from)

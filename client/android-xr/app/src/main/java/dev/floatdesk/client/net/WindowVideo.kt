@@ -27,7 +27,7 @@ internal class WindowVideo @JvmOverloads constructor(private val host:InetSocket
             fun drain(c:MediaCodec){val info=MediaCodec.BufferInfo();while(true){val n=c.dequeueOutputBuffer(info,0);if(n<0)return;c.releaseOutputBuffer(n,active)}}
             while(running){
                 if(!active)Thread.sleep(250)
-                val bytes=JSONObject().put("sessionId",session).put("windowId",id).put("fps",fps).put("rootCapture",rootCapture).put("paused",!active).toString().toByteArray()
+                val bytes=JSONObject().put("sessionId",session).put("windowId",id).put("fps",minOf(fps,dev.floatdesk.client.RenderPolicy.WindowFps)).put("maxDimension",dev.floatdesk.client.RenderPolicy.WindowDimension).put("maxPixels",dev.floatdesk.client.RenderPolicy.WindowPixels).put("rootCapture",rootCapture).put("paused",!active).toString().toByteArray()
                 output.writeInt(bytes.size);output.write(bytes);output.flush()
                 val n=input.readInt();require(n in 1..4096);val header=ByteArray(n);input.readFully(header);val meta=JSONObject(String(header))
                 require(meta.getLong("windowId")==id)

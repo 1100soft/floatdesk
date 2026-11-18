@@ -51,6 +51,7 @@ else:
         DISPLAY=":" + number,
         PATH=str(bin) + ":" + os.environ["PATH"],
         FD_TEST_STATE=str(state),
+        XDG_STATE_HOME=str(folder / "user-state"),
     )
     control = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     control.bind(("127.0.0.1", 0))
@@ -176,6 +177,39 @@ else:
                     break
         print(
             "PASS: incomplete arrangement rejected; complete named draft applied through the display worker"
+        )
+        for request_id, action, disabled in [(103, 6, True), (104, 7, False)]:
+            send(
+                15,
+                json.dumps(
+                    {"type": "command", "requestId": request_id, "action": action}
+                ).encode(),
+            )
+            until = time.monotonic() + 8
+            ack = False
+            status = None
+            while time.monotonic() < until:
+                try:
+                    reply, _ = s.recvfrom(65535)
+                except socket.timeout:
+                    continue
+                if (
+                    reply[5] == 12
+                    and struct.unpack_from("<I", reply, 16)[0] == request_id
+                ):
+                    assert reply[20], reply
+                    ack = True
+                if reply[5] == 15:
+                    candidate = json.loads(reply[16:])
+                    if candidate.get("requestId") == request_id:
+                        status = candidate
+                if ack and status:
+                    break
+            assert ack and status, status
+            assert status["virtualScreensDisabled"] == disabled, status
+            assert len(status["screens"]) == (1 if disabled else 2), status
+        print(
+            "PASS headset JSON disable/restore commands and saved-state status use the display worker"
         )
     finally:
         host.send_signal(signal.SIGTERM)

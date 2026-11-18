@@ -11,9 +11,11 @@ a = s.index('private suspend fun syncMagnifierInput(')
 b = s.index('\n}\n', a) + 2
 helper = s[a:b].replace('kotlinx.coroutines.CancellationException', 'java.util.concurrent.CancellationException')
 code = r'''
+internal object RenderPolicy{var CustomMeshes=true}
 class Session
 class Pose
 class MonitorMesh(val id:Int)
+object NativeMonitorInput{fun create(session:Session,listener:()->Unit)=Input()}
 class Input
 open class Entity {
     var isDisposed=false
@@ -40,6 +42,8 @@ class CurvedMonitorInput(var mesh:MonitorMesh?,var width:Float,var height:Float)
  }
 }
 class MagnifierResources{
+ var flatInput:Input?=null
+ var mesh:MonitorMesh?=null
  var curved:CurvedMonitorInput?=null
  var generation=0
  var entity:SurfaceEntity?=null
@@ -75,6 +79,11 @@ suspend fun main(){
  try{syncMagnifierInput(session,late,lateSurface,MonitorMesh(101),2f,1f);error("stale completion accepted")}
  catch(expected:java.util.concurrent.CancellationException){}
  check(CurvedMonitorInput.last!!.closed && late.curved==null)
+ RenderPolicy.CustomMeshes=false
+ val stable=MagnifierResources();val quad=SurfaceEntity();stable.entity=quad
+ syncMagnifierInput(session,stable,quad,null,2f,1f)
+ syncMagnifierInput(session,stable,quad,null,2f,1f)
+ check(quad.added==1 && stable.curved==null && stable.flatInput!=null && stable.mesh==null)
  println("PASS repeated flat/curved input handoff, stable collider ownership, hidden state and cancelled creation")
 }
 '''

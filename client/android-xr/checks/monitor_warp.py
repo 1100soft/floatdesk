@@ -11,6 +11,8 @@ mesh+='\n'+''.join('\n'.join(l for l in (folder/n).read_text().splitlines() if n
 warp = (folder/'MonitorWarp.kt').read_text()
 warp = warp[warp.index('internal class MonitorWarp'):].replace('@SuppressLint("RestrictedApi")', '').replace('androidx.xr.runtime.math.IntSize2d','IntSize2d').replace('android.os.SystemClock','SystemClock')
 stubs = '''
+internal object RenderPolicy {var CustomMeshes=true}
+
 internal class Texture { fun close() {}; companion object { suspend fun create(session: Session,path: java.nio.file.Path)=Texture() } }
 internal class Surface
 internal object SystemClock { var now=0L;fun uptimeMillis()=now }
@@ -86,8 +88,8 @@ internal class Scene {
     fun getEntitiesOfType(type: Class<SurfaceEntity>) = entities.toList()
 }
 internal class SurfaceEntity(var shape: Shape): Entity() {
-    var pixelDimensions=IntSize2d(0,0)
-    fun setSurfacePixelDimensions(value: IntSize2d) { pixelDimensions=value }
+    var pixelDimensions=IntSize2d(0,0);var pixelChanges=0
+    fun setSurfacePixelDimensions(value: IntSize2d) { pixelChanges++;pixelDimensions=value }
     private val surface = Surface()
     fun getSurface() = surface
     var primaryAlphaMaskTexture: Texture? = null
@@ -298,6 +300,14 @@ suspend fun main() {
         check(kotlin.math.abs(focusNow[0]/resized.physicalWidthM-uvBefore.first)<.00001f)
         check(kotlin.math.abs(focusNow[1]/resized.physicalHeightM-uvBefore.second)<.00001f)
     }
+    warp.close()
+    RenderPolicy.CustomMeshes=false
+    val beforeAttachPixels=input.pixelChanges
+    warp.attach(session,input.getSurface(),screen,PixelDensity(),onEvent={})
+    check(input.pixelChanges==beforeAttachPixels) // No synchronous renderer resize from onSurfaceCreated.
+    warp.presentation(floatArrayOf(0f,0f,.4f,1f,.6f,0f,1f,1f),0f)
+    warp.update(session,root,floatArrayOf(0f,0f,0f),screen,false,false)
+    check(warp.mesh==null && input.shape is SurfaceEntity.Shape.Quad)
     warp.close()
     println("Passed: native matrix localization and independent left/right sequences, flat Compose surface/input/alpha/parent preserved, separate curved video and interaction ownership, mode-switch surface restoration, curvature freezes while held, video UVs, cleanup")
 }

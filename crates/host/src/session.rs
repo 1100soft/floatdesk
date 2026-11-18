@@ -3,6 +3,7 @@
 //! Nothing is encoded until a client hello arrives.
 
 mod cursor;
+mod cursor_map;
 mod detail;
 mod receiver;
 mod resources;
@@ -137,6 +138,8 @@ struct Shared {
     bytes: AtomicU64,
     cursor: Mutex<CursorSprite>,
     cursor_generation: AtomicU64,
+    rendering: Mutex<(Option<SocketAddr>, bool)>,
+    cursor_map: Mutex<(Vec<cursor_map::Surface>, [f64; 2], Instant)>,
     /// X11 socket of the capture thread. -1 when capture is not connected.
     capture_fd: [AtomicI32; 6],
     stream_active: [AtomicBool; 6],
@@ -406,6 +409,8 @@ fn run(
             pixels: Vec::new(),
         }),
         cursor_generation: AtomicU64::new(0),
+        rendering: Mutex::new((None, true)),
+        cursor_map: Mutex::new((Vec::new(), [0.001, 0.001], Instant::now())),
         capture_fd: std::array::from_fn(|_| AtomicI32::new(-1)),
         stream_active: std::array::from_fn(|_| AtomicBool::new(true)),
         stream_ssrc: std::array::from_fn(|_| AtomicU32::new(0)),
@@ -496,6 +501,8 @@ fn run(
         }
     });
     let mut topology_epoch = Instant::now();
+    let mut window_action_sequence = std::collections::HashMap::<(SocketAddr, u32), u32>::new();
+    let mut last_cursor_map: Option<(SocketAddr, u64)> = None;
     let mut last_gaze_focus: Option<(SocketAddr, u32)> = None;
     let mut replies: std::collections::VecDeque<(SocketAddr, u32, Vec<u8>)> =
         std::collections::VecDeque::new();
@@ -506,7 +513,7 @@ fn run(
     let mut last_progress = [0u64; 6];
     let started = Instant::now();
     let mut pending_display: Option<DisplayWorker> = None;
-    let mut scratch = [0u8; 2048];
+    let mut scratch = [0u8; 65535];
     while !shared.stop.load(Ordering::Relaxed) {
         if opts
             .duration
@@ -520,6 +527,102 @@ fn run(
                     let packet = floatdesk_protocol::decode_packet(&scratch[..size]);
                     if let Ok(ControlPacket::Workspace { json }) = &packet {
                         if let Ok(value) = serde_json::from_str::<serde_json::Value>(json) {
+                            if value["type"] == "renderState" {
+                                if shared
+                                    .client
+                                    .read()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .as_ref()
+                                    .is_some_and(|c| c.control == from)
+                                {
+                                    if let Some(active) = value["active"].as_bool() {
+                                        *shared
+                                            .rendering
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner()) =
+                                            (Some(from), active);
+                                    }
+                                }
+                                continue;
+                            }
+                            if value["type"] == "cursorMap" {
+                                let sequence = value["sequence"].as_u64().unwrap_or(0);
+                                if last_cursor_map
+                                    .is_some_and(|(peer, old)| peer == from && sequence < old)
+                                {
+                                    continue;
+                                }
+                                if shared
+                                    .client
+                                    .read()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .as_ref()
+                                    .is_some_and(|c| c.control == from)
+                                {
+                                    if let (Ok(surfaces), Ok(scale)) = (
+                                        serde_json::from_value::<Vec<cursor_map::Surface>>(
+                                            value["surfaces"].clone(),
+                                        ),
+                                        serde_json::from_value::<[f64; 2]>(value["scale"].clone()),
+                                    ) {
+                                        if surfaces.iter().all(|s| s.valid())
+                                            && scale.iter().all(|s| s.is_finite() && *s > 0.0)
+                                        {
+                                            *shared
+                                                .cursor_map
+                                                .lock()
+                                                .unwrap_or_else(|e| e.into_inner()) =
+                                                (surfaces, scale, Instant::now());
+                                            last_cursor_map = Some((from, sequence));
+                                        }
+                                    }
+                                }
+                                continue;
+                            }
+                            if value["type"] == "windowAction" {
+                                let allowed = shared
+                                    .client
+                                    .read()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .as_ref()
+                                    .is_some_and(|c| c.control == from);
+                                if !allowed {
+                                    continue;
+                                }
+                                if let Some(id) = value["requestId"]
+                                    .as_u64()
+                                    .and_then(|v| u32::try_from(v).ok())
+                                {
+                                    if let Some((_, _, reply)) = replies
+                                        .iter()
+                                        .find(|(peer, key, _)| *peer == from && *key == id)
+                                    {
+                                        let _ = socket.send_to(reply, from);
+                                        continue;
+                                    }
+                                    let window = value["windowId"]
+                                        .as_u64()
+                                        .and_then(|w| u32::try_from(w).ok())
+                                        .unwrap_or(0);
+                                    window_action_sequence.retain(|(peer, _), _| *peer == from);
+                                    let stale = window_action_sequence
+                                        .get(&(from, window))
+                                        .is_some_and(|old| id < *old);
+                                    let result = if stale {
+                                        Err(Error::Msg("Superseded window action".into()))
+                                    } else {
+                                        window_action_sequence.insert((from, window), id);
+                                        crate::platform::x11::windows::window_action(&value)
+                                    };
+                                    let reply=ControlPacket::Workspace{json:serde_json::json!({"type":"windowActionResult","requestId":id,"ok":result.is_ok(),"message":result.err().map(|e|e.to_string()).unwrap_or_default()}).to_string()}.encode();
+                                    let _ = socket.send_to(&reply, from);
+                                    replies.push_back((from, id, reply));
+                                    if replies.len() > 32 {
+                                        replies.pop_front();
+                                    }
+                                }
+                                continue;
+                            }
                             if value["type"] == "encoderSettings" {
                                 if shared
                                     .client
@@ -698,24 +801,24 @@ fn run(
                                     }
                                     let id = u32::try_from(v["requestId"].as_u64()?).ok()?;
                                     let action = u8::try_from(v["action"].as_u64()?).ok()?;
-                                    if action > 5 {
+                                    if action > 7 {
                                         return None;
                                     }
-                                    let index = if action == 0 || action == 1 || action == 5 {
+                                    let index = if action == 0 || action == 1 || action >= 5 {
                                         0
                                     } else {
                                         sources.iter().position(|(n, _)| {
                                             Some(n.as_str()) == v["name"].as_str()
                                         })?
                                     };
-                                    let width = if action == 5 {
+                                    let width = if action >= 5 {
                                         0
                                     } else if action == 4 {
                                         i16::try_from(v["width"].as_i64()?).ok()? as u16
                                     } else {
                                         u16::try_from(v["width"].as_u64()?).ok()?
                                     };
-                                    let height = if action == 5 {
+                                    let height = if action >= 5 {
                                         0
                                     } else if action == 4 {
                                         i16::try_from(v["height"].as_i64()?).ok()? as u16

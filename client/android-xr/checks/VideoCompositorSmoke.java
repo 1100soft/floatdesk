@@ -56,6 +56,7 @@ public final class VideoCompositorSmoke {
             saved.put("pinch_thresholds_mm",new org.json.JSONArray().put(8.0).put(9.0).put(10.0).put(11.0));
             saved.put("experimental_viewed_detail",true).put("view_detail_debug",false);
             saved.put("encoder_quality",2).put("encoder_mbps",24.5).put("sharpening",.6).put("dense_fraction",.3).put("show_resources",false);
+            saved.remove("interaction_mode"); // Legacy preference migration.
             saved.put("magnify_system_panels",true).put("focus_mode",true).put("layouts",new org.json.JSONObject().put("Desk",new org.json.JSONArray().put(monitor)));
             java.nio.file.Files.write(workspaceFile.toPath(),saved.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
             require(reloaded.load().getFocusMode(),"Focus mode not restored");
@@ -69,6 +70,11 @@ public final class VideoCompositorSmoke {
             require(reloaded.load().getMagnifySystemPanels(),"Shell magnification setting not saved");
             require(reloaded.load().getPinchThresholds().getLeftMiddleMm()==10f,"Shared pinch settings not saved");
             require(Math.abs(reloaded.load().getLayouts().get("Desk").get(0).getViewCenterV()-.25f)<.00001f,"Selected source center not saved");
+            saved.put("interaction_mode","WINDOW_GRAB").put("cursor_remap",false);
+            java.nio.file.Files.write(workspaceFile.toPath(),saved.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            require(reloaded.load().getWindowGrabMode() && !reloaded.load().getFocusMode(),"Interaction modes were not exclusive");
+            reloaded.save(reloaded.load());
+            require(reloaded.load().getWindowGrabMode() && !reloaded.load().getCursorRemap(),"Window grab / topology preferences were lost");
         } finally {workspaceFile.delete();}
         StringBuilder json=new StringBuilder("{\"type\":\"status\",\"available\":12,\"modes\":[[3840,2160]],\"availableMemoryBytes\":8000000000,\"cpuThreads\":8,\"recommendedPixels\":8000000,\"targetFps\":60,\"estimate\":\"advisory\",\"setupRequired\":false,\"screens\":[");
         for(int i=0;i<9;i++) {if(i>0)json.append(',');json.append("{\"name\":\"Virtual-").append(i).append("\",\"width\":3840,\"height\":2160,\"x\":").append(i*3840).append(",\"y\":0,\"managed\":true,\"primary\":false,\"role\":1,\"refreshHz\":0.1,\"modes\":[[3840,2160]]}");}

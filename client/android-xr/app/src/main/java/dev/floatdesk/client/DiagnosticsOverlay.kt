@@ -66,6 +66,7 @@ internal fun DiagnosticsPanel(connection:dev.floatdesk.client.net.DeskConnection
                     }){
                         drawIntoCanvas{target->
                             val c=target.nativeCanvas;val saved=c.save();c.scale(size.width/800f,size.height/400f)
+                            texture.topology=connection.cursorMapDebug
                             texture.draw(c,state,connection.presentation().rects,stamp,index,patch.columns,patch.rows,patch.vertices)
                             c.restoreToCount(saved)
                         }
@@ -80,15 +81,31 @@ internal class HudGlyphTexture:AutoCloseable{
     val bitmap=android.graphics.Bitmap.createBitmap(800,400,android.graphics.Bitmap.Config.ARGB_8888)
     val paint=Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private var stamp=Long.MIN_VALUE;private var state:DiagnosticSnapshot?=null
+    var topology=floatArrayOf()
     private var closed=false
     private fun update(value:DiagnosticSnapshot,screens:FloatArray,now:Long,index:Int){
         if(stamp==now && state===value)return
-        DiagnosticsCanvas.drawCluster(Canvas(bitmap),value,screens,now,index);stamp=now;state=value
+        DiagnosticsCanvas.drawCluster(Canvas(bitmap),value,screens,now,index);if(index==3 && topology.isNotEmpty())drawTopology(Canvas(bitmap),topology);stamp=now;state=value
     }
     fun draw(canvas:Canvas,value:DiagnosticSnapshot,screens:FloatArray,now:Long,index:Int,columns:Int,rows:Int,vertices:FloatArray){
         if(closed)return
         update(value,screens,now,index)
         canvas.drawBitmapMesh(bitmap,columns,rows,vertices,0,null,0,paint)
+    }
+    private fun drawTopology(canvas:Canvas,lines:FloatArray){
+        val xs=lines.indices.filter{it%5==0 || it%5==2}.map{lines[it]}
+        val ys=lines.indices.filter{it%5==1 || it%5==3}.map{lines[it]}
+        val l=xs.minOrNull() ?: return;val r=xs.maxOrNull() ?: return
+        val t=ys.minOrNull() ?: return;val b=ys.maxOrNull() ?: return
+        val scale=minOf(740f/(r-l).coerceAtLeast(.001f),195f/(b-t).coerceAtLeast(.001f))
+        paint.style=Paint.Style.FILL;paint.color=Color.argb(230,12,20,30);canvas.drawRect(0f,184f,800f,400f,paint)
+        paint.strokeWidth=2f
+        for(i in lines.indices step 5){
+            paint.color=if(lines[i+4]>0f)Color.rgb(190,135,255)else Color.rgb(100,220,240)
+            fun x(v:Float)=400f+(v-(l+r)*.5f)*scale
+            fun y(v:Float)=290f+(v-(t+b)*.5f)*scale
+            canvas.drawLine(x(lines[i]),y(lines[i+1]),x(lines[i+2]),y(lines[i+3]),paint)
+        }
     }
     // Compose/RenderThread can retain recorded draws after disposal. Let the bitmap be
     // collected with those references instead of recycling storage they may still use.

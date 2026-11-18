@@ -121,7 +121,7 @@ internal fun DeskContent(
     }
     palmPanel?.takeIf { handInputAllowed }?.let { panel ->
         SpatialPanel(modifier = placedPanel(panel.pose, PALM_WIDTH * panel.unitsPerMeter, PALM_HEIGHT * panel.unitsPerMeter, density, pixelDensity)) {
-            PalmControls(latchedFollow, workspace.sphericalWarp, workspace.eyeAiming, workspace.mouseGestures, panelFocused, panelPressed, workspace.focusMode, onPalmAction)
+            PalmControls(latchedFollow, workspace.sphericalWarp, workspace.eyeAiming, workspace.mouseGestures, panelFocused, panelPressed, workspace.interactionMode, onPalmAction)
         }
     }
     // Retain native assets across Workspace visits; hide them instead of destroying/re-instancing glTF.
@@ -245,6 +245,7 @@ internal fun DeskContent(
             val surface = videoSurface.get() ?: return@LaunchedEffect
             var frozen: FrozenMonitor? = null
             try {
+                if(!RenderPolicy.CustomMeshes)return@LaunchedEffect
                 frozen = FrozenMonitor.create(current, surface, placement.pixelWidth, placement.pixelHeight, hands.frozenMesh,dynamic=latest.value.sphericalWarp)
                 val latestPlacement = latest.value.monitorAt(index) ?: return@LaunchedEffect
                 frozen.update(latestPlacement,warp.mesh)
@@ -292,6 +293,7 @@ internal fun DeskContent(
             }
         SpatialExternalSurface(
             stereoMode = StereoMode.Mono,
+            superSamplingPattern = androidx.xr.compose.subspace.SuperSamplingPattern.None,
             modifier = placedPanel(
                 pose = placement.pose,
                 widthM = placement.physicalWidthM,

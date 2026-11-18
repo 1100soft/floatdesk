@@ -308,6 +308,14 @@ pub(super) fn monitor_thread(
                     thread::sleep(Duration::from_millis(20));
                     continue;
                 };
+                let paused = {
+                    let state = shared.rendering.lock().unwrap_or_else(|e| e.into_inner());
+                    state.0 == Some(target.control) && !state.1
+                };
+                if paused {
+                    thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
                 let view_active = rect.index == 0
                     && monotonic_ns() < shared.view_until_ns.load(Ordering::Relaxed);
                 if view_active {

@@ -77,7 +77,7 @@ internal class MonitorWarp : AutoCloseable {
     }
     @SuppressLint("RestrictedApi")
     private fun videoShape(width:Float,height:Float,sphere:MonitorMesh?):SurfaceEntity.Shape {
-        if(sphere==null && videoCoverageIsFull(screenRects,spacing)) return SurfaceEntity.Shape.Quad(FloatSize2d(width,height))
+        if(!RenderPolicy.CustomMeshes || sphere==null && videoCoverageIsFull(screenRects,spacing)) return SurfaceEntity.Shape.Quad(FloatSize2d(width,height))
         val geometry=clippedVideoGeometry(width,height,sphere,screenRects,spacing)
         val valid=geometry.indices.isNotEmpty() && geometry.positions.size%3==0 && geometry.texCoords.size*3==geometry.positions.size*2 && geometry.indices.size%3==0 &&
             geometry.positions.all{it.isFinite()} && geometry.texCoords.all{it.isFinite()} && geometry.indices.all{it>=0 && it<geometry.positions.size/3}
@@ -149,7 +149,8 @@ internal class MonitorWarp : AutoCloseable {
         val target = session.scene.getEntitiesOfType(SurfaceEntity::class.java)
             .firstOrNull { it.getSurface() === inputSurface }
             ?: error("Could not find monitor input entity")
-        target.setSurfacePixelDimensions(androidx.xr.runtime.math.IntSize2d(placement.pixelWidth,placement.pixelHeight))
+        // onSurfaceCreated can run while the system renderer is transitioning.
+        // Size the texture from the resumed frame loop, never synchronously here.
         target.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE
         input = target
         ownerEnabled=target.isEnabled(false)

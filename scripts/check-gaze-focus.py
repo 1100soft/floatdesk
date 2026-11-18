@@ -82,6 +82,7 @@ with tempfile.TemporaryDirectory(prefix="floatdesk-gaze-kwin-") as tmp:
                     "--",
                     "--ignored",
                     "--nocapture",
+                    "--test-threads=1",
                 ],
                 env=env,
                 cwd=root,

@@ -73,6 +73,7 @@ internal class MonitorMesh(
         require(width > 0f && height > 0f && width.isFinite() && height.isFinite() &&
             radius > 0f && radius.isFinite() && eye.size == 3 && eye.all { it.isFinite() } &&
             columns > 0 && rows > 0 && columns % 2 == 0 && rows % 2 == 0)
+        if(!planar){
         if(focus==null) {
         val halfX = columns/2; val halfY = rows/2
         val dx = (width*radiansPerMeter/columns).toDouble()
@@ -152,9 +153,11 @@ internal class MonitorMesh(
                 for(axis in 0..2) positions[vertex*3+axis]=eye[axis]+radius*(-cosine*n[axis]+sinc*(x*tx[axis]+y*ty[axis]))
             }
         }
+        }
         if(planar) for(row in 0..rows) for(col in 0..columns) {
             val flat=floatArrayOf((horizontalGrid[col]-.5f)*width,(.5f-verticalGrid[row])*height,0f)
             val vertex=row*(columns+1)+col
+            texCoords[vertex*2]=horizontalGrid[col];texCoords[vertex*2+1]=verticalGrid[row]
             for(axis in 0..2)positions[vertex*3+axis]=flat[axis]
         }
         var offset=0

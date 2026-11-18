@@ -1,6 +1,8 @@
 //! Activate pre-provisioned VKMS outputs; never rebuild kernel topology or alter physical modes.
+mod power;
 use crate::core::MonitorRect;
 use crate::error::{Error, Result};
+pub use power::set_disabled as set_virtual_screens_disabled;
 use std::collections::BTreeSet;
 use std::process::Command;
 
@@ -679,6 +681,40 @@ fn plasma_snapshot(
     }
     Some((value, result))
 }
+fn plasma_mode_id<'a>(
+    snapshot: &'a serde_json::Value,
+    name: &str,
+    width: u16,
+    height: u16,
+    rate: f32,
+) -> Result<&'a str> {
+    snapshot["outputs"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["name"].as_str() == Some(name)))
+        .and_then(|row| row["modes"].as_array())
+        .and_then(|modes| {
+            modes
+                .iter()
+                .filter(|m| {
+                    m["size"]["width"].as_u64() == Some(width.into())
+                        && m["size"]["height"].as_u64() == Some(height.into())
+                })
+                .min_by(|a, b| {
+                    (a["refreshRate"].as_f64().unwrap_or(1e9) - f64::from(rate))
+                        .abs()
+                        .total_cmp(
+                            &(b["refreshRate"].as_f64().unwrap_or(1e9) - f64::from(rate)).abs(),
+                        )
+                })
+        })
+        .filter(|m| (m["refreshRate"].as_f64().unwrap_or(1e9) - f64::from(rate)).abs() < 0.1)
+        .and_then(|m| m["id"].as_str())
+        .ok_or_else(|| {
+            Error::Msg(format!(
+                "Requested mode is not available in Plasma on {name}"
+            ))
+        })
+}
 fn plasma_transaction(
     mut commands: Vec<String>,
     priorities: std::collections::BTreeMap<String, u32>,
@@ -799,7 +835,7 @@ impl MonitorPool {
             .collect();
         let (window_focus, windows) = super::windows::observed_catalogue();
         let system_windows = super::windows::observed_system_catalogue();
-        serde_json::json!({"type":"status","requestId":request_id,"busy":busy,"screens":screens,"windows":windows,"systemWindows":system_windows,"windowFocus":window_focus,"gazeFocus":window_focus,"windowMagnify":window_focus,"available":available,"modes":modes,"availableMemoryBytes":mem,"cpuThreads":cpus,"recommendedPixels":estimated,"targetFps":fps,"estimate":"Rough planning estimate: available memory / 128 bytes per desktop pixel and 1 megapixel per CPU thread at 60 FPS. Advisory only; GPU, content and network can dominate.","desktopLimits":desktop_limits(),"setupRequired":!outputs.iter().any(|o|virtual_name(&o.name))})
+        serde_json::json!({"type":"status","virtualScreensDisabled":power::disabled(),"requestId":request_id,"busy":busy,"screens":screens,"windows":windows,"systemWindows":system_windows,"windowFocus":window_focus,"gazeFocus":window_focus,"windowMagnify":window_focus,"available":available,"modes":modes,"availableMemoryBytes":mem,"cpuThreads":cpus,"recommendedPixels":estimated,"targetFps":fps,"estimate":"Rough planning estimate: available memory / 128 bytes per desktop pixel and 1 megapixel per CPU thread at 60 FPS. Advisory only; GPU, content and network can dominate.","desktopLimits":desktop_limits(),"setupRequired":!outputs.iter().any(|o|virtual_name(&o.name))})
     }
     pub fn owned_mask(&self, sources: &[(String, MonitorRect)]) -> u8 {
         sources.iter().take(6).fold(0, |mask, (name, r)| {
@@ -841,6 +877,7 @@ impl MonitorPool {
 
     /// Validate the complete draft before one native display transaction.
     pub fn apply_arrangement(&self, rows: &serde_json::Value) -> Result<()> {
+        let _transaction = power::transaction_lock()?;
         let outputs = query()?;
         let proposed = arrangement_draft(&outputs, rows, desktop_limits())?;
         let positions = proposed
@@ -891,6 +928,12 @@ impl MonitorPool {
         height: u16,
         sources: &[(String, MonitorRect)],
     ) -> Result<()> {
+        if action == 6 || action == 7 {
+            power::set_disabled(action == 6)?;
+            self.owned.retain(|name| !virtual_name(name));
+            return Ok(());
+        }
+        let _transaction = power::transaction_lock()?;
         if action == 4 {
             return self.move_output(index, width as i16, height as i16, sources);
         }
@@ -990,38 +1033,7 @@ impl MonitorPool {
             } else {
                 let selected = lowest_mode(output, width, height)
                     .ok_or_else(|| Error::Msg(format!("{width}x{height} is unavailable")))?;
-                let mode = snapshot["outputs"]
-                    .as_array()
-                    .and_then(|rows| {
-                        rows.iter()
-                            .find(|r| r["name"].as_str() == Some(output.name.as_str()))
-                    })
-                    .and_then(|row| row["modes"].as_array())
-                    .and_then(|modes| {
-                        modes
-                            .iter()
-                            .filter(|m| {
-                                m["size"]["width"].as_u64() == Some(u64::from(width))
-                                    && m["size"]["height"].as_u64() == Some(u64::from(height))
-                            })
-                            .min_by(|a, b| {
-                                (a["refreshRate"].as_f64().unwrap_or(1e9) - f64::from(selected.3))
-                                    .abs()
-                                    .total_cmp(
-                                        &(b["refreshRate"].as_f64().unwrap_or(1e9)
-                                            - f64::from(selected.3))
-                                        .abs(),
-                                    )
-                            })
-                    })
-                    .filter(|m| {
-                        (m["refreshRate"].as_f64().unwrap_or(1e9) - f64::from(selected.3)).abs()
-                            < 0.1
-                    })
-                    .and_then(|m| m["id"].as_str())
-                    .ok_or_else(|| {
-                        Error::Msg("Requested mode is not available in Plasma".into())
-                    })?;
+                let mode = plasma_mode_id(&snapshot, &output.name, width, height, selected.3)?;
                 let (x, y) = position;
                 commands.extend([
                     format!("output.{}.mode.{mode}", output.name),

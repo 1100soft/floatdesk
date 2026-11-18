@@ -5,10 +5,66 @@ from production_sources import application_sources
 import subprocess,sys,tempfile,re
 root=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
 def body(path):return '\n'.join(l for l in (root/path).read_text().splitlines() if not l.startswith(('import ','package ')))
+topology=body('CursorTopology.kt')
+start=topology.index('    fun json():String {')
+end=start;depth=0;opened=False
+while end<len(topology):
+    if topology[end]=='{':depth+=1;opened=True
+    elif topology[end]=='}':depth-=1
+    end+=1
+    if opened and depth==0:break
+topology=topology[:start]+topology[end:]
 workspace=body('workspace/Workspace.kt');workspace=workspace[workspace.index('internal data class Pose'):workspace.index('internal class WorkspaceStore')]
 metadata=body('net/WorkspaceInfo.kt');metadata=metadata[:metadata.index('    companion object')]+'}\n'
-code='import kotlin.math.*\n'+body('MonitorMesh.kt')+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+re.search(r'internal fun deskLayout\(.*?\n}',(root/'workspace/Workspace.kt').read_text(),re.S).group(0)+body('workspace/WorkspacePlacement.kt')+metadata+body('WindowMagnification.kt')+body('VideoGeometry.kt')+body('MagnifierContacts.kt')+body('BoundedHistory.kt')+body('net/WindowCaptureFormat.kt')+''.join(re.search(r'internal fun '+name+r'\(.*?\n}',application_sources(),re.S).group(0) for name in ('transformPoint','rotateVector','quaternionBetween','multiplyQuaternion','normalize3','normalize4'))+re.search(r'internal fun dot\(a: FloatArray[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun cross3\(.*',application_sources()).group(0)+'\n'+r'''
+code='import kotlin.math.*\n'+body('MonitorMesh.kt')+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+re.search(r'internal fun deskLayout\(.*?\n}',(root/'workspace/Workspace.kt').read_text(),re.S).group(0)+body('workspace/WorkspacePlacement.kt')+metadata+body('WindowMagnification.kt')+body('WindowInteraction.kt')+topology+body('VideoGeometry.kt')+body('MagnifierContacts.kt')+body('BoundedHistory.kt')+body('RenderPolicy.kt')+body('net/WindowCaptureRetry.kt')+body('net/WindowCaptureFormat.kt').replace('dev.floatdesk.client.RenderPolicy','RenderPolicy')+''.join(re.search(r'internal fun '+name+r'\(.*?\n}',application_sources(),re.S).group(0) for name in ('transformPoint','rotateVector','quaternionBetween','multiplyQuaternion','normalize3','normalize4'))+re.search(r'internal fun dot\(a: FloatArray[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun cross3\(.*',application_sources()).group(0)+'\n'+r'''
 fun main() {
+ run {
+   val retry=WindowCaptureRetry()
+   check(List(7){retry.nextDelayMs()}==listOf(500L,1000L,2000L,4000L,5000L,5000L,5000L))
+   retry.reset();check(retry.nextDelayMs()==500L)
+   check(RenderPolicy.WindowFps==30 && RenderPolicy.WindowDimension==WindowCaptureFormat.MaxDimension && RenderPolicy.WindowPixels==WindowCaptureFormat.MaxPixels)
+ }
+
+ run {
+   val pose=Pose(floatArrayOf(0f,0f,-2f))
+   val rect=FocusRect(0f,0f,1000f,1000f)
+   for(curved in listOf(false,true)){
+     val mesh=if(curved)MonitorMesh(4f,4f,floatArrayOf(0f,0f,2f),focus=floatArrayOf(0f,0f))else null
+     val patches=cursorPatches("desktop",pose,4f,4f,mesh,rect,Pose())
+     check(patches.isNotEmpty())
+     for(patch in patches){
+       val expected=listOf(patch.source.left to patch.source.top,patch.source.right to patch.source.top,patch.source.right to patch.source.bottom,patch.source.left to patch.source.bottom)
+       for(i in 0..3){val sample=patch.sourceAt(patch.points[i])!!;check(abs(sample.first-expected[i].first)<.01f && abs(sample.second-expected[i].second)<.01f)}
+     }
+   }
+   val back=cursorPatches("desktop",pose,4f,4f,null,rect,Pose())
+   val front=cursorPatches("window",Pose(floatArrayOf(0f,0f,-1f)),1f,1f,null,FocusRect(200f,200f,600f,600f),Pose(),front=true)
+   val map=CursorTopology(back+front,cursorMapScale(back))
+   check(map.wires().isNotEmpty() && map.wires().all{it.back=="desktop"})
+   check(abs(map.scale.first-.002f)<.00001f)
+   check(map.coarsened().patches.size<map.patches.size)
+   check(map.debugSegments().size==map.patches.size*20)
+   check(cursorPatches("behind",Pose(floatArrayOf(0f,0f,2f)),1f,1f,null,rect,Pose()).isEmpty())
+ }
+
+ run {
+   val source=DesktopWindow(77,100,100,200,200)
+   val info=WorkspaceInfo(listOf(DesktopOutput("screen",1000,1000,0,0,false,true,3,emptyList())),0,emptyList(),0,8,1000000,60,"",false,windowFocus=true,windows=listOf(source))
+   val drag=WindowGrabController{PinchThresholds.Default}
+   fun step(at:Long,closed:Boolean,u:Float=.2f,v:Float=.2f,blocked:Boolean=false)=drag.update(at,true,blocked,
+       mapOf("LEFT" to FingerPinch(if(closed).001f else .1f,.1f)),
+       mapOf("LEFT" to info.hover(u,v)!!),info)
+   step(0,false);step(1,true)
+   check(step(100,true,.25f,.25f).move==WindowMove(77,150,150))
+   check(step(200,false,.26f,.26f).move==WindowMove(77,160,160))
+   check(!drag.engaged)
+   step(300,true);check(step(1001,true).menu==77L)
+   check(step(1100,true).menu==null);step(1101,false)
+   step(1200,true,blocked=true);check(step(2000,true).menu==null)
+   step(2001,false);step(2002,true);check(step(2703,true).menu==77L)
+   check(snapWindowMove(source,2,104,info).x==0)
+ }
+
  // Curved panes keep a constant radius; flat panes stay exactly coplanar.
  // Both use the same native mesh representation across transitions.
  val layerViewer=Pose()
@@ -47,6 +103,7 @@ fun main() {
    check(WindowCaptureFormat.valid(size.first,size.second) && size.first%2==0 && size.second%2==0)
    val canvas=WindowCaptureFormat.canvasSize(width,height)
    check(WindowCaptureFormat.valid(canvas.first,canvas.second) && canvas.first>=size.first && canvas.second>=size.second)
+   check(canvas.first.toLong()*canvas.second<=RenderPolicy.WindowPixels && maxOf(size.first,size.second)<=RenderPolicy.WindowDimension)
  }
  val tap=NativeSurfaceTap()
  check(tap.update("LEFT","DOWN",.5f to .4f)==null)

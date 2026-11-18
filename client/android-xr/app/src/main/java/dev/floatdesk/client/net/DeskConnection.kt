@@ -14,6 +14,9 @@ import dev.floatdesk.client.FocusTarget
 import dev.floatdesk.client.FocusResult
 import dev.floatdesk.client.qualityOutputSize
 import dev.floatdesk.client.qualityDenseFraction
+import dev.floatdesk.client.debugSegments
+import dev.floatdesk.client.coarsened
+import dev.floatdesk.client.wires
 import dev.floatdesk.client.FocusRect
 import dev.floatdesk.client.media.MonitorDecoder
 import dev.floatdesk.client.media.VideoAim
@@ -55,6 +58,7 @@ internal class DeskConnection(
     private fun publishResources(){val state=detailDiagnostics.get();main.post{resourceStatus.value=state.hostResources+"\n"+state.localResources}}
     val detailStatus=mutableStateOf("Experimental viewed detail off")
     private var detailWorker:ViewedDetail?=null
+    val windowCaptureEpoch=androidx.compose.runtime.mutableIntStateOf(0)
     @Volatile private var detailSession=0L
     private val detailDiagnostics=AtomicReference(DetailDiagnostics())
     fun refreshOutput(index:Int){decoders[index]?.refreshOutput()}
@@ -173,6 +177,7 @@ internal class DeskConnection(
     }
 
     fun disconnect() {
+        publishCursorMap(dev.floatdesk.client.CursorTopology());windowRequests.clear()
         localResources?.close();localResources=null
         detailWorker?.close();detailWorker=null
         running = false
@@ -222,11 +227,13 @@ internal class DeskConnection(
         decoders.values.forEach { it.setRenderingActive(renderingActive && visible) }
     }
 
+    private fun sendRenderingState(){send(Protocol.workspace(org.json.JSONObject().put("type","renderState").put("active",renderingActive).toString()))}
     @Synchronized
     fun setRenderingActive(active: Boolean) {
         renderingActive=active
+        sendRenderingState()
         if(windowCapturesLazy.isInitialized())windowCaptures.setActive(active)
-        if(!active){viewedDetail(null);cancelGazeFocus()}
+        if(!active){viewedDetail(null);cancelGazeFocus();publishCursorMap(dev.floatdesk.client.CursorTopology())}
         decoders.values.forEach { it.setRenderingActive(active && desktopVisible) }
     }
 
@@ -297,6 +304,45 @@ internal class DeskConnection(
         val packet=Protocol.workspace(org.json.JSONObject().put("type","gazeFocus").put("quietMs",typingQuietMs).put("requestId",id).put("windowId",window).toString())
         for(delay in listOf(0L,300L,900L))handler.postDelayed({if(gazeFocusPending.get()==id)send(packet)},delay)
         main.postDelayed({if(gazeFocusPending.compareAndSet(id,0))gazeFocusError.value="Gaze focus request timed out"},2000)
+    }
+    @Volatile var cursorTopology=dev.floatdesk.client.CursorTopology()
+    private val cursorMapSequence=java.util.concurrent.atomic.AtomicLong()
+    @Volatile var cursorMapDebug=floatArrayOf()
+    @Volatile var cursorWires=emptyMap<String,FloatArray>()
+    fun publishCursorMap(map:dev.floatdesk.client.CursorTopology){
+        var actual=map
+        var json=actual.json()
+        while(json.toByteArray(Charsets.UTF_8).size>60000){
+            val next=actual.coarsened()
+            actual=if(next.patches.size<actual.patches.size)next else dev.floatdesk.client.CursorTopology()
+            json=actual.json()
+        }
+        cursorTopology=actual
+        cursorMapDebug=actual.debugSegments()
+        val bounds=workspaceInfo.value?.bounds()
+        cursorWires=actual.wires().groupBy{it.back}.mapValues{(key,rows)->
+            val pieces=actual.patches.filter{it.key==key}
+            val l=pieces.minOf{it.source.left};val r=pieces.maxOf{it.source.right}
+            val t=pieces.minOf{it.source.top};val b=pieces.maxOf{it.source.bottom}
+            fun point(p:Pair<Float,Float>):Pair<Float,Float>{
+                if(key=="desktop" && bounds!=null)return presentation().extendedDisplayPoint((p.first-bounds[0])/bounds[2],(p.second-bounds[1])/bounds[3]) ?: (0f to 0f)
+                return (p.first-l)/(r-l) to (p.second-t)/(b-t)
+            }
+            rows.flatMap{val a=point(it.a);val b=point(it.b);listOf(a.first,a.second,b.first,b.second)}.toFloatArray()
+        }
+        send(Protocol.workspace(org.json.JSONObject(json).put("sequence",cursorMapSequence.incrementAndGet()).toString()))
+    }
+    private val windowRequests=java.util.concurrent.ConcurrentHashMap<Int,ByteArray>()
+    fun windowAction(window:Long,action:String,move:dev.floatdesk.client.WindowMove?=null){
+        val json=org.json.JSONObject().put("type","windowAction").put("requestId",monitorSequence.incrementAndGet()).put("windowId",window).put("action",action)
+        move?.let{json.put("x",it.x).put("y",it.y);it.width?.let{w->json.put("width",w)};it.height?.let{h->json.put("height",h)}}
+        val id=json.getInt("requestId");val packet=Protocol.workspace(json.toString())
+        send(packet)
+        if(action!="move"){
+            windowRequests[id]=packet
+            for(delay in listOf(300L,900L))outgoing?.postDelayed({if(windowRequests[id]===packet)send(packet)},delay)
+            main.postDelayed({windowRequests.remove(id)},2000)
+        }
     }
     fun requestFocus(target:FocusTarget):Boolean {
         val handler=outgoing ?: return false
@@ -417,6 +463,8 @@ internal class DeskConnection(
                         }
                     }
                     is Packet.Workspace -> {
+                        runCatching{org.json.JSONObject(decoded.json)}.getOrNull()?.takeIf{it.optString("type")=="windowActionResult"}?.let{windowRequests.remove(it.optInt("requestId"))}
+
                         if(incoming.address==pendingRemote?.address && incoming.port==pendingRemote?.port) {
                             runCatching{org.json.JSONObject(decoded.json)}.getOrNull()?.takeIf{it.optString("type")=="typingState"}?.let{reply->
                                 if(reply.optBoolean("available"))lastTypingAt=(android.os.SystemClock.uptimeMillis()-reply.optLong("ageMs",60000)).coerceAtLeast(1)
@@ -482,8 +530,9 @@ internal class DeskConnection(
 
     @Synchronized
     private fun onHello(hello: Packet.HostHello, remote: InetSocketAddress) {
+        sendRenderingState()
         sendEncoderSettings()
-        if(detailSession!=hello.sessionId){viewedDetail(null);detailSession=hello.sessionId}
+        if(detailSession!=hello.sessionId){viewedDetail(null);detailSession=hello.sessionId;main.post{windowCaptureEpoch.intValue++}}
         val healthy=decoders.isNotEmpty() && decoders.size==hello.monitors.size && hello.monitors.all{decoders[it.index]?.isHealthy()==true}
         if (hello.monitors==currentMonitors && healthy) {
             // A dropped one-shot progress notification must not leave an overlay

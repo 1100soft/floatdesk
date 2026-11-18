@@ -826,11 +826,245 @@ pub fn occluders(link: &X11Link, client: u32) -> Result<Vec<[i32; 4]>> {
     Ok(result)
 }
 
+/// Apply application-selected geometry/actions; never enter the WM's interactive drag.
+pub fn window_action(value: &serde_json::Value) -> Result<()> {
+    let id = value["windowId"]
+        .as_u64()
+        .and_then(|v| u32::try_from(v).ok())
+        .ok_or_else(|| Error::Msg("Missing window".into()))?;
+    let (_, cached) = observed_catalogue();
+    let rows = if cached.iter().any(|w| w.id == id) {
+        cached
+    } else {
+        catalogue()?.1
+    };
+    let window = rows
+        .iter()
+        .find(|w| w.id == id)
+        .ok_or_else(|| Error::Msg("Window is no longer available".into()))?;
+    let link = X11Link::open()?;
+    let mask = EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY;
+    let action = value["action"].as_str().unwrap_or("");
+    let (name, data) = match action {
+        "close" => ("_NET_CLOSE_WINDOW", [x11rb::CURRENT_TIME, 2, 0, 0, 0]),
+        "minimize" => ("WM_CHANGE_STATE", [3, 0, 0, 0, 0]),
+        "maximize" => (
+            "_NET_WM_STATE",
+            [
+                2,
+                atom(&link, b"_NET_WM_STATE_MAXIMIZED_HORZ")?,
+                atom(&link, b"_NET_WM_STATE_MAXIMIZED_VERT")?,
+                2,
+                0,
+            ],
+        ),
+        "move" | "geometry" => {
+            let integer = |key: &str, default: i64| value[key].as_i64().unwrap_or(default);
+            let x = i32::try_from(integer("x", window.x.into()))
+                .map_err(|_| Error::Msg("Invalid window x".into()))?;
+            let y = i32::try_from(integer("y", window.y.into()))
+                .map_err(|_| Error::Msg("Invalid window y".into()))?;
+            let w = u32::try_from(integer("width", window.width.into()))
+                .ok()
+                .filter(|v| *v > 0 && *v <= u16::MAX.into())
+                .ok_or_else(|| Error::Msg("Invalid window width".into()))?;
+            let h = u32::try_from(integer("height", window.height.into()))
+                .ok()
+                .filter(|v| *v > 0 && *v <= u16::MAX.into())
+                .ok_or_else(|| Error::Msg("Invalid window height".into()))?;
+            // Remove maximization before applying an explicit application snap.
+            link.conn
+                .send_event(
+                    false,
+                    link.root,
+                    mask,
+                    ClientMessageEvent::new(
+                        32,
+                        id,
+                        atom(&link, b"_NET_WM_STATE")?,
+                        [
+                            0,
+                            atom(&link, b"_NET_WM_STATE_MAXIMIZED_HORZ")?,
+                            atom(&link, b"_NET_WM_STATE_MAXIMIZED_VERT")?,
+                            2,
+                            0,
+                        ],
+                    ),
+                )
+                .map_err(Error::x11)?;
+            let flags = 10
+                | (2 << 12)
+                | (1 << 8)
+                | (1 << 9)
+                | if action == "geometry" {
+                    (1 << 10) | (1 << 11)
+                } else {
+                    0
+                };
+            ("_NET_MOVERESIZE_WINDOW", [flags, x as u32, y as u32, w, h])
+        }
+        _ => return Err(Error::Msg("Unsupported window action".into())),
+    };
+    link.conn
+        .send_event(
+            false,
+            link.root,
+            mask,
+            ClientMessageEvent::new(32, id, atom(&link, name.as_bytes())?, data),
+        )
+        .map_err(Error::x11)?
+        .check()
+        .map_err(Error::x11)?;
+    link.conn.flush().map_err(Error::x11)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use x11rb::protocol::xproto::{CreateWindowAux, PropMode, WindowClass};
     use x11rb::wrapper::ConnectionExt as _;
+    #[test]
+    #[ignore = "private Xvfb/KWin only"]
+    fn window_actions_private_kwin() {
+        assert_eq!(
+            std::env::var("FLOATDESK_SYNTHETIC_DISPLAY").as_deref(),
+            Ok("1")
+        );
+        let link = X11Link::open().unwrap();
+        // Real XI2 input must survive a root-edge clamp, while our own warps
+        // must not feed back as another physical mouse movement.
+        use crate::core::CursorBackend;
+        use x11rb::protocol::xtest::ConnectionExt as _;
+        let mut cursor = crate::platform::x11::X11Cursor::open().unwrap();
+        cursor.move_to(1279, 799).unwrap();
+        let _ = cursor.poll().unwrap();
+        cursor.take_motion();
+        link.conn
+            .xtest_fake_input(
+                x11rb::protocol::xproto::MOTION_NOTIFY_EVENT,
+                1,
+                0,
+                link.root,
+                13,
+                7,
+                0,
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+        link.conn.flush().unwrap();
+        let mut motion = [0.0, 0.0];
+        for _ in 0..100 {
+            let _ = cursor.poll().unwrap();
+            let delta = cursor.take_motion();
+            motion[0] += delta[0];
+            motion[1] += delta[1];
+            if motion[0] > 0.0 && motion[1] > 0.0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            motion[0] > 0.0 && motion[1] > 0.0,
+            "Raw edge movement was lost: {motion:?}"
+        );
+        cursor.move_to(50, 50).unwrap();
+        let _ = cursor.poll().unwrap();
+        assert_eq!(
+            cursor.take_motion(),
+            [0.0, 0.0],
+            "Warp fed back into relative motion"
+        );
+
+        let id = link.conn.generate_id().unwrap();
+        let screen = &link.conn.setup().roots[link.screen];
+        link.conn
+            .create_window(
+                screen.root_depth,
+                id,
+                link.root,
+                40,
+                40,
+                200,
+                160,
+                0,
+                WindowClass::INPUT_OUTPUT,
+                0,
+                &CreateWindowAux::new().background_pixel(0x404040),
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+        let protocols = atom(&link, b"WM_PROTOCOLS").unwrap();
+        let delete = atom(&link, b"WM_DELETE_WINDOW").unwrap();
+        link.conn
+            .change_property32(PropMode::REPLACE, id, protocols, AtomEnum::ATOM, &[delete])
+            .unwrap()
+            .check()
+            .unwrap();
+        link.conn.map_window(id).unwrap().check().unwrap();
+        link.conn.flush().unwrap();
+        let wait = |test: &dyn Fn() -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !test() {
+                assert!(
+                    std::time::Instant::now() < until,
+                    "Window action did not converge"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+        wait(&|| catalogue().unwrap().1.iter().any(|w| w.id == id));
+        window_action(&serde_json::json!({"windowId":id,"action":"geometry","x":190,"y":140,"width":300,"height":220})).unwrap();
+        wait(&|| {
+            let g = link.conn.get_geometry(id).unwrap().reply().unwrap();
+            g.width == 300 && g.height == 220
+        });
+        let p = link
+            .conn
+            .translate_coordinates(id, link.root, 0, 0)
+            .unwrap()
+            .reply()
+            .unwrap();
+        assert!(
+            (i32::from(p.dst_x) - 190).abs() <= 3 && (i32::from(p.dst_y) - 140).abs() <= 3,
+            "{p:?}"
+        );
+        window_action(&serde_json::json!({"windowId":id,"action":"maximize"})).unwrap();
+        let maximized = atom(&link, b"_NET_WM_STATE_MAXIMIZED_HORZ").unwrap();
+        let state = atom(&link, b"_NET_WM_STATE").unwrap();
+        wait(&|| {
+            values(&link, id, state, AtomEnum::ATOM)
+                .unwrap()
+                .contains(&maximized)
+        });
+        window_action(&serde_json::json!({"windowId":id,"action":"minimize"})).unwrap();
+        wait(&|| {
+            link.conn
+                .get_window_attributes(id)
+                .unwrap()
+                .reply()
+                .unwrap()
+                .map_state
+                != MapState::VIEWABLE
+        });
+        link.conn.map_window(id).unwrap().check().unwrap();
+        link.conn.flush().unwrap();
+        wait(&|| catalogue().unwrap().1.iter().any(|w| w.id == id));
+        window_action(&serde_json::json!({"windowId":id,"action":"close"})).unwrap();
+        wait(&|| {
+            while let Some(event) = link.conn.poll_for_event().unwrap() {
+                if let x11rb::protocol::Event::ClientMessage(message) = event {
+                    if message.type_ == protocols && message.data.as_data32()[0] == delete {
+                        return true;
+                    }
+                }
+            }
+            false
+        });
+        assert!(window_action(&serde_json::json!({"windowId":id,"action":"invalid"})).is_err());
+        link.conn.destroy_window(id).unwrap().check().unwrap();
+    }
     #[test]
     fn dock_strips_trim_both_orientations_consistently() {
         let mut strut = vec![0; 12];

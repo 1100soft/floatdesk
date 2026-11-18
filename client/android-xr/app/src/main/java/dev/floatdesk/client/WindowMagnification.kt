@@ -194,10 +194,15 @@ internal fun fixedMagnifierGeometry(window:MagnifiedWindow,viewer:Pose,proposed:
     val mesh=projectMagnifier(window,viewer,pose,window.width,window.height,updateMesh,.003f,.003f)
     return window.copy(pose=pose,mesh=mesh,requestedPosition=requested)
 }
-internal fun magnifierContentPoint(window:MagnifiedWindow,point:Pair<Float,Float>):Pair<Float,Float>{
+internal fun magnifierContentRect(window:MagnifiedWindow):FocusRect {
     val source=window.sourceWidth.toFloat()/window.sourceHeight.coerceAtLeast(1);val pane=window.width/window.height
     val x=minOf(1f,source/pane);val y=minOf(1f,pane/source)
-    return (((point.first-.5f)/x+.5f).coerceIn(0f,1f) to ((point.second-.5f)/y+.5f).coerceIn(0f,1f))
+    return FocusRect((1-x)*.5f,(1-y)*.5f,(1+x)*.5f,(1+y)*.5f)
+}
+internal fun magnifierContentPoint(window:MagnifiedWindow,point:Pair<Float,Float>):Pair<Float,Float>{
+    val rect=magnifierContentRect(window)
+    return ((point.first-rect.left)/(rect.right-rect.left)).coerceIn(0f,1f) to
+        ((point.second-rect.top)/(rect.bottom-rect.top)).coerceIn(0f,1f)
 }
 
 internal fun surfaceRayDistance(pose:Pose,width:Float,height:Float,mesh:MonitorMesh?,origin:FloatArray,direction:FloatArray):Float?{
@@ -301,7 +306,7 @@ private fun projectMagnifier(window:MagnifiedWindow,viewer:Pose,pose:Pose,width:
     if(!update && old!=null && old.planar==!window.spherical && old.width==width && old.height==height)return old
     val same=old!=null && old.planar==!window.spherical && old.width==width && old.height==height && eye.indices.all{abs(eye[it]-old.eye[it])<eyeTolerance}
     if(!window.spherical) {
-        if(same)return old
+        if(old?.planar==true && old.width==width && old.height==height)return old
         return MonitorMesh(width,height,eye,columns=32,rows=20,focus=floatArrayOf(0f,0f),planar=true)
     }
     if(!update && same)return old

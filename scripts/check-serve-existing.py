@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the managed launcher arguments without touching the user's service manager."""
+"""Persistent launcher installation without touching the real user service manager."""
 
 import json
 import os
@@ -13,10 +13,10 @@ with tempfile.TemporaryDirectory(prefix="floatdesk-launch-") as temp:
     binary = root / "host with spaces"
     binary.write_text("#!/bin/sh\nexit 0\n")
     binary.chmod(0o755)
-    capture = root / "arguments.json"
-    stub = root / "systemd-run"
+    capture = root / "arguments.jsonl"
+    stub = root / "systemctl"
     stub.write_text(
-        '#!/usr/bin/env python3\nimport json, os, sys\nfrom pathlib import Path\nPath(os.environ["LAUNCH_CHECK_ARGS"]).write_text(json.dumps(sys.argv[1:]))\n'
+        '#!/usr/bin/env python3\nimport json,os,sys\nwith open(os.environ["LAUNCH_CHECK_ARGS"],"a") as f:f.write(json.dumps(sys.argv[1:])+"\\n")\n'
     )
     stub.chmod(0o755)
     env = dict(
@@ -25,43 +25,41 @@ with tempfile.TemporaryDirectory(prefix="floatdesk-launch-") as temp:
         FLOATDESK_BIN=str(binary),
         DISPLAY=":77",
         XAUTHORITY="/tmp/test auth",
+        XDG_CONFIG_HOME=str(root / "config"),
         LAUNCH_CHECK_ARGS=str(capture),
     )
     subprocess.run(
         [str(launcher), "--fps", "60", "--encoder", "vah264enc"], env=env, check=True
     )
-    args = json.loads(capture.read_text())
-    for option in (
-        "--user",
-        "--collect",
-        "--unit=floatdesk-live",
-        "--property=Restart=on-failure",
-        "--property=RestartSec=2s",
-        "--property=LimitFSIZE=infinity",
-        "--property=StandardOutput=journal",
-        "--property=StandardError=journal",
-        "--setenv=DISPLAY=:77",
-        "--setenv=XAUTHORITY=/tmp/test auth",
-    ):
-        assert option in args, option
-    assert args[-7:] == [
-        str(binary),
-        "serve",
-        "--existing",
-        "--fps",
-        "60",
-        "--encoder",
-        "vah264enc",
+    calls = [json.loads(line) for line in capture.read_text().splitlines()]
+    assert calls == [
+        ["--user", "import-environment", "DISPLAY", "XAUTHORITY"],
+        ["--user", "daemon-reload"],
+        ["--user", "start", "floatdesk-live.service"],
     ]
-    del env["XAUTHORITY"]
-    subprocess.run([str(launcher)], env=env, check=True)
-    assert not any("XAUTHORITY=" in value for value in json.loads(capture.read_text()))
+    unit = (root / "config/systemd/user/floatdesk-live.service").read_text()
+    assert (
+        f'ExecStart="{binary}" "serve" "--existing" "--fps" "60" "--encoder" "vah264enc"'
+        in unit
+    )
+    for option in (
+        "Restart=on-failure",
+        "LimitFSIZE=infinity",
+        "StandardOutput=journal",
+        "WantedBy=graphical-session.target",
+    ):
+        assert option in unit
+    assert (
+        root
+        / "config/systemd/user/graphical-session.target.wants/floatdesk-live.service"
+    ).resolve() == (root / "config/systemd/user/floatdesk-live.service")
+    assert (
+        "XAUTHORITY=" not in unit
+    )  # Session credentials come from the current manager environment.
     capture.unlink()
     env["FLOATDESK_BIN"] = str(root / "missing")
-    result = subprocess.run(
-        [str(launcher)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-    )
+    result = subprocess.run([str(launcher)], env=env, capture_output=True)
     assert result.returncode != 0 and not capture.exists()
 print(
-    "Passed: managed restart/journal/file limits, quoted binary/environment/arguments, optional authority, missing binary failure"
+    "PASS persistent login service, session environment, quoted arguments and missing-binary failure"
 )

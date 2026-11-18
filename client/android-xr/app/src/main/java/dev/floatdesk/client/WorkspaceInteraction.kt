@@ -141,13 +141,13 @@ internal val palmButtons = listOf(
 internal fun sphericalActionLabel(enabled: Boolean): String = if (enabled) "Disable spherical" else "Enable spherical"
 
 @Composable
-internal fun PalmControls(latched: Boolean, warped: Boolean, eyes: Boolean, gestures: Boolean, focused: PalmAction?, pressed: PalmAction?, focusMode:Boolean, onAction: (PalmAction) -> Unit) {
+internal fun PalmControls(latched: Boolean, warped: Boolean, eyes: Boolean, gestures: Boolean, focused: PalmAction?, pressed: PalmAction?, mode:dev.floatdesk.client.workspace.InteractionMode, onAction: (PalmAction) -> Unit) {
     BoxWithConstraints(Modifier.fillMaxSize().background(Color(0xF01C2430))) {
         Text("Floatdesk", color = Color.White, fontSize = 14.sp,
             modifier = Modifier.offset(maxWidth * 0.06f, maxHeight * 0.04f))
         Text("Look + middle pinch",color=Color(0xFFB8D9EA),fontSize=8.sp,modifier=Modifier.offset(maxWidth*.06f,maxHeight*.105f))
         for (button in palmButtons) {
-            Button(onClick = { onAction(button.action) },
+            Button(enabled=button.action!=PalmAction.WARP || RenderPolicy.CustomMeshes,onClick = { onAction(button.action) },
                 colors=ButtonDefaults.buttonColors(containerColor=when(button.action) { pressed -> Color(0xFF237E59); focused -> Color(0xFF315B82); else -> Color(0xFF354356) }),
                 border=if(button.action==focused) BorderStroke(2.dp,Color(0xFF8ADFFF)) else null,
                 contentPadding = PaddingValues(horizontal = 2.dp, vertical = 1.dp), modifier = Modifier
@@ -161,7 +161,7 @@ internal fun PalmControls(latched: Boolean, warped: Boolean, eyes: Boolean, gest
                     PalmAction.WARP -> sphericalActionLabel(warped)
                     PalmAction.EYES -> if (eyes) "Disable eye mouse" else "Enable eye mouse"
                     PalmAction.GESTURES -> if (gestures) "Mouse gestures on" else "Mouse gestures off"
-                    PalmAction.MODE -> if(focusMode) "Mouse mode" else "Focus mode"
+                    PalmAction.MODE -> "${mode.label} → ${mode.next().label}"
                 }, style = TextStyle(color = Color.White), maxLines = 1, softWrap = false,
                     autoSize = TextAutoSize.StepBased(minFontSize = 4.sp, maxFontSize = 14.sp, stepSize = 0.25.sp))
             }

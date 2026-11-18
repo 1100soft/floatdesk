@@ -9,9 +9,35 @@ pub(super) fn cursor_loop(shared: Arc<Shared>) {
             return;
         }
     };
+    let mut router = cursor_map::Router::default();
+    let mut last_root = None;
     while !shared.stop.load(Ordering::Relaxed) {
         match cursor.poll() {
-            Ok(sample) => {
+            Ok(mut sample) => {
+                let motion = cursor.take_motion();
+                if let Ok(map) = shared.cursor_map.lock() {
+                    if map.2.elapsed() < Duration::from_secs(2) && !map.0.is_empty() {
+                        let root = [f64::from(sample.root_x), f64::from(sample.root_y)];
+                        if motion == [0.0, 0.0] {
+                            if last_root.is_some_and(|old| old != root) {
+                                router.reset();
+                            }
+                        } else if let Some(target) =
+                            router.advance(&map.0, last_root.unwrap_or(root), motion, map.1)
+                        {
+                            let x = target[0].round() as i32;
+                            let y = target[1].round() as i32;
+                            if cursor.move_to(x, y).is_ok() {
+                                sample.root_x = x;
+                                sample.root_y = y;
+                            }
+                        }
+                    } else {
+                        router.reset();
+                    }
+                }
+                last_root = Some([f64::from(sample.root_x), f64::from(sample.root_y)]);
+
                 let changed = if let Ok(mut slot) = shared.cursor.lock() {
                     let moved = slot.root_x != sample.root_x || slot.root_y != sample.root_y;
                     let reshaped = !sample.argb.is_empty();

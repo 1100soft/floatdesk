@@ -48,11 +48,25 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
         }
         if(section!="Screens")Button(onClick={section=if(section=="Settings")"Screens" else "Settings"}){Text("‹ Back")}
         Text(if(busy) "Updating screens…" else "${sizes.size} desktop screens · $available available",color=Color.White)
+        if(section=="Focus & magnification") Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(4.dp)){
+            for(mode in dev.floatdesk.client.workspace.InteractionMode.entries){
+                Button(onClick={onQuality(quality.copy(interactionMode=mode))},modifier=Modifier.weight(1f)){
+                    Text((if(quality.interactionMode==mode)"● "else "")+mode.label)
+                }
+            }
+        }
+        if(section=="Focus & magnification") Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){
+            Text("Connected mouse spaces",color=Color.White)
+            androidx.compose.material3.Switch(enabled=RenderPolicy.CursorTopology,checked=quality.cursorRemap,onCheckedChange={onQuality(quality.copy(cursorRemap=it))})
+        }
         if(section=="Screens") Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             Button(enabled=!busy && available>0,onClick={connection.requestDisplays(1)}) {Text("Add screen")}
             Button(enabled=!busy,onClick={connection.requestDisplays()}) {Text("Refresh")}
             Button(onClick={section="Settings"}) {Text("Settings")}
         }
+        if(section=="Screens") Button(enabled=!busy && info!=null,onClick={
+            connection.requestDisplays(if(info?.virtualScreensDisabled==true)7 else 6)
+        }) {Text(if(info?.virtualScreensDisabled==true)"Restore virtual screens" else "Disable virtual screens")}
         if(section=="Screens")info?.let {host->
             val pixels=sizes.sumOf {it.first.toLong()*it.second}
             val capturePixels=if(sizes.isEmpty()) 0L else (sizes.indices.maxOf {positions[it].first+sizes[it].first}-positions.minOf {it.first}).toLong()*(sizes.indices.maxOf {positions[it].second+sizes[it].second}-positions.minOf {it.second})
@@ -98,7 +112,7 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
         if(section=="Streaming") {
             Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                 listOf(false to "Normal",true to "Dynamic").forEach{(mode,label)->
-                    Button(onClick={onViewedDetail(mode)},colors=androidx.compose.material3.ButtonDefaults.buttonColors(containerColor=if(viewedDetail==mode)Color(0xFF396A9B)else Color(0xFF263344))){Text(if(viewedDetail==mode)"✓ $label" else label)}
+                    Button(enabled=!mode || RenderPolicy.DynamicQuality,onClick={onViewedDetail(mode)},colors=androidx.compose.material3.ButtonDefaults.buttonColors(containerColor=if(viewedDetail==mode)Color(0xFF396A9B)else Color(0xFF263344))){Text(if(viewedDetail==mode)"✓ $label" else label)}
                 }
             }
             Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {

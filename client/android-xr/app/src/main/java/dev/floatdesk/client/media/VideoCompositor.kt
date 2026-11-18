@@ -23,7 +23,7 @@ internal data class VideoAim @JvmOverloads constructor(
 )
 
 internal data class VideoCrop(val left:Float,val top:Float,val right:Float,val bottom:Float,val aspect:Float)
-internal data class VideoMirror @JvmOverloads constructor(val surface:Surface,val padX:Float=0f,val padY:Float=0f,val pinned:Boolean=false,val aspect:Float=0f,val before:((Long)->Unit)?=null,val presented:(()->Unit)?=null,val crop:(()->VideoCrop?)?=null)
+internal data class VideoMirror @JvmOverloads constructor(val surface:Surface,val padX:Float=0f,val padY:Float=0f,val pinned:Boolean=false,val aspect:Float=0f,val before:((Long)->Unit)?=null,val presented:(()->Unit)?=null,val crop:(()->VideoCrop?)?=null,val ink:(()->VideoAim)?=null)
 
 /** One GPU pass keeps aiming decorations and live video in the same compositor layer. */
 internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
@@ -494,7 +494,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     }
 
     private fun drawInk(width: Int,height: Int) {
-        val overlay=aim
+        val overlay=activeMirror?.ink?.invoke() ?: aim
         if(overlay.segments.isEmpty() && overlay.contacts.isEmpty()) return
         val values=inkValues;var valueCount=0
         fun vertex(x: Float,y: Float,alpha: Float,red: Float,green: Float,blue: Float) {

@@ -166,12 +166,18 @@ pub(super) fn start(
                             thread::sleep(wait)
                         }
                         last = Instant::now();
+                        let dimension = request["maxDimension"]
+                            .as_u64()
+                            .unwrap_or(2048)
+                            .clamp(128, 2048) as f64;
+                        let pixels = request["maxPixels"]
+                            .as_u64()
+                            .unwrap_or(2_097_152)
+                            .clamp(16_384, 2_097_152) as f64;
                         let scale = 1f64
-                            .min(2048. / source_width as f64)
-                            .min(2048. / source_height as f64)
-                            .min(
-                                (2_097_152. / (source_width as f64 * source_height as f64)).sqrt(),
-                            );
+                            .min(dimension / source_width as f64)
+                            .min(dimension / source_height as f64)
+                            .min((pixels / (source_width as f64 * source_height as f64)).sqrt());
                         let w = ((source_width as f64 * scale) as u32 / 2 * 2).max(128) as u16;
                         let h = ((source_height as f64 * scale) as u32 / 2 * 2).max(128) as u16;
                         if capture.is_none()

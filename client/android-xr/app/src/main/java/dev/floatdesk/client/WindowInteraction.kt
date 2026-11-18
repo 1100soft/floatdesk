@@ -7,12 +7,11 @@ import kotlin.math.roundToInt
 
 internal object WindowInteractionPolicy {
     const val ContextHoldMs=700L
-    const val MoveIntervalMs=33L
     const val SlopFraction=.004f
     const val SnapFraction=.0125f
 }
 internal data class WindowMove(val id:Long,val x:Int,val y:Int,val width:Int?=null,val height:Int?=null)
-internal data class WindowGrabUpdate(val move:WindowMove?=null,val menu:Long?=null)
+internal data class WindowGrabUpdate(val move:WindowMove?=null,val menu:Long?=null,val preview:WindowMove?=null)
 internal fun snapWindowMove(window:DesktopWindow,x:Int,y:Int,info:WorkspaceInfo):WindowMove {
     val tolerance=(minOf(window.width,window.height)*WindowInteractionPolicy.SnapFraction).coerceAtLeast(1f)
     val xs=info.screens.flatMap{listOf(it.x,it.x+it.width/2,it.x+it.width)}+info.windows.filter{it.id!=window.id}.flatMap{listOf(it.x,it.x+it.width)}
@@ -25,7 +24,7 @@ internal fun snapWindowMove(window:DesktopWindow,x:Int,y:Int,info:WorkspaceInfo)
 }
 /** Shared saved pinch policy; a stationary hold and a drag are mutually exclusive. */
 internal class WindowGrabController(private val thresholds:()->PinchThresholds){
-    private data class Hold(val side:String,val aimSide:String,val window:DesktopWindow,val u:Float,val v:Float,val at:Long,var moved:Boolean=false,var menu:Boolean=false,var sent:Long=0)
+    private data class Hold(val side:String,val aimSide:String,val window:DesktopWindow,val u:Float,val v:Float,val at:Long,var moved:Boolean=false,var menu:Boolean=false,var candidate:WindowMove?=null)
     private var hold:Hold?=null
     private val closed=mutableMapOf<String,Boolean>()
     val engaged get()=hold!=null
@@ -47,15 +46,12 @@ internal class WindowGrabController(private val thresholds:()->PinchThresholds){
                 val dy=((contact.contactV-h.v)*bounds[3]).roundToInt()
                 val slop=minOf(h.window.width,h.window.height)*WindowInteractionPolicy.SlopFraction
                 if(abs(dx)>slop || abs(dy)>slop)h.moved=true
-                if(h.moved && (released || now-h.sent>=WindowInteractionPolicy.MoveIntervalMs)){
-                    h.sent=now
-                    if(released)hold=null
-                    return WindowGrabUpdate(move=snapWindowMove(h.window,h.window.x+dx,h.window.y+dy,info))
-                }
+                if(h.moved)h.candidate=snapWindowDrop(h.window,h.window.x+dx,h.window.y+dy,contact.contactU,contact.contactV,info)
+
             }
-            if(released){hold=null;return WindowGrabUpdate()}
+            if(released){hold=null;return WindowGrabUpdate(move=h.candidate)}
             if(!h.moved && !h.menu && now-h.at>=WindowInteractionPolicy.ContextHoldMs){h.menu=true;return WindowGrabUpdate(menu=h.window.id)}
-            return WindowGrabUpdate()
+            return WindowGrabUpdate(preview=h.candidate)
         }
         for((side,pressed) in presses){
             if(!pressed)continue
@@ -66,4 +62,22 @@ internal class WindowGrabController(private val thresholds:()->PinchThresholds){
         }
         return WindowGrabUpdate()
     }
+}
+
+/** Edge regions select the same half/quarter cells exposed by the visual grid menu. */
+internal fun snapWindowDrop(window:DesktopWindow,x:Int,y:Int,u:Float,v:Float,info:WorkspaceInfo):WindowMove {
+    val bounds=info.bounds() ?: return WindowMove(window.id,x,y)
+    val px=bounds[0]+u*bounds[2];val py=bounds[1]+v*bounds[3]
+    val screen=info.screens.firstOrNull{px>=it.x && px<it.x+it.width && py>=it.y && py<it.y+it.height} ?: return snapWindowMove(window,x,y,info)
+    val sx=(px-screen.x)/screen.width;val sy=(py-screen.y)/screen.height
+    val edge=.12f
+    val col=if(sx<edge)0 else if(sx>1-edge)1 else -1
+    val row=if(sy<edge)0 else if(sy>1-edge)1 else -1
+    if(col<0 && row<0)return snapWindowMove(window,x,y,info)
+    val columns=if(col<0)1 else 2;val rows=if(row<0)1 else 2
+    return windowGridCell(window.id,screen.x,screen.y,screen.width,screen.height,columns,rows,maxOf(0,col),maxOf(0,row))
+}
+internal fun windowGridCell(id:Long,x:Int,y:Int,width:Int,height:Int,columns:Int,rows:Int,col:Int,row:Int):WindowMove {
+    val left=x+width*col/columns;val top=y+height*row/rows
+    return WindowMove(id,left,top,x+width*(col+1)/columns-left,y+height*(row+1)/rows-top)
 }

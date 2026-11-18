@@ -55,7 +55,7 @@ fun main() {
        mapOf("LEFT" to FingerPinch(if(closed).001f else .1f,.1f)),
        mapOf("LEFT" to info.hover(u,v)!!),info)
    step(0,false);step(1,true)
-   check(step(100,true,.25f,.25f).move==WindowMove(77,150,150))
+   val moving=step(100,true,.25f,.25f);check(moving.move==null && moving.preview==WindowMove(77,150,150))
    check(step(200,false,.26f,.26f).move==WindowMove(77,160,160))
    check(!drag.engaged)
    step(300,true);check(step(1001,true).menu==77L)
@@ -63,6 +63,8 @@ fun main() {
    step(1200,true,blocked=true);check(step(2000,true).menu==null)
    step(2001,false);step(2002,true);check(step(2703,true).menu==77L)
    check(snapWindowMove(source,2,104,info).x==0)
+   check(snapWindowDrop(source,0,0,.01f,.01f,info)==WindowMove(77,0,0,500,500))
+   check(snapWindowDrop(source,0,0,.99f,.5f,info)==WindowMove(77,500,0,500,1000))
  }
 
  // Curved panes keep a constant radius; flat panes stay exactly coplanar.

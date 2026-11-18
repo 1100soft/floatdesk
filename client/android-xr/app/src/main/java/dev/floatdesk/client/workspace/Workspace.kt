@@ -293,6 +293,10 @@ private fun floatArray(json: JSONObject, name: String, size: Int): FloatArray {
     return out
 }
 
+
+private fun encodePlacements(rows:List<FixedMagnifierPlacement>)=JSONArray(rows.map{p->JSONObject().put("id",p.id).put("pose",JSONObject().put("position",JSONArray(p.pose.position.toList())).put("rotation",JSONArray(p.pose.rotation.toList()))).put("width_m",p.widthM).put("height_m",p.heightM)})
+private fun decodePlacements(array:JSONArray?):List<FixedMagnifierPlacement> = array?.let{a->(0 until a.length()).mapNotNull{i->runCatching{val p=a.getJSONObject(i);val pose=p.getJSONObject("pose");val w=p.getDouble("width_m").toFloat();val h=p.getDouble("height_m").toFloat();require(w.isFinite() && h.isFinite() && w>0f && h>0f);FixedMagnifierPlacement(p.getString("id"),Pose(floatArray(pose,"position",3),floatArray(pose,"rotation",4)),w,h)}.getOrNull()}} ?: emptyList()
+
 /** Reconcile stable source identities without resetting poses when a display is added or removed. */
 internal fun WorkspaceFile.reconcileMonitors(sources:List<Triple<String,Int,Int>>): WorkspaceFile {
     val old=layouts[activeLayout].orEmpty()
@@ -309,6 +313,3 @@ internal fun WorkspaceFile.reconcileMonitors(sources:List<Triple<String,Int,Int>
     if(old==next) return this
     return copy(layouts=layouts.toMutableMap().also { it[activeLayout]=next })
 }
-
-private fun encodePlacements(rows:List<FixedMagnifierPlacement>)=JSONArray(rows.map{p->JSONObject().put("id",p.id).put("pose",JSONObject().put("position",JSONArray(p.pose.position.toList())).put("rotation",JSONArray(p.pose.rotation.toList()))).put("width_m",p.widthM).put("height_m",p.heightM)})
-private fun decodePlacements(array:JSONArray?):List<FixedMagnifierPlacement> = array?.let{a->(0 until a.length()).mapNotNull{i->runCatching{val p=a.getJSONObject(i);val pose=p.getJSONObject("pose");val w=p.getDouble("width_m").toFloat();val h=p.getDouble("height_m").toFloat();require(w.isFinite() && h.isFinite() && w>0f && h>0f);FixedMagnifierPlacement(p.getString("id"),Pose(floatArray(pose,"position",3),floatArray(pose,"rotation",4)),w,h)}.getOrNull()}} ?: emptyList()

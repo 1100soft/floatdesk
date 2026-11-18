@@ -48,7 +48,7 @@ internal fun WindowActionsMenu(connection:DeskConnection,window:Long?,magnifier:
                             }
                         }
                     }
-                    BoxWithConstraints(Modifier.fillMaxWidth().weight(1f)){
+                    Box(Modifier.fillMaxWidth().weight(1f)){
                         // Every hit cell draws the entire monitor outline, emphasizing its destination.
                         Column(Modifier.fillMaxSize(),verticalArrangement=Arrangement.spacedBy(4.dp)){
                             repeat(grid.second){row->Row(Modifier.fillMaxWidth().weight(1f),horizontalArrangement=Arrangement.spacedBy(4.dp)){

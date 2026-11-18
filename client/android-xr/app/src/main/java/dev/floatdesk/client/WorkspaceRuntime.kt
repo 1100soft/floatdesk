@@ -1149,13 +1149,8 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     }
                     }
                 }
-                // Capture metadata can trim a panel's shadow after the first frame.
-                // Preserve its long-axis size while matching the actual content aspect.
-                val contentRecord=if(live.panel){
-                    val extent=maxOf(record.widthM,record.heightM)
-                    val ratio=source.width.toFloat()/source.height.coerceAtLeast(1)
-                    record.copy(widthM=extent*minOf(1f,ratio),heightM=extent*minOf(1f,1f/ratio))
-                }else record
+                // Capture reconnects must not resize a persisted visual element.
+                val contentRecord=record
                 val attachedPanel=if(live.panel)null else renderedSystem.filter{p->systemInfo?.systemWindows?.any{it.id==p.id && it.panel}==true}.minByOrNull{p->
                     val b=connection.windowCaptures.source(p.id)!!
                     val dx=maxOf(b.x-source.x-source.width,source.x-b.x-b.width,0)

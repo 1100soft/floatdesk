@@ -120,92 +120,42 @@ impl Router {
         {
             return None;
         }
-        if delta == [0.0, 0.0] {
-            if let Some(key) = self.owner.as_ref() {
-                if let Some(root) = surfaces
-                    .iter()
-                    .filter(|s| &s.key == key)
-                    .find_map(|s| s.map(point, false))
-                {
-                    return Some(root);
-                }
-            }
-        }
-        let proposed = [
-            point[0] + delta[0] * scale[0],
-            point[1] + delta[1] * scale[1],
-        ];
-        if let Some((surface, target)) = surfaces
-            .iter()
-            .filter_map(|s| s.map(proposed, false).map(|p| (s, p)))
-            .min_by(|a, b| a.0.depth.total_cmp(&b.0.depth))
-        {
-            self.point = Some(proposed);
-            self.owner = Some(surface.key.clone());
-
-            return Some(target);
-        }
-        // Cross visual gaps in the motion direction, choosing the closest edge.
-        let mut nearest: Option<(f64, [f64; 2], [f64; 2], String)> = None;
-        for s in surfaces {
-            for edge in 0..4 {
-                let a = s.points[edge];
-                let b = s.points[(edge + 1) % 4];
-                let d = [b[0] - a[0], b[1] - a[1]];
-                let n = d[0] * d[0] + d[1] * d[1];
-                if n < 1e-12 {
-                    continue;
-                }
-                let t = (((proposed[0] - a[0]) * d[0] + (proposed[1] - a[1]) * d[1]) / n)
-                    .clamp(0.0, 1.0);
-                let q = [a[0] + t * d[0], a[1] + t * d[1]];
-                if (q[0] - proposed[0]) * delta[0] * scale[0]
-                    + (q[1] - proposed[1]) * delta[1] * scale[1]
-                    <= 0.0
-                {
-                    continue;
-                }
-                let distance = (q[0] - proposed[0]).powi(2) + (q[1] - proposed[1]).powi(2);
-                if let Some(target) = s.map(q, false) {
-                    if nearest.as_ref().is_none_or(|n| distance < n.0) {
-                        nearest = Some((distance, q, target, s.key.clone()));
-                    }
-                }
-            }
-        }
-        if let Some((_, p, target, owner)) = nearest {
-            self.owner = Some(owner);
-            self.point = Some(p);
-
-            Some(target)
-        } else {
-            // X11 has already applied the physical motion. Always return a
-            // mapped boundary point so it cannot escape the virtual workspace.
-            let (surface, boundary, target) = surfaces
+        // Advance through connected intervals on each axis. An exposed edge
+        // blocks motion while the other axis remains free to slide along it.
+        for axis in 0..2 {
+            let other = 1 - axis;
+            let mut intervals: Vec<_> = surfaces
                 .iter()
-                .filter(|surface| self.owner.as_ref().is_none_or(|key| &surface.key == key))
                 .filter_map(|surface| {
-                    let [left, top] = surface.points[0];
-                    let [right, bottom] = surface.points[2];
-                    if left > right || top > bottom {
-                        return None;
-                    }
-                    let boundary = [
-                        proposed[0].clamp(left, right),
-                        proposed[1].clamp(top, bottom),
-                    ];
-                    surface
-                        .map(boundary, false)
-                        .map(|target| (surface, boundary, target))
+                    let low = surface.points[0];
+                    let high = surface.points[2];
+                    (point[other] >= low[other] && point[other] <= high[other])
+                        .then_some((low[axis], high[axis]))
                 })
-                .min_by(|a, b| {
-                    let distance = |p: [f64; 2]| (p[0] - proposed[0]).hypot(p[1] - proposed[1]);
-                    distance(a.1).total_cmp(&distance(b.1))
-                })?;
-            self.point = Some(boundary);
-            self.owner = Some(surface.key.clone());
-            Some(target)
+                .collect();
+            intervals.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let mut merged: Vec<(f64, f64)> = Vec::new();
+            for (low, high) in intervals {
+                if let Some(last) = merged.last_mut().filter(|last| low <= last.1) {
+                    last.1 = last.1.max(high);
+                } else {
+                    merged.push((low, high));
+                }
+            }
+            if let Some((low, high)) = merged
+                .into_iter()
+                .find(|(low, high)| point[axis] >= *low && point[axis] <= *high)
+            {
+                point[axis] = (point[axis] + delta[axis] * scale[axis]).clamp(low, high);
+            }
         }
+        let (surface, target) = surfaces
+            .iter()
+            .filter_map(|surface| surface.map(point, false).map(|target| (surface, target)))
+            .min_by(|a, b| a.0.depth.total_cmp(&b.0.depth))?;
+        self.point = Some(point);
+        self.owner = Some(surface.key.clone());
+        Some(target)
     }
     pub fn claim(&mut self, surfaces: &[Surface], key: &str, root: [f64; 2]) -> bool {
         if let Some(point) = surfaces
@@ -214,7 +164,11 @@ impl Router {
             .find_map(|s| s.map(root, true))
         {
             self.point = Some(point);
-            self.owner = Some(key.to_owned());
+            self.owner = surfaces
+                .iter()
+                .filter(|surface| surface.map(point, false).is_some())
+                .min_by(|a, b| a.depth.total_cmp(&b.depth))
+                .map(|surface| surface.key.clone());
             true
         } else {
             false
@@ -266,7 +220,7 @@ mod tests {
         }
     }
     #[test]
-    fn front_occlusion_and_gap_crossing() {
+    fn front_occlusion_and_disconnected_edge() {
         let surfaces = vec![
             pane(0., 2., [0., 0., 100., 100.]),
             pane(0.4, 1., [200., 0., 300., 100.]),
@@ -280,7 +234,7 @@ mod tests {
         let p = r
             .advance(&surfaces, [210., 50.], [110., 0.], [0.01, 0.01])
             .unwrap();
-        assert!(p[0] >= 400., "{p:?}");
+        assert_eq!(p, [300., 50.]);
     }
     #[test]
     fn cursor_stays_in_owned_space_when_its_content_changes() {
@@ -382,6 +336,23 @@ mod tests {
             );
             assert_eq!(router.virtual_position(), Some([500., 2000.]));
         }
+    }
+    #[test]
+    fn protruding_magnifier_blocks_exposed_edges_and_hides_desktop() {
+        let desktop = pane(0., 2., [0., 0., 100., 100.]);
+        let mut pane = pane(0.25, 1., [200., 200., 300., 300.]);
+        pane.points = [[0.25, 0.75], [0.75, 0.75], [0.75, 1.5], [0.25, 1.5]];
+        let surfaces = [desktop, pane];
+        let mut router = Router::default();
+        assert!(router.claim(&surfaces, &surfaces[0].key, [50., 90.]));
+        assert_eq!(router.location(&surfaces).unwrap().0, surfaces[1].key);
+        router.advance(&surfaces, [0., 0.], [0., 0.5], [1., 1.]);
+        router.advance(&surfaces, [0., 0.], [1., 0.], [1., 1.]);
+        assert_eq!(router.virtual_position(), Some([0.75, 1.4]));
+        router.advance(&surfaces, [0., 0.], [0., 1.], [1., 1.]);
+        assert_eq!(router.virtual_position(), Some([0.75, 1.5]));
+        router.advance(&surfaces, [0., 0.], [0., -1.], [1., 1.]);
+        assert_eq!(router.location(&surfaces).unwrap().0, surfaces[0].key);
     }
     #[test]
     fn invalid_maps_rejected() {

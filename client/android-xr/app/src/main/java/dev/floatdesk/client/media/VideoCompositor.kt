@@ -158,6 +158,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     @Volatile private var viewProjection:ViewProjection?=null
     private var program=0
     private var inkProgram=0
+    private var inkVertexBuffer=0
     @Volatile var outputLimit:Int=4096
         private set
     private var hasFrame=false
@@ -221,6 +222,9 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                 copyProgram=link(VERTEX,COPY_FRAGMENT)
                 program=link(VERTEX,FRAGMENT)
                 inkProgram=link(INK_VERTEX,INK_FRAGMENT)
+                val buffers=IntArray(1)
+                GLES20.glGenBuffers(1,buffers,0)
+                inkVertexBuffer=buffers[0]
                 if(diagnostics.showOverlay || diagnostics.showResources)handler.postDelayed(debugTick,250)
                 Log.i("Floatdesk","live video compositor ready ${width}x$height")
             } catch(error: Throwable) { failure=error }
@@ -494,6 +498,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     }
 
     private fun drawInk(width: Int,height: Int) {
+        if(width<=0 || height<=0 || inkVertexBuffer==0)return
         val overlay=activeMirror?.ink?.invoke() ?: aim
         if(overlay.segments.isEmpty() && overlay.contacts.isEmpty()) return
         val values=inkValues;var valueCount=0
@@ -503,7 +508,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         }
         fun line(ax: Float,ay: Float,bx: Float,by: Float,thickness: Float,alpha: Float,red: Float,green: Float,blue: Float) {
             val dx=bx-ax; val dy=by-ay; val length=kotlin.math.hypot(dx,dy)
-            if(length<.001f) return
+            if(!length.isFinite() || length<.001f || !thickness.isFinite()) return
             val ox=-dy/length*thickness*.5f; val oy=dx/length*thickness*.5f
             vertex(ax+ox,ay+oy,alpha,red,green,blue); vertex(ax-ox,ay-oy,alpha,red,green,blue); vertex(bx+ox,by+oy,alpha,red,green,blue)
             vertex(bx+ox,by+oy,alpha,red,green,blue); vertex(ax-ox,ay-oy,alpha,red,green,blue); vertex(bx-ox,by-oy,alpha,red,green,blue)
@@ -532,11 +537,22 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         val a=attribute(inkProgram,"alpha")
         val c=attribute(inkProgram,"color")
         GLES20.glEnableVertexAttribArray(p); GLES20.glEnableVertexAttribArray(a); GLES20.glEnableVertexAttribArray(c)
-        buffer.position(0); GLES20.glVertexAttribPointer(p,2,GLES20.GL_FLOAT,false,24,buffer)
-        buffer.position(2); GLES20.glVertexAttribPointer(a,1,GLES20.GL_FLOAT,false,24,buffer)
-        buffer.position(3); GLES20.glVertexAttribPointer(c,3,GLES20.GL_FLOAT,false,24,buffer)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES,0,valueCount/6)
-        GLES20.glDisableVertexAttribArray(p); GLES20.glDisableVertexAttribArray(a); GLES20.glDisableVertexAttribArray(c); GLES20.glDisable(GLES20.GL_BLEND)
+        // Upload vertices once. Client-memory attribute pointers can outlive
+        // writes to the shared staging buffer on the XR graphics driver.
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER,inkVertexBuffer)
+        try {
+            GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER,valueCount*4,buffer,GLES20.GL_STREAM_DRAW)
+            GLES20.glVertexAttribPointer(p,2,GLES20.GL_FLOAT,false,24,0)
+            GLES20.glVertexAttribPointer(a,1,GLES20.GL_FLOAT,false,24,8)
+            GLES20.glVertexAttribPointer(c,3,GLES20.GL_FLOAT,false,24,12)
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLES,0,valueCount/6)
+        } finally {
+            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER,0)
+            GLES20.glDisableVertexAttribArray(p)
+            GLES20.glDisableVertexAttribArray(a)
+            GLES20.glDisableVertexAttribArray(c)
+            GLES20.glDisable(GLES20.GL_BLEND)
+        }
     }
 
     private fun link(vertex: String,fragment: String): Int {

@@ -43,6 +43,11 @@ fun main() {
    check(map.wires().isNotEmpty() && map.wires().all{it.back=="desktop"})
    check(abs(map.scale.first-.002f)<.00001f)
    check(map.patches.all{it.points[0].second==it.points[1].second && it.points[0].first==it.points[3].first && it.points[2].first==it.points[1].first})
+   val logical=map.logicalPixels();check(logical.scale==1f to 1f)
+   check(logical.patches.first().points.first()==0f to 0f)
+   val panel=front.map{it.copy(key="panel",depth=.5f)}
+   val layers=CursorTopology(back+front+panel)
+   check(layers.wires().any{it.back=="window"} && layers.wires().any{it.back=="desktop"})
    check(map.debugSegments().size==map.patches.size*20)
    check(cursorPatches("behind",Pose(floatArrayOf(0f,0f,2f)),1f,1f,null,rect,Pose()).isEmpty())
  }
@@ -79,12 +84,19 @@ fun main() {
  run {
    val ray=WindowDragRay()
    val desktop=MonitorPlacement("d","desktop",Pose(floatArrayOf(0f,0f,-2f)),4f,4f,0f,1000,1000,30)
-   val hand=HandAimPose(floatArrayOf(0f,0f,0f),floatArrayOf(0f,0f,0f,1f))
-   ray.begin("LEFT",hand,PointerTarget(0,.5f,.5f,floatArrayOf(0f,0f,0f)),desktop,null)
-   val p=ray.point(mapOf("LEFT" to hand.copy(position=floatArrayOf(.2f,0f,0f))))!!.second
-   check(abs(p.u-.55f)<.0001f && abs(p.v-.5f)<.0001f)
+   val hand=HandAimPose(floatArrayOf(0f,0f,-.5f),floatArrayOf(0f,0f,0f,1f))
+   ray.begin("LEFT",hand,PointerTarget(0,.5f,.5f,floatArrayOf(0f,0f,0f)),desktop,null,Pose(),DesktopWindow(42,250,250,500,500),intArrayOf(0,0,1000,1000),1f)
+   val p=ray.point(mapOf("LEFT" to hand.copy(position=floatArrayOf(.02f,0f,-.5f))))!!.second
+   check(abs(p.u-.52f)<.001f && abs(p.v-.5f)<.0001f)
    val rotated=ray.point(mapOf("LEFT" to hand.copy(rotation=floatArrayOf(.2f,.3f,.1f,.92f))))!!.second
    check(abs(rotated.u-.5f)<.0001f && abs(rotated.v-.5f)<.0001f)
+   val frame=Pose(floatArrayOf(3f,1f,2f),floatArrayOf(0f,sin(.35f),0f,cos(.35f)))
+   val movedDesk=desktop.copy(pose=Pose(transformPoint(frame,desktop.pose.position),multiplyQuaternion(frame.rotation,desktop.pose.rotation)))
+   val other=WindowDragRay()
+   val transformedHand=hand.copy(position=transformPoint(frame,hand.position))
+   other.begin("RIGHT",transformedHand,PointerTarget(0,.5f,.5f,floatArrayOf(0f,0f,0f)),movedDesk,null,frame,DesktopWindow(42,250,250,500,500),intArrayOf(0,0,1000,1000),1f,"GAZE")
+   val movedPoint=other.point(mapOf("RIGHT" to transformedHand.copy(position=transformPoint(frame,floatArrayOf(.02f,0f,-.5f)))))!!
+   check(movedPoint.first=="GAZE" && abs(movedPoint.second.u-p.u)<.001f && abs(movedPoint.second.v-p.v)<.001f)
    ray.clear();check(ray.point(mapOf("LEFT" to hand))==null)
    val cue=typingIndicator(FocusRect(.2f,.3f,.8f,.9f));check(cue.size%4==0)
    check(cue.indices.all{if(it%2==0)cue[it] in .2f.. .8f else cue[it] in .3f.. .9f})

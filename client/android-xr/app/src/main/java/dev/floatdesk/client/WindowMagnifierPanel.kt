@@ -19,7 +19,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
     pinned:Boolean,viewer:java.util.concurrent.atomic.AtomicReference<dev.floatdesk.client.workspace.Pose?>,
     units:()->Float,tracking:GrabTracking,
     onReady:()->Unit,onError:(String)->Unit,onHover:(String,Pair<Float,Float>?)->Unit,onTap:(Pair<Float,Float>)->Unit,
-    onPlacement:(MagnifiedWindow,Boolean)->Unit,onMoving:(Boolean)->Unit,onContext:()->Unit={},onHidden:()->Unit={},captureId:Long?=null,regionId:Long?=null,allowManipulation:Boolean=true,showFrame:Boolean=true,topologyKey:String?=null){
+    onPlacement:(MagnifiedWindow,Boolean)->Unit,onMoving:(Boolean)->Unit,onContext:()->Unit={},onHidden:()->Unit={},captureId:Long?=null,regionId:Long?=null,allowManipulation:Boolean=true,showFrame:Boolean=true,topologyKey:String?=null,receiveInput:Boolean=true,projectFrame:Boolean=true){
     val readyNow=rememberUpdatedState(onReady);val errorNow=rememberUpdatedState(onError);val hoverNow=rememberUpdatedState(onHover)
     val tapNow=rememberUpdatedState(onTap);val windowNow=rememberUpdatedState(window);val placementNow=rememberUpdatedState(onPlacement);val movingNow=rememberUpdatedState(onMoving)
     val pinNow=rememberUpdatedState(pinned)
@@ -40,7 +40,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
         val initial=window?.takeIf{it.id>0L && it.sourceWidth>0 && it.sourceHeight>0} ?: return@LaunchedEffect
         var initialViewer=viewer.get()
         while(initialViewer==null){withFrameNanos{};initialViewer=viewer.get()}
-        val target=magnifierFrame(initial,initial,initialViewer,units(),true)
+        val target=if(projectFrame)magnifierFrame(initial,initial,initialViewer,units(),true)else initial
         try{
             fun shape(surface:MagnifiedWindow):SurfaceEntity.Shape{
                 if(!RenderPolicy.CustomMeshes){
@@ -121,7 +121,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
             logMagnifierSubmission("start",target,entity)
             if(reusedSurface && resources.rendered?.let{it.width!=target.width || it.height!=target.height || it.mesh!==target.mesh}!=false){val nextShape=shape(target);resources.retain(nextShape);entity.shape=nextShape}
             resources.rendered=target
-            syncMagnifierInput(session,resources,entity,target.mesh,target.width,target.height)
+            if(receiveInput)syncMagnifierInput(session,resources,entity,target.mesh,target.width,target.height)
             entity.parent=root;entity.setPose(targetPose)
             val generation=++resources.generation
             var shown=false
@@ -178,7 +178,17 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                 val updateGeometry=now-geometryAt>=if(windowNow.value?.fixed==true)100 else 50
                 val current=resources.pending ?: windowNow.value ?: continue
                 resources.pending=null
-                val next=magnifierFrame(current,prior,head,units(),updateGeometry)
+                val next=if(projectFrame)magnifierFrame(current,prior,head,units(),updateGeometry)else current
+                if(allowManipulation){
+                    resources.corners.update(session,entity,next.width,next.height,units(),tracking){active,factor->
+                        if(resources.resizeStart==null){resources.resizeStart=resources.rendered;resources.dragged=true;resources.taps.clear()}
+                        resources.resizeStart?.let{resources.pending=resizedMagnifier(it,factor)}
+                        resources.resizing=active
+                        if(!active){resources.pending?.let{placementNow.value(it,true)};resources.resizeStart=null}
+                        movingNow.value(active)
+                    }
+                }
+
                 val modeChanged=next.spherical!=prior.spherical
                 val previous=prior.mesh;val mesh=next.mesh
                 val poseChanged=(0..2).any{kotlin.math.abs(next.pose.position[it]-prior.pose.position[it])>.0005f} ||
@@ -198,7 +208,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                 }
                 if(modeChanged || meshChanged || sizeChanged){
                     val nextShape=shape(next);resources.retain(nextShape);entity.shape=nextShape;geometryAt=android.os.SystemClock.uptimeMillis()
-                    syncMagnifierInput(session,resources,entity,mesh,next.width,next.height)
+                    if(receiveInput)syncMagnifierInput(session,resources,entity,mesh,next.width,next.height)
                     if(modeChanged)logMagnifierSubmission("mode",next,entity)
 
                 }
@@ -250,13 +260,13 @@ private class MagnifierResources:AutoCloseable{
     var flatInput:InteractableComponent?=null
     var curved:CurvedMonitorInput?=null;var mesh:MonitorMesh?=null;var listener:((InputEvent)->Unit)?=null
     var rendered:MagnifiedWindow?=null;var pending:MagnifiedWindow?=null
-    var resizing=false;var resizeStart:MagnifiedWindow?=null
+    val corners=PaneCornerResize();var resizing=false;var resizeStart:MagnifiedWindow?=null
     val drag=MagnifierRayDrag();var dragSide:String?=null;var dragHandSide:String?=null;var moving=false;var dragged=false;var tapCommitted=false
     var lastContact:Pair<Float,Float>?=null;var moveContact:Pair<Float,Float>?=null
     var holdAt=0L;var contextShown=false
     var visible=false;var generation=0;val taps=NativeSurfaceTap();val shapes=RetainedSurfaceShapes(128,16L*1024*1024)
     fun clearInteraction(){
-        drag.clear();dragSide=null;dragHandSide=null;pending=null
+        corners.cancel();drag.clear();dragSide=null;dragHandSide=null;pending=null
         resizing=false;resizeStart=null;holdAt=0;moving=false
         taps.clear();lastContact=null;moveContact=null
     }
@@ -265,6 +275,7 @@ private class MagnifierResources:AutoCloseable{
         clearInteraction();visible=false;generation++
         val lease=stream;stream=null;lease?.close()
         flatInput?.let{component->entity?.takeUnless{it.isDisposed}?.removeComponent(component)};flatInput=null
+        corners.close()
         val input=curved;curved=null;input?.close()
         val surface=entity;entity=null
         if(surface!=null && !surface.isDisposed)surface.dispose()

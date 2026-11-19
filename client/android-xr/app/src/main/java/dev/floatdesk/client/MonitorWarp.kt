@@ -36,6 +36,7 @@ internal class MonitorWarp : AutoCloseable {
         if(pixelTarget!==target || pixelSize!=size){target.setSurfacePixelDimensions(androidx.xr.runtime.math.IntSize2d(size.first,size.second));pixelTarget=target;pixelSize=size}
     }
     private var input: SurfaceEntity? = null
+    val coordinateParent:Entity? get()=input?.parent
     private var live: SurfaceEntity? = null
     private var retainedCurved:SurfaceEntity?=null
     private var flatWidth = 0f

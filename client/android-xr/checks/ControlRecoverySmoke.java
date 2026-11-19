@@ -24,6 +24,10 @@ public final class ControlRecoverySmoke {
         try{
             for(int i=0;i<40&&!stats(connection,"11");i++){send(host,first,Protocol.INSTANCE.workspace("{\"type\":\"resourceStats\",\"cpuPct\":11}"));SystemClock.sleep(25);}
             if(!stats(connection,"11"))throw new AssertionError("Initial telemetry not received");
+            send(host,first,Protocol.INSTANCE.workspace("{\"type\":\"cursorOwner\",\"key\":\"magnifier\",\"u\":0.5,\"v\":0.5,\"x\":500,\"y\":1500,\"sourceX\":250,\"sourceY\":250}"));
+            Object location=null;
+            for(int i=0;i<40;i++){location=field("cursorLocation").get(connection);if(location!=null)break;SystemClock.sleep(25);}
+            if(location==null || ((Float)location.getClass().getMethod("getY").invoke(location))!=1500f || ((Float)location.getClass().getMethod("getSourceY").invoke(location))!=250f)throw new AssertionError("Virtual and mirrored cursor coordinates were conflated");
             send(host,first,new byte[]{1,2,3});
             send(host,first,Protocol.INSTANCE.workspace("not-json"));
             java.util.concurrent.atomic.AtomicInteger pending=(java.util.concurrent.atomic.AtomicInteger)field("monitorPending").get(connection);

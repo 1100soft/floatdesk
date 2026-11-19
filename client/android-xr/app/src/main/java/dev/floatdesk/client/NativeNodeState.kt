@@ -22,3 +22,7 @@ internal class NativeNodeState(private val entity:Entity){
     fun alpha(value:Float){if(alpha!=value){entity.setAlpha(value);alpha=value}}
     fun enabled(value:Boolean){if(enabled!=value){entity.setEnabled(value);enabled=value}}
 }
+
+/** Keep the pinned SDK's restricted lifetime query behind one checked boundary. */
+@android.annotation.SuppressLint("RestrictedApi")
+internal fun Entity?.liveOrNull():Entity? = this?.takeUnless{it.isDisposed}

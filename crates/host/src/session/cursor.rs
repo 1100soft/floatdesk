@@ -19,9 +19,6 @@ pub(super) fn cursor_loop(shared: Arc<Shared>, socket: UdpSocket) {
                 if let Ok(map) = shared.cursor_map.lock() {
                     if map.2.elapsed() < Duration::from_secs(2) && !map.0.is_empty() {
                         let root = [f64::from(sample.root_x), f64::from(sample.root_y)];
-                        if motion == [0.0, 0.0] && last_root.is_some_and(|old| old != root) {
-                            router.reset();
-                        }
                         if let Some((key, point)) = shared
                             .cursor_claim
                             .lock()
@@ -46,7 +43,10 @@ pub(super) fn cursor_loop(shared: Arc<Shared>, socket: UdpSocket) {
                         }
                         if owner_sent.elapsed() >= Duration::from_millis(33) {
                             let value = if let Some((key, uv, root)) = router.location(&map.0) {
-                                serde_json::json!({"type":"cursorOwner","key":key,"u":uv[0],"v":uv[1],"x":root[0],"y":root[1]})
+                                {
+                                    let point = router.virtual_position().unwrap_or(root);
+                                    serde_json::json!({"type":"cursorOwner","key":key,"u":uv[0],"v":uv[1],"x":point[0],"y":point[1],"sourceX":root[0],"sourceY":root[1]})
+                                }
                             } else {
                                 serde_json::json!({"type":"cursorOwner","key":""})
                             };
@@ -62,7 +62,7 @@ pub(super) fn cursor_loop(shared: Arc<Shared>, socket: UdpSocket) {
                             owner_sent = Instant::now();
                         }
                     } else {
-                        router.reset();
+                        router.inactive(motion);
                     }
                 }
                 last_root = Some([f64::from(sample.root_x), f64::from(sample.root_y)]);

@@ -2,6 +2,8 @@ package dev.floatdesk.client
 
 import dev.floatdesk.client.net.DesktopWindow
 import dev.floatdesk.client.net.WorkspaceInfo
+import dev.floatdesk.client.workspace.Pose
+import dev.floatdesk.client.workspace.MonitorPlacement
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -31,9 +33,11 @@ internal class WindowGrabController(private val thresholds:()->PinchThresholds){
     private var hold:Hold?=null
     private val closed=mutableMapOf<String,Boolean>()
     private val pending=mutableMapOf<String,Long>()
+    fun cancel(){hold=null;pending.clear()}
     val engaged get()=hold!=null
     val source get()=hold?.window
     val aimSide get()=hold?.aimSide
+    val handSide get()=hold?.side
     val preview get()=hold?.candidate
     fun update(now:Long,enabled:Boolean,blocked:Boolean,samples:Map<String,FingerPinch>,hover:Map<String,FocusHover>,info:WorkspaceInfo?):WindowGrabUpdate {
         closed.keys.retainAll(samples.keys)
@@ -93,24 +97,38 @@ internal fun windowGridCell(id:Long,x:Int,y:Int,width:Int,height:Int,columns:Int
     return WindowMove(id,left,top,x+width*(col+1)/columns-left,y+height*(row+1)/rows-top)
 }
 
-/** Calibrate once against native aim, then move the preview from display-rate joint poses. */
+/** A temporary window pane uses the same distance-scaled drag as magnifiers. */
 internal class WindowDragRay {
-    private data class Anchor(val side:String,val hand:HandAimPose,val vector:FloatArray,val desktop:dev.floatdesk.client.workspace.MonitorPlacement,val mesh:MonitorMesh?)
+    private data class Anchor(val side:String,val aimSide:String,val desktop:MonitorPlacement,val viewer:Pose,val u:Float,val v:Float,val initial:FloatArray,val pane:MagnifiedWindow)
     private var anchor:Anchor?=null
-    fun clear(){anchor=null}
-    fun begin(side:String,hand:HandAimPose,hit:PointerTarget,desktop:dev.floatdesk.client.workspace.MonitorPlacement,mesh:MonitorMesh?){
+    private val drag=MagnifierRayDrag()
+    var pane:MagnifiedWindow?=null;private set
+    fun clear(){anchor=null;pane=null;drag.clear()}
+    fun begin(side:String,hand:HandAimPose,hit:PointerTarget,desktop:MonitorPlacement,mesh:MonitorMesh?,viewer:Pose,source:DesktopWindow,bounds:IntArray,units:Float,aimSide:String=side){
         if(anchor!=null)return
-        val point=transformPoint(desktop.pose,hit.local)
-        anchor=Anchor(side,hand,FloatArray(3){point[it]-hand.position[it]},desktop,mesh)
+        val u=(source.x+source.width*.5f-bounds[0])/bounds[2];val v=(source.y+source.height*.5f-bounds[1])/bounds[3]
+        val center=transformPoint(desktop.pose,floatArrayOf((u-.5f)*desktop.physicalWidthM,(.5f-v)*desktop.physicalHeightM,.02f*units))
+        val width=source.width.toFloat()/bounds[2]*desktop.physicalWidthM;val height=source.height.toFloat()/bounds[3]*desktop.physicalHeightM
+        val pane=MagnifiedWindow(source.id,desktop.pose.copy(position=center),width,height,source.width,source.height,false,units=units,fixed=true,requestedPosition=center)
+        val contact=transformPoint(desktop.pose,hit.local)
+        val direction=FloatArray(3){contact[it]-hand.position[it]}
+        drag.begin(pane,viewer,hand.position,direction,contact,hand.position)
+        anchor=Anchor(side,aimSide,desktop,viewer,hit.u,hit.v,project(center,desktop,viewer),pane);this.pane=pane
     }
-    fun point(poses:Map<String,HandAimPose>):Pair<String,PointerTarget>? {
+    private fun project(point:FloatArray,desktop:MonitorPlacement,viewer:Pose):FloatArray{
+        val p=viewerInMonitor(point,desktop.pose.position,desktop.pose.rotation)
+        val eye=viewerInMonitor(viewer.position,desktop.pose.position,desktop.pose.rotation)
+        val denominator=p[2]-eye[2]
+        val t=if(kotlin.math.abs(denominator)>.00001f)-eye[2]/denominator else 1f
+        return floatArrayOf(eye[0]+(p[0]-eye[0])*t,eye[1]+(p[1]-eye[1])*t,0f)
+    }
+    fun point(poses:Map<String,HandAimPose>):Pair<String,PointerTarget>?{
         val a=anchor ?: return null;val hand=poses[a.side] ?: return null
-        // Wrist rotation changes during pinching; a held grab follows translation only.
-        val vector=a.vector
-        val origin=viewerInMonitor(hand.position,a.desktop.pose.position,a.desktop.pose.rotation)
-        val end=viewerInMonitor(FloatArray(3){hand.position[it]+vector[it]},a.desktop.pose.position,a.desktop.pose.rotation)
-        val hit=monitorRayHit(origin,FloatArray(3){end[it]-origin[it]},a.desktop.physicalWidthM,a.desktop.physicalHeightM,a.mesh) ?: return null
-        val flat=a.mesh?.unproject(hit) ?: hit
-        return a.side to PointerTarget(0,flat[0]/a.desktop.physicalWidthM+.5f,.5f-flat[1]/a.desktop.physicalHeightM,hit)
+        val moved=drag.moveHand(a.viewer,hand.position) ?: a.pane.pose.position
+        pane=a.pane.copy(pose=a.pane.pose.copy(position=moved),requestedPosition=moved)
+        val p=project(moved,a.desktop,a.viewer)
+        val u=a.u+(p[0]-a.initial[0])/a.desktop.physicalWidthM
+        val v=a.v-(p[1]-a.initial[1])/a.desktop.physicalHeightM
+        return a.aimSide to PointerTarget(0,u,v,floatArrayOf((u-.5f)*a.desktop.physicalWidthM,(.5f-v)*a.desktop.physicalHeightM,0f))
     }
 }

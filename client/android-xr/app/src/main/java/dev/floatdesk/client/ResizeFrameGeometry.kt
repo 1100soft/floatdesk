@@ -46,3 +46,9 @@ internal fun resizeDimensions(width:Float,height:Float,factor:Float):Pair<Float,
     val w=width*scale;val h=height*scale
     return if(w.isFinite() && h.isFinite()) w to h else null
 }
+
+/** Aspect-preserving resize at a visible corner, measured in that pane's frozen axes. */
+internal fun cornerResizeFactor(width:Float,height:Float,x:Int,y:Int,dx:Float,dy:Float,base:Float=1f):Float {
+    val radius=(width*width+height*height)*.25f
+    return if(radius>0f)base+(dx*x*width*.5f+dy*y*height*.5f)/radius else base
+}

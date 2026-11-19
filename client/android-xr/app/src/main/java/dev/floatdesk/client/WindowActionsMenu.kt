@@ -1,104 +1,112 @@
 package dev.floatdesk.client
 
-import androidx.compose.runtime.*
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.unit.dp
-import dev.floatdesk.client.net.DeskConnection
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Dp
 
-/** Independent pages keep pane management separate from host window actions. */
+internal object WindowMenuLayout {
+    val grids = listOf(1 to 1, 2 to 1, 1 to 2, 2 to 2, 3 to 1, 1 to 3, 3 to 2, 2 to 3, 3 to 3)
+    const val columns = 3
+    const val cellM = .055f
+    const val gapM = .006f
+    const val widthM = columns * cellM + (columns + 1) * gapM
+    val gridRows get() = (grids.size + columns - 1) / columns
+    val heightM get() = (1 + gridRows) * cellM + (gridRows + 3) * gapM + gapM / 6
+    const val magnifierWidthM = 2 * cellM + 3 * gapM
+    const val magnifierHeightM = cellM + 2 * gapM
+}
+
+/** Every destination cell is selectable directly; there are no submenu pages. */
 @Composable
-internal fun WindowActionsMenu(connection:DeskConnection,window:Long?,magnifier:Boolean,onAdd:()->Unit,onRemove:()->Unit,onClose:()->Unit,onGrid:(Boolean)->Unit={}){
-    var page by remember(window,magnifier){mutableIntStateOf(if(magnifier)0 else 1)}
-    SideEffect{onGrid(page==2)}
-    var grid by remember{mutableStateOf(2 to 2)}
-    fun action(name:String){window?.let{connection.windowAction(it,name)};onClose()}
-    MaterialTheme(colorScheme=darkColorScheme()){
-        CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp){
-        Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).padding(4.dp),verticalArrangement=Arrangement.spacedBy(4.dp)){
-            Row(Modifier.fillMaxWidth().weight(if(page==2).20f else .35f),horizontalArrangement=Arrangement.SpaceBetween){
-                if(page==2 || (magnifier && page==1))IconButton(onClick={page--},modifier=Modifier.fillMaxHeight().aspectRatio(1f)){Text("‹")}
-                Spacer(Modifier.weight(1f))
-                IconButton(onClick=onClose,modifier=Modifier.fillMaxHeight().aspectRatio(1f)){Text("×")}
+internal fun WindowActionsMenu(window: Long?, cell: Dp, gap: Dp, onAction: (String) -> Unit,
+                               onSnap: (Int, Int, Int, Int) -> Unit, onClose: () -> Unit) {
+    BackHandler(onBack = onClose)
+    MaterialTheme(colorScheme = darkColorScheme()) {
+        CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides androidx.compose.ui.unit.Dp(0f)){
+        Column(Modifier.background(MaterialTheme.colorScheme.surface).padding(gap), verticalArrangement = Arrangement.spacedBy(gap)) {
+            Row(Modifier.width(cell * WindowMenuLayout.columns + gap * (WindowMenuLayout.columns - 1)), horizontalArrangement = Arrangement.SpaceBetween) {
+                MenuIcon("minimize", "Minimize window", cell, window != null) { onAction("minimize") }
+                MenuIcon("close", "Close window", cell, window != null) { onAction("close") }
             }
-            when(page){
-                0->{
-                    Row(Modifier.fillMaxWidth().weight(1f),horizontalArrangement=Arrangement.SpaceEvenly){
-                        IconButton(onClick=onAdd,modifier=Modifier.weight(1f).fillMaxHeight()){ActionDiagram("add")}
-                        IconButton(onClick=onRemove,modifier=Modifier.weight(1f).fillMaxHeight()){ActionDiagram("remove")}
-                        IconButton(enabled=window!=null,onClick={page=1},modifier=Modifier.weight(1f).fillMaxHeight()){ActionDiagram("window")}
-                    }
-                }
-                1->{
-                    Row(Modifier.fillMaxWidth().weight(1f),horizontalArrangement=Arrangement.SpaceEvenly){
-                        for(name in listOf("minimize","maximize","close"))IconButton(enabled=window!=null,onClick={action(name)},modifier=Modifier.weight(1f).fillMaxHeight()){ActionDiagram(name)}
-                        IconButton(onClick={page=2},modifier=Modifier.weight(1f).fillMaxHeight()){GridDiagram(2,2,null,Modifier.size(28.dp))}
-                    }
-                }
-                2->{
-                    Row(Modifier.fillMaxWidth().weight(.25f),horizontalArrangement=Arrangement.spacedBy(6.dp)){
-                        for(shape in listOf(1 to 1,2 to 1,3 to 1,2 to 2)){
-                            OutlinedButton(onClick={grid=shape},modifier=Modifier.weight(1f).fillMaxHeight(),contentPadding=PaddingValues(4.dp)){
-                                GridDiagram(shape.first,shape.second,null,Modifier.fillMaxSize(),grid==shape)
-                            }
-                        }
-                    }
-                    Box(Modifier.fillMaxWidth().weight(1f)){
-                        // Every hit cell draws the entire monitor outline, emphasizing its destination.
-                        Column(Modifier.fillMaxSize(),verticalArrangement=Arrangement.spacedBy(4.dp)){
-                            repeat(grid.second){row->Row(Modifier.fillMaxWidth().weight(1f),horizontalArrangement=Arrangement.spacedBy(4.dp)){
-                                repeat(grid.first){col->OutlinedButton(enabled=window!=null,onClick={
-                                    val info=connection.workspaceInfo.value
-                                    val source=info?.windows?.firstOrNull{it.id==window}
-                                    val screen=info?.screens?.firstOrNull{s->source!=null && source.x+source.width/2 in s.x until s.x+s.width && source.y+source.height/2 in s.y until s.y+s.height} ?: info?.screens?.firstOrNull{it.primary}
-                                    if(window!=null && screen!=null)connection.windowAction(window,"geometry",windowGridCell(window,screen.x,screen.y,screen.width,screen.height,grid.first,grid.second,col,row))
-                                    onClose()
-                                },modifier=Modifier.weight(1f).fillMaxHeight(),contentPadding=PaddingValues(6.dp)){
-                                    GridDiagram(grid.first,grid.second,col to row,Modifier.fillMaxSize())
-                                }}
-                            }}
-                        }
+            HorizontalDivider(thickness = gap / 6)
+            for (row in WindowMenuLayout.grids.chunked(WindowMenuLayout.columns)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(gap)) {
+                    for ((columns, rows) in row) {
+                        GridChoice(columns, rows, cell, window != null) { col, r -> onSnap(columns, rows, col, r) }
                     }
                 }
             }
+        }
+        }
+    }
+}
+
+@Composable
+internal fun MagnifierActionsMenu(cell: Dp, gap: Dp, onAdd: () -> Unit, onRemove: () -> Unit) {
+    MaterialTheme(colorScheme = darkColorScheme()) {
+        CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides androidx.compose.ui.unit.Dp(0f)){
+        Row(Modifier.background(MaterialTheme.colorScheme.surface).padding(gap), horizontalArrangement = Arrangement.spacedBy(gap)) {
+            MenuIcon("add", "Add a magnifier", cell, true, onAdd)
+            MenuIcon("remove", "Remove this magnifier", cell, true, onRemove)
         }
     }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun GridDiagram(columns:Int,rows:Int,selected:Pair<Int,Int>?,modifier:Modifier,active:Boolean=false){
-    Canvas(modifier){
-        val pad=3.dp.toPx();val w=size.width-2*pad;val h=size.height-2*pad
-        val ink=if(active)Color(0xFF70E5FA)else Color(0xFFB9CBDA)
-        selected?.let{(col,row)->drawRect(Color(0xFF487BA5),Offset(pad+w*col/columns,pad+h*row/rows),Size(w/columns,h/rows))}
-        drawRect(ink,Offset(pad,pad),Size(w,h),style=Stroke(2.dp.toPx()))
-        for(col in 1 until columns)drawLine(ink,Offset(pad+w*col/columns,pad),Offset(pad+w*col/columns,pad+h),1.dp.toPx())
-        for(row in 1 until rows)drawLine(ink,Offset(pad,pad+h*row/rows),Offset(pad+w,pad+h*row/rows),1.dp.toPx())
+private fun MenuIcon(action: String, description: String, cell: Dp, enabled: Boolean, onClick: () -> Unit) {
+    TooltipBox(positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+        tooltip = { PlainTooltip { Text(description) } }, state = rememberTooltipState()) {
+        FilledTonalIconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(cell).semantics { contentDescription = description }) {
+            Canvas(Modifier.fillMaxSize().padding(cell * .25f)) {
+                val ink = Color(0xFFC8E7F5)
+                val stroke = size.minDimension * .09f
+                fun line(x: Float, y: Float, r: Float, b: Float) = drawLine(ink, Offset(x * size.width, y * size.height), Offset(r * size.width, b * size.height), stroke)
+                when (action) {
+                    "minimize" -> line(.05f, .85f, .95f, .85f)
+                    "close" -> { line(.1f,.1f,.9f,.9f); line(.9f,.1f,.1f,.9f) }
+                    "add" -> { line(.05f,.5f,.95f,.5f); line(.5f,.05f,.5f,.95f) }
+                    "remove" -> {
+                        line(.1f,.2f,.9f,.2f); line(.35f,.05f,.65f,.05f)
+                        line(.22f,.3f,.27f,.95f); line(.27f,.95f,.73f,.95f); line(.73f,.95f,.78f,.3f)
+                        line(.42f,.4f,.42f,.8f); line(.58f,.4f,.58f,.8f)
+                    }
+                }
+            }
+        }
     }
 }
 
 @Composable
-private fun ActionDiagram(action:String){
-    Canvas(Modifier.size(26.dp)){
-        val ink=Color(0xFFBCD7E8);val stroke=2.dp.toPx();val w=size.width;val h=size.height
-        fun line(x:Float,y:Float,r:Float,b:Float)=drawLine(ink,Offset(x*w,y*h),Offset(r*w,b*h),stroke)
-        when(action){
-            "minimize"->line(.15f,.8f,.85f,.8f)
-            "close"->{line(.2f,.2f,.8f,.8f);line(.8f,.2f,.2f,.8f)}
-            else->{
-                drawRect(ink,Offset(w*.1f,h*.15f),Size(w*.8f,h*.65f),style=Stroke(stroke))
-                line(.1f,.3f,.9f,.3f)
-                if(action=="add" || action=="remove"){line(.32f,.55f,.68f,.55f);if(action=="add")line(.5f,.4f,.5f,.7f)}
-                if(action=="window"){line(.65f,.45f,.8f,.55f);line(.8f,.55f,.65f,.65f)}
+private fun GridChoice(columns: Int, rows: Int, cell: Dp, enabled: Boolean, onChoose: (Int, Int) -> Unit) {
+    Canvas(Modifier.size(cell).background(Color(0xFF243544)).border(cell * .015f, Color(0xFF708EA4))
+        .semantics { contentDescription = "$columns by $rows snap grid" }
+        .pointerInput(columns, rows, enabled) {
+            if (enabled) detectTapGestures { point ->
+                onChoose((point.x / size.width * columns).toInt().coerceIn(0, columns - 1),
+                    (point.y / size.height * rows).toInt().coerceIn(0, rows - 1))
             }
-        }
+        }) {
+        val pad = size.minDimension * .12f
+        val width = size.width - 2 * pad; val height = size.height - 2 * pad
+        val ink = Color(0xFFB6D6E8)
+        drawRect(ink, Offset(pad, pad), Size(width, height), style = Stroke(size.minDimension * .025f))
+        for (col in 1 until columns) drawLine(ink, Offset(pad + width * col / columns, pad), Offset(pad + width * col / columns, pad + height), size.minDimension * .02f)
+        for (row in 1 until rows) drawLine(ink, Offset(pad, pad + height * row / rows), Offset(pad + width, pad + height * row / rows), size.minDimension * .02f)
     }
 }

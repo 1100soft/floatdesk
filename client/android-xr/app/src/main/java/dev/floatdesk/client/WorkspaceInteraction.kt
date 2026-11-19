@@ -237,19 +237,6 @@ internal class PalmPoke {
 }
 
 /** Find the parent the video is actually rendered in; never infer it from a saved pose. */
-internal fun findDeskSpace(session: androidx.xr.runtime.Session): Entity? {
-    val activity = session.scene.activitySpace
-    val queue = java.util.ArrayDeque<Entity>()
-    queue.addAll(activity.children)
-    while (queue.isNotEmpty()) {
-        val entity = queue.removeFirst()
-        if (entity is SurfaceEntity && entity.parent != null && entity.parent !== activity) return entity.parent
-        queue.addAll(entity.children)
-    }
-    // Before video connects, Compose also parents the implicit main panel to its root.
-    return session.scene.mainPanelEntity.parent?.takeIf { it !== activity }
-}
-
 internal fun deskPose(
     session: androidx.xr.runtime.Session,
     root: Entity,

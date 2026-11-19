@@ -67,6 +67,7 @@ import kotlin.math.max
 @Composable
 internal fun DeskContent(
     connection: DeskConnection,
+    onDeskRoot:(androidx.xr.scenecore.Entity)->Unit,
     viewer:AtomicReference<Pose?>,
     viewerAngles:AtomicReference<FloatArray>,
     workspace: WorkspaceFile,
@@ -158,7 +159,7 @@ internal fun DeskContent(
                 if(!connection.isRenderingActive() || !current.lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) { delay(100);continue }
                 warp.setVisible(true);systemControls.setVisible(true)
                 if (videoSurface.get() == null) continue
-                val root = findDeskSpace(current) ?: continue
+                val root = warp.coordinateParent.liveOrNull() ?: continue
                 val file = latest.value
                 val screen = file.monitorAt(index) ?: continue
                 try {
@@ -227,7 +228,8 @@ internal fun DeskContent(
                     connection.projection(index,null) // Geometry projection uses the original streamed pixels.
                     warp.outputSurface?.let { display ->
                         if (videoSurface.get() !== display) {
-                            videoSurface.set(display)
+                            warp.coordinateParent?.let(onDeskRoot)
+                videoSurface.set(display)
                             connection.attachSurface(index, display)
                         }
                     }
@@ -307,6 +309,7 @@ internal fun DeskContent(
                 val display = warp.attach(current, surface, latest.value.monitorAt(index) ?: placement, pixelDensity, inputPolicy::onInputEvent) { side, point, flat, width, height ->
                     pointerControl.hover(index,side,point,flat,width,height,SystemClock.uptimeMillis())
                 }
+                warp.coordinateParent?.let(onDeskRoot)
                 videoSurface.set(display)
                 warp.setVisible(!controlsOpenNow.value)
                 connection.attachSurface(index, display)

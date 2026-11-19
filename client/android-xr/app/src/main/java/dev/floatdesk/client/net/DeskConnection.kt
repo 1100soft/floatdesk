@@ -237,6 +237,11 @@ internal class DeskConnection(
         decoders.values.forEach { it.setRenderingActive(active && desktopVisible) }
     }
 
+    fun recoverRenderingOutputs(){
+        decoders.values.forEach{it.refreshOutput()}
+        windowCaptureEpoch.intValue++
+    }
+
     fun requestDisplays(action:Int=0,index:Int=0,width:Int=1920,height:Int=1080) {
         val handler=outgoing ?: return
         if(!monitorPending.compareAndSet(0,-1)) return
@@ -471,7 +476,7 @@ internal class DeskConnection(
 
                         if(incoming.address==pendingRemote?.address && incoming.port==pendingRemote?.port) {
                             runCatching{org.json.JSONObject(decoded.json)}.getOrNull()?.takeIf{it.optString("type")=="cursorOwner"}?.let{reply->
-                                cursorLocation=reply.optString("key").takeIf{it.isNotEmpty()}?.let{dev.floatdesk.client.CursorLocation(it,reply.optDouble("u").toFloat(),reply.optDouble("v").toFloat(),reply.optDouble("x").toFloat(),reply.optDouble("y").toFloat())}
+                                cursorLocation=reply.optString("key").takeIf{it.isNotEmpty()}?.let{dev.floatdesk.client.CursorLocation(it,reply.optDouble("u").toFloat(),reply.optDouble("v").toFloat(),reply.optDouble("x").toFloat(),reply.optDouble("y").toFloat(),reply.optDouble("sourceX",reply.optDouble("x")).toFloat(),reply.optDouble("sourceY",reply.optDouble("y")).toFloat())}
                             }
                             runCatching{org.json.JSONObject(decoded.json)}.getOrNull()?.takeIf{it.optString("type")=="typingState"}?.let{reply->
                                 typingWindow=reply.optLong("windowId").takeIf{it>0L}

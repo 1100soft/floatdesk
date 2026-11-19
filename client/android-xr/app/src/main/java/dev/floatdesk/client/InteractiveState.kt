@@ -44,3 +44,16 @@ internal fun rememberDeviceInteractive(context: Context): State<Boolean> {
     }
     return interactive
 }
+
+/** Full-space acquisition must use Activity readiness, never its own XR resume result. */
+@Composable
+internal fun rememberActivityResumed(context:Context):State<Boolean>{
+    val owner=remember(context){generateSequence(context){current->(current as? android.content.ContextWrapper)?.baseContext?.takeIf{it!==current}}.filterIsInstance<androidx.lifecycle.LifecycleOwner>().firstOrNull()}
+    val resumed=remember(owner){mutableStateOf(owner?.lifecycle?.currentState?.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)==true)}
+    DisposableEffect(owner){
+        val observer=androidx.lifecycle.LifecycleEventObserver{_,_->resumed.value=owner?.lifecycle?.currentState?.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)==true}
+        owner?.lifecycle?.addObserver(observer)
+        onDispose{owner?.lifecycle?.removeObserver(observer)}
+    }
+    return resumed
+}

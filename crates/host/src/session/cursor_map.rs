@@ -73,13 +73,53 @@ impl Router {
 
             return None;
         }
-        let point = self.point.or_else(|| {
+        let mut point = self.point.or_else(|| {
             surfaces
                 .iter()
                 .filter_map(|s| s.map(root, true).map(|p| (s.depth, p)))
                 .max_by(|a, b| a.0.total_cmp(&b.0))
                 .map(|(_, p)| p)
         })?;
+        // Content can change the bounds of the owning pane. Clamp within that
+        // same space instead of reinterpreting the mirrored OS cursor as input.
+        if let Some(key) = self.owner.as_ref() {
+            let owned: Vec<_> = surfaces.iter().filter(|s| &s.key == key).collect();
+            if !owned.is_empty() && !owned.iter().any(|s| s.map(point, false).is_some()) {
+                if let Some(p) = owned
+                    .iter()
+                    .map(|s| {
+                        let left = s.points.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);
+                        let right = s
+                            .points
+                            .iter()
+                            .map(|p| p[0])
+                            .fold(f64::NEG_INFINITY, f64::max);
+                        let top = s.points.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
+                        let bottom = s
+                            .points
+                            .iter()
+                            .map(|p| p[1])
+                            .fold(f64::NEG_INFINITY, f64::max);
+                        [point[0].clamp(left, right), point[1].clamp(top, bottom)]
+                    })
+                    .min_by(|a, b| {
+                        ((a[0] - point[0]).powi(2) + (a[1] - point[1]).powi(2))
+                            .total_cmp(&((b[0] - point[0]).powi(2) + (b[1] - point[1]).powi(2)))
+                    })
+                {
+                    point = p;
+                    self.point = Some(p);
+                }
+            }
+        }
+        if delta == [0.0, 0.0]
+            && self
+                .owner
+                .as_ref()
+                .is_some_and(|key| !surfaces.iter().any(|s| &s.key == key))
+        {
+            return None;
+        }
         if delta == [0.0, 0.0] {
             if let Some(key) = self.owner.as_ref() {
                 if let Some(root) = surfaces
@@ -172,6 +212,16 @@ impl Router {
             root,
         ))
     }
+    pub fn inactive(&mut self, motion: [f64; 2]) {
+        // A sleeping viewer does not move the virtual cursor. Real desktop use
+        // while XR is inactive deliberately relinquishes the old virtual owner.
+        if motion != [0.0, 0.0] {
+            self.reset()
+        }
+    }
+    pub fn virtual_position(&self) -> Option<[f64; 2]> {
+        self.point
+    }
     pub fn has_point(&self) -> bool {
         self.point.is_some()
     }
@@ -243,6 +293,56 @@ mod tests {
             Some([25., 50.])
         );
         assert!(!router.claim(&surfaces, "missing", [25., 50.]));
+    }
+    #[test]
+    fn virtual_position_is_authoritative_and_clamps_inside_its_owner() {
+        let desktop = Surface {
+            key: "desktop".into(),
+            points: [[0., 0.], [1000., 0.], [1000., 1000.], [0., 1000.]],
+            source: [0., 0., 1000., 1000.],
+            depth: 2.,
+        };
+        let magnifier = Surface {
+            key: "magnifier".into(),
+            points: [[0., 1000.], [1000., 1000.], [1000., 2000.], [0., 2000.]],
+            source: [0., 0., 500., 500.],
+            depth: 1.,
+        };
+        let mut surfaces = vec![desktop, magnifier];
+        let mut router = Router::default();
+        assert_eq!(
+            router.advance(&surfaces, [500., 900.], [0., 600.], [1., 1.]),
+            Some([250., 250.])
+        );
+        assert_eq!(router.virtual_position(), Some([500., 1500.]));
+        surfaces[1].source = [100., 200., 1100., 1200.];
+        assert_eq!(
+            router.advance(&surfaces, [250., 250.], [0., 0.], [1., 1.]),
+            Some([600., 700.])
+        );
+        assert_eq!(router.virtual_position(), Some([500., 1500.]));
+        // A reload gap cannot reassign this cursor to a duplicated desktop image.
+        assert_eq!(
+            router.advance(&surfaces[..1], [600., 700.], [0., 0.], [1., 1.]),
+            None
+        );
+        assert_eq!(router.virtual_position(), Some([500., 1500.]));
+        surfaces[1].points = [[0., 1000.], [400., 1000.], [400., 1400.], [0., 1400.]];
+        assert_eq!(
+            router.advance(&surfaces, [600., 700.], [0., 0.], [1., 1.]),
+            Some([1100., 1200.])
+        );
+        assert_eq!(router.virtual_position(), Some([400., 1400.]));
+    }
+    #[test]
+    fn sleep_retains_virtual_cursor_until_physical_desktop_use() {
+        let surfaces = vec![pane(0., 1., [0., 0., 100., 100.])];
+        let mut router = Router::default();
+        router.claim(&surfaces, &surfaces[0].key, [25., 50.]);
+        router.inactive([0., 0.]);
+        assert_eq!(router.virtual_position(), Some([0.25, 0.5]));
+        router.inactive([1., 0.]);
+        assert_eq!(router.virtual_position(), None);
     }
     #[test]
     fn invalid_maps_rejected() {

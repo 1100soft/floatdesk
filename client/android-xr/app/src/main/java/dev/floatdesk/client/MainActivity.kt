@@ -12,6 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.io.File
 import androidx.lifecycle.lifecycleScope
+import androidx.xr.scenecore.scene
 
 class MainActivity : ComponentActivity() {
     private lateinit var store: WorkspaceStore
@@ -48,6 +49,13 @@ class MainActivity : ComponentActivity() {
         setContent {
             FloatdeskApp(store = store, dumpFile = dump,onSession={activeSession=it})
         }
+    }
+
+    override fun onResume(){
+        super.onResume()
+        // The Activity can resume before the XR lifecycle. Do not wait for XR
+        // frame callbacks to request the full-space state that restarts them.
+        activeSession?.let{session->runCatching{session.scene.requestFullSpace()}}
     }
 
     override fun onStop() {

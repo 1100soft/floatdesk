@@ -133,6 +133,7 @@ suspend fun main() {
     input.parent = root; input.setPose(Pose(Vector3(.1f,0f,-1f))); input.setAlpha(.8f)
     val warp = MonitorWarp()
     val output = warp.attach(session,input.getSurface(),screen)
+    check(warp.coordinateParent===root)
     val video = session.scene.entities.single { it.getSurface() === output }
     check(video === input && output === input.getSurface())
     check(input.mediaBlendingMode==SurfaceEntity.MediaBlendingMode.OPAQUE)

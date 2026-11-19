@@ -51,22 +51,32 @@ internal fun CursorPatch.sourceAt(point:Pair<Float,Float>):Pair<Float,Float>? {
     if(!viewBounds.contains(point.first,point.second))return null
     return patchTriangle(this,point,0,1,2) ?: patchTriangle(this,point,0,2,3)
 }
-/** Project only perimeter edges onto the closest deeper surface, never through a foreground pane. */
+/** The same logical shadow is visible on every intersected layer behind its owner. */
 internal fun CursorTopology.wires():List<CursorWire> = buildList {
-    for((_,group) in patches.filter{it.front}.groupBy{it.key}){
-        fun token(p:Pair<Float,Float>)="${kotlin.math.round(p.first*10000)}:${kotlin.math.round(p.second*10000)}"
-        val edges=group.flatMap{p->(0..3).map{p to (p.points[it] to p.points[(it+1)%4])}}.groupBy{(_,edge)->listOf(token(edge.first),token(edge.second)).sorted().joinToString("/")}
-        for(entries in edges.values.filter{it.size==1}){
-            val (front,edge)=entries.single()
-            fun along(t:Float)=edge.first.first+(edge.second.first-edge.first.first)*t to edge.first.second+(edge.second.second-edge.first.second)*t
-            for(part in 0 until 4){
-                val start=along(part/4f);val end=along((part+1)/4f);val middle=along((part+.5f)/4f)
-                val back=patches.filter{it.key!=front.key && it.depth>front.depth && it.sourceAt(middle)!=null}.minByOrNull{it.depth} ?: continue
-                val a=back.sourceAt(start) ?: continue;val b=back.sourceAt(end) ?: continue
-                add(CursorWire(back.key,a,b))
-            }
+    for(front in patches.filter{it.front})for(back in patches.filter{it.key!=front.key && it.depth>front.depth}){
+        val f=front.viewBounds;val b=back.viewBounds
+        fun edge(x0:Float,y0:Float,x1:Float,y1:Float){
+            val a=back.sourceAt(x0 to y0) ?: return;val end=back.sourceAt(x1 to y1) ?: return
+            if(x0!=x1 || y0!=y1)add(CursorWire(back.key,a,end))
+        }
+        val left=maxOf(f.left,b.left);val right=minOf(f.right,b.right)
+        val top=maxOf(f.top,b.top);val bottom=minOf(f.bottom,b.bottom)
+        if(left<right && top<bottom){
+            edge(left,top,right,top);edge(right,top,right,bottom)
+            edge(right,bottom,left,bottom);edge(left,bottom,left,top)
         }
     }
+}
+/** Express the whole virtual workspace in desktop pixels, including extra-desktop space. */
+internal fun CursorTopology.logicalPixels():CursorTopology {
+    val base=patches.firstOrNull{!it.front} ?: return this
+    val b=base.viewBounds
+    val sx=(base.source.right-base.source.left)/(b.right-b.left)
+    val sy=(base.source.bottom-base.source.top)/(b.bottom-b.top)
+    if(!sx.isFinite() || !sy.isFinite() || sx<=0f || sy<=0f)return CursorTopology()
+    return CursorTopology(patches.map{p->p.copy(points=p.points.map{(x,y)->
+        base.source.left+(x-b.left)*sx to base.source.top+(y-b.top)*sy
+    })},1f to 1f)
 }
 internal fun CursorTopology.debugSegments():FloatArray=patches.flatMap{p->(0..3).flatMap{i->
     val a=p.points[i];val b=p.points[(i+1)%4];listOf(a.first,a.second,b.first,b.second,if(p.front)1f else 0f)
@@ -87,7 +97,7 @@ internal fun CursorTopology.coarsened():CursorTopology {
     return copy(patches=reduced)
 }
 
-internal data class CursorLocation(val key:String,val u:Float,val v:Float,val x:Float,val y:Float)
+internal data class CursorLocation(val key:String,val u:Float,val v:Float,val x:Float,val y:Float,val sourceX:Float=x,val sourceY:Float=y)
 internal fun cursorGlow(u:Float,v:Float,aspect:Float):FloatArray=buildList<Float>{
     for(radius in listOf(.012f,.018f))for(i in 0 until 20){
         val a=i*2*Math.PI/20;val b=(i+1)*2*Math.PI/20

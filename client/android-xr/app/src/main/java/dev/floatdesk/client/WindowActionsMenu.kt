@@ -14,6 +14,8 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
@@ -70,9 +72,10 @@ internal fun MagnifierActionsMenu(cell: Dp, gap: Dp, onAdd: () -> Unit, onRemove
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MenuIcon(action: String, description: String, cell: Dp, enabled: Boolean, onClick: () -> Unit) {
-    TooltipBox(positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
-        tooltip = { PlainTooltip { Text(description) } }, state = rememberTooltipState()) {
-        FilledTonalIconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(cell).semantics { contentDescription = description }) {
+    var hovered by remember { mutableStateOf(false) }
+    Box {
+
+        FilledTonalIconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(cell).trackMenuHover { hovered = it != null }.semantics { contentDescription = description }) {
             Canvas(Modifier.fillMaxSize().padding(cell * .25f)) {
                 val ink = Color(0xFFC8E7F5)
                 val stroke = size.minDimension * .09f
@@ -89,22 +92,51 @@ private fun MenuIcon(action: String, description: String, cell: Dp, enabled: Boo
                 }
             }
         }
+        if (hovered) Text(description, Modifier.align(Alignment.BottomCenter)
+            .background(Color(0xFF18232E)), style = MaterialTheme.typography.labelSmall,
+            maxLines = 2)
+
+    }
+}
+
+private fun Modifier.trackMenuHover(onHover: (Offset?) -> Unit) = pointerInput(Unit) {
+    awaitPointerEventScope {
+        while (true) {
+            val event = awaitPointerEvent()
+            when (event.type) {
+                PointerEventType.Enter, PointerEventType.Move -> {
+                    val position = event.changes.firstOrNull()?.position
+                    onHover(position?.let { Offset(it.x / size.width, it.y / size.height) })
+                }
+                PointerEventType.Exit -> onHover(null)
+            }
+        }
     }
 }
 
 @Composable
 private fun GridChoice(columns: Int, rows: Int, cell: Dp, enabled: Boolean, onChoose: (Int, Int) -> Unit) {
-    Canvas(Modifier.size(cell).background(Color(0xFF243544)).border(cell * .015f, Color(0xFF708EA4))
+    var hovered by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    fun target(x: Float, y: Float): Pair<Int, Int> {
+        fun axis(value: Float, count: Int) = ((value - .12f) / .76f * count).toInt().coerceIn(0, count - 1)
+        return axis(x, columns) to axis(y, rows)
+    }
+    Canvas(Modifier.size(cell).trackMenuHover { point ->
+        hovered = point?.takeIf { enabled }?.let { target(it.x, it.y) }
+    }.background(Color(0xFF243544)).border(cell * .015f, Color(0xFF708EA4))
         .semantics { contentDescription = "$columns by $rows snap grid" }
         .pointerInput(columns, rows, enabled) {
             if (enabled) detectTapGestures { point ->
-                onChoose((point.x / size.width * columns).toInt().coerceIn(0, columns - 1),
-                    (point.y / size.height * rows).toInt().coerceIn(0, rows - 1))
+                val (col, row) = target(point.x / size.width, point.y / size.height)
+                onChoose(col, row)
             }
         }) {
         val pad = size.minDimension * .12f
         val width = size.width - 2 * pad; val height = size.height - 2 * pad
         val ink = Color(0xFFB6D6E8)
+        hovered?.let { (col, row) ->
+            drawRect(Color(0xFF3988AA), Offset(pad + width * col / columns, pad + height * row / rows), Size(width / columns, height / rows))
+        }
         drawRect(ink, Offset(pad, pad), Size(width, height), style = Stroke(size.minDimension * .025f))
         for (col in 1 until columns) drawLine(ink, Offset(pad + width * col / columns, pad), Offset(pad + width * col / columns, pad + height), size.minDimension * .02f)
         for (row in 1 until rows) drawLine(ink, Offset(pad, pad + height * row / rows), Offset(pad + width, pad + height * row / rows), size.minDimension * .02f)

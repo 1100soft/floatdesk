@@ -1,6 +1,8 @@
 package dev.floatdesk.client
 
 import androidx.compose.runtime.key
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.fillMaxWidth
 import android.util.Log
 import androidx.lifecycle.Lifecycle
@@ -999,7 +1001,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 if(index==0)connection.cursorLocation?.takeIf{it.key=="desktop"}?.let{location->
                     val b=focusInfo?.bounds()
                     if(b!=null)connection.presentation().extendedDisplayPoint((location.sourceX-b[0])/b[2],(location.sourceY-b[1])/b[3])?.let{(u,v)->
-                        val glow=cursorGlow(u,v,placement.physicalWidthM/placement.physicalHeightM)
+                        val glow=cursorGlow(u,v,placement.physicalWidthM,placement.physicalHeightM,dev.floatdesk.client.workspace.ViewLayers.DesktopDistanceM*handTracking.unitsPerMeter)
                         segments.addAll(glow.toList());repeat(glow.size/4){colors.addAll(listOf(0f,1f,1f))}
                     }
                 }
@@ -1309,6 +1311,15 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             val cell=(WindowMenuLayout.cellM*unit).meters(density,pixelDensity)
             val gap=(WindowMenuLayout.gapM*unit).meters(density,pixelDensity)
             fun closeMenus(){magnifierMenu=null;windowMenu=null}
+            val dismissPose=pose.copy(position=transformPoint(pose,floatArrayOf(0f,0f,-.012f*unit)))
+            Subspace {
+                SpatialPanel(modifier=placedPanel(dismissPose,2.4f*unit,1.8f*unit,density,pixelDensity)){
+                    androidx.compose.foundation.layout.Box(Modifier.fillMaxSize().pointerInput(Unit){
+                        detectTapGestures { closeMenus() }
+                    })
+                }
+            }
+
             Subspace{SpatialPanel(modifier=placedPanel(pose,width,height,density,pixelDensity),shape=androidx.xr.compose.subspace.layout.SpatialRoundedCornerShape(androidx.compose.foundation.shape.CornerSize(0.dp))){
                 WindowActionsMenu(menuWindow,cell,gap,onAction={action->menuWindow?.let{connection.windowAction(it,action)};closeMenus()},onSnap={columns,rows,col,row->
                     val info=connection.workspaceInfo.value

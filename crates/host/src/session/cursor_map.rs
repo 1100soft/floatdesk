@@ -179,8 +179,32 @@ impl Router {
 
             Some(target)
         } else {
-            self.point = Some(point);
-            None
+            // X11 has already applied the physical motion. Always return a
+            // mapped boundary point so it cannot escape the virtual workspace.
+            let (surface, boundary, target) = surfaces
+                .iter()
+                .filter(|surface| self.owner.as_ref().is_none_or(|key| &surface.key == key))
+                .filter_map(|surface| {
+                    let [left, top] = surface.points[0];
+                    let [right, bottom] = surface.points[2];
+                    if left > right || top > bottom {
+                        return None;
+                    }
+                    let boundary = [
+                        proposed[0].clamp(left, right),
+                        proposed[1].clamp(top, bottom),
+                    ];
+                    surface
+                        .map(boundary, false)
+                        .map(|target| (surface, boundary, target))
+                })
+                .min_by(|a, b| {
+                    let distance = |p: [f64; 2]| (p[0] - proposed[0]).hypot(p[1] - proposed[1]);
+                    distance(a.1).total_cmp(&distance(b.1))
+                })?;
+            self.point = Some(boundary);
+            self.owner = Some(surface.key.clone());
+            Some(target)
         }
     }
     pub fn claim(&mut self, surfaces: &[Surface], key: &str, root: [f64; 2]) -> bool {
@@ -343,6 +367,21 @@ mod tests {
         assert_eq!(router.virtual_position(), Some([0.25, 0.5]));
         router.inactive([1., 0.]);
         assert_eq!(router.virtual_position(), None);
+    }
+    #[test]
+    fn outward_motion_keeps_os_cursor_at_logical_edge() {
+        let mut magnifier = pane(0., 1., [0., 0., 500., 500.]);
+        magnifier.points = [[0., 1000.], [1000., 1000.], [1000., 2000.], [0., 2000.]];
+        let surfaces = [magnifier];
+        let mut router = Router::default();
+        assert!(router.claim(&surfaces, &surfaces[0].key, [250., 250.]));
+        for _ in 0..2 {
+            assert_eq!(
+                router.advance(&surfaces, [250., 550.], [0., 600.], [1., 1.]),
+                Some([250., 500.])
+            );
+            assert_eq!(router.virtual_position(), Some([500., 2000.]));
+        }
     }
     #[test]
     fn invalid_maps_rejected() {

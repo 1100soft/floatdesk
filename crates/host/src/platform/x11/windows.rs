@@ -872,6 +872,20 @@ pub fn window_action(value: &serde_json::Value) -> Result<()> {
                 .ok()
                 .filter(|v| *v > 0 && *v <= u16::MAX.into())
                 .ok_or_else(|| Error::Msg("Invalid window height".into()))?;
+            let state = atom(&link, b"_NET_WM_STATE")?;
+            let fullscreen = atom(&link, b"_NET_WM_STATE_FULLSCREEN")?;
+            if values(&link, id, state, AtomEnum::ATOM)?.contains(&fullscreen) {
+                link.conn
+                    .send_event(
+                        false,
+                        link.root,
+                        mask,
+                        ClientMessageEvent::new(32, id, state, [0, fullscreen, 0, 2, 0]),
+                    )
+                    .map_err(Error::x11)?
+                    .check()
+                    .map_err(Error::x11)?;
+            }
             // Remove maximization before applying an explicit application snap.
             link.conn
                 .send_event(
@@ -1015,6 +1029,24 @@ mod tests {
             }
         };
         wait(&|| catalogue().unwrap().1.iter().any(|w| w.id == id));
+        let fullscreen = atom(&link, b"_NET_WM_STATE_FULLSCREEN").unwrap();
+        let state = atom(&link, b"_NET_WM_STATE").unwrap();
+        link.conn
+            .send_event(
+                false,
+                link.root,
+                EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+                ClientMessageEvent::new(32, id, state, [1, fullscreen, 0, 2, 0]),
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+        link.conn.flush().unwrap();
+        wait(&|| {
+            values(&link, id, state, AtomEnum::ATOM)
+                .unwrap()
+                .contains(&fullscreen)
+        });
         window_action(&serde_json::json!({"windowId":id,"action":"geometry","x":190,"y":140,"width":300,"height":220})).unwrap();
         wait(&|| {
             let g = link.conn.get_geometry(id).unwrap().reply().unwrap();

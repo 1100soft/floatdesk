@@ -151,7 +151,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                 val typed=connection.typingLocked(now) && connection.typingWindow==renderedPane?.id
                 val cue=if(typed)typingIndicator(FocusRect(0f,0f,1f,1f))else floatArrayOf()
                 val location=connection.cursorLocation?.takeIf{it.key==topologyKey}
-                val glow=surfaceCoordinates(location?.let{cursorGlow(it.u,it.v,renderedPane?.let{p->p.width/p.height} ?: 1f)} ?: floatArrayOf())
+                val glow=surfaceCoordinates(location?.let{loc->renderedPane?.let{p->cursorGlow(loc.u,loc.v,p.width,p.height,p.layerDistanceM*p.units)}} ?: floatArrayOf())
                 val colors=FloatArray((ink.size+cue.size+glow.size)/4*3){i->if(i/3<ink.size/4)listOf(.6f,.85f,1f)[i%3]else if(i/3<(ink.size+cue.size)/4)listOf(1f,.75f,.25f)[i%3]else listOf(0f,1f,1f)[i%3]}
                 resources.stream?.overlay(VideoAim(ink+cue+glow,opacity=.85f,colors=colors))
                 val head=viewer.get() ?: continue

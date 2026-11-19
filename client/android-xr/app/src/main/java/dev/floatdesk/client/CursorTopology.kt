@@ -98,10 +98,13 @@ internal fun CursorTopology.coarsened():CursorTopology {
 }
 
 internal data class CursorLocation(val key:String,val u:Float,val v:Float,val x:Float,val y:Float,val sourceX:Float=x,val sourceY:Float=y)
-internal fun cursorGlow(u:Float,v:Float,aspect:Float):FloatArray=buildList<Float>{
-    for(radius in listOf(.012f,.018f))for(i in 0 until 20){
+internal fun cursorGlow(u:Float,v:Float,width:Float,height:Float,distance:Float):FloatArray=buildList<Float>{
+    if(width<=0f || height<=0f)return@buildList
+    // Fixed angular radii; normalize each axis independently.
+    for(angle in listOf(.004f,.006f))for(i in 0 until 20){
+        val radius=angle*distance
         val a=i*2*Math.PI/20;val b=(i+1)*2*Math.PI/20
-        add(u+radius*kotlin.math.cos(a).toFloat());add(v+radius*aspect*kotlin.math.sin(a).toFloat())
-        add(u+radius*kotlin.math.cos(b).toFloat());add(v+radius*aspect*kotlin.math.sin(b).toFloat())
+        add(u+radius/width*kotlin.math.cos(a).toFloat());add(v+radius/height*kotlin.math.sin(a).toFloat())
+        add(u+radius/width*kotlin.math.cos(b).toFloat());add(v+radius/height*kotlin.math.sin(b).toFloat())
     }
 }.toFloatArray()

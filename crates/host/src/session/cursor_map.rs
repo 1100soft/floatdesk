@@ -55,6 +55,102 @@ impl Surface {
             && self.source[3] > self.source[1]
     }
 }
+/// Clip the motion segment against each rectangle, then traverse only through
+/// intersections with a shared edge or area. A single shared corner is a wall.
+fn sweep(
+    surfaces: &[Surface],
+    start: [f64; 2],
+    travel: [f64; 2],
+    owner: Option<&str>,
+) -> ([f64; 2], Vec<bool>) {
+    fn interval(surface: &Surface, start: [f64; 2], travel: [f64; 2]) -> Option<(f64, f64)> {
+        let mut enter: f64 = 0.0;
+        let mut exit: f64 = 1.0;
+        for axis in 0..2 {
+            let low = surface.points[0][axis];
+            let high = surface.points[2][axis];
+            if travel[axis] == 0.0 {
+                if start[axis] < low || start[axis] > high {
+                    return None;
+                }
+            } else {
+                let a = (low - start[axis]) / travel[axis];
+                let b = (high - start[axis]) / travel[axis];
+                enter = enter.max(a.min(b));
+                exit = exit.min(a.max(b));
+            }
+        }
+        (enter <= exit).then_some((enter, exit))
+    }
+
+    fn shares_edge(a: &Surface, b: &Surface) -> bool {
+        let overlap = |axis: usize| {
+            a.points[2][axis].min(b.points[2][axis]) - a.points[0][axis].max(b.points[0][axis])
+        };
+        let (x, y) = (overlap(0), overlap(1));
+        x >= 0.0 && y >= 0.0 && (x > 0.0 || y > 0.0)
+    }
+
+    let intervals: Vec<_> = surfaces
+        .iter()
+        .map(|s| interval(s, start, travel))
+        .collect();
+    let seed = surfaces
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| intervals[*i].is_some_and(|(enter, _)| enter == 0.0))
+        .min_by(|(_, a), (_, b)| {
+            (Some(a.key.as_str()) != owner)
+                .cmp(&(Some(b.key.as_str()) != owner))
+                .then_with(|| a.depth.total_cmp(&b.depth))
+        });
+    let mut arrival = vec![f64::INFINITY; surfaces.len()];
+    let mut pending = Vec::new();
+    if let Some((i, _)) = seed {
+        arrival[i] = 0.0;
+        pending.push(i);
+    }
+    let mut end: f64 = 0.0;
+    let mut last = seed.map(|(i, _)| i);
+    while let Some(i) = pending.pop() {
+        let (_, exit) = intervals[i].unwrap();
+        if exit > end {
+            end = exit;
+            last = Some(i);
+        }
+        for (j, bounds) in intervals.iter().enumerate() {
+            let Some((enter, next_exit)) = *bounds else {
+                continue;
+            };
+            // A rectangle touched at one point cannot serve as a bridge.
+            if enter == next_exit {
+                continue;
+            }
+            let crossing = enter.max(arrival[i]);
+            if crossing < arrival[j]
+                && crossing <= exit
+                && crossing <= next_exit
+                && shares_edge(&surfaces[i], &surfaces[j])
+            {
+                arrival[j] = crossing;
+                pending.push(j);
+            }
+        }
+    }
+    let mut point = [start[0] + travel[0] * end, start[1] + travel[1] * end];
+    if let Some(i) = last {
+        for (axis, value) in point.iter_mut().enumerate() {
+            *value = value.clamp(surfaces[i].points[0][axis], surfaces[i].points[2][axis]);
+        }
+    }
+    let reached = arrival
+        .into_iter()
+        .zip(intervals)
+        .map(|(at, bounds)| at <= end && bounds.is_some_and(|(_, exit)| exit >= end))
+        .collect();
+    (point, reached)
+}
+
 #[derive(Default)]
 pub(super) struct Router {
     point: Option<[f64; 2]>,
@@ -120,38 +216,14 @@ impl Router {
         {
             return None;
         }
-        // Advance through connected intervals on each axis. An exposed edge
-        // blocks motion while the other axis remains free to slide along it.
-        for axis in 0..2 {
-            let other = 1 - axis;
-            let mut intervals: Vec<_> = surfaces
-                .iter()
-                .filter_map(|surface| {
-                    let low = surface.points[0];
-                    let high = surface.points[2];
-                    (point[other] >= low[other] && point[other] <= high[other])
-                        .then_some((low[axis], high[axis]))
-                })
-                .collect();
-            intervals.sort_by(|a, b| a.0.total_cmp(&b.0));
-            let mut merged: Vec<(f64, f64)> = Vec::new();
-            for (low, high) in intervals {
-                if let Some(last) = merged.last_mut().filter(|last| low <= last.1) {
-                    last.1 = last.1.max(high);
-                } else {
-                    merged.push((low, high));
-                }
-            }
-            if let Some((low, high)) = merged
-                .into_iter()
-                .find(|(low, high)| point[axis] >= *low && point[axis] <= *high)
-            {
-                point[axis] = (point[axis] + delta[axis] * scale[axis]).clamp(low, high);
-            }
-        }
+        let travel = [delta[0] * scale[0], delta[1] * scale[1]];
+        let (end, reachable) = sweep(surfaces, point, travel, self.owner.as_deref());
+        point = end;
         let (surface, target) = surfaces
             .iter()
-            .filter_map(|surface| surface.map(point, false).map(|target| (surface, target)))
+            .zip(reachable)
+            .filter(|(_, reached)| *reached)
+            .filter_map(|(surface, _)| surface.map(point, false).map(|target| (surface, target)))
             .min_by(|a, b| a.0.depth.total_cmp(&b.0.depth))?;
         self.point = Some(point);
         self.owner = Some(surface.key.clone());
@@ -353,6 +425,38 @@ mod tests {
         assert_eq!(router.virtual_position(), Some([0.75, 1.5]));
         router.advance(&surfaces, [0., 0.], [0., -1.], [1., 1.]);
         assert_eq!(router.location(&surfaces).unwrap().0, surfaces[0].key);
+    }
+    #[test]
+    fn diagonal_motion_cannot_detour_or_cross_a_corner() {
+        let a = pane(0., 2., [0., 0., 100., 100.]);
+        let mut b = pane(1., 1., [200., 200., 300., 300.]);
+        b.points = [[1., 1.], [2., 1.], [2., 2.], [1., 2.]];
+        let surfaces = [a, b];
+        let mut r = Router::default();
+        assert!(r.claim(&surfaces, &surfaces[0].key, [50., 50.]));
+        for _ in 0..2 {
+            assert_eq!(
+                r.advance(&surfaces, [50., 50.], [1., 1.], [1., 1.]),
+                Some([100., 100.])
+            );
+        }
+
+        let right = pane(1., 1., [200., 0., 300., 100.]);
+        let mut above = pane(1., 1., [400., 0., 500., 100.]);
+        above.points = [[1., 1.], [2., 1.], [2., 2.], [1., 2.]];
+        let surfaces = [surfaces[0].clone(), right, above];
+        let mut corner = Router::default();
+        assert!(corner.claim(&surfaces, &surfaces[0].key, [50., 50.]));
+        assert_eq!(
+            corner.advance(&surfaces, [50., 50.], [1., 1.], [1., 1.]),
+            Some([100., 100.])
+        );
+        let mut r = Router::default();
+        assert!(r.claim(&surfaces, &surfaces[0].key, [50., 90.]));
+        r.advance(&surfaces, [50., 90.], [1., 1.], [1., 1.]);
+        let point = r.virtual_position().unwrap();
+        assert!((point[0] - 0.6).abs() < 1e-12);
+        assert_eq!(point[1], 1.0);
     }
     #[test]
     fn invalid_maps_rejected() {

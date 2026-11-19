@@ -151,6 +151,60 @@ fn sweep(
     (point, reached)
 }
 
+/// Cross only the gap directly opposite the exit face. Keep the perpendicular
+/// coordinate at the impact point and land on the first facing rectangle.
+fn cross_gap(
+    surfaces: &[Surface],
+    reached: &[bool],
+    impact: [f64; 2],
+    intended: [f64; 2],
+    travel: [f64; 2],
+) -> Option<[f64; 2]> {
+    let mut axes = (0..2).filter(|&axis| {
+        let other = 1 - axis;
+        travel[axis] != 0.0
+            && (intended[axis] - impact[axis]) * travel[axis] > 0.0
+            && surfaces.iter().zip(reached).any(|(surface, &reached)| {
+                let [low, _, high, _] = surface.points;
+                let edge = if travel[axis] > 0.0 {
+                    high[axis]
+                } else {
+                    low[axis]
+                };
+                reached
+                    && impact[axis] == edge
+                    && impact[other] > low[other]
+                    && impact[other] < high[other]
+            })
+    });
+    let axis = axes.next()?;
+    if axes.next().is_some() {
+        return None;
+    }
+    let other = 1 - axis;
+    let direction = travel[axis].signum();
+    let edge = surfaces
+        .iter()
+        .filter_map(|surface| {
+            let [low, _, high, _] = surface.points;
+            if impact[other] <= low[other] || impact[other] >= high[other] {
+                return None;
+            }
+            let edge = if direction > 0.0 {
+                low[axis]
+            } else {
+                high[axis]
+            };
+            let gap = (edge - impact[axis]) * direction;
+            (gap > 0.0).then_some((gap, edge))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))?
+        .1;
+    let mut landing = impact;
+    landing[axis] = edge;
+    Some(landing)
+}
+
 #[derive(Default)]
 pub(super) struct Router {
     point: Option<[f64; 2]>,
@@ -217,8 +271,17 @@ impl Router {
             return None;
         }
         let travel = [delta[0] * scale[0], delta[1] * scale[1]];
-        let (end, reachable) = sweep(surfaces, point, travel, self.owner.as_deref());
+        let intended = [point[0] + travel[0], point[1] + travel[1]];
+        let (end, mut reachable) = sweep(surfaces, point, travel, self.owner.as_deref());
         point = end;
+        if let Some(landing) = cross_gap(surfaces, &reachable, end, intended, travel) {
+            point = landing;
+            for (surface, reached) in surfaces.iter().zip(&mut reachable) {
+                *reached = (0..2).all(|axis| {
+                    point[axis] >= surface.points[0][axis] && point[axis] <= surface.points[2][axis]
+                });
+            }
+        }
         let (surface, target) = surfaces
             .iter()
             .zip(reachable)
@@ -292,7 +355,7 @@ mod tests {
         }
     }
     #[test]
-    fn front_occlusion_and_disconnected_edge() {
+    fn front_occlusion_and_aligned_gap_crossing() {
         let surfaces = vec![
             pane(0., 2., [0., 0., 100., 100.]),
             pane(0.4, 1., [200., 0., 300., 100.]),
@@ -306,7 +369,7 @@ mod tests {
         let p = r
             .advance(&surfaces, [210., 50.], [110., 0.], [0.01, 0.01])
             .unwrap();
-        assert_eq!(p, [300., 50.]);
+        assert_eq!(p, [400., 50.]);
     }
     #[test]
     fn cursor_stays_in_owned_space_when_its_content_changes() {
@@ -457,6 +520,18 @@ mod tests {
         let point = r.virtual_position().unwrap();
         assert!((point[0] - 0.6).abs() < 1e-12);
         assert_eq!(point[1], 1.0);
+    }
+    #[test]
+    fn gap_crossing_preserves_the_coordinate_at_the_exit_face() {
+        let a = pane(0., 2., [0., 0., 100., 100.]);
+        let mut b = pane(0., 1., [200., 200., 300., 300.]);
+        b.points = [[0., 2.], [1., 2.], [1., 3.], [0., 3.]];
+        let surfaces = [a, b];
+        let mut r = Router::default();
+        assert!(r.claim(&surfaces, &surfaces[0].key, [25., 50.]));
+        r.advance(&surfaces, [25., 50.], [0.5, 1.], [1., 1.])
+            .unwrap();
+        assert_eq!(r.virtual_position(), Some([0.5, 2.]));
     }
     #[test]
     fn invalid_maps_rejected() {

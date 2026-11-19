@@ -2,6 +2,8 @@
 use serde::Deserialize;
 #[derive(Clone, Debug, Deserialize)]
 pub(super) struct Surface {
+    #[serde(default)]
+    pub key: String,
     pub points: [[f64; 2]; 4],
     pub source: [f64; 4],
     pub depth: f64,
@@ -56,6 +58,7 @@ impl Surface {
 #[derive(Default)]
 pub(super) struct Router {
     point: Option<[f64; 2]>,
+    owner: Option<String>,
 }
 impl Router {
     pub fn advance(
@@ -74,24 +77,36 @@ impl Router {
             surfaces
                 .iter()
                 .filter_map(|s| s.map(root, true).map(|p| (s.depth, p)))
-                .min_by(|a, b| a.0.total_cmp(&b.0))
+                .max_by(|a, b| a.0.total_cmp(&b.0))
                 .map(|(_, p)| p)
         })?;
+        if delta == [0.0, 0.0] {
+            if let Some(key) = self.owner.as_ref() {
+                if let Some(root) = surfaces
+                    .iter()
+                    .filter(|s| &s.key == key)
+                    .find_map(|s| s.map(point, false))
+                {
+                    return Some(root);
+                }
+            }
+        }
         let proposed = [
             point[0] + delta[0] * scale[0],
             point[1] + delta[1] * scale[1],
         ];
-        if let Some((_, target)) = surfaces
+        if let Some((surface, target)) = surfaces
             .iter()
-            .filter_map(|s| s.map(proposed, false).map(|p| (s.depth, p)))
-            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .filter_map(|s| s.map(proposed, false).map(|p| (s, p)))
+            .min_by(|a, b| a.0.depth.total_cmp(&b.0.depth))
         {
             self.point = Some(proposed);
+            self.owner = Some(surface.key.clone());
 
             return Some(target);
         }
         // Cross visual gaps in the motion direction, choosing the closest edge.
-        let mut nearest: Option<(f64, [f64; 2], [f64; 2])> = None;
+        let mut nearest: Option<(f64, [f64; 2], [f64; 2], String)> = None;
         for s in surfaces {
             for edge in 0..4 {
                 let a = s.points[edge];
@@ -113,12 +128,13 @@ impl Router {
                 let distance = (q[0] - proposed[0]).powi(2) + (q[1] - proposed[1]).powi(2);
                 if let Some(target) = s.map(q, false) {
                     if nearest.as_ref().is_none_or(|n| distance < n.0) {
-                        nearest = Some((distance, q, target));
+                        nearest = Some((distance, q, target, s.key.clone()));
                     }
                 }
             }
         }
-        if let Some((_, p, target)) = nearest {
+        if let Some((_, p, target, owner)) = nearest {
+            self.owner = Some(owner);
             self.point = Some(p);
 
             Some(target)
@@ -127,7 +143,40 @@ impl Router {
             None
         }
     }
+    pub fn claim(&mut self, surfaces: &[Surface], key: &str, root: [f64; 2]) -> bool {
+        if let Some(point) = surfaces
+            .iter()
+            .filter(|s| s.key == key)
+            .find_map(|s| s.map(root, true))
+        {
+            self.point = Some(point);
+            self.owner = Some(key.to_owned());
+            true
+        } else {
+            false
+        }
+    }
+    pub fn location(&self, surfaces: &[Surface]) -> Option<(String, [f64; 2], [f64; 2])> {
+        let point = self.point?;
+        let key = self.owner.as_ref()?;
+        let surface = surfaces
+            .iter()
+            .find(|s| &s.key == key && s.map(point, false).is_some())?;
+        let root = surface.map(point, false)?;
+        Some((
+            key.clone(),
+            [
+                (root[0] - surface.source[0]) / (surface.source[2] - surface.source[0]),
+                (root[1] - surface.source[1]) / (surface.source[3] - surface.source[1]),
+            ],
+            root,
+        ))
+    }
+    pub fn has_point(&self) -> bool {
+        self.point.is_some()
+    }
     pub fn reset(&mut self) {
+        self.owner = None;
         self.point = None;
     }
 }
@@ -136,6 +185,7 @@ mod tests {
     use super::*;
     fn pane(x: f64, depth: f64, source: [f64; 4]) -> Surface {
         Surface {
+            key: format!("pane:{x}:{depth}"),
             points: [[x, 0.], [x + 1., 0.], [x + 1., 1.], [x, 1.]],
             source,
             depth,
@@ -157,6 +207,42 @@ mod tests {
             .advance(&surfaces, [210., 50.], [110., 0.], [0.01, 0.01])
             .unwrap();
         assert!(p[0] >= 400., "{p:?}");
+    }
+    #[test]
+    fn cursor_stays_in_owned_space_when_its_content_changes() {
+        let mut surfaces = vec![
+            pane(0., 2., [0., 0., 100., 100.]),
+            pane(0.4, 1., [200., 0., 300., 100.]),
+        ];
+        let mut router = Router::default();
+        assert_eq!(
+            router.advance(&surfaces, [20., 50.], [30., 0.], [0.01, 0.01]),
+            Some([210., 50.])
+        );
+        let (key, uv, _) = router.location(&surfaces).unwrap();
+        surfaces[1].source = [500., 100., 700., 300.];
+        let root = router
+            .advance(&surfaces, [210., 50.], [0., 0.], [0.01, 0.01])
+            .unwrap();
+        assert!((root[0] - 520.).abs() < 0.00001 && (root[1] - 200.).abs() < 0.00001);
+        let (next, local, _) = router.location(&surfaces).unwrap();
+        assert_eq!(key, next);
+        assert_eq!(uv, local);
+    }
+    #[test]
+    fn explicit_claim_disambiguates_mirrored_sources() {
+        let a = pane(0., 2., [0., 0., 100., 100.]);
+        let mut b = pane(2., 1., [0., 0., 100., 100.]);
+        b.key = "magnifier".into();
+        let surfaces = vec![a, b];
+        let mut router = Router::default();
+        assert!(router.claim(&surfaces, "magnifier", [25., 50.]));
+        assert_eq!(router.location(&surfaces).unwrap().0, "magnifier");
+        assert_eq!(
+            router.advance(&surfaces, [25., 50.], [0., 0.], [0.01, 0.01]),
+            Some([25., 50.])
+        );
+        assert!(!router.claim(&surfaces, "missing", [25., 50.]));
     }
     #[test]
     fn invalid_maps_rejected() {

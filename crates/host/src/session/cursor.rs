@@ -1,7 +1,7 @@
 //! Cursor capture and compositing shared by streaming modes.
 use super::*;
 
-pub(super) fn cursor_loop(shared: Arc<Shared>) {
+pub(super) fn cursor_loop(shared: Arc<Shared>, socket: UdpSocket) {
     let mut cursor = match X11Cursor::open() {
         Ok(cursor) => cursor,
         Err(err) => {
@@ -11,6 +11,7 @@ pub(super) fn cursor_loop(shared: Arc<Shared>) {
     };
     let mut router = cursor_map::Router::default();
     let mut last_root = None;
+    let mut owner_sent = Instant::now() - Duration::from_secs(1);
     while !shared.stop.load(Ordering::Relaxed) {
         match cursor.poll() {
             Ok(mut sample) => {
@@ -18,19 +19,47 @@ pub(super) fn cursor_loop(shared: Arc<Shared>) {
                 if let Ok(map) = shared.cursor_map.lock() {
                     if map.2.elapsed() < Duration::from_secs(2) && !map.0.is_empty() {
                         let root = [f64::from(sample.root_x), f64::from(sample.root_y)];
-                        if motion == [0.0, 0.0] {
-                            if last_root.is_some_and(|old| old != root) {
-                                router.reset();
-                            }
-                        } else if let Some(target) =
-                            router.advance(&map.0, last_root.unwrap_or(root), motion, map.1)
+                        if motion == [0.0, 0.0] && last_root.is_some_and(|old| old != root) {
+                            router.reset();
+                        }
+                        if let Some((key, point)) = shared
+                            .cursor_claim
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .take()
                         {
-                            let x = target[0].round() as i32;
-                            let y = target[1].round() as i32;
-                            if cursor.move_to(x, y).is_ok() {
-                                sample.root_x = x;
-                                sample.root_y = y;
+                            router.claim(&map.0, &key, point);
+                        }
+                        if motion != [0.0, 0.0] || router.has_point() {
+                            if let Some(target) =
+                                router.advance(&map.0, last_root.unwrap_or(root), motion, map.1)
+                            {
+                                let x = target[0].round() as i32;
+                                let y = target[1].round() as i32;
+                                if (x != sample.root_x || y != sample.root_y)
+                                    && cursor.move_to(x, y).is_ok()
+                                {
+                                    sample.root_x = x;
+                                    sample.root_y = y;
+                                }
                             }
+                        }
+                        if owner_sent.elapsed() >= Duration::from_millis(33) {
+                            let value = if let Some((key, uv, root)) = router.location(&map.0) {
+                                serde_json::json!({"type":"cursorOwner","key":key,"u":uv[0],"v":uv[1],"x":root[0],"y":root[1]})
+                            } else {
+                                serde_json::json!({"type":"cursorOwner","key":""})
+                            };
+                            if let Ok(client) = shared.client.read() {
+                                if let Some(client) = client.as_ref() {
+                                    let packet = ControlPacket::Workspace {
+                                        json: value.to_string(),
+                                    }
+                                    .encode();
+                                    let _ = socket.send_to(&packet, client.control);
+                                }
+                            }
+                            owner_sent = Instant::now();
                         }
                     } else {
                         router.reset();

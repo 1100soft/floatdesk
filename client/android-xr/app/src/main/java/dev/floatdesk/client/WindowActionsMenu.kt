@@ -21,28 +21,29 @@ internal fun WindowActionsMenu(connection:DeskConnection,window:Long?,magnifier:
     var grid by remember{mutableStateOf(2 to 2)}
     fun action(name:String){window?.let{connection.windowAction(it,name)};onClose()}
     MaterialTheme(colorScheme=darkColorScheme()){
-        Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).padding(10.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){
-            Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){
-                if(page==2 || (magnifier && page==1))OutlinedButton(onClick={page--}){Text("‹")}
+        CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp){
+        Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).padding(4.dp),verticalArrangement=Arrangement.spacedBy(4.dp)){
+            Row(Modifier.fillMaxWidth().weight(if(page==2).20f else .35f),horizontalArrangement=Arrangement.SpaceBetween){
+                if(page==2 || (magnifier && page==1))IconButton(onClick={page--},modifier=Modifier.fillMaxHeight().aspectRatio(1f)){Text("‹")}
                 Spacer(Modifier.weight(1f))
-                OutlinedButton(onClick=onClose){Text("×")}
+                IconButton(onClick=onClose,modifier=Modifier.fillMaxHeight().aspectRatio(1f)){Text("×")}
             }
             when(page){
                 0->{
-                    Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(4.dp)){
-                        IconButton(onClick=onAdd){ActionDiagram("add")}
-                        IconButton(onClick=onRemove){ActionDiagram("remove")}
-                        IconButton(enabled=window!=null,onClick={page=1}){ActionDiagram("window")}
+                    Row(Modifier.fillMaxWidth().weight(1f),horizontalArrangement=Arrangement.SpaceEvenly){
+                        IconButton(onClick=onAdd,modifier=Modifier.weight(1f).fillMaxHeight()){ActionDiagram("add")}
+                        IconButton(onClick=onRemove,modifier=Modifier.weight(1f).fillMaxHeight()){ActionDiagram("remove")}
+                        IconButton(enabled=window!=null,onClick={page=1},modifier=Modifier.weight(1f).fillMaxHeight()){ActionDiagram("window")}
                     }
                 }
                 1->{
-                    Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(4.dp)){
-                        for(name in listOf("minimize","maximize","close"))IconButton(enabled=window!=null,onClick={action(name)}){ActionDiagram(name)}
-                        IconButton(onClick={page=2}){GridDiagram(2,2,null,Modifier.size(28.dp))}
+                    Row(Modifier.fillMaxWidth().weight(1f),horizontalArrangement=Arrangement.SpaceEvenly){
+                        for(name in listOf("minimize","maximize","close"))IconButton(enabled=window!=null,onClick={action(name)},modifier=Modifier.weight(1f).fillMaxHeight()){ActionDiagram(name)}
+                        IconButton(onClick={page=2},modifier=Modifier.weight(1f).fillMaxHeight()){GridDiagram(2,2,null,Modifier.size(28.dp))}
                     }
                 }
                 2->{
-                    Row(Modifier.fillMaxWidth().height(48.dp),horizontalArrangement=Arrangement.spacedBy(6.dp)){
+                    Row(Modifier.fillMaxWidth().weight(.25f),horizontalArrangement=Arrangement.spacedBy(6.dp)){
                         for(shape in listOf(1 to 1,2 to 1,3 to 1,2 to 2)){
                             OutlinedButton(onClick={grid=shape},modifier=Modifier.weight(1f).fillMaxHeight(),contentPadding=PaddingValues(4.dp)){
                                 GridDiagram(shape.first,shape.second,null,Modifier.fillMaxSize(),grid==shape)
@@ -68,6 +69,7 @@ internal fun WindowActionsMenu(connection:DeskConnection,window:Long?,magnifier:
                 }
             }
         }
+    }
     }
 }
 

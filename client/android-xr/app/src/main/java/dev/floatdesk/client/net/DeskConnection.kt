@@ -306,6 +306,7 @@ internal class DeskConnection(
         for(delay in listOf(0L,300L,900L))handler.postDelayed({if(gazeFocusPending.get()==id)send(packet)},delay)
         main.postDelayed({if(gazeFocusPending.compareAndSet(id,0))gazeFocusError.value="Gaze focus request timed out"},2000)
     }
+    @Volatile var cursorLocation:dev.floatdesk.client.CursorLocation?=null
     @Volatile var cursorTopology=dev.floatdesk.client.CursorTopology()
     private val cursorMapSequence=java.util.concurrent.atomic.AtomicLong()
     @Volatile var cursorMapDebug=floatArrayOf()
@@ -318,6 +319,7 @@ internal class DeskConnection(
             actual=if(next.patches.size<actual.patches.size)next else dev.floatdesk.client.CursorTopology()
             json=actual.json()
         }
+        if(actual.patches.isEmpty())cursorLocation=null
         cursorTopology=actual
         cursorMapDebug=actual.debugSegments()
         val bounds=workspaceInfo.value?.bounds()
@@ -468,6 +470,9 @@ internal class DeskConnection(
                         runCatching{org.json.JSONObject(decoded.json)}.getOrNull()?.takeIf{it.optString("type")=="windowActionResult"}?.let{windowRequests.remove(it.optInt("requestId"))}
 
                         if(incoming.address==pendingRemote?.address && incoming.port==pendingRemote?.port) {
+                            runCatching{org.json.JSONObject(decoded.json)}.getOrNull()?.takeIf{it.optString("type")=="cursorOwner"}?.let{reply->
+                                cursorLocation=reply.optString("key").takeIf{it.isNotEmpty()}?.let{dev.floatdesk.client.CursorLocation(it,reply.optDouble("u").toFloat(),reply.optDouble("v").toFloat(),reply.optDouble("x").toFloat(),reply.optDouble("y").toFloat())}
+                            }
                             runCatching{org.json.JSONObject(decoded.json)}.getOrNull()?.takeIf{it.optString("type")=="typingState"}?.let{reply->
                                 typingWindow=reply.optLong("windowId").takeIf{it>0L}
                                 if(reply.optBoolean("available"))lastTypingAt=(android.os.SystemClock.uptimeMillis()-reply.optLong("ageMs",60000)).coerceAtLeast(1)
@@ -614,6 +619,11 @@ internal class DeskConnection(
         send(Protocol.keyframeRequest(0xff))
     }
 
+    fun claimCursor(key:String,u:Float,v:Float){
+        if(cursorTopology.patches.isEmpty())return
+        val b=workspaceInfo.value?.bounds() ?: return
+        send(Protocol.workspace(org.json.JSONObject().put("type","cursorSpace").put("sequence",pointerSeq.incrementAndGet()).put("key",key).put("x",b[0]+u*b[2]).put("y",b[1]+v*b[3]).toString()))
+    }
     fun movePointer(monitor: Int,x: Float,y: Float,dragging: Boolean = false) {
         if (monitors.value.none { it.index == monitor }) return
         val packet=Protocol.pointerMove(monitor,x,y,pointerSeq.incrementAndGet(),dragging)

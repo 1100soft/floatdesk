@@ -931,7 +931,12 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     Log.i("Floatdesk","mouse drag=${mouse.dragging}")
                     lastMouseDragging=mouse.dragging
                 }
-                mouse.target?.let {target->connection.desktopPoint(target.monitor,target.u,target.v)?.let {(u,v)->connection.movePointer(target.monitor,u,v,mouse.dragging)}}
+                mouse.target?.let {target->connection.desktopPoint(target.monitor,target.u,target.v)?.let {(u,v)->
+                    connection.movePointer(target.monitor,u,v,mouse.dragging)
+                    val side=contextHands.keys.singleOrNull();val owner=side?.let{magnifierHands.owner(it)}
+                    val space=when{owner==null->"desktop";owner.startsWith("system:")->owner.replaceFirst("system:","shell:");owner.startsWith("popup:")->"menu:${magnifierHands.window(side!!)}";else->owner}
+                    connection.claimCursor(space,u,v)
+                }}
                 mouse.click?.let {
                     if(it.button==3) clickView.playSoundEffect(android.view.SoundEffectConstants.CLICK)
                     Log.i("Floatdesk","mouse click button=${it.button}")
@@ -969,6 +974,13 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     }
                 }
                 if(index==0)connection.cursorWires["desktop"]?.let{wires->segments.addAll(wires.toList());repeat(wires.size/4){colors.addAll(listOf(.6f,.85f,1f))}}
+                if(index==0)connection.cursorLocation?.takeIf{it.key=="desktop"}?.let{location->
+                    val b=focusInfo?.bounds()
+                    if(b!=null)connection.presentation().extendedDisplayPoint((location.x-b[0])/b[2],(location.y-b[1])/b[3])?.let{(u,v)->
+                        val glow=cursorGlow(u,v,placement.physicalWidthM/placement.physicalHeightM)
+                        segments.addAll(glow.toList());repeat(glow.size/4){colors.addAll(listOf(0f,1f,1f))}
+                    }
+                }
                 connection.aimOverlay(index,dev.floatdesk.client.media.VideoAim(segments.toFloatArray(),floatArrayOf(),maxOf(2f,placement.pixelWidth*.001f),.85f,colors.toFloatArray()))
             }
             val previews = if (choice.mode == PointerMode.PREVIEW) hoverHands.values.groupBy { it.monitor }.mapNotNull { (index,points) ->
@@ -1250,7 +1262,9 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     }
                     for((key,pane) in panes){
                         val source=connection.windowCaptures.source(pane.id) ?: continue
-                        patches+=cursorPatches(key,pane.pose,pane.width,pane.height,pane.mesh,FocusRect(source.x.toFloat(),source.y.toFloat(),(source.x+source.width).toFloat(),(source.y+source.height).toFloat()),mapViewer!!,region=magnifierContentRect(pane),front=true)
+                        val logicalPose=if(pane.fixed)pane.pose.copy(position=pane.requestedPosition ?: pane.pose.position)
+                            else pane.pose.copy(position=transformPoint(mapViewer!!,FloatArray(3){pane.headOffset[it]*pane.layerDistanceM*pane.units}))
+                        patches+=cursorPatches(key,logicalPose,pane.width,pane.height,pane.mesh,FocusRect(source.x.toFloat(),source.y.toFloat(),(source.x+source.width).toFloat(),(source.y+source.height).toFloat()),mapViewer!!,region=magnifierContentRect(pane),front=true)
                     }
                 }
                 if(!windowGrab.engaged)connection.publishCursorMap(CursorTopology(patches,cursorMapScale(patches.filter{!it.front})))
@@ -1264,7 +1278,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
         if(magnifierMenu!=null || windowMenu!=null)displayHead.get()?.let{head->
             val unit=handTracking.unitsPerMeter
             val pose=Pose(transformPoint(head,floatArrayOf(0f,-.03f*unit,-dev.floatdesk.client.workspace.ViewLayers.ControlsDistanceM*unit)),head.rotation)
-            Subspace{SpatialPanel(modifier=placedPanel(pose,.24f*unit,(if(actionGrid).24f else .11f)*unit,density,pixelDensity)){
+            Subspace{SpatialPanel(modifier=placedPanel(pose,.24f*unit,(if(actionGrid).30f else .18f)*unit,density,pixelDensity)){
                 WindowActionsMenu(connection,menuWindow,magnifierMenu!=null,
                     onAdd={addFixedMagnifier();magnifierMenu=null},
                     onRemove={val selected=magnifierMenu;if(selected=="floating"){magnification.dismiss(SystemClock.uptimeMillis());magnified=null};workspace=workspace.copy(fixedMagnifiers=workspace.fixedMagnifiers.filter{it.id!=selected});fixedPins.remove(selected);fixedRuntime.remove(selected);store.save(workspace);magnifierMenu=null},

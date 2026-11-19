@@ -55,8 +55,9 @@ fun main() {
        mapOf("LEFT" to FingerPinch(if(closed).001f else .1f,.1f)),
        mapOf("LEFT" to info.hover(u,v)!!),info)
    step(0,false);step(1,true)
-   val moving=step(100,true,.25f,.25f);check(moving.move==null && moving.preview==WindowMove(77,150,150))
-   check(step(200,false,.26f,.26f).move==WindowMove(77,150,150))
+   check(step(100,true,.25f,.25f).preview==null)
+   val moving=step(210,true,.25f,.25f);check(moving.move==null && moving.preview==WindowMove(77,150,150))
+   check(step(220,false,.26f,.26f).move==WindowMove(77,150,150))
    check(!drag.engaged)
    step(300,true);check(step(1001,true).menu==77L)
    check(step(1100,true).menu==null);step(1101,false)
@@ -71,6 +72,7 @@ fun main() {
    delayed.update(80,true,true,pinched,emptyMap(),info);check(!delayed.engaged)
    check(snapWindowMove(source,2,104,info).x==0)
    check(snapWindowDrop(source,0,0,.01f,.01f,info)==WindowMove(77,0,0,500,500))
+   check(snapWindowDrop(source,0,0,.2f,.2f,info)==WindowMove(77,0,0,500,500))
    check(snapWindowDrop(source,0,0,.99f,.5f,info)==WindowMove(77,500,0,500,1000))
  }
 
@@ -81,6 +83,8 @@ fun main() {
    ray.begin("LEFT",hand,PointerTarget(0,.5f,.5f,floatArrayOf(0f,0f,0f)),desktop,null)
    val p=ray.point(mapOf("LEFT" to hand.copy(position=floatArrayOf(.2f,0f,0f))))!!.second
    check(abs(p.u-.55f)<.0001f && abs(p.v-.5f)<.0001f)
+   val rotated=ray.point(mapOf("LEFT" to hand.copy(rotation=floatArrayOf(.2f,.3f,.1f,.92f))))!!.second
+   check(abs(rotated.u-.5f)<.0001f && abs(rotated.v-.5f)<.0001f)
    ray.clear();check(ray.point(mapOf("LEFT" to hand))==null)
    val cue=typingIndicator(FocusRect(.2f,.3f,.8f,.9f));check(cue.size%4==0)
    check(cue.indices.all{if(it%2==0)cue[it] in .2f.. .8f else cue[it] in .3f.. .9f})

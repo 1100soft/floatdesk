@@ -10,7 +10,7 @@ internal data class CursorPatch(val key:String,val points:List<Pair<Float,Float>
 internal data class CursorTopology(val patches:List<CursorPatch> = emptyList(),val scale:Pair<Float,Float> = .001f to .001f){
     fun json():String {
         fun number(v:Float)=kotlin.math.round(v*10000f)/10000f
-        val rows=patches.map{p->org.json.JSONObject().put("points",org.json.JSONArray(p.points.map{org.json.JSONArray(listOf(number(it.first),number(it.second)))}))
+        val rows=patches.map{p->org.json.JSONObject().put("key",p.key).put("points",org.json.JSONArray(p.points.map{org.json.JSONArray(listOf(number(it.first),number(it.second)))}))
             .put("source",org.json.JSONArray(listOf(p.source.left,p.source.top,p.source.right,p.source.bottom)))
             .put("depth",p.depth)}
         return org.json.JSONObject().put("type","cursorMap").put("scale",org.json.JSONArray(listOf(scale.first,scale.second))).put("surfaces",org.json.JSONArray(rows)).toString()
@@ -86,3 +86,12 @@ internal fun CursorTopology.coarsened():CursorTopology {
     }
     return copy(patches=reduced)
 }
+
+internal data class CursorLocation(val key:String,val u:Float,val v:Float,val x:Float,val y:Float)
+internal fun cursorGlow(u:Float,v:Float,aspect:Float):FloatArray=buildList<Float>{
+    for(radius in listOf(.012f,.018f))for(i in 0 until 20){
+        val a=i*2*Math.PI/20;val b=(i+1)*2*Math.PI/20
+        add(u+radius*kotlin.math.cos(a).toFloat());add(v+radius*aspect*kotlin.math.sin(a).toFloat())
+        add(u+radius*kotlin.math.cos(b).toFloat());add(v+radius*aspect*kotlin.math.sin(b).toFloat())
+    }
+}.toFloatArray()

@@ -7,7 +7,8 @@ import kotlin.math.roundToInt
 
 internal object WindowInteractionPolicy {
     const val ContextHoldMs=700L
-    const val SlopFraction=.004f
+    const val SlopFraction=.025f
+    const val MotionConfirmMs=100L
     const val SnapFraction=.0125f
     const val AimAcquireMs=150L
     const val GridEdgeFraction=.12f
@@ -26,7 +27,7 @@ internal fun snapWindowMove(window:DesktopWindow,x:Int,y:Int,info:WorkspaceInfo)
 }
 /** Shared saved pinch policy; a stationary hold and a drag are mutually exclusive. */
 internal class WindowGrabController(private val thresholds:()->PinchThresholds){
-    private data class Hold(val side:String,val aimSide:String,val window:DesktopWindow,val u:Float,val v:Float,val at:Long,val layout:WorkspaceInfo,var moved:Boolean=false,var menu:Boolean=false,var candidate:WindowMove?=null)
+    private data class Hold(val side:String,val aimSide:String,val window:DesktopWindow,val u:Float,val v:Float,val at:Long,val layout:WorkspaceInfo,var outsideAt:Long?=null,var moved:Boolean=false,var menu:Boolean=false,var candidate:WindowMove?=null)
     private var hold:Hold?=null
     private val closed=mutableMapOf<String,Boolean>()
     private val pending=mutableMapOf<String,Long>()
@@ -52,8 +53,11 @@ internal class WindowGrabController(private val thresholds:()->PinchThresholds){
             if(contact!=null && !h.menu && !released){
                 val dx=((contact.contactU-h.u)*bounds[2]).roundToInt()
                 val dy=((contact.contactV-h.v)*bounds[3]).roundToInt()
-                val slop=minOf(h.window.width,h.window.height)*WindowInteractionPolicy.SlopFraction
-                if(abs(dx)>slop || abs(dy)>slop)h.moved=true
+                val slop=minOf(bounds[2],bounds[3])*WindowInteractionPolicy.SlopFraction
+                if(abs(dx)>slop || abs(dy)>slop){
+                    if(h.outsideAt==null)h.outsideAt=now
+                    if(now-h.outsideAt!!>=WindowInteractionPolicy.MotionConfirmMs)h.moved=true
+                }else h.outsideAt=null
                 if(h.moved)h.candidate=snapWindowDrop(h.window,h.window.x+dx,h.window.y+dy,contact.contactU,contact.contactV,h.layout)
             }
             if(released){hold=null;return WindowGrabUpdate(move=h.candidate)}
@@ -77,8 +81,9 @@ internal fun snapWindowDrop(window:DesktopWindow,x:Int,y:Int,u:Float,v:Float,inf
     val screen=info.screens.firstOrNull{px>=it.x && px<it.x+it.width && py>=it.y && py<it.y+it.height} ?: return snapWindowMove(window,x,y,info)
     val sx=(px-screen.x)/screen.width;val sy=(py-screen.y)/screen.height
     val edge=WindowInteractionPolicy.GridEdgeFraction
-    val col=if(sx<edge)0 else if(sx>1-edge)1 else -1
-    val row=if(sy<edge)0 else if(sy>1-edge)1 else -1
+    val corner=(sx<.25f || sx>.75f) && (sy<.25f || sy>.75f)
+    val col=if(sx<edge || corner && sx<.5f)0 else if(sx>1-edge || corner)1 else -1
+    val row=if(sy<edge || corner && sy<.5f)0 else if(sy>1-edge || corner)1 else -1
     if(col<0 && row<0)return snapWindowMove(window,x,y,info)
     val columns=if(col<0)1 else 2;val rows=if(row<0)1 else 2
     return windowGridCell(window.id,screen.x,screen.y,screen.width,screen.height,columns,rows,maxOf(0,col),maxOf(0,row))
@@ -100,9 +105,8 @@ internal class WindowDragRay {
     }
     fun point(poses:Map<String,HandAimPose>):Pair<String,PointerTarget>? {
         val a=anchor ?: return null;val hand=poses[a.side] ?: return null
-        val q=a.hand.rotation
-        val delta=multiplyQuaternion(hand.rotation,floatArrayOf(-q[0],-q[1],-q[2],q[3]))
-        val vector=rotateVector(delta,a.vector[0],a.vector[1],a.vector[2])
+        // Wrist rotation changes during pinching; a held grab follows translation only.
+        val vector=a.vector
         val origin=viewerInMonitor(hand.position,a.desktop.pose.position,a.desktop.pose.rotation)
         val end=viewerInMonitor(FloatArray(3){hand.position[it]+vector[it]},a.desktop.pose.position,a.desktop.pose.rotation)
         val hit=monitorRayHit(origin,FloatArray(3){end[it]-origin[it]},a.desktop.physicalWidthM,a.desktop.physicalHeightM,a.mesh) ?: return null

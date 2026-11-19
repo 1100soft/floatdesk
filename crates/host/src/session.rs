@@ -139,6 +139,7 @@ struct Shared {
     cursor: Mutex<CursorSprite>,
     cursor_generation: AtomicU64,
     rendering: Mutex<(Option<SocketAddr>, bool)>,
+    cursor_claim: Mutex<Option<(String, [f64; 2])>>,
     cursor_map: Mutex<(Vec<cursor_map::Surface>, [f64; 2], Instant)>,
     /// X11 socket of the capture thread. -1 when capture is not connected.
     capture_fd: [AtomicI32; 6],
@@ -410,6 +411,7 @@ fn run(
         }),
         cursor_generation: AtomicU64::new(0),
         rendering: Mutex::new((None, true)),
+        cursor_claim: Mutex::new(None),
         cursor_map: Mutex::new((Vec::new(), [0.001, 0.001], Instant::now())),
         capture_fd: std::array::from_fn(|_| AtomicI32::new(-1)),
         stream_active: std::array::from_fn(|_| AtomicBool::new(true)),
@@ -440,8 +442,9 @@ fn run(
     let mut threads = launch_streams(&shared, &monitors, &hellos, opts);
     tracing::info!(listen = %opts.listen, "waiting for a client hello");
     let cursor_shared = Arc::clone(&shared);
+    let cursor_socket = socket.try_clone()?;
     let cursor_thread = thread::spawn(move || {
-        cursor_loop(cursor_shared);
+        cursor_loop(cursor_shared, cursor_socket);
     });
     let (topology_tx, topology_rx) = std::sync::mpsc::sync_channel(1);
     let topology_shared = Arc::clone(&shared);
@@ -502,6 +505,7 @@ fn run(
     });
     let mut topology_epoch = Instant::now();
     let mut window_action_sequence = std::collections::HashMap::<(SocketAddr, u32), u32>::new();
+    let mut last_cursor_claim: Option<(SocketAddr, u64)> = None;
     let mut last_cursor_map: Option<(SocketAddr, u64)> = None;
     let mut last_gaze_focus: Option<(SocketAddr, u32)> = None;
     let mut replies: std::collections::VecDeque<(SocketAddr, u32, Vec<u8>)> =
@@ -541,6 +545,35 @@ fn run(
                                             .lock()
                                             .unwrap_or_else(|e| e.into_inner()) =
                                             (Some(from), active);
+                                    }
+                                }
+                                continue;
+                            }
+                            if value["type"] == "cursorSpace" {
+                                let sequence = value["sequence"].as_u64().unwrap_or(0);
+                                let allowed = shared
+                                    .client
+                                    .read()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .as_ref()
+                                    .is_some_and(|c| c.control == from);
+                                if allowed
+                                    && !last_cursor_claim
+                                        .is_some_and(|(peer, old)| peer == from && sequence < old)
+                                {
+                                    if let (Some(key), Some(x), Some(y)) = (
+                                        value["key"].as_str(),
+                                        value["x"].as_f64(),
+                                        value["y"].as_f64(),
+                                    ) {
+                                        if key.len() <= 256 && x.is_finite() && y.is_finite() {
+                                            *shared
+                                                .cursor_claim
+                                                .lock()
+                                                .unwrap_or_else(|e| e.into_inner()) =
+                                                Some((key.to_owned(), [x, y]));
+                                            last_cursor_claim = Some((from, sequence));
+                                        }
                                     }
                                 }
                                 continue;

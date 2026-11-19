@@ -25,6 +25,7 @@ internal enum class SystemMovePhase { START,UPDATE,END }
 /** Native move/resize rectangle behind the image. The system owns it throughout a gesture. */
 internal class MonitorSystemControls : AutoCloseable {
     private var entity: SurfaceEntity?=null
+    private var ownsEntity=true
     private var submitted:NativeNodeState?=null
     private var component: ResizableComponent?=null
     private var movable: MovableComponent?=null
@@ -32,7 +33,7 @@ internal class MonitorSystemControls : AutoCloseable {
     fun setVisible(value:Boolean) {
         if(visible==value)return
         visible=value
-        if(!value){entity?.setEnabled(false);moving=false;resizeStartWidth=null}
+        if(!value){if(ownsEntity)entity?.setEnabled(false);moving=false;resizeStartWidth=null}
         submitted?.invalidate()
     }
     private var generation=0L
@@ -58,12 +59,12 @@ internal class MonitorSystemControls : AutoCloseable {
         if(video==null || (!enabled && (resizeStartWidth!=null || moving))) { close();return }
         // Do not feed the app's changing geometry back into an active native controller.
         if(resizeStartWidth!=null || moving) {submitted?.invalidate();return}
-        val frame=if(mesh!=null) {
+        val frame=if(!allowMove)ResizeFrameGeometry(floatArrayOf(0f,0f,0f),floatArrayOf(0f,0f,1f),floatArrayOf(0f,1f,0f),width,height) else if(mesh!=null) {
             if(frameMesh!==mesh || curvedFrame==null) {curvedFrame=curvedResizeFrame(mesh);frameMesh=mesh}
             curvedFrame!!
         } else flatResizeFrame(width,height,viewer)
         frameWidth=frame.width
-        val padding=.02f*unitsPerMeter
+        val padding=if(allowMove).02f*unitsPerMeter else 0f
         val nextWidth=frame.width+2f*padding;val nextHeight=frame.height+2f*padding
         val geometryChanged=!shapeWidth.isFinite() || !shapeHeight.isFinite() ||
             kotlin.math.abs(shapeWidth-nextWidth)>maxOf(.00001f,kotlin.math.abs(nextWidth)*.0001f) ||
@@ -71,8 +72,10 @@ internal class MonitorSystemControls : AutoCloseable {
         val boundsChanged=geometryChanged || canonicalWidth!=width || canonicalHeight!=height
         if(entity==null) {
             val token=++generation
-            val root=SurfaceEntity.create(session,shape=SurfaceEntity.Shape.Quad(FloatSize2d(frame.width+2f*padding,frame.height+2f*padding)),
+            ownsEntity=allowMove || video !is SurfaceEntity
+            val root=if(!ownsEntity)video as SurfaceEntity else SurfaceEntity.create(session,shape=SurfaceEntity.Shape.Quad(FloatSize2d(frame.width+2f*padding,frame.height+2f*padding)),
                 parent=null,superSampling=SurfaceEntity.SuperSampling.NONE)
+            if(ownsEntity){
             val pointer=SpatialPointerComponent.create(session)
             check(root.addComponent(pointer));pointer.spatialPointerIcon=SpatialPointerIcon.NONE
             root.setSurfacePixelDimensions(IntSize2d(256,256))
@@ -80,6 +83,7 @@ internal class MonitorSystemControls : AutoCloseable {
             val canvas=root.getSurface().lockCanvas(null)
             canvas.drawColor(Color.TRANSPARENT,PorterDuff.Mode.CLEAR)
             root.getSurface().unlockCanvasAndPost(canvas)
+            }
             val resize=ResizableComponent.create(session,resizeEventListener=java.util.function.Consumer { event ->
                 if(visible && token==generation && !moving) {
                     submitted?.invalidate()
@@ -103,6 +107,7 @@ internal class MonitorSystemControls : AutoCloseable {
             resize.isFixedAspectRatioEnabled=true;resize.isAutoHideContentWhileResizingEnabled=false
             resize.isAlwaysShowOverlayEnabled=true
             check(root.addComponent(resize))
+            if(allowMove){
             val move=MovableComponent.createSystemMovable(session,scaleInZ=false)
             move.addMoveListener(object: EntityMoveListener {
                 override fun onMoveStart(entity: Entity,initialInputRay: Ray,initialPose: Pose,initialScale: Float,initialParent: Entity) {
@@ -117,13 +122,14 @@ internal class MonitorSystemControls : AutoCloseable {
                     if(visible && token==generation && moving) { moveListener?.invoke(SystemMovePhase.END,finalPose);moving=false }
                 }
             })
-            if(allowMove)check(root.addComponent(move))
-            entity=root;submitted=NativeNodeState(root);component=resize;movable=if(allowMove)move else null
+            check(root.addComponent(move));movable=move
+            }
+            entity=root;submitted=NativeNodeState(root);component=resize
         }
         val scale=video.getScale()
         val offset=Vector3(frame.center[0]*scale,frame.center[1]*scale,frame.center[2]*scale)
         val normal=Vector3(frame.normal[0],frame.normal[1],frame.normal[2]);val up=Vector3(frame.up[0],frame.up[1],frame.up[2])
-        entity?.let {
+        entity?.takeIf{ownsEntity}?.let {
             submitted!!.parent(video.parent);submitted!!.pose(video.getPose().compose(Pose(offset,Quaternion.fromLookTowards(normal,up))))
             submitted!!.scale(scale);submitted!!.enabled(enabled && visible)
             if(geometryChanged) it.shape=SurfaceEntity.Shape.Quad(FloatSize2d(nextWidth,nextHeight))
@@ -145,7 +151,7 @@ internal class MonitorSystemControls : AutoCloseable {
         generation++;moving=false;submitted=null
         frameMesh=null;curvedFrame=null
         component?.let { entity?.takeUnless{it.isDisposed}?.removeComponent(it) };movable?.let { entity?.takeUnless{it.isDisposed}?.removeComponent(it) }
-        entity?.dispose()
+        if(ownsEntity)entity?.dispose()
         entity=null;component=null;movable=null;listener=null;moveListener=null;resizeStartWidth=null
         shapeWidth=Float.NaN;shapeHeight=Float.NaN;canonicalWidth=Float.NaN;canonicalHeight=Float.NaN
     }

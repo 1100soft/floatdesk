@@ -89,10 +89,14 @@ internal fun magnifierGeometry(window:MagnifiedWindow,viewer:Pose,units:Float,pr
 }
 /** Projection mode changes are immediate even when ordinary mesh updates are deferred. */
 internal fun magnifierFrame(window:MagnifiedWindow, previous:MagnifiedWindow, viewer:Pose, units:Float, updateGeometry:Boolean):MagnifiedWindow {
-    val changed=window.spherical!=previous.spherical || window.width!=previous.width || window.height!=previous.height
-    val rebuild=updateGeometry || changed || window.spherical && previous.mesh==null
-    val source=window.copy(mesh=if(changed)null else previous.mesh)
-    return if(window.fixed)fixedMagnifierGeometry(source,viewer,updateMesh=rebuild)
+    // The native input surface, resize affordance and image share the content aspect.
+    val extent=maxOf(window.width,window.height)
+    val ratio=window.sourceWidth.toFloat()/window.sourceHeight.coerceAtLeast(1)
+    val fitted=window.copy(width=extent*minOf(1f,ratio),height=extent*minOf(1f,1f/ratio))
+    val changed=fitted.spherical!=previous.spherical || fitted.width!=previous.width || fitted.height!=previous.height
+    val rebuild=updateGeometry || changed || fitted.spherical && previous.mesh==null
+    val source=fitted.copy(mesh=if(changed)null else previous.mesh)
+    return if(fitted.fixed)fixedMagnifierGeometry(source,viewer,updateMesh=rebuild)
         else magnifierGeometry(source,viewer,units,updateMesh=rebuild)
 }
 
@@ -196,6 +200,7 @@ internal fun fixedMagnifierGeometry(window:MagnifiedWindow,viewer:Pose,proposed:
 }
 internal fun magnifierContentRect(window:MagnifiedWindow):FocusRect {
     val source=window.sourceWidth.toFloat()/window.sourceHeight.coerceAtLeast(1);val pane=window.width/window.height
+    if(abs(source/pane-1f)<.00001f)return FocusRect(0f,0f,1f,1f)
     val x=minOf(1f,source/pane);val y=minOf(1f,pane/source)
     return FocusRect((1-x)*.5f,(1-y)*.5f,(1+x)*.5f,(1+y)*.5f)
 }

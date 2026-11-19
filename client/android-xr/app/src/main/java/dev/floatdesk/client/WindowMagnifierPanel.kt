@@ -156,7 +156,10 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                     FloatArray(wire.size){i->if(i%2==0)padX+(rect.left+wire[i]*(rect.right-rect.left))*(1-2*padX)
                         else padY+(rect.top+wire[i]*(rect.bottom-rect.top))*(1-2*padY)}
                 }else floatArrayOf()
-                resources.stream?.overlay(VideoAim(ink,opacity=.5f))
+                val typed=connection.typingLocked(now) && connection.typingWindow==renderedPane?.id
+                val cue=if(typed)typingIndicator(FocusRect(0f,0f,1f,1f))else floatArrayOf()
+                val colors=FloatArray((ink.size+cue.size)/4*3){i->if(i/3<ink.size/4)listOf(.6f,.85f,1f)[i%3]else listOf(1f,.75f,.25f)[i%3]}
+                resources.stream?.overlay(VideoAim(ink+cue,opacity=.85f,colors=colors))
                 val head=viewer.get() ?: continue
                 if(resources.moving && !resources.resizing){
                     // Mixed gaze input can arrive before the joint sampler confirms which hand pinched.

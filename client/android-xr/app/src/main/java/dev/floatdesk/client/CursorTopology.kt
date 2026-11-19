@@ -16,27 +16,17 @@ internal data class CursorTopology(val patches:List<CursorPatch> = emptyList(),v
         return org.json.JSONObject().put("type","cursorMap").put("scale",org.json.JSONArray(listOf(scale.first,scale.second))).put("surfaces",org.json.JSONArray(rows)).toString()
     }
 }
-/** Tessellate using the same surface projection as visible content, including curved panes. */
+/** Logical content rectangles. Orientation/curvature never skew a cursor space. */
 internal fun cursorPatches(key:String,pose:Pose,width:Float,height:Float,mesh:MonitorMesh?,source:FocusRect,viewer:Pose,
     region:FocusRect=FocusRect(0f,0f,1f,1f),front:Boolean=false,divisions:Int=4):List<CursorPatch>{
-    fun view(u:Float,v:Float):FloatArray{
-        val flat=floatArrayOf((u-.5f)*width,(.5f-v)*height,0f)
-        return viewerInMonitor(transformPoint(pose,mesh?.project(flat,onTriangles=true) ?: flat),viewer.position,viewer.rotation)
-    }
-    fun mix(a:Float,b:Float,t:Float)=a+(b-a)*t
-    val grid=Array(divisions+1){row->Array(divisions+1){col->
-        view(mix(region.left,region.right,col.toFloat()/divisions),mix(region.top,region.bottom,row.toFloat()/divisions))
-    }}
-    return buildList {
-        for(row in 0 until divisions)for(col in 0 until divisions){
-            val l=col.toFloat()/divisions;val r=(col+1f)/divisions;val t=row.toFloat()/divisions;val b=(row+1f)/divisions
-            val vertices=listOf(grid[row][col],grid[row][col+1],grid[row+1][col+1],grid[row+1][col])
-            if(vertices.any{it[2]>=-.001f || it.any{v->!v.isFinite()}})continue
-            val points=vertices.map{it[0]/-it[2] to -it[1]/-it[2]}
-            if(points.all{it.first < -4f} || points.all{it.first>4f} || points.all{it.second < -4f} || points.all{it.second>4f})continue
-            add(CursorPatch(key,points,FocusRect(mix(source.left,source.right,l),mix(source.top,source.bottom,t),mix(source.left,source.right,r),mix(source.top,source.bottom,b)),vertices.map{-it[2]}.average().toFloat(),front))
-        }
-    }
+    val center=viewerInMonitor(pose.position,viewer.position,viewer.rotation)
+    val depth=-center[2]
+    if(depth<=.001f || center.any{!it.isFinite()} || width<=0 || height<=0)return emptyList()
+    val left=(center[0]+(region.left-.5f)*width)/depth
+    val right=(center[0]+(region.right-.5f)*width)/depth
+    val top=(-center[1]+(region.top-.5f)*height)/depth
+    val bottom=(-center[1]+(region.bottom-.5f)*height)/depth
+    return listOf(CursorPatch(key,listOf(left to top,right to top,right to bottom,left to bottom),source,depth,front))
 }
 internal fun cursorMapScale(desktop:List<CursorPatch>):Pair<Float,Float>{
     if(desktop.isEmpty())return .001f to .001f

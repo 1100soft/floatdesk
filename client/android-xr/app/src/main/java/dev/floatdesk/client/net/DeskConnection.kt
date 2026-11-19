@@ -294,6 +294,7 @@ internal class DeskConnection(
     }
     @Volatile private var lastTypingAt=0L
     private var lastTypingPoll=0L
+    @Volatile var typingWindow:Long?=null
     var typingQuietMs=1000L
     fun typingLocked(now:Long=android.os.SystemClock.uptimeMillis()):Boolean=lastTypingAt>0 && now-lastTypingAt<typingQuietMs
     fun pollTyping(now:Long){if(now-lastTypingPoll>=150){lastTypingPoll=now;send(Protocol.workspace(org.json.JSONObject().put("type","typingState").toString()))}}
@@ -338,7 +339,8 @@ internal class DeskConnection(
         move?.let{json.put("x",it.x).put("y",it.y);it.width?.let{w->json.put("width",w)};it.height?.let{h->json.put("height",h)}}
         val id=json.getInt("requestId");val packet=Protocol.workspace(json.toString())
         send(packet)
-        if(action!="move"){
+        run {
+            // Moves are release-only transactions now, so they need the same ACK/retry as other actions.
             windowRequests[id]=packet
             for(delay in listOf(300L,900L))outgoing?.postDelayed({if(windowRequests[id]===packet)send(packet)},delay)
             main.postDelayed({windowRequests.remove(id)},2000)
@@ -467,6 +469,7 @@ internal class DeskConnection(
 
                         if(incoming.address==pendingRemote?.address && incoming.port==pendingRemote?.port) {
                             runCatching{org.json.JSONObject(decoded.json)}.getOrNull()?.takeIf{it.optString("type")=="typingState"}?.let{reply->
+                                typingWindow=reply.optLong("windowId").takeIf{it>0L}
                                 if(reply.optBoolean("available"))lastTypingAt=(android.os.SystemClock.uptimeMillis()-reply.optLong("ageMs",60000)).coerceAtLeast(1)
                             }
                             runCatching{org.json.JSONObject(decoded.json)}.getOrNull()?.takeIf{it.optString("type")=="gazeFocusResult"}?.let{reply->

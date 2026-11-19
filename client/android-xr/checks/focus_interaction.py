@@ -16,7 +16,7 @@ while end<len(topology):
 topology=topology[:start]+topology[end:]
 workspace=body('workspace/Workspace.kt');workspace=workspace[workspace.index('internal data class Pose'):workspace.index('internal class WorkspaceStore')]
 metadata=body('net/WorkspaceInfo.kt');metadata=metadata[:metadata.index('    companion object')]+'}\n'
-code='import kotlin.math.*\n'+body('MonitorMesh.kt')+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+re.search(r'internal fun deskLayout\(.*?\n}',(root/'workspace/Workspace.kt').read_text(),re.S).group(0)+body('workspace/WorkspacePlacement.kt')+metadata+body('WindowMagnification.kt')+body('WindowInteraction.kt')+topology+body('VideoGeometry.kt')+body('MagnifierContacts.kt')+body('BoundedHistory.kt')+body('RenderPolicy.kt')+body('net/WindowCaptureRetry.kt')+body('net/WindowCaptureFormat.kt').replace('dev.floatdesk.client.RenderPolicy','RenderPolicy')+''.join(re.search(r'internal fun '+name+r'\(.*?\n}',application_sources(),re.S).group(0) for name in ('transformPoint','rotateVector','quaternionBetween','multiplyQuaternion','normalize3','normalize4'))+re.search(r'internal fun dot\(a: FloatArray[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun cross3\(.*',application_sources()).group(0)+'\n'+r'''
+code='import kotlin.math.*\n'+body('MonitorMesh.kt')+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+re.search(r'internal fun deskLayout\(.*?\n}',(root/'workspace/Workspace.kt').read_text(),re.S).group(0)+body('workspace/WorkspacePlacement.kt')+metadata+body('WindowMagnification.kt')+body('WindowInteraction.kt').replace('dev.floatdesk.client.workspace.MonitorPlacement','MonitorPlacement')+topology+body('VideoGeometry.kt')+body('MagnifierContacts.kt')+body('BoundedHistory.kt')+body('RenderPolicy.kt')+body('net/WindowCaptureRetry.kt')+body('net/WindowCaptureFormat.kt').replace('dev.floatdesk.client.RenderPolicy','RenderPolicy')+''.join(re.search(r'internal fun '+name+r'\(.*?\n}',application_sources(),re.S).group(0) for name in ('transformPoint','rotateVector','quaternionBetween','multiplyQuaternion','normalize3','normalize4'))+re.search(r'internal fun dot\(a: FloatArray[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun cross3\(.*',application_sources()).group(0)+'\n'+r'''
 fun main() {
  run {
    val retry=WindowCaptureRetry()
@@ -42,7 +42,7 @@ fun main() {
    val map=CursorTopology(back+front,cursorMapScale(back))
    check(map.wires().isNotEmpty() && map.wires().all{it.back=="desktop"})
    check(abs(map.scale.first-.002f)<.00001f)
-   check(map.coarsened().patches.size<map.patches.size)
+   check(map.patches.all{it.points[0].second==it.points[1].second && it.points[0].first==it.points[3].first && it.points[2].first==it.points[1].first})
    check(map.debugSegments().size==map.patches.size*20)
    check(cursorPatches("behind",Pose(floatArrayOf(0f,0f,2f)),1f,1f,null,rect,Pose()).isEmpty())
  }
@@ -74,6 +74,33 @@ fun main() {
    check(snapWindowDrop(source,0,0,.99f,.5f,info)==WindowMove(77,500,0,500,1000))
  }
 
+ run {
+   val ray=WindowDragRay()
+   val desktop=MonitorPlacement("d","desktop",Pose(floatArrayOf(0f,0f,-2f)),4f,4f,0f,1000,1000,30)
+   val hand=HandAimPose(floatArrayOf(0f,0f,0f),floatArrayOf(0f,0f,0f,1f))
+   ray.begin("LEFT",hand,PointerTarget(0,.5f,.5f,floatArrayOf(0f,0f,0f)),desktop,null)
+   val p=ray.point(mapOf("LEFT" to hand.copy(position=floatArrayOf(.2f,0f,0f))))!!.second
+   check(abs(p.u-.55f)<.0001f && abs(p.v-.5f)<.0001f)
+   ray.clear();check(ray.point(mapOf("LEFT" to hand))==null)
+   val cue=typingIndicator(FocusRect(.2f,.3f,.8f,.9f));check(cue.size%4==0)
+   check(cue.indices.all{if(it%2==0)cue[it] in .2f.. .8f else cue[it] in .3f.. .9f})
+ }
+
+ run {
+   val start=magnifiedWindow(99,46,1600,Pose(),.6f,.5f,1f,false).copy(width=.4f,height=.6f)
+   var fitted=magnifierFrame(start,start,Pose(),1f,true)
+   check(abs(fitted.width/fitted.height-46f/1600)<.00001f)
+   val width=fitted.width;val height=fitted.height
+   repeat(100){fitted=magnifierFrame(fitted,fitted,Pose(),1f,false)}
+   check(fitted.width==width && fitted.height==height)
+   check(magnifierContentRect(fitted)==FocusRect(0f,0f,1f,1f))
+   val pose=Pose(floatArrayOf(0f,0f,-2f),floatArrayOf(.3f,.4f,.1f,.86f))
+   val rect=FocusRect(0f,0f,100f,200f)
+   val angled=cursorPatches("a",pose,1f,2f,null,rect,Pose()).single()
+   val straight=cursorPatches("a",pose.copy(rotation=floatArrayOf(0f,0f,0f,1f)),1f,2f,null,rect,Pose()).single()
+   check(angled.points==straight.points)
+ }
+
  // Curved panes keep a constant radius; flat panes stay exactly coplanar.
  // Both use the same native mesh representation across transitions.
  val layerViewer=Pose()
@@ -91,7 +118,7 @@ fun main() {
   val popup=DesktopWindow(2,1250,700,300,240)
   val note=stickyMagnifier(pane,source,popup,layerViewer)
   check(note.sourceWidth==300 && note.sourceHeight==240 && note.layerDistanceM<pane.layerDistanceM)
-  check(pane.sourceWidth==1200 && pane.width==distance*4)
+  check(pane.sourceWidth==1200 && pane.width<=distance*4 && abs(pane.width/pane.height-1.5f)<.0001f)
   check(magnifierFrame(pane,pane,Pose(floatArrayOf(.02f,0f,0f)),1f,false).mesh===pane.mesh)
  }
  for(enabled in listOf(false,true))for(active in listOf(false,true))for(open in listOf(false,true)){

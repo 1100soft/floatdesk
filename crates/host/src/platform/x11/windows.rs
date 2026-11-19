@@ -1205,6 +1205,39 @@ mod tests {
             link.conn.get_input_focus().unwrap().reply().unwrap().focus,
             child
         );
+        assert!(super::super::typing::start());
+        use x11rb::protocol::xtest::ConnectionExt as _;
+        link.conn
+            .xtest_fake_input(
+                x11rb::protocol::xproto::KEY_PRESS_EVENT,
+                36,
+                0,
+                link.root,
+                0,
+                0,
+                0,
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+        link.conn
+            .xtest_fake_input(
+                x11rb::protocol::xproto::KEY_RELEASE_EVENT,
+                36,
+                0,
+                link.root,
+                0,
+                0,
+                0,
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+        link.conn.flush().unwrap();
+        wait(&|| {
+            super::super::typing::age_ms() < 1000
+                && super::super::typing::window_id() == u64::from(ids[0])
+        });
         for id in ids {
             link.conn.destroy_window(id).unwrap().check().unwrap();
         }

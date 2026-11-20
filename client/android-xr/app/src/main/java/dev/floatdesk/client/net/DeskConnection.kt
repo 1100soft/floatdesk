@@ -394,6 +394,12 @@ internal class DeskConnection(
 
     @Synchronized
     fun projection(index:Int,value:ViewProjection?) {viewProjections[index]=value;decoders[index]?.projection(value)}
+    fun tryDesktopShapeUpdate(index:Int,update:()->Unit):Boolean {
+        val compositor=decoders[index]?.windowRenderer()
+        if(compositor!=null)return compositor.tryShapeUpdate(update)
+        update()
+        return true
+    }
     fun aimOverlay(index: Int,value: VideoAim) { decoders[index]?.overlay(value) }
 
     @Synchronized

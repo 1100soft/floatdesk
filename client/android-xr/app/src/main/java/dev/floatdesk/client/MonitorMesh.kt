@@ -68,7 +68,6 @@ internal class MonitorMesh(
         get() = FloatArray(texCoords.size) { if (it % 2 == 1) 1f - texCoords[it] else texCoords[it] }
     val indices = IntArray(columns * rows * 6)
     val outline: List<FloatArray>
-
     init {
         require(width > 0f && height > 0f && width.isFinite() && height.isFinite() &&
             radius > 0f && radius.isFinite() && eye.size == 3 && eye.all { it.isFinite() } &&

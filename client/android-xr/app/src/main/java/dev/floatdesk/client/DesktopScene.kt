@@ -178,7 +178,8 @@ internal fun DeskContent(
                             (hands.busy && !hands.engaged) || nativeMove || nativeResize || handTracking.pointerHeld,
                             forceUpdate=(hands.engaged || !hands.busy) && (nativeGeometryPending || !warp.matchesSize(screen)),
                             viewDirection=handTracking.points["VIEW_DIRECTION"],
-                            freezeProjection=(hands.busy && !hands.engaged) || nativeMove || nativeResize || handTracking.pointerHeld)
+                            freezeProjection=(hands.busy && !hands.engaged) || nativeMove || nativeResize || handTracking.pointerHeld,
+                            submitShape={update->connection.tryDesktopShapeUpdate(index,update)})
                         grabProjectionAt=projectionNow
                     }
                     if(outputResizePending){connection.refreshOutput(index);outputResizePending=false}
@@ -225,7 +226,7 @@ internal fun DeskContent(
                     pointerControl.nativeManipulation(index,systemControls.isManipulating)
                     pointerControl.meshes[index] = warp.mesh
                     pointerControl.qualityReferences[index]=warp.gazeReference
-                    connection.projection(index,null) // Geometry projection uses the original streamed pixels.
+                    connection.projection(index,null)
                     warp.outputSurface?.let { display ->
                         if (videoSurface.get() !== display) {
                             warp.coordinateParent?.let(onDeskRoot)

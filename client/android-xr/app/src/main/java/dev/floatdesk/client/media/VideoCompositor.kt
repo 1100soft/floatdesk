@@ -350,7 +350,21 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         try { block() } catch(error: Exception) { Log.e("Floatdesk","live video compositor failed",error) }
     }
 
+    private val shapeDrawLock=java.util.concurrent.locks.ReentrantLock()
+
+    /** Never block the UI waiting for an EGL submission. Retry the shape next frame. */
+    fun tryShapeUpdate(update:()->Unit):Boolean {
+        if(!shapeDrawLock.tryLock())return false
+        try { update() } finally { shapeDrawLock.unlock() }
+        return true
+    }
+
     private fun draw() {
+        shapeDrawLock.lock()
+        try { drawLocked() } finally { shapeDrawLock.unlock() }
+    }
+
+    private fun drawLocked() {
         val primaryWindow=window;val primaryTarget=target
         try{
             if(primaryWindow!=EGL14.EGL_NO_SURFACE && primaryTarget?.isValid==true){

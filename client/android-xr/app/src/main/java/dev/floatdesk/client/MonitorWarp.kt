@@ -78,7 +78,7 @@ internal class MonitorWarp : AutoCloseable {
     }
     @SuppressLint("RestrictedApi")
     private fun videoShape(width:Float,height:Float,sphere:MonitorMesh?):SurfaceEntity.Shape {
-        if(!RenderPolicy.CustomMeshes || sphere==null && videoCoverageIsFull(screenRects,spacing)) return SurfaceEntity.Shape.Quad(FloatSize2d(width,height))
+        if(sphere==null && (!RenderPolicy.CustomMeshes || videoCoverageIsFull(screenRects,spacing))) return SurfaceEntity.Shape.Quad(FloatSize2d(width,height))
         val geometry=clippedVideoGeometry(width,height,sphere,screenRects,spacing)
         val valid=geometry.indices.isNotEmpty() && geometry.positions.size%3==0 && geometry.texCoords.size*3==geometry.positions.size*2 && geometry.indices.size%3==0 &&
             geometry.positions.all{it.isFinite()} && geometry.texCoords.all{it.isFinite()} && geometry.indices.all{it>=0 && it<geometry.positions.size/3}
@@ -103,8 +103,10 @@ internal class MonitorWarp : AutoCloseable {
         if (sphere == null) {
             curvedInput?.entity?.setEnabled(false)
             input?.setEnabled(ownerEnabled)
-            input?.primaryAlphaMaskTexture = null
-            input?.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE
+            if(input?.primaryAlphaMaskTexture!=null){
+                input?.primaryAlphaMaskTexture = null
+                input?.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE
+            }
             if (!directInteraction) interaction?.let { component ->
                 check(input?.addComponent(component) == true)
                 directInteraction = true
@@ -112,8 +114,10 @@ internal class MonitorWarp : AutoCloseable {
             return
         }
         if (mask == null) mask = Texture.create(session, java.nio.file.Paths.get("transparent-monitor-mask.png"))
-        input?.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.TRANSPARENT
-        input?.primaryAlphaMaskTexture = mask
+        if(input?.primaryAlphaMaskTexture!==mask){
+            input?.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.TRANSPARENT
+            input?.primaryAlphaMaskTexture = mask
+        }
         if (directInteraction) {
             interaction?.let { input?.removeComponent(it) }
             directInteraction = false
@@ -253,7 +257,8 @@ internal class MonitorWarp : AutoCloseable {
 
     @SuppressLint("RestrictedApi") // CustomMesh is available in the pinned SceneCore 1.0 runtime.
     fun update(session: Session, root: Entity, eye: FloatArray?, placement: MonitorPlacement,
-               enabled: Boolean, held: Boolean, forceUpdate: Boolean = false, viewDirection:FloatArray? = null, freezeProjection:Boolean=held,viewFocus:FloatArray?=null) {
+               enabled: Boolean, held: Boolean, forceUpdate: Boolean = false, viewDirection:FloatArray? = null, freezeProjection:Boolean=held,viewFocus:FloatArray?=null,
+               submitShape:((()->Unit)->Boolean)?=null) {
         val original = input ?: return
         if(enabled==(mesh!=null))live?.let{applyPixels(it,placement)}
         if (live !== original) live?.let {
@@ -291,7 +296,10 @@ internal class MonitorWarp : AutoCloseable {
         if (viewer == null) return
         val previous = mesh
         val now=android.os.SystemClock.uptimeMillis()
-        if((viewDirection!=null || viewFocus!=null) && previous!=null && !forceUpdate && !presentationDirty && matchesSize(placement) && now-geometryUpdatedAt<50) return
+        // Coalesce size/focus updates before allocating another native shape.
+        if(previous!=null && now-geometryUpdatedAt<80 &&
+            (submitShape!=null || !forceUpdate && !presentationDirty && matchesSize(placement) &&
+                (viewDirection!=null || viewFocus!=null)))return
         val center=projectionCenter(placement)
         var reference=referenceMesh
         if(reference==null || reference.width!=placement.physicalWidthM || reference.height!=placement.physicalHeightM || !reference.center.contentEquals(center) ||
@@ -331,10 +339,9 @@ internal class MonitorWarp : AutoCloseable {
                 Log.i("Floatdesk","warp geometry map=geodesic viewer=${viewer.contentToString()} sdkViewer=$sdkEye radius=${next.radius} radiusActivity=${next.radius*original.getScale(Space.ACTIVITY)} image=${placement.pixelWidth}x${placement.pixelHeight} extent=${next.width}x${next.height} horizontalSag=${sag(h)} verticalSag=${sag(v)}")
             }
             val shape = videoShape(next.width,next.height,next)
-            recentShapes.retain(shape)
             val target = if (live === original && retainedCurved!=null) retainedCurved!!.also {
                 it.parent=original.parent;it.setPose(original.getPose());it.setScale(original.getScale())
-                it.setEnabled(shown);live=it;applyPixels(it,placement)
+                applyPixels(it,placement)
             } else if(live === original) SurfaceEntity.create(session,
                 shape = shape, pose = original.getPose(), parent = original.parent,
                 superSampling = SurfaceEntity.SuperSampling.NONE).also {
@@ -347,11 +354,12 @@ internal class MonitorWarp : AutoCloseable {
                 live = it;retainedCurved=it;appliedShape=shape
                 recentShapes.retain(shape)
             } else live!!
-            applyShape(target, shape)
+            if(submitShape!=null){
+                if(!submitShape{applyShape(target,shape)})return
+            }else applyShape(target,shape)
+            live=target;target.setEnabled(shown)
             flatWidth = next.width; flatHeight = next.height
             mesh = next;presentationDirty=false;geometryUpdatedAt=android.os.SystemClock.uptimeMillis()
-        } else if (live?.shape !== appliedShape) {
-            appliedShape?.let { applyShape(live!!, it) }
         }
     }
 

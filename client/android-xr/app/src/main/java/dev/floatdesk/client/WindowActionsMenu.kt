@@ -15,7 +15,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerEventType
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
@@ -34,15 +33,15 @@ internal object WindowMenuLayout {
 
 /** Every destination cell is selectable directly; there are no submenu pages. */
 @Composable
-internal fun WindowActionsMenu(window: Long?, cell: Dp, gap: Dp, onAction: (String) -> Unit,
+internal fun WindowActionsMenu(window: Long?, cell: Dp, gap: Dp, onTooltip: (String?) -> Unit, onAction: (String) -> Unit,
                                onSnap: (Int, Int, Int, Int) -> Unit, onClose: () -> Unit) {
     BackHandler(onBack = onClose)
     MaterialTheme(colorScheme = darkColorScheme()) {
         CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides androidx.compose.ui.unit.Dp(0f)){
         Column(Modifier.background(MaterialTheme.colorScheme.surface).padding(gap), verticalArrangement = Arrangement.spacedBy(gap)) {
             Row(Modifier.width(cell * WindowMenuLayout.columns + gap * (WindowMenuLayout.columns - 1)), horizontalArrangement = Arrangement.SpaceBetween) {
-                MenuIcon("minimize", "Minimize window", cell, window != null) { onAction("minimize") }
-                MenuIcon("close", "Close window", cell, window != null) { onAction("close") }
+                MenuIcon("minimize", "Minimize window", cell, window != null, onTooltip) { onAction("minimize") }
+                MenuIcon("close", "Close window", cell, window != null, onTooltip) { onAction("close") }
             }
             HorizontalDivider(thickness = gap / 6)
             for (row in WindowMenuLayout.grids.chunked(WindowMenuLayout.columns)) {
@@ -58,12 +57,12 @@ internal fun WindowActionsMenu(window: Long?, cell: Dp, gap: Dp, onAction: (Stri
 }
 
 @Composable
-internal fun MagnifierActionsMenu(cell: Dp, gap: Dp, onAdd: () -> Unit, onRemove: () -> Unit) {
+internal fun MagnifierActionsMenu(cell: Dp, gap: Dp, onTooltip: (String?) -> Unit, onAdd: () -> Unit, onRemove: () -> Unit) {
     MaterialTheme(colorScheme = darkColorScheme()) {
         CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides androidx.compose.ui.unit.Dp(0f)){
         Row(Modifier.background(MaterialTheme.colorScheme.surface).padding(gap), horizontalArrangement = Arrangement.spacedBy(gap)) {
-            MenuIcon("add", "Add a magnifier", cell, true, onAdd)
-            MenuIcon("remove", "Remove this magnifier", cell, true, onRemove)
+            MenuIcon("add", "Add a magnifier", cell, true, onTooltip, onAdd)
+            MenuIcon("remove", "Remove this magnifier", cell, true, onTooltip, onRemove)
         }
     }
     }
@@ -71,11 +70,8 @@ internal fun MagnifierActionsMenu(cell: Dp, gap: Dp, onAdd: () -> Unit, onRemove
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun MenuIcon(action: String, description: String, cell: Dp, enabled: Boolean, onClick: () -> Unit) {
-    var hovered by remember { mutableStateOf(false) }
-    Box {
-
-        FilledTonalIconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(cell).trackMenuHover { hovered = it != null }.semantics { contentDescription = description }) {
+private fun MenuIcon(action: String, description: String, cell: Dp, enabled: Boolean, onTooltip: (String?) -> Unit, onClick: () -> Unit) {
+        FilledTonalIconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(cell).trackMenuHover { onTooltip(description.takeIf { _ -> it != null }) }.semantics { contentDescription = description }) {
             Canvas(Modifier.fillMaxSize().padding(cell * .25f)) {
                 val ink = Color(0xFFC8E7F5)
                 val stroke = size.minDimension * .09f
@@ -92,11 +88,6 @@ private fun MenuIcon(action: String, description: String, cell: Dp, enabled: Boo
                 }
             }
         }
-        if (hovered) Text(description, Modifier.align(Alignment.BottomCenter)
-            .background(Color(0xFF18232E)), style = MaterialTheme.typography.labelSmall,
-            maxLines = 2)
-
-    }
 }
 
 private fun Modifier.trackMenuHover(onHover: (Offset?) -> Unit) = pointerInput(Unit) {

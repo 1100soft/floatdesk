@@ -28,7 +28,7 @@ internal data class Vector3(val x: Float, val y: Float, val z: Float) {
     val length get() = kotlin.math.sqrt(x*x+y*y+z*z)
 }
 internal data class Quaternion(val x: Float=0f,val y: Float=0f,val z: Float=0f,val w: Float=1f)
-internal data class Pose(val translation: Vector3 = Vector3(0f,0f,0f),val rotation: Quaternion=Quaternion())
+internal data class Pose(val translation: Vector3 = Vector3(0f,0f,0f),val rotation: Quaternion=Quaternion()) { fun compose(other:Pose)=Pose(Vector3(translation.x+other.translation.x,translation.y+other.translation.y,translation.z+other.translation.z),rotation) }
 internal enum class Space { PARENT, ACTIVITY }
 internal object Log { fun i(tag: String,message: String) {} }
 internal data class IntSize2d(val width: Int,val height: Int)
@@ -309,6 +309,19 @@ suspend fun main() {
     warp.presentation(floatArrayOf(0f,0f,.4f,1f,.6f,0f,1f,1f),0f)
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,false,false)
     check(warp.mesh==null && input.shape is SurfaceEntity.Shape.Quad)
+
+    warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false)
+    val prior=warp.mesh
+    val originalPixels=warp.displayEntity!!.pixelDimensions
+    check(originalPixels==IntSize2d(screen.pixelWidth,screen.pixelHeight))
+    SystemClock.now+=100
+    val larger=screen.copy(physicalWidthM=screen.physicalWidthM*1.2f)
+    warp.update(session,root,floatArrayOf(0f,0f,0f),larger,true,false,submitShape={false})
+    check(warp.mesh===prior && !warp.matchesSize(larger))
+    warp.update(session,root,floatArrayOf(0f,0f,0f),larger,true,false,submitShape={ submit->submit();true })
+    check(warp.matchesSize(larger) && warp.displayEntity!!.pixelDimensions==originalPixels)
+
+
     warp.close()
     println("Passed: native matrix localization and independent left/right sequences, flat Compose surface/input/alpha/parent preserved, separate curved video and interaction ownership, mode-switch surface restoration, curvature freezes while held, video UVs, cleanup")
 }

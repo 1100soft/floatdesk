@@ -6,8 +6,13 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 use x11rb::protocol::xinput::{ConnectionExt as _, EventMask, XIEventMask};
+use x11rb::protocol::xproto::AtomEnum;
 static START: OnceLock<Instant> = OnceLock::new();
 static LAST: AtomicU64 = AtomicU64::new(0);
+static WINDOW: AtomicU64 = AtomicU64::new(0);
+pub fn window_id() -> u64 {
+    WINDOW.load(Ordering::Relaxed)
+}
 static WATCH: OnceLock<bool> = OnceLock::new();
 fn now() -> u64 {
     START.get_or_init(Instant::now).elapsed().as_millis() as u64 + 1
@@ -45,10 +50,36 @@ pub fn start() -> bool {
         })();
         match setup {
             Ok(link) => {
+                let active = link
+                    .conn
+                    .intern_atom(false, b"_NET_ACTIVE_WINDOW")
+                    .ok()
+                    .and_then(|cookie| cookie.reply().ok())
+                    .map(|reply| reply.atom)
+                    .unwrap_or(0);
                 std::thread::spawn(move || loop {
                     match link.conn.poll_for_event() {
                         Ok(Some(x11rb::protocol::Event::XinputRawKeyPress(_))) => {
                             LAST.store(now(), Ordering::Relaxed);
+                            if let Ok(cookie) = link.conn.get_property(
+                                false,
+                                link.root,
+                                active,
+                                AtomEnum::WINDOW,
+                                0,
+                                1,
+                            ) {
+                                if let Ok(reply) = cookie.reply() {
+                                    WINDOW.store(
+                                        reply
+                                            .value32()
+                                            .and_then(|mut v| v.next())
+                                            .unwrap_or(0)
+                                            .into(),
+                                        Ordering::Relaxed,
+                                    );
+                                }
+                            }
                         }
                         Ok(Some(_)) => {}
                         Ok(None) => std::thread::sleep(Duration::from_millis(5)),

@@ -1,0 +1,540 @@
+//! View-plane cursor topology. Raw physical motion is independent of root-edge clamping.
+use serde::Deserialize;
+#[derive(Clone, Debug, Deserialize)]
+pub(super) struct Surface {
+    #[serde(default)]
+    pub key: String,
+    pub points: [[f64; 2]; 4],
+    pub source: [f64; 4],
+    pub depth: f64,
+}
+impl Surface {
+    fn map(&self, p: [f64; 2], inverse: bool) -> Option<[f64; 2]> {
+        let source = [
+            [self.source[0], self.source[1]],
+            [self.source[2], self.source[1]],
+            [self.source[2], self.source[3]],
+            [self.source[0], self.source[3]],
+        ];
+        let (from, to) = if inverse {
+            (&source, &self.points)
+        } else {
+            (&self.points, &source)
+        };
+        for [a, b, c] in [[0, 1, 2], [0, 2, 3]] {
+            let det = (from[b][1] - from[c][1]) * (from[a][0] - from[c][0])
+                + (from[c][0] - from[b][0]) * (from[a][1] - from[c][1]);
+            if det.abs() < 1e-12 {
+                continue;
+            }
+            let u = ((from[b][1] - from[c][1]) * (p[0] - from[c][0])
+                + (from[c][0] - from[b][0]) * (p[1] - from[c][1]))
+                / det;
+            let v = ((from[c][1] - from[a][1]) * (p[0] - from[c][0])
+                + (from[a][0] - from[c][0]) * (p[1] - from[c][1]))
+                / det;
+            if u >= -1e-6 && v >= -1e-6 && u + v <= 1.0 + 1e-6 {
+                return Some([
+                    u * to[a][0] + v * to[b][0] + (1.0 - u - v) * to[c][0],
+                    u * to[a][1] + v * to[b][1] + (1.0 - u - v) * to[c][1],
+                ]);
+            }
+        }
+        None
+    }
+    pub fn valid(&self) -> bool {
+        self.depth > 0.0
+            && self.depth.is_finite()
+            && self
+                .points
+                .iter()
+                .flatten()
+                .chain(self.source.iter())
+                .all(|v| v.is_finite())
+            && self.source[2] > self.source[0]
+            && self.source[3] > self.source[1]
+    }
+}
+/// Clip the motion segment against each rectangle, then traverse only through
+/// intersections with a shared edge or area. A single shared corner is a wall.
+fn sweep(
+    surfaces: &[Surface],
+    start: [f64; 2],
+    travel: [f64; 2],
+    owner: Option<&str>,
+) -> ([f64; 2], Vec<bool>) {
+    fn interval(surface: &Surface, start: [f64; 2], travel: [f64; 2]) -> Option<(f64, f64)> {
+        let mut enter: f64 = 0.0;
+        let mut exit: f64 = 1.0;
+        for axis in 0..2 {
+            let low = surface.points[0][axis];
+            let high = surface.points[2][axis];
+            if travel[axis] == 0.0 {
+                if start[axis] < low || start[axis] > high {
+                    return None;
+                }
+            } else {
+                let a = (low - start[axis]) / travel[axis];
+                let b = (high - start[axis]) / travel[axis];
+                enter = enter.max(a.min(b));
+                exit = exit.min(a.max(b));
+            }
+        }
+        (enter <= exit).then_some((enter, exit))
+    }
+
+    fn shares_edge(a: &Surface, b: &Surface) -> bool {
+        let overlap = |axis: usize| {
+            a.points[2][axis].min(b.points[2][axis]) - a.points[0][axis].max(b.points[0][axis])
+        };
+        let (x, y) = (overlap(0), overlap(1));
+        x >= 0.0 && y >= 0.0 && (x > 0.0 || y > 0.0)
+    }
+
+    let intervals: Vec<_> = surfaces
+        .iter()
+        .map(|s| interval(s, start, travel))
+        .collect();
+    let seed = surfaces
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| intervals[*i].is_some_and(|(enter, _)| enter == 0.0))
+        .min_by(|(_, a), (_, b)| {
+            (Some(a.key.as_str()) != owner)
+                .cmp(&(Some(b.key.as_str()) != owner))
+                .then_with(|| a.depth.total_cmp(&b.depth))
+        });
+    let mut arrival = vec![f64::INFINITY; surfaces.len()];
+    let mut pending = Vec::new();
+    if let Some((i, _)) = seed {
+        arrival[i] = 0.0;
+        pending.push(i);
+    }
+    let mut end: f64 = 0.0;
+    let mut last = seed.map(|(i, _)| i);
+    while let Some(i) = pending.pop() {
+        let (_, exit) = intervals[i].unwrap();
+        if exit > end {
+            end = exit;
+            last = Some(i);
+        }
+        for (j, bounds) in intervals.iter().enumerate() {
+            let Some((enter, next_exit)) = *bounds else {
+                continue;
+            };
+            // A rectangle touched at one point cannot serve as a bridge.
+            if enter == next_exit {
+                continue;
+            }
+            let crossing = enter.max(arrival[i]);
+            if crossing < arrival[j]
+                && crossing <= exit
+                && crossing <= next_exit
+                && shares_edge(&surfaces[i], &surfaces[j])
+            {
+                arrival[j] = crossing;
+                pending.push(j);
+            }
+        }
+    }
+    let mut point = [start[0] + travel[0] * end, start[1] + travel[1] * end];
+    if let Some(i) = last {
+        for (axis, value) in point.iter_mut().enumerate() {
+            *value = value.clamp(surfaces[i].points[0][axis], surfaces[i].points[2][axis]);
+        }
+    }
+    let reached = arrival
+        .into_iter()
+        .zip(intervals)
+        .map(|(at, bounds)| at <= end && bounds.is_some_and(|(_, exit)| exit >= end))
+        .collect();
+    (point, reached)
+}
+
+/// Cross only the gap directly opposite the exit face. Keep the perpendicular
+/// coordinate at the impact point and land on the first facing rectangle.
+fn cross_gap(
+    surfaces: &[Surface],
+    reached: &[bool],
+    impact: [f64; 2],
+    intended: [f64; 2],
+    travel: [f64; 2],
+) -> Option<[f64; 2]> {
+    let mut axes = (0..2).filter(|&axis| {
+        let other = 1 - axis;
+        travel[axis] != 0.0
+            && (intended[axis] - impact[axis]) * travel[axis] > 0.0
+            && surfaces.iter().zip(reached).any(|(surface, &reached)| {
+                let [low, _, high, _] = surface.points;
+                let edge = if travel[axis] > 0.0 {
+                    high[axis]
+                } else {
+                    low[axis]
+                };
+                reached
+                    && impact[axis] == edge
+                    && impact[other] > low[other]
+                    && impact[other] < high[other]
+            })
+    });
+    let axis = axes.next()?;
+    if axes.next().is_some() {
+        return None;
+    }
+    let other = 1 - axis;
+    let direction = travel[axis].signum();
+    let edge = surfaces
+        .iter()
+        .filter_map(|surface| {
+            let [low, _, high, _] = surface.points;
+            if impact[other] <= low[other] || impact[other] >= high[other] {
+                return None;
+            }
+            let edge = if direction > 0.0 {
+                low[axis]
+            } else {
+                high[axis]
+            };
+            let gap = (edge - impact[axis]) * direction;
+            (gap > 0.0).then_some((gap, edge))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))?
+        .1;
+    let mut landing = impact;
+    landing[axis] = edge;
+    Some(landing)
+}
+
+#[derive(Default)]
+pub(super) struct Router {
+    point: Option<[f64; 2]>,
+    owner: Option<String>,
+}
+impl Router {
+    pub fn advance(
+        &mut self,
+        surfaces: &[Surface],
+        root: [f64; 2],
+        delta: [f64; 2],
+        scale: [f64; 2],
+    ) -> Option<[f64; 2]> {
+        if surfaces.is_empty() {
+            self.point = None;
+
+            return None;
+        }
+        let mut point = self.point.or_else(|| {
+            surfaces
+                .iter()
+                .filter_map(|s| s.map(root, true).map(|p| (s.depth, p)))
+                .max_by(|a, b| a.0.total_cmp(&b.0))
+                .map(|(_, p)| p)
+        })?;
+        // Content can change the bounds of the owning pane. Clamp within that
+        // same space instead of reinterpreting the mirrored OS cursor as input.
+        if let Some(key) = self.owner.as_ref() {
+            let owned: Vec<_> = surfaces.iter().filter(|s| &s.key == key).collect();
+            if !owned.is_empty() && !owned.iter().any(|s| s.map(point, false).is_some()) {
+                if let Some(p) = owned
+                    .iter()
+                    .map(|s| {
+                        let left = s.points.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);
+                        let right = s
+                            .points
+                            .iter()
+                            .map(|p| p[0])
+                            .fold(f64::NEG_INFINITY, f64::max);
+                        let top = s.points.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
+                        let bottom = s
+                            .points
+                            .iter()
+                            .map(|p| p[1])
+                            .fold(f64::NEG_INFINITY, f64::max);
+                        [point[0].clamp(left, right), point[1].clamp(top, bottom)]
+                    })
+                    .min_by(|a, b| {
+                        ((a[0] - point[0]).powi(2) + (a[1] - point[1]).powi(2))
+                            .total_cmp(&((b[0] - point[0]).powi(2) + (b[1] - point[1]).powi(2)))
+                    })
+                {
+                    point = p;
+                    self.point = Some(p);
+                }
+            }
+        }
+        if delta == [0.0, 0.0]
+            && self
+                .owner
+                .as_ref()
+                .is_some_and(|key| !surfaces.iter().any(|s| &s.key == key))
+        {
+            return None;
+        }
+        let travel = [delta[0] * scale[0], delta[1] * scale[1]];
+        let intended = [point[0] + travel[0], point[1] + travel[1]];
+        let (end, mut reachable) = sweep(surfaces, point, travel, self.owner.as_deref());
+        point = end;
+        if let Some(landing) = cross_gap(surfaces, &reachable, end, intended, travel) {
+            point = landing;
+            for (surface, reached) in surfaces.iter().zip(&mut reachable) {
+                *reached = (0..2).all(|axis| {
+                    point[axis] >= surface.points[0][axis] && point[axis] <= surface.points[2][axis]
+                });
+            }
+        }
+        let (surface, target) = surfaces
+            .iter()
+            .zip(reachable)
+            .filter(|(_, reached)| *reached)
+            .filter_map(|(surface, _)| surface.map(point, false).map(|target| (surface, target)))
+            .min_by(|a, b| a.0.depth.total_cmp(&b.0.depth))?;
+        self.point = Some(point);
+        self.owner = Some(surface.key.clone());
+        Some(target)
+    }
+    pub fn claim(&mut self, surfaces: &[Surface], key: &str, root: [f64; 2]) -> bool {
+        if let Some(point) = surfaces
+            .iter()
+            .filter(|s| s.key == key)
+            .find_map(|s| s.map(root, true))
+        {
+            self.point = Some(point);
+            self.owner = surfaces
+                .iter()
+                .filter(|surface| surface.map(point, false).is_some())
+                .min_by(|a, b| a.depth.total_cmp(&b.depth))
+                .map(|surface| surface.key.clone());
+            true
+        } else {
+            false
+        }
+    }
+    pub fn location(&self, surfaces: &[Surface]) -> Option<(String, [f64; 2], [f64; 2])> {
+        let point = self.point?;
+        let key = self.owner.as_ref()?;
+        let surface = surfaces
+            .iter()
+            .find(|s| &s.key == key && s.map(point, false).is_some())?;
+        let root = surface.map(point, false)?;
+        Some((
+            key.clone(),
+            [
+                (root[0] - surface.source[0]) / (surface.source[2] - surface.source[0]),
+                (root[1] - surface.source[1]) / (surface.source[3] - surface.source[1]),
+            ],
+            root,
+        ))
+    }
+    pub fn inactive(&mut self, motion: [f64; 2]) {
+        // A sleeping viewer does not move the virtual cursor. Real desktop use
+        // while XR is inactive deliberately relinquishes the old virtual owner.
+        if motion != [0.0, 0.0] {
+            self.reset()
+        }
+    }
+    pub fn virtual_position(&self) -> Option<[f64; 2]> {
+        self.point
+    }
+    pub fn has_point(&self) -> bool {
+        self.point.is_some()
+    }
+    pub fn reset(&mut self) {
+        self.owner = None;
+        self.point = None;
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn pane(x: f64, depth: f64, source: [f64; 4]) -> Surface {
+        Surface {
+            key: format!("pane:{x}:{depth}"),
+            points: [[x, 0.], [x + 1., 0.], [x + 1., 1.], [x, 1.]],
+            source,
+            depth,
+        }
+    }
+    #[test]
+    fn front_occlusion_and_aligned_gap_crossing() {
+        let surfaces = vec![
+            pane(0., 2., [0., 0., 100., 100.]),
+            pane(0.4, 1., [200., 0., 300., 100.]),
+            pane(2., 0.5, [400., 0., 500., 100.]),
+        ];
+        let mut r = Router::default();
+        assert_eq!(
+            r.advance(&surfaces, [20., 50.], [30., 0.], [0.01, 0.01]),
+            Some([210., 50.])
+        );
+        let p = r
+            .advance(&surfaces, [210., 50.], [110., 0.], [0.01, 0.01])
+            .unwrap();
+        assert_eq!(p, [400., 50.]);
+    }
+    #[test]
+    fn cursor_stays_in_owned_space_when_its_content_changes() {
+        let mut surfaces = vec![
+            pane(0., 2., [0., 0., 100., 100.]),
+            pane(0.4, 1., [200., 0., 300., 100.]),
+        ];
+        let mut router = Router::default();
+        assert_eq!(
+            router.advance(&surfaces, [20., 50.], [30., 0.], [0.01, 0.01]),
+            Some([210., 50.])
+        );
+        let (key, uv, _) = router.location(&surfaces).unwrap();
+        surfaces[1].source = [500., 100., 700., 300.];
+        let root = router
+            .advance(&surfaces, [210., 50.], [0., 0.], [0.01, 0.01])
+            .unwrap();
+        assert!((root[0] - 520.).abs() < 0.00001 && (root[1] - 200.).abs() < 0.00001);
+        let (next, local, _) = router.location(&surfaces).unwrap();
+        assert_eq!(key, next);
+        assert_eq!(uv, local);
+    }
+    #[test]
+    fn explicit_claim_disambiguates_mirrored_sources() {
+        let a = pane(0., 2., [0., 0., 100., 100.]);
+        let mut b = pane(2., 1., [0., 0., 100., 100.]);
+        b.key = "magnifier".into();
+        let surfaces = vec![a, b];
+        let mut router = Router::default();
+        assert!(router.claim(&surfaces, "magnifier", [25., 50.]));
+        assert_eq!(router.location(&surfaces).unwrap().0, "magnifier");
+        assert_eq!(
+            router.advance(&surfaces, [25., 50.], [0., 0.], [0.01, 0.01]),
+            Some([25., 50.])
+        );
+        assert!(!router.claim(&surfaces, "missing", [25., 50.]));
+    }
+    #[test]
+    fn virtual_position_is_authoritative_and_clamps_inside_its_owner() {
+        let desktop = Surface {
+            key: "desktop".into(),
+            points: [[0., 0.], [1000., 0.], [1000., 1000.], [0., 1000.]],
+            source: [0., 0., 1000., 1000.],
+            depth: 2.,
+        };
+        let magnifier = Surface {
+            key: "magnifier".into(),
+            points: [[0., 1000.], [1000., 1000.], [1000., 2000.], [0., 2000.]],
+            source: [0., 0., 500., 500.],
+            depth: 1.,
+        };
+        let mut surfaces = vec![desktop, magnifier];
+        let mut router = Router::default();
+        assert_eq!(
+            router.advance(&surfaces, [500., 900.], [0., 600.], [1., 1.]),
+            Some([250., 250.])
+        );
+        assert_eq!(router.virtual_position(), Some([500., 1500.]));
+        surfaces[1].source = [100., 200., 1100., 1200.];
+        assert_eq!(
+            router.advance(&surfaces, [250., 250.], [0., 0.], [1., 1.]),
+            Some([600., 700.])
+        );
+        assert_eq!(router.virtual_position(), Some([500., 1500.]));
+        // A reload gap cannot reassign this cursor to a duplicated desktop image.
+        assert_eq!(
+            router.advance(&surfaces[..1], [600., 700.], [0., 0.], [1., 1.]),
+            None
+        );
+        assert_eq!(router.virtual_position(), Some([500., 1500.]));
+        surfaces[1].points = [[0., 1000.], [400., 1000.], [400., 1400.], [0., 1400.]];
+        assert_eq!(
+            router.advance(&surfaces, [600., 700.], [0., 0.], [1., 1.]),
+            Some([1100., 1200.])
+        );
+        assert_eq!(router.virtual_position(), Some([400., 1400.]));
+    }
+    #[test]
+    fn sleep_retains_virtual_cursor_until_physical_desktop_use() {
+        let surfaces = vec![pane(0., 1., [0., 0., 100., 100.])];
+        let mut router = Router::default();
+        router.claim(&surfaces, &surfaces[0].key, [25., 50.]);
+        router.inactive([0., 0.]);
+        assert_eq!(router.virtual_position(), Some([0.25, 0.5]));
+        router.inactive([1., 0.]);
+        assert_eq!(router.virtual_position(), None);
+    }
+    #[test]
+    fn outward_motion_keeps_os_cursor_at_logical_edge() {
+        let mut magnifier = pane(0., 1., [0., 0., 500., 500.]);
+        magnifier.points = [[0., 1000.], [1000., 1000.], [1000., 2000.], [0., 2000.]];
+        let surfaces = [magnifier];
+        let mut router = Router::default();
+        assert!(router.claim(&surfaces, &surfaces[0].key, [250., 250.]));
+        for _ in 0..2 {
+            assert_eq!(
+                router.advance(&surfaces, [250., 550.], [0., 600.], [1., 1.]),
+                Some([250., 500.])
+            );
+            assert_eq!(router.virtual_position(), Some([500., 2000.]));
+        }
+    }
+    #[test]
+    fn protruding_magnifier_blocks_exposed_edges_and_hides_desktop() {
+        let desktop = pane(0., 2., [0., 0., 100., 100.]);
+        let mut pane = pane(0.25, 1., [200., 200., 300., 300.]);
+        pane.points = [[0.25, 0.75], [0.75, 0.75], [0.75, 1.5], [0.25, 1.5]];
+        let surfaces = [desktop, pane];
+        let mut router = Router::default();
+        assert!(router.claim(&surfaces, &surfaces[0].key, [50., 90.]));
+        assert_eq!(router.location(&surfaces).unwrap().0, surfaces[1].key);
+        router.advance(&surfaces, [0., 0.], [0., 0.5], [1., 1.]);
+        router.advance(&surfaces, [0., 0.], [1., 0.], [1., 1.]);
+        assert_eq!(router.virtual_position(), Some([0.75, 1.4]));
+        router.advance(&surfaces, [0., 0.], [0., 1.], [1., 1.]);
+        assert_eq!(router.virtual_position(), Some([0.75, 1.5]));
+        router.advance(&surfaces, [0., 0.], [0., -1.], [1., 1.]);
+        assert_eq!(router.location(&surfaces).unwrap().0, surfaces[0].key);
+    }
+    #[test]
+    fn diagonal_motion_cannot_detour_or_cross_a_corner() {
+        let a = pane(0., 2., [0., 0., 100., 100.]);
+        let mut b = pane(1., 1., [200., 200., 300., 300.]);
+        b.points = [[1., 1.], [2., 1.], [2., 2.], [1., 2.]];
+        let surfaces = [a, b];
+        let mut r = Router::default();
+        assert!(r.claim(&surfaces, &surfaces[0].key, [50., 50.]));
+        for _ in 0..2 {
+            assert_eq!(
+                r.advance(&surfaces, [50., 50.], [1., 1.], [1., 1.]),
+                Some([100., 100.])
+            );
+        }
+
+        let right = pane(1., 1., [200., 0., 300., 100.]);
+        let mut above = pane(1., 1., [400., 0., 500., 100.]);
+        above.points = [[1., 1.], [2., 1.], [2., 2.], [1., 2.]];
+        let surfaces = [surfaces[0].clone(), right, above];
+        let mut corner = Router::default();
+        assert!(corner.claim(&surfaces, &surfaces[0].key, [50., 50.]));
+        assert_eq!(
+            corner.advance(&surfaces, [50., 50.], [1., 1.], [1., 1.]),
+            Some([100., 100.])
+        );
+        let mut r = Router::default();
+        assert!(r.claim(&surfaces, &surfaces[0].key, [50., 90.]));
+        r.advance(&surfaces, [50., 90.], [1., 1.], [1., 1.]);
+        let point = r.virtual_position().unwrap();
+        assert!((point[0] - 0.6).abs() < 1e-12);
+        assert_eq!(point[1], 1.0);
+    }
+    #[test]
+    fn gap_crossing_preserves_the_coordinate_at_the_exit_face() {
+        let a = pane(0., 2., [0., 0., 100., 100.]);
+        let mut b = pane(0., 1., [200., 200., 300., 300.]);
+        b.points = [[0., 2.], [1., 2.], [1., 3.], [0., 3.]];
+        let surfaces = [a, b];
+        let mut r = Router::default();
+        assert!(r.claim(&surfaces, &surfaces[0].key, [25., 50.]));
+        r.advance(&surfaces, [25., 50.], [0.5, 1.], [1., 1.])
+            .unwrap();
+        assert_eq!(r.virtual_position(), Some([0.5, 2.]));
+    }
+    #[test]
+    fn invalid_maps_rejected() {
+        assert!(!pane(0., f64::NAN, [0., 0., 1., 1.]).valid());
+    }
+}

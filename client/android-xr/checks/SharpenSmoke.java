@@ -14,10 +14,10 @@ public final class SharpenSmoke {
   var overlay=Bitmap.createBitmap(1280,480,Bitmap.Config.ARGB_8888);
   var overlayState=new DetailDiagnostics(false,null,"","",0f,0f,false,true,"Host CPU(core) 120%","XR CPU(core) 130%");
   dev.floatdesk.client.DiagnosticsCanvas.INSTANCE.draw(new Canvas(overlay),new dev.floatdesk.client.net.DiagnosticSnapshot(overlayState,null,"60fps"),new float[]{0,0,1,1},SystemClock.uptimeMillis());
-  if(Color.alpha(overlay.getPixel(0,0))!=0 || Color.alpha(overlay.getPixel(1279,479))!=0)throw new AssertionError("Diagnostics background is opaque");
+  if(Color.alpha(overlay.getPixel(0,0))!=165 || Color.alpha(overlay.getPixel(1279,479))!=0)throw new AssertionError("Diagnostics translucent background missing");
   int lit=0;for(int y=0;y<480;y++)for(int x=0;x<1280;x++)if(Color.alpha(overlay.getPixel(x,y))>0)lit++;
   for(int y=120;y<360;y++)for(int x=384;x<896;x++)if(Color.alpha(overlay.getPixel(x,y))!=0)throw new AssertionError("HUD obstructed the central focus area");
-  if(lit<100 || lit>1280*480/8)throw new AssertionError("Diagnostics are not isolated floating glyphs");overlay.recycle();
+  if(lit<100 || lit>1280*480/2)throw new AssertionError("Diagnostics escaped peripheral blocks");overlay.recycle();
   var hudLayout=dev.floatdesk.client.ViewedRegionKt.hudSurfaceLayout(.6f,.5f,.35f);
   var hud=Bitmap.createBitmap(hudLayout.getPixelWidth(),hudLayout.getPixelHeight(),Bitmap.Config.ARGB_8888);
   var hudState=new DetailDiagnostics(true,new FocusRect(.1f,.1f,.9f,.9f),"GAZE","REQ 100 / RX 99 / late 0 / errors 0 · 22ms · HEVC native tiles 1280x1024 · 20KiB",1f,1f,true,true,
@@ -27,21 +27,21 @@ public final class SharpenSmoke {
   int hudLit=0;
   for(int y=0;y<hud.getHeight();y++)for(int x=0;x<hud.getWidth();x++)if(Color.alpha(hud.getPixel(x,y))>0){
     hudLit++;boolean inside=false;
-    for(var region:hudLayout.getRegions())if(region.contains((float)x/hud.getWidth(),(float)y/hud.getHeight()))inside=true;
+    for(var region:hudLayout.getRegions())if(x>=Math.floor(region.getLeft()*hud.getWidth()) && x<Math.ceil(region.getRight()*hud.getWidth()) && y>=Math.floor(region.getTop()*hud.getHeight()) && y<Math.ceil(region.getBottom()*hud.getHeight()))inside=true;
     if(!inside)throw new AssertionError("Single curved HUD draws outside its geometry");
   }
   if(hudLit<1000 || Color.alpha(hud.getPixel(hud.getWidth()/2,hud.getHeight()/2))!=0)throw new AssertionError("Single HUD is empty or obstructs the focus center");
   for(var region:hudLayout.getRegions()){
     int x0=(int)(region.getLeft()*hud.getWidth())+2,y0=(int)(region.getTop()*hud.getHeight())+2;
     int x1=(int)(region.getRight()*hud.getWidth())-3,y1=(int)(region.getBottom()*hud.getHeight())-3;
-    if(Color.alpha(hud.getPixel(x0,y0))!=0 || Color.alpha(hud.getPixel(x1,y1))!=0)throw new AssertionError("HUD corners have a background");
+    if(Color.alpha(hud.getPixel(x0,y0))!=165 || Color.alpha(hud.getPixel(x1,y1))!=165)throw new AssertionError("HUD translucent block background missing");
   }
   var hostRegion=hudLayout.getRegions().get(0);
   int hx0=(int)(hostRegion.getLeft()*hud.getWidth()),hx1=(int)(hostRegion.getRight()*hud.getWidth());
   int hy0=(int)(hostRegion.getTop()*hud.getHeight()),hy1=(int)(hostRegion.getBottom()*hud.getHeight());
   boolean headerSeen=false,afterHeader=false;int gap=0;
   for(int y=hy0;y<hy1;y++){
-    boolean ink=false;for(int x=hx0;x<hx1;x++)if(Color.alpha(hud.getPixel(x,y))>0){ink=true;break;}
+    boolean ink=false;for(int x=hx0;x<hx1;x++)if(Color.red(hud.getPixel(x,y))>100 || Color.green(hud.getPixel(x,y))>100 || Color.blue(hud.getPixel(x,y))>100){ink=true;break;}
     if(!headerSeen){if(ink)headerSeen=true;}
     else if(!afterHeader){if(!ink){afterHeader=true;gap=1;}}
     else if(ink)break;else gap++;

@@ -60,16 +60,21 @@ internal class GrabGuideRenderer private constructor(
         val tethers=mutableListOf<Pair<FloatArray,FloatArray>>()
         val contacts=mutableListOf<FloatArray>()
         for ((index, guide) in guides.withIndex()) {
-            val edgeCount = guide.outline.size
-            val previous = groups.getOrNull(index)
-            val group = if (previous?.parts?.size == edgeCount + 6) previous else {
-                previous?.let { old -> old.root.dispose() }
-                newGroup(edgeCount).also { if (index < groups.size) groups[index] = it else groups.add(it) }
+            // Retain a single outline pool across flat/curved transitions.
+            // Replacing groups would repeatedly create and dispose material instances.
+            val edgeCount = 24
+            val outline = List(edgeCount) { edge ->
+                val fraction = edge.toFloat() * guide.outline.size / edgeCount
+                val from = fraction.toInt()
+                val a = guide.outline[from]
+                val b = guide.outline[(from + 1) % guide.outline.size]
+                FloatArray(3) { axis -> a[axis] + (b[axis] - a[axis]) * (fraction - from) }
             }
+            val group = groups.getOrNull(index) ?: newGroup(edgeCount).also { groups.add(it) }
             group.root.parent = parent
             group.root.setEnabled(true)
             val unit = guide.unitsPerMeter
-            for (edge in 0 until edgeCount) beam(group.parts[edge], guide.outline[edge], guide.outline[(edge + 1) % edgeCount], 0.0025f * unit)
+            for (edge in 0 until edgeCount) beam(group.parts[edge], outline[edge], outline[(edge + 1) % edgeCount], 0.0025f * unit)
             for (hand in 0..1) {
                 val contact = visibleGrabContact(guide.contacts[hand], guide.eye, unit)
                 group.parts[edgeCount + hand].setEnabled(false)
@@ -197,13 +202,13 @@ internal class GrabGuideRenderer private constructor(
         closed = true
         nodeStates.clear()
         groups.forEach { group ->
-            group.root.dispose()
+            if(!group.root.isDisposed)group.root.dispose()
         }
-        (aimBeams+grabBeams+grabPoints).forEach { it.parent=null; it.dispose() }
+        (aimBeams+grabBeams+grabPoints).forEach { if(!it.isDisposed){it.parent=null; it.dispose()} }
         aimBeams.clear(); grabBeams.clear(); grabPoints.clear()
         pointerPoint?.dispose(); pointerPoint = null
         groups.clear()
-        models.forEach { it.close() }
+        if(session.lifecycleOwner.lifecycle.currentState!=androidx.lifecycle.Lifecycle.State.DESTROYED)models.forEach { it.close() }
     }
 
     companion object {
@@ -215,7 +220,7 @@ internal class GrabGuideRenderer private constructor(
                 }
                 return GrabGuideRenderer(session, loaded)
             } catch (failure: Throwable) {
-                loaded.forEach { it.close() }
+                if(session.lifecycleOwner.lifecycle.currentState!=androidx.lifecycle.Lifecycle.State.DESTROYED)loaded.forEach { it.close() }
                 throw failure
             }
         }

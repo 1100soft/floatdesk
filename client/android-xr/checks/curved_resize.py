@@ -25,6 +25,7 @@ internal data class Pose(val translation:Vector3=Vector3(),val rotation:Quaterni
 internal class Session { val entities=mutableListOf<Entity>() }
 internal class ResizeEvent(val resizeState:ResizeState,val newSize:FloatSize3d) { enum class ResizeState { START,ONGOING,END } }
 internal open class Entity {
+    var isDisposed=false
     var parent:Entity?=null
     @JvmField var pose=Pose(); @JvmField var scale=1f; @JvmField var enabled=true
     var resize:ResizableComponent?=null
@@ -36,6 +37,7 @@ internal open class Entity {
     fun setScale(s:Vector3) { scale=s.x }
     fun setAlpha(a:Float) {}
     fun setEnabled(e:Boolean) { enabled=e }
+    fun dispose(){parent=null;enabled=false}
     fun addComponent(c:SpatialPointerComponent):Boolean = true
     fun addComponent(c:ResizableComponent):Boolean { resize=c; return true }
     fun addComponent(c:MovableComponent):Boolean { move=c; return true }
@@ -111,6 +113,8 @@ fun main() {
     fun dot(a:FloatArray,b:FloatArray)=(0..2).sumOf { (a[it]*b[it]).toDouble() }.toFloat()
     fun unit(v:FloatArray):FloatArray { val n=kotlin.math.sqrt(dot(v,v)); return FloatArray(3){v[it]/n} }
     fun near(a:Float,b:Float)=check(kotlin.math.abs(a-b)<.00002f) { "$a != $b" }
+    near(cornerResizeFactor(2f,1f,1,1,.1f,.05f),1.1f)
+    near(cornerResizeFactor(2f,1f,-1,1,-.1f,.05f),1.1f)
     for((label,mesh) in listOf(
         "left-middle" to MonitorMesh(1.4094946f,.8809341f,floatArrayOf(-.3641987f,-.037884656f,1.4811001f)),
         "bottom" to MonitorMesh(1.1701335f,.73133343f,floatArrayOf(.00200787f,-.6641777f,1.0608732f)),
@@ -153,7 +157,7 @@ fun main() {
     check(root!==video && root.parent===parent && root.scale==.8f && video.move==null && !move.scaleInZ)
     near(root.pose.translation.x,.2f+frame.center[0]*.8f)
     check(component.isFixedAspectRatioEnabled && !component.isAutoHideContentWhileResizingEnabled && component.isAlwaysShowOverlayEnabled)
-    near(component.affordanceSize.width,frame.width)
+    near(component.affordanceSize.width,(root.shape as SurfaceEntity.Shape.Quad).size.width)
     fun event(state:ResizeEvent.ResizeState,factor:Float)=ResizeEvent(state,FloatSize3d(frame.width*factor,frame.height*factor,.001f))
     component.listener.accept(event(ResizeEvent.ResizeState.ONGOING,1.1f));check(events.isEmpty())
     component.listener.accept(event(ResizeEvent.ResizeState.START,1f))
@@ -196,6 +200,16 @@ fun main() {
     update(enabled=false)
     check(active.parent==null && active.move==null && active.resize==null)
     handles.close()
+    // UI panes reuse the projected frame without a second native movement path.
+    val paneSession=Session();val paneControls=MonitorSystemControls()
+    paneControls.update(paneSession,video,mesh,mesh.width,mesh.height,mesh.eye,1f,true,
+        onResize={_,_->},onMove={_,_->error("Pane movement belongs to direct input")},
+        allowMove=false,minimumWidth=.01f,minimumHeight=.02f)
+    val paneRoot=paneSession.entities.single() as SurfaceEntity
+    check(paneRoot.move==null && paneRoot.resize!=null)
+    near(paneRoot.resize!!.affordanceSize.width,(paneRoot.shape as SurfaceEntity.Shape.Quad).size.width)
+    paneControls.setVisible(false);check(!paneRoot.enabled)
+    paneControls.close()
     val bigSession=Session();val bigHandles=MonitorSystemControls()
     val initialWidth=3.328259f;val initialHeight=2.0801616f
     val initialBig=MonitorMesh(initialWidth,initialHeight,floatArrayOf(0f,0f,1.887f),focus=floatArrayOf(0f,0f))

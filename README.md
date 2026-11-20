@@ -36,7 +36,7 @@ cargo build --release
 journalctl --user -u floatdesk-live -f
 ```
 
-This session service restarts the host after a crash, sends logs to the journal, and removes inherited regular-file size limits. Omit `--encoder` to select an available encoder automatically. It uses the current X11 `DISPLAY` and `XAUTHORITY`. Stop it with `systemctl --user stop floatdesk-live`; use `systemctl --user restart floatdesk-live` to restart the running service. To change launch arguments, stop it and rerun the script. `FLOATDESK_BIN` can select a different executable.
+`scripts/serve-existing.sh` installs a persistent graphical-session user unit through `scripts/manage-host.py`. It imports the current `DISPLAY` and `XAUTHORITY`, starts `floatdesk-live`, and does not stop an already running host. The unit restarts the host after a crash, logs to the journal, and is tied to the graphical session so it comes back after logout and reboot. Stop it with `systemctl --user stop floatdesk-live`. To change launch arguments, stop it and rerun the script. `FLOATDESK_BIN` can select a different executable. Recent reliability notes are in [docs/reliability-2026-11-17.md](docs/reliability-2026-11-17.md) and [docs/reliability-2026-11-18.md](docs/reliability-2026-11-18.md).
 
 Ctrl-C restores a virtual framebuffer. If the process is killed first, the saved size is in `$XDG_STATE_HOME/floatdesk/x11-screen.json` (or `~/.local/state/floatdesk/`). Put it back with:
 

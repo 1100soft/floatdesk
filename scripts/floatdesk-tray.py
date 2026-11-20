@@ -45,6 +45,15 @@ class Window(QWidget):
             ["Display", "Resolution", "Position", "Refresh Hz"]
         )
         layout.addWidget(self.table)
+        for label, action in [
+            ("Disable virtual screens", "disable"),
+            ("Restore virtual screens", "restore"),
+        ]:
+            button = QPushButton(label)
+            button.clicked.connect(
+                lambda _=False, action=action: self.virtual_screens(action)
+            )
+            layout.addWidget(button)
         self.count = QSpinBox()
         self.count.setRange(1, 2147483647)
         self.count.setValue(4)
@@ -79,6 +88,12 @@ class Window(QWidget):
     def hideEvent(self, event):
         self.timer.stop()
         super().hideEvent(event)
+
+    def virtual_screens(self, action):
+        self.execute(
+            os.environ.get("FLOATDESK_BIN", str(ROOT / "target/release/floatdesk")),
+            ["virtual-screens", action],
+        )
 
     def processEnvironment(self):
         env = QProcessEnvironment.systemEnvironment()
@@ -219,6 +234,8 @@ def main():
         ("Start server", lambda: service("start")),
         ("Stop server", lambda: service("stop")),
         ("Restart server", lambda: service("restart")),
+        ("Disable virtual screens", lambda: window.virtual_screens("disable")),
+        ("Restore virtual screens", lambda: window.virtual_screens("restore")),
         ("Virtual screen setup", lambda: window.show()),
         (
             "Show logs",

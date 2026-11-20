@@ -38,6 +38,11 @@ internal data class PanelPlacement(
 
 internal data class FixedMagnifierPlacement(val id:String,val pose:Pose,val widthM:Float,val heightM:Float)
 
+internal enum class InteractionMode(val label:String){
+    MOUSE("Mouse"), FOCUS("Focus"), WINDOW_GRAB("Window grab");
+    fun next()=entries[(ordinal+1)%entries.size]
+}
+
 internal data class WorkspaceFile(
     val schemaVersion: Int = 1,
     val activeLayout: String = "Desk",
@@ -49,11 +54,14 @@ internal data class WorkspaceFile(
     val mouseGestures: Boolean = false,
     val screenSpacing:Float=0f,
     val viewerReference:Pose?=null,
-    val focusMode:Boolean=false,
+    val interactionMode:InteractionMode=InteractionMode.MOUSE,
+    val cursorRemap:Boolean=true,
     val gazeToFocus:Boolean=false,
     val magnifyWindow:Boolean=false,
+    val magnifySystemPanels:Boolean=false,
     val magnifierMode:String="floating",
     val fixedMagnifiers:List<FixedMagnifierPlacement> = emptyList(),
+    val systemPanels:List<FixedMagnifierPlacement> = emptyList(),
     val typingQuietMs:Long=1000,
     val experimentalViewedDetail:Boolean=false,
     val viewDetailDebug:Boolean=true,
@@ -65,7 +73,10 @@ internal data class WorkspaceFile(
     val detailTargetFps:Int=30,
     val showResources:Boolean=true,
     val pinchThresholds:PinchThresholds=PinchThresholds.Default,
-)
+){
+    val focusMode get()=interactionMode==InteractionMode.FOCUS
+    val windowGrabMode get()=interactionMode==InteractionMode.WINDOW_GRAB
+}
 
 internal class WorkspaceStore(private val file: File) {
     private val lock = Any()
@@ -153,9 +164,10 @@ private fun encode(workspace: WorkspaceFile): JSONObject {
         .put("control", encodePanel(workspace.control))
         .put("spherical_warp", workspace.sphericalWarp)
         .put("eye_aiming", workspace.eyeAiming)
-        .put("focus_mode",workspace.focusMode).put("gaze_to_focus",workspace.gazeToFocus).put("magnify_window",workspace.magnifyWindow).put("typing_quiet_ms",workspace.typingQuietMs)
-        .put("magnifier_mode",workspace.magnifierMode)
-        .put("fixed_magnifiers",JSONArray(workspace.fixedMagnifiers.map{p->JSONObject().put("id",p.id).put("pose",JSONObject().put("position",JSONArray(p.pose.position.toList())).put("rotation",JSONArray(p.pose.rotation.toList()))).put("width_m",p.widthM).put("height_m",p.heightM)}))
+        .put("interaction_mode",workspace.interactionMode.name).put("cursor_remap",workspace.cursorRemap).put("window_grab_mode",workspace.windowGrabMode).put("focus_mode",workspace.focusMode).put("gaze_to_focus",workspace.gazeToFocus).put("magnify_window",workspace.magnifyWindow).put("typing_quiet_ms",workspace.typingQuietMs)
+        .put("magnifier_mode",workspace.magnifierMode).put("magnify_system_panels",workspace.magnifySystemPanels)
+        .put("fixed_magnifiers",encodePlacements(workspace.fixedMagnifiers))
+        .put("system_panels",encodePlacements(workspace.systemPanels))
         .put("experimental_viewed_detail",workspace.experimentalViewedDetail)
         .put("view_detail_debug",workspace.viewDetailDebug)
         .put("encoder_quality",workspace.encoderQuality).put("encoder_mbps",workspace.encoderMbps)
@@ -203,11 +215,14 @@ private fun decode(json: JSONObject): WorkspaceFile {
         layouts = layouts,
         control = json.optJSONObject("control")?.let { decodePanel(it) } ?: PanelPlacement(),
         sphericalWarp = json.optBoolean("spherical_warp", false),
-        focusMode=json.optBoolean("focus_mode",false),
+        interactionMode=runCatching{InteractionMode.valueOf(json.optString("interaction_mode",if(json.optBoolean("window_grab_mode",false))"WINDOW_GRAB" else if(json.optBoolean("focus_mode",false))"FOCUS" else "MOUSE"))}.getOrDefault(InteractionMode.MOUSE),
+        cursorRemap=json.optBoolean("cursor_remap",true),
         gazeToFocus=json.optBoolean("gaze_to_focus",false),
         magnifyWindow=json.optBoolean("magnify_window",false),
+        magnifySystemPanels=json.optBoolean("magnify_system_panels",false),
         magnifierMode=if(json.optString("magnifier_mode")=="fixed")"fixed" else "floating",
-        fixedMagnifiers=json.optJSONArray("fixed_magnifiers")?.let{a->(0 until a.length()).mapNotNull{i->runCatching{val p=a.getJSONObject(i);val pose=p.getJSONObject("pose");val w=p.getDouble("width_m").toFloat();val h=p.getDouble("height_m").toFloat();require(w.isFinite() && h.isFinite() && w>0f && h>0f);FixedMagnifierPlacement(p.getString("id"),Pose(floatArray(pose,"position",3),floatArray(pose,"rotation",4)),w,h)}.getOrNull()}} ?: emptyList(),
+        fixedMagnifiers=decodePlacements(json.optJSONArray("fixed_magnifiers")),
+        systemPanels=decodePlacements(json.optJSONArray("system_panels")),
         typingQuietMs=json.optLong("typing_quiet_ms",1000).coerceIn(0,10000),
         experimentalViewedDetail=json.optBoolean("experimental_viewed_detail",false),
         viewDetailDebug=json.optBoolean("view_detail_debug",true),
@@ -277,6 +292,10 @@ private fun floatArray(json: JSONObject, name: String, size: Int): FloatArray {
     if (size == 4 && array.length() < 4) out[3] = 1f
     return out
 }
+
+
+private fun encodePlacements(rows:List<FixedMagnifierPlacement>)=JSONArray(rows.map{p->JSONObject().put("id",p.id).put("pose",JSONObject().put("position",JSONArray(p.pose.position.toList())).put("rotation",JSONArray(p.pose.rotation.toList()))).put("width_m",p.widthM).put("height_m",p.heightM)})
+private fun decodePlacements(array:JSONArray?):List<FixedMagnifierPlacement> = array?.let{a->(0 until a.length()).mapNotNull{i->runCatching{val p=a.getJSONObject(i);val pose=p.getJSONObject("pose");val w=p.getDouble("width_m").toFloat();val h=p.getDouble("height_m").toFloat();require(w.isFinite() && h.isFinite() && w>0f && h>0f);FixedMagnifierPlacement(p.getString("id"),Pose(floatArray(pose,"position",3),floatArray(pose,"rotation",4)),w,h)}.getOrNull()}} ?: emptyList()
 
 /** Reconcile stable source identities without resetting poses when a display is added or removed. */
 internal fun WorkspaceFile.reconcileMonitors(sources:List<Triple<String,Int,Int>>): WorkspaceFile {

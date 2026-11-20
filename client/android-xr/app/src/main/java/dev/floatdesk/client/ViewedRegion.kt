@@ -123,16 +123,25 @@ internal fun hudSurfaceLayout(horizontal:Float,vertical:Float,distance:Float):Hu
 }
 
 /** Project each spherical glyph patch onto its foreground tangent UI surface. */
-internal data class HudForegroundPatch(val width:Float,val height:Float,val position:FloatArray,val normal:FloatArray,val up:FloatArray,val vertices:FloatArray,val columns:Int=16,val rows:Int=8)
-internal fun hudForegroundPatches(horizontal:Float,vertical:Float,distance:Float):List<HudForegroundPatch>{
+internal data class HudForegroundPatch(val width:Float,val height:Float,val position:FloatArray,val normal:FloatArray,val up:FloatArray,val vertices:FloatArray,val columns:Int=16,val rows:Int=8) {
+    val right=floatArrayOf(up[1]*normal[2]-up[2]*normal[1],up[2]*normal[0]-up[0]*normal[2],up[0]*normal[1]-up[1]*normal[0])
+    val perimeter=IntArray(2*(columns+rows)).also{edge->
+        var i=0
+        for(c in 0..columns)edge[i++]=c
+        for(r in 1..rows)edge[i++]=r*(columns+1)+columns
+        for(c in columns-1 downTo 0)edge[i++]=rows*(columns+1)+c
+        for(r in rows-1 downTo 1)edge[i++]=r*(columns+1)
+    }
+}
+internal fun hudForegroundPatches(horizontal:Float,vertical:Float,distance:Float,spherical:Boolean=true):List<HudForegroundPatch>{
     val layout=hudSurfaceLayout(horizontal,vertical,distance)
-    val sphere=MonitorMesh(layout.width,layout.height,floatArrayOf(0f,0f,distance),focus=floatArrayOf(0f,0f))
+    val sphere=MonitorMesh(layout.width,layout.height,floatArrayOf(0f,0f,distance),focus=floatArrayOf(0f,0f),planar=!spherical)
     fun dot(a:FloatArray,b:FloatArray)=(0..2).sumOf{(a[it]*b[it]).toDouble()}.toFloat()
     fun cross(a:FloatArray,b:FloatArray)=floatArrayOf(a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0])
     fun unit(a:FloatArray):FloatArray{val n=kotlin.math.sqrt(dot(a,a));return FloatArray(3){a[it]/n}}
     fun point(x:Float,y:Float)=sphere.project(floatArrayOf(x,y,0f)).let{floatArrayOf(it[0],it[1],it[2]-distance)}
     return peripheralHudPanels(horizontal,vertical,distance).map{box->
-        val center=point(box.x,box.y);val normal=unit(FloatArray(3){-center[it]})
+        val center=point(box.x,box.y);val normal=if(spherical)unit(FloatArray(3){-center[it]})else floatArrayOf(0f,0f,1f)
         val right=unit(cross(floatArrayOf(0f,1f,0f),normal));val up=cross(normal,right)
         val coordinates=FloatArray(17*9*2)
         for(row in 0..8)for(col in 0..16){
@@ -145,5 +154,42 @@ internal fun hudForegroundPatches(horizontal:Float,vertical:Float,distance:Float
         val width=coordinates.indices.filter{it%2==0}.maxOf{coordinates[it]}-left;val height=coordinates.indices.filter{it%2==1}.maxOf{coordinates[it]}-bottom
         val position=FloatArray(3){center[it]+right[it]*(left+width*.5f)+up[it]*(bottom+height*.5f)}
         HudForegroundPatch(width,height,position,normal,up,FloatArray(coordinates.size){i->if(i%2==0)(coordinates[i]-left)/width*800f else (bottom+height-coordinates[i])/height*400f})
+    }
+}
+
+/** Hit only the warped glyph/background footprint, leaving the central view transparent to gaze. */
+internal fun hudPatchHit(origin:FloatArray,direction:FloatArray,patch:HudForegroundPatch):Boolean {
+    fun dot(a:FloatArray,b:FloatArray)=(0..2).sumOf{(a[it]*b[it]).toDouble()}.toFloat()
+    val denominator=dot(direction,patch.normal)
+    if(kotlin.math.abs(denominator)<.000001f)return false
+    val distance=dot(FloatArray(3){patch.position[it]-origin[it]},patch.normal)/denominator
+    if(distance<=0f)return false
+    val delta=FloatArray(3){origin[it]+direction[it]*distance-patch.position[it]}
+    val up=patch.up;val normal=patch.normal
+    val right=patch.right
+    val x=(dot(delta,right)/patch.width+.5f)*800f
+    val y=(.5f-dot(delta,up)/patch.height)*400f
+    if(x !in 0f..800f || y !in 0f..400f)return false
+    val edge=patch.perimeter
+    var inside=false
+    var previous=edge.last()
+    for(current in edge){
+        val ax=patch.vertices[current*2];val ay=patch.vertices[current*2+1]
+        val bx=patch.vertices[previous*2];val by=patch.vertices[previous*2+1]
+        if((ay>y)!=(by>y) && x<(bx-ax)*(y-ay)/(by-ay)+ax)inside=!inside
+        previous=current
+    }
+    return inside
+}
+
+internal class HudGazeRegions(private val distance:Float){
+    private var angles=Float.NaN to Float.NaN
+    private var patches=emptyList<HudForegroundPatch>()
+    private var curved=true
+    fun hit(origin:FloatArray,direction:FloatArray,horizontal:Float,vertical:Float,resources:Boolean,visible:Boolean,spherical:Boolean=true):Boolean {
+        if(!visible)return false
+        val next=kotlin.math.round(horizontal*100f)/100f to kotlin.math.round(vertical*100f)/100f
+        if(next!=angles || curved!=spherical){angles=next;curved=spherical;patches=hudForegroundPatches(next.first,next.second,distance,spherical)}
+        return patches.withIndex().any{(index,patch)->(index>=2 || resources) && hudPatchHit(origin,direction,patch)}
     }
 }

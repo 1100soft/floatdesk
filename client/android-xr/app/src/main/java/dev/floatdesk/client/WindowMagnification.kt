@@ -55,20 +55,20 @@ internal class NativeSurfaceTap {
     }
 }
 internal const val MagnifierDistanceM=ViewLayers.MagnifierDistanceM
-internal data class MagnifiedWindow(val id:Long,val pose:Pose,val width:Float,val height:Float,val sourceWidth:Int,val sourceHeight:Int,val spherical:Boolean=false,val mesh:MonitorMesh?=null,val units:Float=1f,val headOffset:FloatArray=floatArrayOf(0f,0f,-1f),val sizeScale:Float=1f,val fixed:Boolean=false,val desktopRotation:FloatArray?=null,val requestedPosition:FloatArray?=null,val headRotation:FloatArray?=null)
-internal fun magnifiedWindow(id:Long,width:Int,height:Int,viewer:Pose,horizontal:Float,vertical:Float,units:Float,spherical:Boolean=false,previous:MagnifiedWindow?=null):MagnifiedWindow{
+internal data class MagnifiedWindow(val id:Long,val pose:Pose,val width:Float,val height:Float,val sourceWidth:Int,val sourceHeight:Int,val spherical:Boolean=false,val mesh:MonitorMesh?=null,val units:Float=1f,val headOffset:FloatArray=floatArrayOf(0f,0f,-1f),val sizeScale:Float=1f,val fixed:Boolean=false,val desktopRotation:FloatArray?=null,val requestedPosition:FloatArray?=null,val headRotation:FloatArray?=null,val layerDistanceM:Float=MagnifierDistanceM)
+internal fun magnifiedWindow(id:Long,width:Int,height:Int,viewer:Pose,horizontal:Float,vertical:Float,units:Float,spherical:Boolean=false,previous:MagnifiedWindow?=null,layerDistanceM:Float=MagnifierDistanceM):MagnifiedWindow{
     val source=deskLayout(listOf(Triple("Window",width,height)))
-    val fitted=fitDesktopInView(source,viewer,horizontal,vertical,units,spherical,centralView=true,distanceM=MagnifierDistanceM).single()
+    val fitted=fitDesktopInView(source,viewer,horizontal,vertical,units,spherical,centralView=true,distanceM=layerDistanceM).single()
     val scale=previous?.sizeScale ?: 1f
     val window=MagnifiedWindow(id,fitted.pose,fitted.physicalWidthM*scale,fitted.physicalHeightM*scale,width,height,spherical,
-        units=units,headOffset=previous?.headOffset ?: floatArrayOf(0f,0f,-1f),sizeScale=scale,headRotation=previous?.headRotation)
+        units=units,headOffset=previous?.headOffset ?: floatArrayOf(0f,0f,-1f),sizeScale=scale,headRotation=previous?.headRotation,layerDistanceM=layerDistanceM)
     return magnifierFrame(window,window,viewer,units,true)
 }
 /** Same exponential-map projection as the desktop, with this panel's own fixed radial distance. */
 internal fun magnifierGeometry(window:MagnifiedWindow,viewer:Pose,units:Float,proposed:FloatArray?=null,updateMesh:Boolean=true):MagnifiedWindow{
     // Perception-space matrices can jitter by a few ULPs. Do not turn that into native mesh uploads.
     val stableUnits=if(abs(units/window.units-1f)<.001f)window.units else units
-    val radius=MagnifierDistanceM*stableUnits
+    val radius=window.layerDistanceM*stableUnits
     val offset=if(proposed==null)window.headOffset else {
         val local=viewerInMonitor(proposed,viewer.position,viewer.rotation)
         val length=sqrt(local.sumOf{(it*it).toDouble()}).toFloat()
@@ -89,10 +89,14 @@ internal fun magnifierGeometry(window:MagnifiedWindow,viewer:Pose,units:Float,pr
 }
 /** Projection mode changes are immediate even when ordinary mesh updates are deferred. */
 internal fun magnifierFrame(window:MagnifiedWindow, previous:MagnifiedWindow, viewer:Pose, units:Float, updateGeometry:Boolean):MagnifiedWindow {
-    val changed=window.spherical!=previous.spherical || window.width!=previous.width || window.height!=previous.height
-    val rebuild=updateGeometry || changed || window.spherical && previous.mesh==null
-    val source=window.copy(mesh=if(changed)null else previous.mesh)
-    return if(window.fixed)fixedMagnifierGeometry(source,viewer,updateMesh=rebuild)
+    // The native input surface, resize affordance and image share the content aspect.
+    val extent=maxOf(window.width,window.height)
+    val ratio=window.sourceWidth.toFloat()/window.sourceHeight.coerceAtLeast(1)
+    val fitted=window.copy(width=extent*minOf(1f,ratio),height=extent*minOf(1f,1f/ratio))
+    val changed=fitted.spherical!=previous.spherical || fitted.width!=previous.width || fitted.height!=previous.height
+    val rebuild=updateGeometry || changed || fitted.spherical && previous.mesh==null
+    val source=fitted.copy(mesh=if(changed)null else previous.mesh)
+    return if(fitted.fixed)fixedMagnifierGeometry(source,viewer,updateMesh=rebuild)
         else magnifierGeometry(source,viewer,units,updateMesh=rebuild)
 }
 
@@ -177,10 +181,10 @@ internal fun saveFixedMagnifier(id:String,window:MagnifiedWindow,desktop:Monitor
     val rotation=multiplyQuaternion(floatArrayOf(-q[0],-q[1],-q[2],q[3]),window.pose.rotation)
     return FixedMagnifierPlacement(id,Pose(FloatArray(3){local[it]/units},rotation),window.width/units,window.height/units)
 }
-internal fun fixedMagnifier(record:FixedMagnifierPlacement,desktop:MonitorPlacement,source:DesktopWindow?,viewer:Pose,units:Float,spherical:Boolean,previous:MagnifiedWindow?=null):MagnifiedWindow{
+internal fun fixedMagnifier(record:FixedMagnifierPlacement,desktop:MonitorPlacement,source:DesktopWindow?,viewer:Pose,units:Float,spherical:Boolean,previous:MagnifiedWindow?=null,layerDistanceM:Float=MagnifierDistanceM):MagnifiedWindow{
     val pose=Pose(transformPoint(desktop.pose,FloatArray(3){record.pose.position[it]*units}),multiplyQuaternion(desktop.pose.rotation,record.pose.rotation))
     val window=MagnifiedWindow(source?.id ?: 0,pose,record.widthM*units,record.heightM*units,source?.width ?: 1280,source?.height ?: 800,
-        spherical,units=units,fixed=true,desktopRotation=desktop.pose.rotation,requestedPosition=pose.position)
+        spherical,units=units,fixed=true,desktopRotation=desktop.pose.rotation,requestedPosition=pose.position,layerDistanceM=layerDistanceM)
     return magnifierFrame(window,previous ?: window,viewer,units,true)
 }
 
@@ -188,16 +192,22 @@ internal fun fixedMagnifierGeometry(window:MagnifiedWindow,viewer:Pose,proposed:
     val requested=proposed ?: window.requestedPosition ?: window.pose.position
     fun unit(v:FloatArray):FloatArray{val n=sqrt(v.sumOf{(it*it).toDouble()}).toFloat().coerceAtLeast(.00001f);return FloatArray(3){v[it]/n}}
     val normal=unit(FloatArray(3){viewer.position[it]-requested[it]})
-    val center=FloatArray(3){viewer.position[it]-normal[it]*MagnifierDistanceM*window.units}
+    val center=FloatArray(3){viewer.position[it]-normal[it]*window.layerDistanceM*window.units}
     val rotation=if(window.spherical || proposed!=null)facingMagnifierRotation(center,viewer,window.desktopRotation ?: window.pose.rotation) else window.pose.rotation
     val pose=Pose(center,rotation)
     val mesh=projectMagnifier(window,viewer,pose,window.width,window.height,updateMesh,.003f,.003f)
     return window.copy(pose=pose,mesh=mesh,requestedPosition=requested)
 }
-internal fun magnifierContentPoint(window:MagnifiedWindow,point:Pair<Float,Float>):Pair<Float,Float>{
+internal fun magnifierContentRect(window:MagnifiedWindow):FocusRect {
     val source=window.sourceWidth.toFloat()/window.sourceHeight.coerceAtLeast(1);val pane=window.width/window.height
+    if(abs(source/pane-1f)<.00001f)return FocusRect(0f,0f,1f,1f)
     val x=minOf(1f,source/pane);val y=minOf(1f,pane/source)
-    return (((point.first-.5f)/x+.5f).coerceIn(0f,1f) to ((point.second-.5f)/y+.5f).coerceIn(0f,1f))
+    return FocusRect((1-x)*.5f,(1-y)*.5f,(1+x)*.5f,(1+y)*.5f)
+}
+internal fun magnifierContentPoint(window:MagnifiedWindow,point:Pair<Float,Float>):Pair<Float,Float>{
+    val rect=magnifierContentRect(window)
+    return ((point.first-rect.left)/(rect.right-rect.left)).coerceIn(0f,1f) to
+        ((point.second-rect.top)/(rect.bottom-rect.top)).coerceIn(0f,1f)
 }
 
 internal fun surfaceRayDistance(pose:Pose,width:Float,height:Float,mesh:MonitorMesh?,origin:FloatArray,direction:FloatArray):Float?{
@@ -211,7 +221,7 @@ internal fun surfaceRayDistance(pose:Pose,width:Float,height:Float,mesh:MonitorM
 internal fun framedMagnifierGeometry(window:MagnifiedWindow):VideoGeometry {
     val mesh=window.mesh ?: return clippedVideoGeometry(window.width+.01f*window.units,window.height+.01f*window.units,null,floatArrayOf(0f,0f,1f,1f),0f)
     val pad=.005f*window.units;val width=window.width;val height=window.height
-    val expanded=MonitorMesh(width+2*pad,height+2*pad,mesh.eye,columns=mesh.columns,rows=mesh.rows,focus=mesh.focus,center=mesh.center)
+    val expanded=MonitorMesh(width+2*pad,height+2*pad,mesh.eye,columns=mesh.columns,rows=mesh.rows,focus=mesh.focus,center=mesh.center,planar=mesh.planar)
     val perimeter=buildList{for(c in 0..mesh.columns)add(c);for(r in 1..mesh.rows)add(r*(mesh.columns+1)+mesh.columns);for(c in mesh.columns-1 downTo 0)add(mesh.rows*(mesh.columns+1)+c);for(r in mesh.rows-1 downTo 1)add(r*(mesh.columns+1))}
     val positions=mesh.positions.toMutableList();val uv=ArrayList<Float>();val indices=mesh.indices.toMutableList()
     fun tex(u:Float,v:Float){uv.add((pad+u*width)/(width+2*pad));uv.add(1f-(pad+v*height)/(height+2*pad))}
@@ -296,10 +306,14 @@ internal class MagnifierRayDrag{
 
 /** Placement changes independently; expensive geometry is shared, cached and budgeted by callers. */
 private fun projectMagnifier(window:MagnifiedWindow,viewer:Pose,pose:Pose,width:Float,height:Float,update:Boolean,eyeTolerance:Float,focusTolerance:Float):MonitorMesh?{
-    if(!window.spherical)return null
     val eye=viewerInMonitor(viewer.position,pose.position,pose.rotation)
     val old=window.mesh
-    val same=old!=null && old.width==width && old.height==height && eye.indices.all{abs(eye[it]-old.eye[it])<eyeTolerance}
+    if(!update && old!=null && old.planar==!window.spherical && old.width==width && old.height==height)return old
+    val same=old!=null && old.planar==!window.spherical && old.width==width && old.height==height && eye.indices.all{abs(eye[it]-old.eye[it])<eyeTolerance}
+    if(!window.spherical) {
+        if(old?.planar==true && old.width==width && old.height==height)return old
+        return MonitorMesh(width,height,eye,columns=32,rows=20,focus=floatArrayOf(0f,0f),planar=true)
+    }
     if(!update && same)return old
     val reference=if(same)old!! else MonitorMesh(width,height,eye,columns=32,rows=20,focus=floatArrayOf(0f,0f))
     val direction=rotateVector(viewer.rotation,0f,0f,-1f)
@@ -307,4 +321,18 @@ private fun projectMagnifier(window:MagnifiedWindow,viewer:Pose,pose:Pose,width:
     val focus=sphericalViewFocus(reference,FloatArray(3){end[it]-eye[it]}) ?: floatArrayOf(0f,0f)
     if(same && focus.indices.all{abs(focus[it]-(old!!.focus?.get(it) ?: 0f))<focusTolerance})return old
     return MonitorMesh(width,height,eye,columns=32,rows=20,focus=focus)
+}
+
+/** A popup keeps its desktop-pixel offset/scale beside its owner; it never refits the owner. */
+internal fun stickyMagnifier(owner:MagnifiedWindow,source:DesktopWindow,popup:DesktopWindow,viewer:Pose,level:Int=0):MagnifiedWindow {
+    val distance=ViewLayers.popupDistance(owner.layerDistanceM,level)
+    val ratio=distance/owner.layerDistanceM
+    val fitX=minOf(1f,(owner.sourceWidth.toFloat()/owner.sourceHeight)/(owner.width/owner.height))
+    val fitY=minOf(1f,(owner.width/owner.height)/(owner.sourceWidth.toFloat()/owner.sourceHeight))
+    val sx=owner.width*fitX/source.width;val sy=owner.height*fitY/source.height
+    val flat=floatArrayOf((popup.x+popup.width*.5f-source.x-source.width*.5f)*sx,-(popup.y+popup.height*.5f-source.y-source.height*.5f)*sy,0f)
+    val position=transformPoint(owner.pose,owner.mesh?.project(flat) ?: flat)
+    val window=MagnifiedWindow(popup.id,Pose(position,owner.pose.rotation),popup.width*sx*ratio,popup.height*sy*ratio,popup.width,popup.height,owner.spherical,
+        units=owner.units,fixed=true,desktopRotation=owner.pose.rotation,requestedPosition=position,layerDistanceM=distance)
+    return magnifierFrame(window,window,viewer,owner.units,true)
 }

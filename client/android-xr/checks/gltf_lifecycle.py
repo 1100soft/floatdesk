@@ -8,8 +8,18 @@ root=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
 sources=[]
 for name in ['OwnedGltf.kt','CurvedMonitorInput.kt']:
     sources.append('\n'.join(line for line in (root/name).read_text().splitlines() if not line.startswith(('package ','import ')) and '@android.annotation.SuppressLint' not in line and '@SuppressLint' not in line))
+sources=[s.replace('androidx.lifecycle.LifecycleEventObserver','LifecycleEventObserver').replace('androidx.lifecycle.Lifecycle.Event','Lifecycle.Event').replace('android.os.Handler(android.os.Looper.getMainLooper()).post','postAfterDestroy') for s in sources]
 stubs='''
-internal class Session
+internal class Session {val lifecycleOwner=LifecycleOwner()}
+internal class LifecycleOwner {val lifecycle=Lifecycle();val lifecycleScope=kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined+kotlinx.coroutines.SupervisorJob())}
+internal fun interface LifecycleEventObserver {fun changed(owner:Any?,event:Lifecycle.Event)}
+internal class Lifecycle {
+ enum class Event {ON_DESTROY}
+ private val observers=mutableListOf<LifecycleEventObserver>()
+ fun addObserver(observer:LifecycleEventObserver){observers.add(observer)}
+ fun destroy(){observers.forEach{it.changed(null,Event.ON_DESTROY)}}
+}
+internal fun postAfterDestroy(block:()->Unit){block()}
 internal class MonitorMesh(val width:Float=1f,val height:Float=1f)
 internal class Vector3(val x:Float,val y:Float,val z:Float)
 internal class Quaternion(val x:Float,val y:Float,val z:Float,val w:Float)
@@ -29,6 +39,7 @@ internal fun frozenFrameGlb(pixel:ByteArray,mesh:MonitorMesh,interactionOnly:Boo
 internal open class Entity {
  var parent:Entity?=null
  var disposed=false
+ val isDisposed get()=disposed
  open fun dispose(){check(!disposed);disposed=true}
 }
 internal class GltfModel {
@@ -36,7 +47,9 @@ internal class GltfModel {
  fun close(){check(instances==0) {"Material freed with a live native instance"};check(!closed);closed=true}
  companion object {
   val all=mutableListOf<GltfModel>()
-  suspend fun create(s:Session,data:ByteArray,key:String)=GltfModel().also {all.add(it)}
+  var loading:kotlinx.coroutines.CompletableDeferred<Unit>?=null
+  var attempts=0
+  suspend fun create(s:Session,data:ByteArray,key:String):GltfModel {attempts++;loading?.await();return GltfModel().also{all.add(it)}}
  }
 }
 internal class GltfModelEntity(val model:GltfModel):Entity() {
@@ -60,6 +73,10 @@ suspend fun main() {
   patch.close();patch.close()
   check(patch.entity.disposed)
  }
+ val deadSession=Session()
+ val tornDown=CurvedMonitorInput.create(deadSession,parent,MonitorMesh()) {}
+ tornDown.entity.dispose();GltfModel.all.last().close() // XR session disposed resources first.
+ deadSession.lifecycleOwner.lifecycle.destroy();tornDown.close();tornDown.close()
  val flat=CurvedMonitorInput.create(session,parent,null,width=2f,height=1f) {}
  val original=flat.entity
  repeat(20){
@@ -70,12 +87,32 @@ suspend fun main() {
  flat.close();flat.close();check(original.disposed)
  GltfModelEntity.failComponent=true
  check(runCatching {CurvedMonitorInput.create(session,parent,MonitorMesh()) {}}.isFailure)
- check(GltfModel.all.all {it.closed && it.instances==0})
+ check(GltfModel.all.size==2 && GltfModel.all.all {it.instances==0})
+ check(!GltfModel.all.first().closed) // Shared material remains alive through menu churn.
+ GltfModel.all.filter{!it.closed}.forEach{it.close()}
+ session.lifecycleOwner.lifecycle.destroy()
+ check(GltfModel.all.all{it.closed})
+ GltfModelEntity.failComponent=false
+ kotlinx.coroutines.coroutineScope {
+  val concurrent=Session();val aParent=Entity();val bParent=Entity()
+  val gate=kotlinx.coroutines.CompletableDeferred<Unit>();GltfModel.loading=gate
+  val attempts=GltfModel.attempts
+  val a=launch{CurvedMonitorInput.create(concurrent,aParent,MonitorMesh()) {}}
+  kotlinx.coroutines.yield()
+  val b=async{CurvedMonitorInput.create(concurrent,bParent,MonitorMesh()) {}}
+  kotlinx.coroutines.yield()
+  a.cancelAndJoin();aParent.dispose();gate.complete(Unit)
+  b.await().close();GltfModel.loading=null
+  check(GltfModel.attempts==attempts+1 && GltfModel.all.last().instances==0)
+  GltfModel.all.last().close();concurrent.lifecycleOwner.lifecycle.destroy()
+ }
+ parent.dispose()
+ check(runCatching{CurvedMonitorInput.create(session,parent,MonitorMesh()) {}}.isFailure)
 }
 '''
-lib=Path(sys.argv[1]);stdlib=next(lib.glob('kotlin-stdlib-*.jar'))
+lib=Path(sys.argv[1]);stdlib=next(lib.glob('kotlin-stdlib-*.jar'));coroutines=next(lib.glob('kotlinx-coroutines-core-jvm-*.jar'));classpath=str(stdlib)+':'+str(coroutines)
 with tempfile.TemporaryDirectory(prefix='floatdesk-gltf-') as temp:
- path=Path(temp);code=path/'GltfLifecycle.kt';code.write_text(stubs+'\n'.join(sources)+main)
- subprocess.run(['java','-cp',str(lib/'*'),'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler','-no-stdlib','-no-reflect','-classpath',str(stdlib),'-d',temp,str(code)],check=True)
- subprocess.run(['java','-cp',temp+':'+str(stdlib),'GltfLifecycleKt'],check=True)
-print('Passed: 1000 curved patches release entities before materials, repeated close and failed setup cleanup')
+ path=Path(temp);code=path/'GltfLifecycle.kt';code.write_text('import kotlinx.coroutines.*\n'+stubs+'\n'.join(sources)+main)
+ subprocess.run(['java','-cp',str(lib/'*'),'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler','-no-stdlib','-no-reflect','-classpath',classpath,'-d',temp,str(code)],check=True)
+ subprocess.run(['java','-cp',temp+':'+classpath,'GltfLifecycleKt'],check=True)
+print('Passed: 1000 input instances reuse session materials, repeated close, session-first teardown and failed setup cleanup')

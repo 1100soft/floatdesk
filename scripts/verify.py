@@ -90,7 +90,10 @@ def checks(groups: list[str], lib: str | None):
         for name in (
             "check-gaze-focus",
             "check-display-worker",
+            "check-render-pause",
             "check-tray-polling",
+            "check-serve-existing",
+            "check-virtual-screen-power",
             "check-viewed-detail",
         ):
             yield name, [sys.executable, str(ROOT / "scripts" / f"{name}.py")]

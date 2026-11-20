@@ -48,11 +48,25 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
         }
         if(section!="Screens")Button(onClick={section=if(section=="Settings")"Screens" else "Settings"}){Text("‹ Back")}
         Text(if(busy) "Updating screens…" else "${sizes.size} desktop screens · $available available",color=Color.White)
+        if(section=="Focus & magnification") Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(4.dp)){
+            for(mode in dev.floatdesk.client.workspace.InteractionMode.entries){
+                Button(onClick={onQuality(quality.copy(interactionMode=mode))},modifier=Modifier.weight(1f)){
+                    Text((if(quality.interactionMode==mode)"● "else "")+mode.label)
+                }
+            }
+        }
+        if(section=="Focus & magnification") Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){
+            Text("Connected mouse spaces",color=Color.White)
+            androidx.compose.material3.Switch(enabled=RenderPolicy.CursorTopology,checked=quality.cursorRemap,onCheckedChange={onQuality(quality.copy(cursorRemap=it))})
+        }
         if(section=="Screens") Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             Button(enabled=!busy && available>0,onClick={connection.requestDisplays(1)}) {Text("Add screen")}
             Button(enabled=!busy,onClick={connection.requestDisplays()}) {Text("Refresh")}
             Button(onClick={section="Settings"}) {Text("Settings")}
         }
+        if(section=="Screens") Button(enabled=!busy && info!=null,onClick={
+            connection.requestDisplays(if(info?.virtualScreensDisabled==true)7 else 6)
+        }) {Text(if(info?.virtualScreensDisabled==true)"Restore virtual screens" else "Disable virtual screens")}
         if(section=="Screens")info?.let {host->
             val pixels=sizes.sumOf {it.first.toLong()*it.second}
             val capturePixels=if(sizes.isEmpty()) 0L else (sizes.indices.maxOf {positions[it].first+sizes[it].first}-positions.minOf {it.first}).toLong()*(sizes.indices.maxOf {positions[it].second+sizes[it].second}-positions.minOf {it.second})
@@ -82,6 +96,10 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
             Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){
                 listOf("floating" to "Floating","fixed" to "Fixed").forEach{(mode,label)->Button(onClick={onQuality(quality.copy(magnifierMode=mode))}){Text(if(quality.magnifierMode==mode)"✓ $label" else label)}}
             }
+            Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
+                Text("Panels & system menu",color=Color.White)
+                androidx.compose.material3.Switch(checked=quality.magnifySystemPanels,onCheckedChange={onQuality(quality.copy(magnifySystemPanels=it))})
+            }
             if(quality.magnifierMode=="fixed")Button(onClick=onAddFixed){Text("Add fixed magnifier")}
             if(quality.gazeToFocus && connection.gazeFocusError.value.isNotEmpty())Text(connection.gazeFocusError.value,color=Color(0xFFFFB4AB),fontSize=12.sp)
             var quiet by remember(quality.typingQuietMs){mutableStateOf((quality.typingQuietMs/1000f).toString())}
@@ -93,8 +111,9 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
         }
         if(section=="Streaming") {
             Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                androidx.compose.material3.Switch(checked=viewedDetail,onCheckedChange=onViewedDetail)
-                Text("Experimental viewed-area quality",color=Color.White)
+                listOf(false to "Normal",true to "Dynamic").forEach{(mode,label)->
+                    Button(enabled=!mode || RenderPolicy.DynamicQuality,onClick={onViewedDetail(mode)},colors=androidx.compose.material3.ButtonDefaults.buttonColors(containerColor=if(viewedDetail==mode)Color(0xFF396A9B)else Color(0xFF263344))){Text(if(viewedDetail==mode)"✓ $label" else label)}
+                }
             }
             Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                 androidx.compose.material3.Switch(checked=viewDebug,onCheckedChange=onViewDebug)
@@ -109,7 +128,7 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
             Text("On the computer, run: python3 scripts/virtual-display-setup.py --check\nIf no pool is available, use --write-bundle to prepare installation files. A compatible VKMS configfs kernel, administrator setup and a graphical-session restart are required. Existing pools are reused; Floatdesk never rebuilds kernel topology during use.",color=Color(0xFFB8D9EA),fontSize=13.sp)
         }
         if(section=="Screens") {
-        ScreenArrangementEditor(sizes,positions,busy,screens?.indexOfFirst {it.primary}?.coerceAtLeast(0) ?: if(state.primary==0) 0 else Integer.numberOfTrailingZeros(state.primary),info?.limits ?: (32767 to 32767)) {index,x,y->connection.requestDisplays(4,index,x,y)}
+        ScreenArrangementEditor(sizes,positions,busy,screens?.indexOfFirst {it.primary}?.coerceAtLeast(0) ?: if(state.primary==0) 0 else Integer.numberOfTrailingZeros(state.primary),info?.limits ?: (32767 to 32767)) {draft->connection.requestArrangement(draft)}
         if(sizes.isNotEmpty()) {
             Text(String.format(Locale.ROOT,"Visual spacing: %.1f%%",spacing*100),color=Color.White)
             androidx.compose.material3.Slider(value=spacing,onValueChange={onSpacing((it*1000).roundToInt()/1000f)},onValueChangeFinished=onSpacingFinished,valueRange=0f..0.15f,steps=149,enabled=!busy)
@@ -191,6 +210,7 @@ private fun StreamingSettings(value:dev.floatdesk.client.workspace.WorkspaceFile
     var sharp by remember(value.sharpening){mutableStateOf(value.sharpening)}
     Text(String.format(Locale.ROOT,"Sharpening %.2f",sharp),color=Color.White)
     androidx.compose.material3.Slider(value=sharp,onValueChange={sharp=(it*20).roundToInt()/20f},onValueChangeFinished={onApply(value.copy(sharpening=sharp))},valueRange=0f..1.5f,steps=29)
+    if(value.experimentalViewedDetail) {
     Row(horizontalArrangement=Arrangement.spacedBy(6.dp)){
         Button(onClick={onApply(value.copy(detailAreaPixels=0))}){Text(if(value.detailAreaPixels==0L)"✓ Auto" else "Auto")}
         Button(onClick={onApply(value.copy(detailAreaPixels=value.detailAreaPixels.takeIf{it>0} ?: 1_048_576))}){Text(if(value.detailAreaPixels>0)"✓ Fixed area" else "Fixed area")}
@@ -211,6 +231,7 @@ private fun StreamingSettings(value:dev.floatdesk.client.workspace.WorkspaceFile
             Button(enabled=parsed!=null,onClick={parsed?.let{onApply(value.copy(detailAreaPixels=it*it))}}){Text("Apply")}
         }
         Text(parsed?.let{String.format(Locale.ROOT,"%d × %d · %.2f MP patch",it,it,it*it/1e6)} ?: "64–4096 pixels per side",color=Color.White)
+    }
     }
     Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)){
         androidx.compose.material3.Switch(checked=value.showResources,onCheckedChange={onApply(value.copy(showResources=it))});Text("Live resources",color=Color.White)

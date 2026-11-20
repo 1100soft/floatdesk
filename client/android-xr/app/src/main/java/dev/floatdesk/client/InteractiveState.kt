@@ -6,6 +6,8 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.PowerManager
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import kotlinx.coroutines.delay
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
@@ -32,5 +34,26 @@ internal fun rememberDeviceInteractive(context: Context): State<Boolean> {
         interactive.value = power?.isInteractive ?: true
         onDispose { app.unregisterReceiver(receiver) }
     }
+    // SCREEN_ON can precede PowerManager becoming interactive. Reconcile even
+    // when XR leaves the Activity resumed across sleep.
+    LaunchedEffect(power) {
+        while (true) {
+            interactive.value = power?.isInteractive ?: true
+            delay(250)
+        }
+    }
     return interactive
+}
+
+/** Full-space acquisition must use Activity readiness, never its own XR resume result. */
+@Composable
+internal fun rememberActivityResumed(context:Context):State<Boolean>{
+    val owner=remember(context){generateSequence(context){current->(current as? android.content.ContextWrapper)?.baseContext?.takeIf{it!==current}}.filterIsInstance<androidx.lifecycle.LifecycleOwner>().firstOrNull()}
+    val resumed=remember(owner){mutableStateOf(owner?.lifecycle?.currentState?.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)==true)}
+    DisposableEffect(owner){
+        val observer=androidx.lifecycle.LifecycleEventObserver{_,_->resumed.value=owner?.lifecycle?.currentState?.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)==true}
+        owner?.lifecycle?.addObserver(observer)
+        onDispose{owner?.lifecycle?.removeObserver(observer)}
+    }
+    return resumed
 }

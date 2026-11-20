@@ -359,6 +359,18 @@ impl X11Capture {
         tiles: &[(MonitorRect, u16, u16, u16, u16)],
         gutter: u16,
     ) -> Result<CapturedFrame> {
+        let layers: Vec<_> = tiles
+            .iter()
+            .map(|&(r, x, y, w, h)| (self, r, x, y, w, h))
+            .collect();
+        self.atlas_layers(&layers, gutter)
+    }
+    /// Composite named backing pixmaps together on the X server, then read once.
+    pub fn atlas_layers(
+        &self,
+        tiles: &[(&X11Capture, MonitorRect, u16, u16, u16, u16)],
+        gutter: u16,
+    ) -> Result<CapturedFrame> {
         let target = self
             .render
             .as_ref()
@@ -386,7 +398,12 @@ impl X11Capture {
                 .map_err(Error::x11)?,
         );
         let fixed = |v: f64| (v * 65536.0).round() as i32;
-        for &(r, x, y, w, h) in tiles {
+        for (index, &(source, r, x, y, w, h)) in tiles.iter().enumerate() {
+            let picture = source
+                .render
+                .as_ref()
+                .ok_or_else(|| Error::Msg("Missing layer source".into()))?
+                .source;
             if w == 0
                 || h == 0
                 || x < gutter
@@ -400,7 +417,7 @@ impl X11Capture {
                 self.link
                     .conn
                     .render_set_picture_transform(
-                        target.source,
+                        picture,
                         render::Transform {
                             matrix11: fixed(r.width as f64 / w as f64),
                             matrix12: 0,
@@ -423,8 +440,12 @@ impl X11Capture {
                 self.link
                     .conn
                     .render_composite(
-                        render::PictOp::SRC,
-                        target.source,
+                        if index == 0 {
+                            render::PictOp::SRC
+                        } else {
+                            render::PictOp::OVER
+                        },
+                        picture,
                         0u32,
                         target.destination,
                         0,
@@ -839,6 +860,159 @@ mod scaled_checks {
                 .any(|r| r[0] <= 164 && r[1] <= 148 && r[0] + r[2] > 164 && r[1] + r[3] > 148),
             "Root occluder must be excluded from the shared desktop patch"
         );
+        // Popup ownership and named-pixmap composition, including outside the owner.
+        use x11rb::protocol::xproto::{AtomEnum, ConfigureWindowAux, PropMode};
+        use x11rb::wrapper::ConnectionExt as _;
+        let atom = |name: &[u8]| {
+            link.conn
+                .intern_atom(false, name)
+                .unwrap()
+                .reply()
+                .unwrap()
+                .atom
+        };
+        link.conn
+            .change_property32(
+                PropMode::REPLACE,
+                cover,
+                atom(b"_NET_WM_WINDOW_TYPE"),
+                AtomEnum::ATOM,
+                &[atom(b"_NET_WM_WINDOW_TYPE_DOCK")],
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+        let started = std::time::Instant::now();
+        while !crate::platform::x11::windows::observed_system_catalogue()
+            .iter()
+            .any(|p| p.id == cover)
+        {
+            assert!(
+                started.elapsed() < std::time::Duration::from_millis(500),
+                "Shell map observation waited for periodic catalogue refresh"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        // Qt may map a one-pixel helper before its first real menu geometry.
+        link.conn.unmap_window(cover).unwrap().check().unwrap();
+        link.conn
+            .configure_window(cover, &ConfigureWindowAux::new().width(1).height(1))
+            .unwrap()
+            .check()
+            .unwrap();
+        link.conn.map_window(cover).unwrap().check().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(70));
+        link.conn
+            .configure_window(cover, &ConfigureWindowAux::new().width(128).height(96))
+            .unwrap()
+            .check()
+            .unwrap();
+        let started = std::time::Instant::now();
+        while !crate::platform::x11::windows::observed_system_catalogue()
+            .iter()
+            .any(|p| p.id == cover && p.width == 128)
+        {
+            assert!(
+                started.elapsed() < std::time::Duration::from_millis(500),
+                "Mapped helper's final menu geometry was missed"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let panels = crate::platform::x11::windows::system_catalogue().unwrap();
+        assert!(panels.iter().any(|p| p.id == cover));
+        assert!(!panels.iter().any(|p| p.id == window));
+        link.conn
+            .change_property32(
+                PropMode::REPLACE,
+                cover,
+                atom(b"_NET_WM_WINDOW_TYPE"),
+                AtomEnum::ATOM,
+                &[atom(b"_NET_WM_WINDOW_TYPE_DESKTOP")],
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+        assert!(!crate::platform::x11::windows::system_catalogue()
+            .unwrap()
+            .iter()
+            .any(|p| p.id == cover));
+        let started = std::time::Instant::now();
+        while crate::platform::x11::windows::observed_system_catalogue()
+            .iter()
+            .any(|p| p.id == cover)
+        {
+            assert!(
+                started.elapsed() < std::time::Duration::from_millis(500),
+                "Shell property observation did not update immediately"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        assert!(crate::platform::x11::windows::window_popups(&link, window)
+            .unwrap()
+            .is_empty());
+        link.conn
+            .change_property32(
+                PropMode::REPLACE,
+                cover,
+                atom(b"WM_TRANSIENT_FOR"),
+                AtomEnum::WINDOW,
+                &[window],
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+        link.conn
+            .change_property32(
+                PropMode::REPLACE,
+                cover,
+                atom(b"_NET_WM_WINDOW_TYPE"),
+                AtomEnum::ATOM,
+                &[atom(b"_NET_WM_WINDOW_TYPE_POPUP_MENU")],
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+        link.conn
+            .configure_window(cover, &ConfigureWindowAux::new().x(180).y(120))
+            .unwrap()
+            .check()
+            .unwrap();
+        let popups = crate::platform::x11::windows::window_popups(&link, window).unwrap();
+        assert_eq!(popups.len(), 1);
+        assert_eq!(popups[0].id, cover);
+        assert_eq!(
+            crate::platform::x11::windows::capture_bounds((100, 100, 128, 96), &popups),
+            (100, 100, 208, 116)
+        );
+        let expanded = X11Capture::window(window, 208, 116).unwrap();
+        let popup = X11Capture::window(cover, 32, 32).unwrap();
+        let rect = MonitorRect {
+            index: 0,
+            x: 0,
+            y: 0,
+            width: 128,
+            height: 96,
+        };
+        let combined = expanded
+            .atlas_layers(
+                &[
+                    (&expanded, rect, 0, 0, 128, 96),
+                    (&popup, rect, 80, 20, 128, 96),
+                ],
+                0,
+            )
+            .unwrap();
+        for (x, y, rgb) in [(10, 10, [0, 0, 255]), (200, 100, [255, 0, 0])] {
+            let i = y * combined.stride as usize + x * 4;
+            assert_eq!(
+                &combined.bgra[i..i + 3],
+                &rgb,
+                "Owner and out-of-bounds popup must share one capture"
+            );
+        }
+        drop(popup);
+        drop(expanded);
         drop(root_capture);
         drop(capture);
         link.conn.free_gc(gc).unwrap();

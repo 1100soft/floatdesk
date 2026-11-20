@@ -1,0 +1,27 @@
+# XR reliability review — 2026-11-17
+
+A captured Workspace-return crash overflowed Filament’s native command stream while creating an input model. Desktop assets now remain allocated and disabled during Workspace, and hidden decoding pauses. Scene updates require RESUMED rather than STARTED; this also avoids feeding native geometry while the renderer is paused. Newer captured crashes were in native mesh upload. The lifecycle gate addresses a concrete risk but does not prove those native failures eliminated.
+
+The control receiver previously terminated on a packet-handler exception while the app remained marked connected. It now rejects bad packets, reopens failed or silent transport, and rebuilds dead decoder workers on handshake. Device recovery testing additionally exposed a receiver startup/shutdown race around socket options; initialization now handles a socket closed concurrently by shutdown. Pending display mutations are cancelled and reconciled read-only after endpoint replacement because host deduplication includes the source endpoint.
+
+Diagnostics have translucent backgrounds only within rendered clusters. Eye rays intersect those same warped footprints before desktop, magnifier or palm targeting; the transparent central region remains available. Normal streaming hides dynamic-only controls. Existing user preferences are preserved.
+
+Thermal severity is the Android-reported status, not an FPS estimate. These changes do not establish that severe thermal throttling is resolved. Sustained real-world use is still required to verify thermal behavior and native-engine stability.
+
+Validation: Android debug build and lint passed; six targeted JVM suites passed (curved resize, display requests, focus interaction, monitor warp, viewed detail and Workspace regressions), with focus rerun after the final HUD interaction adjustment. Four headset probes passed: control recovery, sharpening/HUD pixels, decoder idle/resume and window fan-out. Control recovery was rerun against the final APK, including cancellation of pending mutations across endpoint replacement. The APK was installed and reopened. These checks are not a sustained thermal soak or proof that every native crash is eliminated.
+
+## Popup capture, arrangement drafts and shell panes
+
+The subsequent update adds associated popup composition with expanded capture/input bounds, independent shell panes, and atomic Apply/Revert arrangement editing with hover feedback. Validation passed: 61 Rust tests (13 platform cases remain ignored in the default run), strict Clippy, Rust/Python formatting, five targeted JVM suites, four isolated KWin checks, and the synthetic display worker’s slow-refresh plus incomplete/complete batch-command cases. Android build/lint passed. Final headset window fan-out and compositor probes passed, including expanded source mapping, separate shell metadata and saved toggle state. Both host/client were deployed; active output positions were checked unchanged. Physical gaze-hover behavior and toolkit-specific menus still require user verification.
+
+## Four radial layers, shell decoding and popup notes
+
+Live host probes received both real Plasma dock captures. The headset codec-capability probe reported a 96-pixel minimum width/height for Qualcomm hardware AVC decoders; one dock was encoded at 36 pixels high, the other at 62 pixels wide before popup expansion. Both now use a minimum coded axis of 128, preserving native aspect ratio through source metadata. Synthetic wide/tall streams passed the real decoder and output callback.
+
+Desktop/window/shell/HUD radii are 1.20/0.85/0.55/0.35 metres. Flat-looking magnifier geometry preserves source viewing rays on its radial layer. Enlarged, tilted and curved/flat geometry checks passed, as did exact nonindexed triangle expansion and deferred upload checks. Shell menus attach to a nearby dock; normal popup notes use independent UV crops of the same decoded atlas, leaving owner size and coordinates unchanged. GPU crop and shared-source device checks passed.
+
+Crashes were reproduced during actual Activity destruction: a grab-guide access to a disposed entity and native SDK nDisposeAllResources/SplitEngine cleanup memory faults. Guarded cleanup removes the Java exception; early composition disposal alone did not eliminate the native final-teardown failure. Back now backgrounds the root task and pauses producers, retaining the XR session. Three Back/reopen cycles produced no new crash records. This is a verified avoidance of the common exit path, not proof that arbitrary SDK teardown or long-duration native mesh uploads are fixed. Native uploads use expanded triangles and paused/budgeted updates as additional mitigations.
+
+SceneCore 1.0.0 is already the stable version used here; the official release notes document its prior cleanup fixes but do not establish that this observed fault is resolved: https://developer.android.com/jetpack/androidx/releases/xr-scenecore
+
+Final follow-up: window/panel streams now pause capture/encoding with a lightweight TCP acknowledgement, independently of whether a backgrounded Compose tree gets another frame. Renderer detach operations are acknowledged before native output release. The final Android build/lint, Rust workspace tests and strict Clippy passed. Device crop, padded panel AVC, shared capture pause/resume and compositor/beam checks passed. The host was updated without changing the active monitor geometry; existing fixed magnification, normal quality mode and enabled shell-panel preferences were preserved.

@@ -5,6 +5,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.xr.compose.subspace.draw.scale
 import androidx.xr.compose.subspace.layout.pointerHoverIcon
 import androidx.xr.scenecore.scene
@@ -25,7 +26,7 @@ import dev.floatdesk.client.workspace.ViewLayers
 @androidx.compose.runtime.Composable
 internal fun DiagnosticsPanel(connection:dev.floatdesk.client.net.DeskConnection,
     viewer:java.util.concurrent.atomic.AtomicReference<dev.floatdesk.client.workspace.Pose?>,
-    units:()->Float,angles:()->FloatArray,resources:Boolean,quality:Boolean,qualityDebug:Boolean) {
+    units:()->Float,angles:()->FloatArray,resources:Boolean,quality:Boolean,qualityDebug:Boolean,spherical:Boolean) {
     if(!qualityDebug)return
     val session=androidx.xr.compose.platform.LocalSession.current ?: return
     val density=androidx.compose.ui.platform.LocalDensity.current
@@ -44,8 +45,8 @@ internal fun DiagnosticsPanel(connection:dev.floatdesk.client.net.DeskConnection
     }
     val pose=head ?: return
     val fov=angles();val h=kotlin.math.round(fov[0]*100f)/100f;val v=kotlin.math.round(fov[1]*100f)/100f
-    val patches=androidx.compose.runtime.remember(h,v){hudForegroundPatches(h,v,ViewLayers.DiagnosticsDistanceM)}
-    val state=androidx.compose.runtime.remember(snapshot,resources,quality,qualityDebug){snapshot.copy(state=snapshot.state.copy(enabled=quality,showOverlay=qualityDebug,showResources=resources))}
+    val patches=androidx.compose.runtime.remember(h,v,spherical){hudForegroundPatches(h,v,ViewLayers.DiagnosticsDistanceM,spherical)}
+    val state=androidx.compose.runtime.remember(snapshot,resources,quality,qualityDebug){snapshot.copy(frame=if(quality)snapshot.frame else null,state=snapshot.state.copy(enabled=quality,showOverlay=qualityDebug,showResources=resources))}
     val unit=units().takeIf{it.isFinite() && it>0f} ?: 1f
     // Only this parent follows the head. Text refreshes never update individual block poses.
     androidx.xr.compose.subspace.SpatialBox(modifier=placedPanel(pose,unit,unit,density,pixelDensity)){
@@ -60,9 +61,12 @@ internal fun DiagnosticsPanel(connection:dev.floatdesk.client.net.DeskConnection
                 androidx.xr.compose.subspace.SpatialPanel(
                     modifier=placedPanel(local,patch.width*unit*supersample,patch.height*unit*supersample,density,pixelDensity).scale(1f/supersample).pointerHoverIcon(androidx.xr.scenecore.SpatialPointerIcon.NONE),
                     shape=androidx.xr.compose.subspace.layout.SpatialRoundedCornerShape(androidx.compose.foundation.shape.CornerSize(androidx.compose.ui.unit.Dp(0f)))){
-                    androidx.compose.foundation.Canvas(androidx.compose.ui.Modifier.fillMaxSize()){
+                    androidx.compose.foundation.Canvas(androidx.compose.ui.Modifier.fillMaxSize().pointerInput(Unit){
+                        awaitPointerEventScope{while(true){awaitPointerEvent().changes.forEach{it.consume()}}}
+                    }){
                         drawIntoCanvas{target->
                             val c=target.nativeCanvas;val saved=c.save();c.scale(size.width/800f,size.height/400f)
+                            texture.topology=connection.cursorMapDebug
                             texture.draw(c,state,connection.presentation().rects,stamp,index,patch.columns,patch.rows,patch.vertices)
                             c.restoreToCount(saved)
                         }
@@ -77,15 +81,31 @@ internal class HudGlyphTexture:AutoCloseable{
     val bitmap=android.graphics.Bitmap.createBitmap(800,400,android.graphics.Bitmap.Config.ARGB_8888)
     val paint=Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private var stamp=Long.MIN_VALUE;private var state:DiagnosticSnapshot?=null
+    var topology=floatArrayOf()
     private var closed=false
     private fun update(value:DiagnosticSnapshot,screens:FloatArray,now:Long,index:Int){
         if(stamp==now && state===value)return
-        DiagnosticsCanvas.drawCluster(Canvas(bitmap),value,screens,now,index);stamp=now;state=value
+        DiagnosticsCanvas.drawCluster(Canvas(bitmap),value,screens,now,index);if(index==3 && topology.isNotEmpty())drawTopology(Canvas(bitmap),topology);stamp=now;state=value
     }
     fun draw(canvas:Canvas,value:DiagnosticSnapshot,screens:FloatArray,now:Long,index:Int,columns:Int,rows:Int,vertices:FloatArray){
         if(closed)return
         update(value,screens,now,index)
         canvas.drawBitmapMesh(bitmap,columns,rows,vertices,0,null,0,paint)
+    }
+    private fun drawTopology(canvas:Canvas,lines:FloatArray){
+        val xs=lines.indices.filter{it%5==0 || it%5==2}.map{lines[it]}
+        val ys=lines.indices.filter{it%5==1 || it%5==3}.map{lines[it]}
+        val l=xs.minOrNull() ?: return;val r=xs.maxOrNull() ?: return
+        val t=ys.minOrNull() ?: return;val b=ys.maxOrNull() ?: return
+        val scale=minOf(740f/(r-l).coerceAtLeast(.001f),195f/(b-t).coerceAtLeast(.001f))
+        paint.style=Paint.Style.FILL;paint.color=Color.argb(230,12,20,30);canvas.drawRect(0f,184f,800f,400f,paint)
+        paint.strokeWidth=2f
+        for(i in lines.indices step 5){
+            paint.color=if(lines[i+4]>0f)Color.rgb(190,135,255)else Color.rgb(100,220,240)
+            fun x(v:Float)=400f+(v-(l+r)*.5f)*scale
+            fun y(v:Float)=290f+(v-(t+b)*.5f)*scale
+            canvas.drawLine(x(lines[i]),y(lines[i+1]),x(lines[i+2]),y(lines[i+3]),paint)
+        }
     }
     // Compose/RenderThread can retain recorded draws after disposal. Let the bitmap be
     // collected with those references instead of recycling storage they may still use.
@@ -131,6 +151,8 @@ internal object DiagnosticsCanvas {
         canvas.drawColor(Color.TRANSPARENT,PorterDuff.Mode.CLEAR)
         val state=snapshot.state
         if(index<2 && !state.showResources || index>=2 && !state.showOverlay)return
+        paint.style=Paint.Style.FILL;paint.color=Color.argb(165,12,20,30)
+        canvas.drawRect(0f,0f,800f,400f,paint)
         val title=listOf("HOST","HEADSET","STREAM","QUALITY")[index]
         fun metric(text:String,label:String)=Regex(Regex.escape(label)+"\\s+([^\\s]+)").find(text)?.groupValues?.get(1) ?: "—"
         fun value(text:String,suffix:String)=Regex("[0-9.]+"+suffix).find(text)?.value ?: "—"

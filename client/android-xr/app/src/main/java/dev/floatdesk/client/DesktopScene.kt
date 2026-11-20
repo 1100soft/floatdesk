@@ -67,6 +67,7 @@ import kotlin.math.max
 @Composable
 internal fun DeskContent(
     connection: DeskConnection,
+    onDeskRoot:(androidx.xr.scenecore.Entity)->Unit,
     viewer:AtomicReference<Pose?>,
     viewerAngles:AtomicReference<FloatArray>,
     workspace: WorkspaceFile,
@@ -97,7 +98,7 @@ internal fun DeskContent(
     val reloading by connection.reloading
     val layout = workspace.reconcileMonitors(monitors.map { Triple(it.name,it.width,it.height) }).layouts[workspace.activeLayout].orEmpty()
     DiagnosticsPanel(connection,viewer,{handTracking.unitsPerMeter},{viewerAngles.get()},
-        workspace.showResources,workspace.experimentalViewedDetail,workspace.viewDetailDebug)
+        workspace.showResources,workspace.experimentalViewedDetail,workspace.viewDetailDebug,workspace.sphericalWarp)
     var managerPage by remember{mutableStateOf("Screens")}
     val managerHeight=when(managerPage){"Settings"->.40f;"Focus & magnification"->.40f;"Pinches"->.48f;"Virtual screen setup"->.38f;else->.65f}
     if(displayControlsOpen) SpatialPanel(modifier=placedPanel(displayControlsPose,if(managerPage=="Screens") .60f else .52f,managerHeight,density,pixelDensity)) {
@@ -121,11 +122,12 @@ internal fun DeskContent(
     }
     palmPanel?.takeIf { handInputAllowed }?.let { panel ->
         SpatialPanel(modifier = placedPanel(panel.pose, PALM_WIDTH * panel.unitsPerMeter, PALM_HEIGHT * panel.unitsPerMeter, density, pixelDensity)) {
-            PalmControls(latchedFollow, workspace.sphericalWarp, workspace.eyeAiming, workspace.mouseGestures, panelFocused, panelPressed, workspace.focusMode, onPalmAction)
+            PalmControls(latchedFollow, workspace.sphericalWarp, workspace.eyeAiming, workspace.mouseGestures, panelFocused, panelPressed, workspace.interactionMode, onPalmAction)
         }
     }
-    // Remove desktop render/input surfaces while Workspace is open so no surface can occlude it.
-    if(!displayControlsOpen) layout.forEachIndexed { index, placement ->
+    // Retain native assets across Workspace visits; hide them instead of destroying/re-instancing glTF.
+    val controlsOpenNow=rememberUpdatedState(displayControlsOpen)
+    layout.forEachIndexed { index, placement ->
         androidx.compose.runtime.key(placement.hostSourceId,placement.pixelWidth,placement.pixelHeight) {
         val hands = remember(index) { grabs.getOrPut(index) { TwoHandState() } }
         var nativeResize by remember(index) { mutableStateOf(false) }
@@ -146,9 +148,18 @@ internal fun DeskContent(
             var outputResizePending=false
             while (isActive) {
                 delay(20)
-                if(!connection.isRenderingActive() || !current.lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) { delay(100);continue }
+                if(controlsOpenNow.value) {
+                    warp.setVisible(false);systemControls.setVisible(false)
+                    hands.cancel();pointerControl.clearMonitor(index)
+                    if(nativeMove || nativeResize)onManipulate(false)
+                    nativeMove=false;nativeResize=false;moveBefore=null
+                    frozenMonitor?.suspendVisibility()
+                    delay(100);continue
+                }
+                if(!connection.isRenderingActive() || !current.lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) { delay(100);continue }
+                warp.setVisible(true);systemControls.setVisible(true)
                 if (videoSurface.get() == null) continue
-                val root = findDeskSpace(current) ?: continue
+                val root = warp.coordinateParent.liveOrNull() ?: continue
                 val file = latest.value
                 val screen = file.monitorAt(index) ?: continue
                 try {
@@ -167,7 +178,8 @@ internal fun DeskContent(
                             (hands.busy && !hands.engaged) || nativeMove || nativeResize || handTracking.pointerHeld,
                             forceUpdate=(hands.engaged || !hands.busy) && (nativeGeometryPending || !warp.matchesSize(screen)),
                             viewDirection=handTracking.points["VIEW_DIRECTION"],
-                            freezeProjection=(hands.busy && !hands.engaged) || nativeMove || nativeResize || handTracking.pointerHeld)
+                            freezeProjection=(hands.busy && !hands.engaged) || nativeMove || nativeResize || handTracking.pointerHeld,
+                            submitShape={update->connection.tryDesktopShapeUpdate(index,update)})
                         grabProjectionAt=projectionNow
                     }
                     if(outputResizePending){connection.refreshOutput(index);outputResizePending=false}
@@ -214,10 +226,11 @@ internal fun DeskContent(
                     pointerControl.nativeManipulation(index,systemControls.isManipulating)
                     pointerControl.meshes[index] = warp.mesh
                     pointerControl.qualityReferences[index]=warp.gazeReference
-                    connection.projection(index,null) // Geometry projection uses the original streamed pixels.
+                    connection.projection(index,null)
                     warp.outputSurface?.let { display ->
                         if (videoSurface.get() !== display) {
-                            videoSurface.set(display)
+                            warp.coordinateParent?.let(onDeskRoot)
+                videoSurface.set(display)
                             connection.attachSurface(index, display)
                         }
                     }
@@ -235,6 +248,7 @@ internal fun DeskContent(
             val surface = videoSurface.get() ?: return@LaunchedEffect
             var frozen: FrozenMonitor? = null
             try {
+                if(!RenderPolicy.CustomMeshes)return@LaunchedEffect
                 frozen = FrozenMonitor.create(current, surface, placement.pixelWidth, placement.pixelHeight, hands.frozenMesh,dynamic=latest.value.sphericalWarp)
                 val latestPlacement = latest.value.monitorAt(index) ?: return@LaunchedEffect
                 frozen.update(latestPlacement,warp.mesh)
@@ -249,7 +263,7 @@ internal fun DeskContent(
                 frozen?.close()
             }
         }
-        frozenMonitor?.let { frozen -> SideEffect { frozen.update(placement,warp.mesh) } }
+        if(!displayControlsOpen) frozenMonitor?.let { frozen -> SideEffect { frozen.update(placement,warp.mesh) } }
 
         val inputPolicy = remember(index) {
                 object : InteractionPolicy {
@@ -282,6 +296,7 @@ internal fun DeskContent(
             }
         SpatialExternalSurface(
             stereoMode = StereoMode.Mono,
+            superSamplingPattern = androidx.xr.compose.subspace.SuperSamplingPattern.None,
             modifier = placedPanel(
                 pose = placement.pose,
                 widthM = placement.physicalWidthM,
@@ -295,7 +310,9 @@ internal fun DeskContent(
                 val display = warp.attach(current, surface, latest.value.monitorAt(index) ?: placement, pixelDensity, inputPolicy::onInputEvent) { side, point, flat, width, height ->
                     pointerControl.hover(index,side,point,flat,width,height,SystemClock.uptimeMillis())
                 }
+                warp.coordinateParent?.let(onDeskRoot)
                 videoSurface.set(display)
+                warp.setVisible(!controlsOpenNow.value)
                 connection.attachSurface(index, display)
             }
             onSurfaceDestroyed {

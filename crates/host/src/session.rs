@@ -3,6 +3,7 @@
 //! Nothing is encoded until a client hello arrives.
 
 mod cursor;
+mod cursor_map;
 mod detail;
 mod receiver;
 mod resources;
@@ -137,6 +138,9 @@ struct Shared {
     bytes: AtomicU64,
     cursor: Mutex<CursorSprite>,
     cursor_generation: AtomicU64,
+    rendering: Mutex<(Option<SocketAddr>, bool)>,
+    cursor_claim: Mutex<Option<(String, [f64; 2])>>,
+    cursor_map: Mutex<(Vec<cursor_map::Surface>, [f64; 2], Instant)>,
     /// X11 socket of the capture thread. -1 when capture is not connected.
     capture_fd: [AtomicI32; 6],
     stream_active: [AtomicBool; 6],
@@ -406,6 +410,9 @@ fn run(
             pixels: Vec::new(),
         }),
         cursor_generation: AtomicU64::new(0),
+        rendering: Mutex::new((None, true)),
+        cursor_claim: Mutex::new(None),
+        cursor_map: Mutex::new((Vec::new(), [0.001, 0.001], Instant::now())),
         capture_fd: std::array::from_fn(|_| AtomicI32::new(-1)),
         stream_active: std::array::from_fn(|_| AtomicBool::new(true)),
         stream_ssrc: std::array::from_fn(|_| AtomicU32::new(0)),
@@ -435,8 +442,9 @@ fn run(
     let mut threads = launch_streams(&shared, &monitors, &hellos, opts);
     tracing::info!(listen = %opts.listen, "waiting for a client hello");
     let cursor_shared = Arc::clone(&shared);
+    let cursor_socket = socket.try_clone()?;
     let cursor_thread = thread::spawn(move || {
-        cursor_loop(cursor_shared);
+        cursor_loop(cursor_shared, cursor_socket);
     });
     let (topology_tx, topology_rx) = std::sync::mpsc::sync_channel(1);
     let topology_shared = Arc::clone(&shared);
@@ -496,16 +504,20 @@ fn run(
         }
     });
     let mut topology_epoch = Instant::now();
+    let mut window_action_sequence = std::collections::HashMap::<(SocketAddr, u32), u32>::new();
+    let mut last_cursor_claim: Option<(SocketAddr, u64)> = None;
+    let mut last_cursor_map: Option<(SocketAddr, u64)> = None;
     let mut last_gaze_focus: Option<(SocketAddr, u32)> = None;
     let mut replies: std::collections::VecDeque<(SocketAddr, u32, Vec<u8>)> =
         std::collections::VecDeque::new();
     let mut resources = resources::Sampler::new();
     let mut last_hello = Instant::now() - Duration::from_secs(2);
+    let mut shell_revision = crate::platform::x11::windows::system_revision();
     let mut last_stats = Instant::now();
     let mut last_progress = [0u64; 6];
     let started = Instant::now();
     let mut pending_display: Option<DisplayWorker> = None;
-    let mut scratch = [0u8; 2048];
+    let mut scratch = [0u8; 65535];
     while !shared.stop.load(Ordering::Relaxed) {
         if opts
             .duration
@@ -519,6 +531,131 @@ fn run(
                     let packet = floatdesk_protocol::decode_packet(&scratch[..size]);
                     if let Ok(ControlPacket::Workspace { json }) = &packet {
                         if let Ok(value) = serde_json::from_str::<serde_json::Value>(json) {
+                            if value["type"] == "renderState" {
+                                if shared
+                                    .client
+                                    .read()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .as_ref()
+                                    .is_some_and(|c| c.control == from)
+                                {
+                                    if let Some(active) = value["active"].as_bool() {
+                                        *shared
+                                            .rendering
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner()) =
+                                            (Some(from), active);
+                                    }
+                                }
+                                continue;
+                            }
+                            if value["type"] == "cursorSpace" {
+                                let sequence = value["sequence"].as_u64().unwrap_or(0);
+                                let allowed = shared
+                                    .client
+                                    .read()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .as_ref()
+                                    .is_some_and(|c| c.control == from);
+                                if allowed
+                                    && !last_cursor_claim
+                                        .is_some_and(|(peer, old)| peer == from && sequence < old)
+                                {
+                                    if let (Some(key), Some(x), Some(y)) = (
+                                        value["key"].as_str(),
+                                        value["x"].as_f64(),
+                                        value["y"].as_f64(),
+                                    ) {
+                                        if key.len() <= 256 && x.is_finite() && y.is_finite() {
+                                            *shared
+                                                .cursor_claim
+                                                .lock()
+                                                .unwrap_or_else(|e| e.into_inner()) =
+                                                Some((key.to_owned(), [x, y]));
+                                            last_cursor_claim = Some((from, sequence));
+                                        }
+                                    }
+                                }
+                                continue;
+                            }
+                            if value["type"] == "cursorMap" {
+                                let sequence = value["sequence"].as_u64().unwrap_or(0);
+                                if last_cursor_map
+                                    .is_some_and(|(peer, old)| peer == from && sequence < old)
+                                {
+                                    continue;
+                                }
+                                if shared
+                                    .client
+                                    .read()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .as_ref()
+                                    .is_some_and(|c| c.control == from)
+                                {
+                                    if let (Ok(surfaces), Ok(scale)) = (
+                                        serde_json::from_value::<Vec<cursor_map::Surface>>(
+                                            value["surfaces"].clone(),
+                                        ),
+                                        serde_json::from_value::<[f64; 2]>(value["scale"].clone()),
+                                    ) {
+                                        if surfaces.iter().all(|s| s.valid())
+                                            && scale.iter().all(|s| s.is_finite() && *s > 0.0)
+                                        {
+                                            *shared
+                                                .cursor_map
+                                                .lock()
+                                                .unwrap_or_else(|e| e.into_inner()) =
+                                                (surfaces, scale, Instant::now());
+                                            last_cursor_map = Some((from, sequence));
+                                        }
+                                    }
+                                }
+                                continue;
+                            }
+                            if value["type"] == "windowAction" {
+                                let allowed = shared
+                                    .client
+                                    .read()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .as_ref()
+                                    .is_some_and(|c| c.control == from);
+                                if !allowed {
+                                    continue;
+                                }
+                                if let Some(id) = value["requestId"]
+                                    .as_u64()
+                                    .and_then(|v| u32::try_from(v).ok())
+                                {
+                                    if let Some((_, _, reply)) = replies
+                                        .iter()
+                                        .find(|(peer, key, _)| *peer == from && *key == id)
+                                    {
+                                        let _ = socket.send_to(reply, from);
+                                        continue;
+                                    }
+                                    let window = value["windowId"]
+                                        .as_u64()
+                                        .and_then(|w| u32::try_from(w).ok())
+                                        .unwrap_or(0);
+                                    window_action_sequence.retain(|(peer, _), _| *peer == from);
+                                    let stale = window_action_sequence
+                                        .get(&(from, window))
+                                        .is_some_and(|old| id < *old);
+                                    let result = if stale {
+                                        Err(Error::Msg("Superseded window action".into()))
+                                    } else {
+                                        window_action_sequence.insert((from, window), id);
+                                        crate::platform::x11::windows::window_action(&value)
+                                    };
+                                    let reply=ControlPacket::Workspace{json:serde_json::json!({"type":"windowActionResult","requestId":id,"ok":result.is_ok(),"message":result.err().map(|e|e.to_string()).unwrap_or_default()}).to_string()}.encode();
+                                    let _ = socket.send_to(&reply, from);
+                                    replies.push_back((from, id, reply));
+                                    if replies.len() > 32 {
+                                        replies.pop_front();
+                                    }
+                                }
+                                continue;
+                            }
                             if value["type"] == "encoderSettings" {
                                 if shared
                                     .client
@@ -581,7 +718,7 @@ fn run(
                                     .is_some_and(|c| c.control == from)
                                 {
                                     let age = crate::platform::x11::typing::age_ms().min(60_000);
-                                    let reply=ControlPacket::Workspace{json:serde_json::json!({"type":"typingState","ageMs":age,"available":crate::platform::x11::typing::start()}).to_string()}.encode();
+                                    let reply=ControlPacket::Workspace{json:serde_json::json!({"type":"typingState","windowId":crate::platform::x11::typing::window_id(),"ageMs":age,"available":crate::platform::x11::typing::start()}).to_string()}.encode();
                                     let _ = socket.send_to(&reply, from);
                                 }
                                 continue;
@@ -697,22 +834,26 @@ fn run(
                                     }
                                     let id = u32::try_from(v["requestId"].as_u64()?).ok()?;
                                     let action = u8::try_from(v["action"].as_u64()?).ok()?;
-                                    if action > 4 {
+                                    if action > 7 {
                                         return None;
                                     }
-                                    let index = if action == 0 || action == 1 {
+                                    let index = if action == 0 || action == 1 || action >= 5 {
                                         0
                                     } else {
                                         sources.iter().position(|(n, _)| {
                                             Some(n.as_str()) == v["name"].as_str()
                                         })?
                                     };
-                                    let width = if action == 4 {
+                                    let width = if action >= 5 {
+                                        0
+                                    } else if action == 4 {
                                         i16::try_from(v["width"].as_i64()?).ok()? as u16
                                     } else {
                                         u16::try_from(v["width"].as_u64()?).ok()?
                                     };
-                                    let height = if action == 4 {
+                                    let height = if action >= 5 {
+                                        0
+                                    } else if action == 4 {
                                         i16::try_from(v["height"].as_i64()?).ok()? as u16
                                     } else {
                                         u16::try_from(v["height"].as_u64()?).ok()?
@@ -748,14 +889,31 @@ fn run(
                                 let source_snapshot = sources.clone();
                                 pointer.release();
                                 send_reload(&shared, &socket, true);
+                                let arrangement = if action == 5 {
+                                    match &packet {
+                                        Ok(ControlPacket::Workspace { json }) => {
+                                            serde_json::from_str::<serde_json::Value>(json)
+                                                .ok()
+                                                .map(|v| v["positions"].clone())
+                                        }
+                                        _ => None,
+                                    }
+                                } else {
+                                    None
+                                };
                                 let worker = thread::spawn(move || {
-                                    let result = worker_pool.apply(
-                                        action,
-                                        index,
-                                        width,
-                                        height,
-                                        &source_snapshot,
-                                    );
+                                    let result = if action == 5 {
+                                        worker_pool
+                                            .apply_arrangement(&arrangement.unwrap_or_default())
+                                    } else {
+                                        worker_pool.apply(
+                                            action,
+                                            index,
+                                            width,
+                                            height,
+                                            &source_snapshot,
+                                        )
+                                    };
                                     (worker_pool, result)
                                 });
                                 pending_display = Some((from, request_id, worker));
@@ -905,6 +1063,18 @@ fn run(
             }
         }
         pointer.expire();
+        let shell_now = crate::platform::x11::windows::system_revision();
+        if pending_display.is_none() && shell_now != shell_revision {
+            if let Some(client) = shared
+                .client
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+            {
+                publish_workspace(pool.as_deref(), &socket, client.control, 0, false, opts.fps);
+            }
+            shell_revision = shell_now;
+        }
         if last_hello.elapsed() >= Duration::from_secs(1) {
             send_hello(&shared, &socket, &hellos);
             let stats = resources.sample(&shared);

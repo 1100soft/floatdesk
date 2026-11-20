@@ -4,6 +4,7 @@ import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.addCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import dev.floatdesk.client.workspace.AnchorController
 import dev.floatdesk.client.workspace.WorkspaceStore
@@ -11,6 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.io.File
 import androidx.lifecycle.lifecycleScope
+import androidx.xr.scenecore.scene
 
 class MainActivity : ComponentActivity() {
     private lateinit var store: WorkspaceStore
@@ -24,6 +26,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // A root XR task should pause on Back, just as on Home. Keeping its
+        // session avoids the reproducible native SDK final-teardown fault;
+        // existing lifecycle gates stop video/input work while backgrounded.
+        onBackPressedDispatcher.addCallback(this){moveTaskToBack(true)}
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         store = WorkspaceStore(File(filesDir, "workspace.json"))
         val permissions = arrayOf(
@@ -43,6 +49,24 @@ class MainActivity : ComponentActivity() {
         setContent {
             FloatdeskApp(store = store, dumpFile = dump,onSession={activeSession=it})
         }
+    }
+
+    override fun onResume(){
+        super.onResume()
+        // The Activity can resume before the XR lifecycle. Do not wait for XR
+        // frame callbacks to request the full-space state that restarts them.
+        activeSession?.let{session->runCatching{session.scene.requestFullSpace()}}
+    }
+
+    override fun onStop() {
+        // SceneCore tears down native resources before Activity.onDestroy. Dispose
+        // our Compose scene while the XR session is still alive, stopping producers
+        // and releasing child entities before that native teardown starts.
+        if(isFinishing || isChangingConfigurations){
+            val content=findViewById<android.view.ViewGroup>(android.R.id.content)
+            for(i in 0 until content.childCount)(content.getChildAt(i) as? androidx.compose.ui.platform.ComposeView)?.disposeComposition()
+        }
+        super.onStop()
     }
 
     private fun rememberAnchor() {

@@ -65,3 +65,10 @@ internal class ArrangementDropHistory(private val releaseWindowMs:Long=100) {
     fun finish(at:Long):DesktopScreen? = samples.lastOrNull {it.first<=at-releaseWindowMs}?.second ?: samples.peekFirst()?.second
     fun clear()=samples.clear()
 }
+
+/** Draft edits may be disconnected temporarily; only the complete Apply must be valid. */
+internal fun canApplyArrangement(screens:List<DesktopScreen>,primary:Int,limits:Pair<Int,Int>):Boolean {
+    if(screens.isEmpty() || overlappingScreens(screens).any{it} || connectedScreens(screens,primary).any{!it})return false
+    return screens.maxOf{it.x+it.width}-minOf(0,screens.minOf{it.x})<=limits.first &&
+        screens.maxOf{it.y+it.height}-minOf(0,screens.minOf{it.y})<=limits.second
+}

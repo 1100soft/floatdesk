@@ -22,7 +22,8 @@ internal data class VideoAim @JvmOverloads constructor(
     val thickness: Float = 2f, val opacity: Float = .18f, val colors: FloatArray = floatArrayOf(),
 )
 
-internal data class VideoMirror(val surface:Surface,val padX:Float=0f,val padY:Float=0f,val pinned:Boolean=false,val aspect:Float=0f,val before:((Long)->Unit)?=null,val presented:(()->Unit)?=null)
+internal data class VideoCrop(val left:Float,val top:Float,val right:Float,val bottom:Float,val aspect:Float)
+internal data class VideoMirror @JvmOverloads constructor(val surface:Surface,val padX:Float=0f,val padY:Float=0f,val pinned:Boolean=false,val aspect:Float=0f,val before:((Long)->Unit)?=null,val presented:(()->Unit)?=null,val crop:(()->VideoCrop?)?=null,val ink:(()->VideoAim)?=null)
 
 /** One GPU pass keeps aiming decorations and live video in the same compositor layer. */
 internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
@@ -128,6 +129,12 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         previous.filter{old->mirrors.none{it.egl===old.egl}}.forEach{EGL14.eglDestroySurface(display,it.egl)}
         requestDraw()
     }}}
+    /** Finish queued output detach operations before the XR owner frees a native canvas. */
+    fun flushOutputs(){
+        if(closed || android.os.Looper.myLooper()==handler.looper)return
+        val done=CountDownLatch(1)
+        if(handler.post{done.countDown()})done.await(250,TimeUnit.MILLISECONDS)
+    }
     private val viewTransform=FloatArray(16)
     private val viewFrames=java.util.concurrent.ConcurrentSkipListMap<Long,dev.floatdesk.client.net.ViewFrame>()
     private var viewTimestamp=Long.MIN_VALUE
@@ -151,6 +158,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     @Volatile private var viewProjection:ViewProjection?=null
     private var program=0
     private var inkProgram=0
+    private var inkVertexBuffer=0
     @Volatile var outputLimit:Int=4096
         private set
     private var hasFrame=false
@@ -214,6 +222,9 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                 copyProgram=link(VERTEX,COPY_FRAGMENT)
                 program=link(VERTEX,FRAGMENT)
                 inkProgram=link(INK_VERTEX,INK_FRAGMENT)
+                val buffers=IntArray(1)
+                GLES20.glGenBuffers(1,buffers,0)
+                inkVertexBuffer=buffers[0]
                 if(diagnostics.showOverlay || diagnostics.showResources)handler.postDelayed(debugTick,250)
                 Log.i("Floatdesk","live video compositor ready ${width}x$height")
             } catch(error: Throwable) { failure=error }
@@ -289,6 +300,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                 }
             }
         }
+        if(surface==null)flushOutputs()
     }
 
     fun viewFrame(ptsUs:Long,value:dev.floatdesk.client.net.ViewFrame){
@@ -338,7 +350,21 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         try { block() } catch(error: Exception) { Log.e("Floatdesk","live video compositor failed",error) }
     }
 
+    private val shapeDrawLock=java.util.concurrent.locks.ReentrantLock()
+
+    /** Never block the UI waiting for an EGL submission. Retry the shape next frame. */
+    fun tryShapeUpdate(update:()->Unit):Boolean {
+        if(!shapeDrawLock.tryLock())return false
+        try { update() } finally { shapeDrawLock.unlock() }
+        return true
+    }
+
     private fun draw() {
+        shapeDrawLock.lock()
+        try { drawLocked() } finally { shapeDrawLock.unlock() }
+    }
+
+    private fun drawLocked() {
         val primaryWindow=window;val primaryTarget=target
         try{
             if(primaryWindow!=EGL14.EGL_NO_SURFACE && primaryTarget?.isValid==true){
@@ -350,6 +376,8 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                 check(EGL14.eglMakeCurrent(display,window,window,context))
                 val pts=texture.timestamp/1000
                 mirror.value.before?.invoke(pts)
+                val crop=mirror.value.crop?.invoke()
+                if(crop!=null && (crop.right<=crop.left || crop.bottom<=crop.top))continue
                 EGLExt.eglPresentationTimeANDROID(display,window,pts*1000)
                 drawSurface();mirror.value.presented?.invoke()
             }
@@ -397,7 +425,9 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         GLES20.glUniform2f(uniform(program,"framePadding"),mirror?.padX ?: 0f,mirror?.padY ?: 0f)
         GLES20.glUniform1i(uniform(program,"framePinned"),if(mirror?.pinned==true)1 else 0)
         GLES20.glUniform1f(uniform(program,"paneAspect"),mirror?.aspect ?: 0f)
-        GLES20.glUniform1f(uniform(program,"sourceAspect"),sourceAspect)
+        val crop=mirror?.crop?.invoke()
+        GLES20.glUniform1f(uniform(program,"sourceAspect"),crop?.aspect ?: sourceAspect)
+        GLES20.glUniform4f(uniform(program,"videoCrop"),crop?.left ?: 0f,crop?.top ?: 0f,crop?.right ?: 1f,crop?.bottom ?: 1f)
         GLES20.glUniform1i(uniform(program,"windowMaskCount"),minOf(16,windowMask.size/4))
         if(windowMask.isNotEmpty())GLES20.glUniform4fv(uniform(program,"windowMasks[0]"),minOf(16,windowMask.size/4),windowMask,0)
         val focusWindow=windowRect
@@ -482,7 +512,8 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     }
 
     private fun drawInk(width: Int,height: Int) {
-        val overlay=aim
+        if(width<=0 || height<=0 || inkVertexBuffer==0)return
+        val overlay=activeMirror?.ink?.invoke() ?: aim
         if(overlay.segments.isEmpty() && overlay.contacts.isEmpty()) return
         val values=inkValues;var valueCount=0
         fun vertex(x: Float,y: Float,alpha: Float,red: Float,green: Float,blue: Float) {
@@ -491,7 +522,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         }
         fun line(ax: Float,ay: Float,bx: Float,by: Float,thickness: Float,alpha: Float,red: Float,green: Float,blue: Float) {
             val dx=bx-ax; val dy=by-ay; val length=kotlin.math.hypot(dx,dy)
-            if(length<.001f) return
+            if(!length.isFinite() || length<.001f || !thickness.isFinite()) return
             val ox=-dy/length*thickness*.5f; val oy=dx/length*thickness*.5f
             vertex(ax+ox,ay+oy,alpha,red,green,blue); vertex(ax-ox,ay-oy,alpha,red,green,blue); vertex(bx+ox,by+oy,alpha,red,green,blue)
             vertex(bx+ox,by+oy,alpha,red,green,blue); vertex(ax-ox,ay-oy,alpha,red,green,blue); vertex(bx-ox,by-oy,alpha,red,green,blue)
@@ -520,11 +551,22 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         val a=attribute(inkProgram,"alpha")
         val c=attribute(inkProgram,"color")
         GLES20.glEnableVertexAttribArray(p); GLES20.glEnableVertexAttribArray(a); GLES20.glEnableVertexAttribArray(c)
-        buffer.position(0); GLES20.glVertexAttribPointer(p,2,GLES20.GL_FLOAT,false,24,buffer)
-        buffer.position(2); GLES20.glVertexAttribPointer(a,1,GLES20.GL_FLOAT,false,24,buffer)
-        buffer.position(3); GLES20.glVertexAttribPointer(c,3,GLES20.GL_FLOAT,false,24,buffer)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES,0,valueCount/6)
-        GLES20.glDisableVertexAttribArray(p); GLES20.glDisableVertexAttribArray(a); GLES20.glDisableVertexAttribArray(c); GLES20.glDisable(GLES20.GL_BLEND)
+        // Upload vertices once. Client-memory attribute pointers can outlive
+        // writes to the shared staging buffer on the XR graphics driver.
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER,inkVertexBuffer)
+        try {
+            GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER,valueCount*4,buffer,GLES20.GL_STREAM_DRAW)
+            GLES20.glVertexAttribPointer(p,2,GLES20.GL_FLOAT,false,24,0)
+            GLES20.glVertexAttribPointer(a,1,GLES20.GL_FLOAT,false,24,8)
+            GLES20.glVertexAttribPointer(c,3,GLES20.GL_FLOAT,false,24,12)
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLES,0,valueCount/6)
+        } finally {
+            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER,0)
+            GLES20.glDisableVertexAttribArray(p)
+            GLES20.glDisableVertexAttribArray(a)
+            GLES20.glDisableVertexAttribArray(c)
+            GLES20.glDisable(GLES20.GL_BLEND)
+        }
     }
 
     private fun link(vertex: String,fragment: String): Int {
@@ -596,7 +638,9 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             uniform vec2 videoTexel;
             uniform sampler2D retainedVideo;
             uniform int useRetained;
+            uniform vec4 videoCrop;
             vec3 videoAt(vec2 point){
+                point=mix(videoCrop.xy,videoCrop.zw,point);
                 if(useRetained==1)return texture2D(retainedVideo,vec2(point.x,1.0-point.y)).rgb;
                 return texture2D(video,(textureMatrix*vec4(point.x,1.0-point.y,0.0,1.0)).xy).rgb;
             }

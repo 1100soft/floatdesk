@@ -15,29 +15,63 @@ internal class WindowCapturePool @JvmOverloads constructor(private val connectio
     private val capture:(Long,VideoCompositor,(String)->Unit,(Long,JSONObject)->Unit)->WindowVideo?={id,video,error,frame->connection.captureWindow(id,video,error,frame)}){
     private val main=Handler(Looper.getMainLooper())
     private val sources=mutableMapOf<Long,Source>()
-    private class Member(var mirror:VideoMirror,val ready:()->Unit,val error:(String)->Unit,val output:WindowDestination?=null){val shown=AtomicBoolean()}
+    private var active=connection.isRenderingActive()
+    fun setActive(value:Boolean){active=value;sources.values.forEach{it.stream?.setActive(value)}}
+    private val capturedBounds=ConcurrentHashMap<Long,DesktopWindow>()
+    private val popupBounds=ConcurrentHashMap<Long,List<DesktopWindow>>()
+    fun owner(id:Long):Long=popupBounds.entries.firstOrNull{(_,rows)->rows.any{it.id==id}}?.key ?: id
+    fun popups(owner:Long):List<DesktopWindow>{boundsRevision.intValue;return popupBounds[owner].orEmpty()}
+    private val boundsRevision=androidx.compose.runtime.mutableIntStateOf(0)
+    fun source(id:Long?):DesktopWindow? {
+        boundsRevision.intValue
+        if(id==null)return null
+        val info=connection.workspaceInfo.value
+        val live=info?.windows?.firstOrNull{it.id==id} ?: info?.systemWindows?.firstOrNull{it.id==id} ?: popupBounds.values.firstNotNullOfOrNull{rows->rows.firstOrNull{it.id==id}} ?: return null
+        return capturedBounds[id] ?: live
+    }
+    private class Member(var mirror:VideoMirror,val ready:()->Unit,val error:(String)->Unit,val output:WindowDestination?=null,val regionId:Long?=null){var crop:VideoCrop?=if(regionId==null)null else VideoCrop(0f,0f,0f,0f,1f);@Volatile var ink=VideoAim();val shown=AtomicBoolean()}
     private inner class Source(val id:Long){
         val members=ConcurrentHashMap<Any,Member>()
         val frames=java.util.concurrent.ConcurrentSkipListMap<Long,JSONObject>()
-        val info=connection.workspaceInfo.value?.windows?.firstOrNull{it.id==id}
+        val info=source(id)
         val width=info?.width ?: 1280;val height=info?.height ?: 800
         val size=WindowCaptureFormat.size(width,height)
         val w=size.first;val h=size.second
         val video=VideoCompositor(w,h)
         @Volatile private var encodedSize=w to h
         var stream:WindowVideo?=null
+        var retired=false;private set
+        fun retire(){
+            if(retired)return
+            retired=true
+            if(sources[id]===this){sources.remove(id);capturedBounds.remove(id);popupBounds.remove(id)}
+            stream?.stop();video.mirrors(emptyList());video.flushOutputs()
+            BackgroundRelease.close(AutoCloseable{close()})
+        }
         init{
             if(id==0L){val c=video.input.lockCanvas(null);c.drawColor(Color.rgb(30,38,48));val paint=android.graphics.Paint().also{it.color=Color.rgb(90,110,130);it.strokeWidth=3f};c.drawLine(w*.4f,h*.5f,w*.6f,h*.5f,paint);c.drawLine(w*.5f,h*.4f,w*.5f,h*.6f,paint);video.input.unlockCanvasAndPost(c)}
-            else stream=capture(id,video,{message->main.post{members.values.forEach{it.error(message)}}}){pts,meta->
+            else stream=capture(id,video,{message->main.post{if(!retired){retire();members.values.forEach{it.output?.clear?.invoke();it.error(message)}}}}){pts,meta->
                 frames[pts]=meta;while(frames.size>64)frames.pollFirstEntry()
                 val next=meta.getInt("width") to meta.getInt("height")
                 if(next!=encodedSize){encodedSize=next;members.values.forEach{it.output?.size?.invoke(next.first,next.second)}}
             }
+            stream?.setActive(active)
         }
         fun outputSize()=encodedSize
-        fun update(){video.mirrors(members.values.map{member->member.mirror.copy(before={pts->
+        fun update(){if(retired)return;video.mirrors(members.values.map{member->member.mirror.copy(before={pts->
             val output=member.output
             val meta=frames[pts]
+            if(meta!=null){
+                val x=meta.optInt("sourceX",info?.x ?: 0);val y=meta.optInt("sourceY",info?.y ?: 0)
+                val sw=meta.optInt("sourceWidth",width);val sh=meta.optInt("sourceHeight",height)
+                val bounds=DesktopWindow(id,meta.optInt("ownerX",x),meta.optInt("ownerY",y),meta.optInt("ownerWidth",sw),meta.optInt("ownerHeight",sh))
+                val rows=meta.optJSONArray("popups")
+                val popups=if(rows==null)emptyList()else (0 until rows.length()).map{i->val p=rows.getJSONObject(i);DesktopWindow(p.getLong("id"),p.getInt("x"),p.getInt("y"),p.getInt("width"),p.getInt("height"))}
+                val prior=capturedBounds.put(id,bounds);val priorPopups=popupBounds.put(id,popups)
+                if(prior!=bounds || priorPopups!=popups)main.post{boundsRevision.intValue++}
+                val region=if(member.regionId==null)bounds else popups.firstOrNull{it.id==member.regionId}
+                member.crop=if(output!=null)null else (region?.let{VideoCrop((it.x-x).toFloat()/sw,(it.y-y).toFloat()/sh,(it.x+it.width-x).toFloat()/sw,(it.y+it.height-y).toFloat()/sh,it.width.toFloat()/it.height)} ?: VideoCrop(0f,0f,0f,0f,1f))
+            }
             if(meta!=null)video.sourceAspect=meta.optInt("sourceWidth",width).toFloat()/meta.optInt("sourceHeight",height).coerceAtLeast(1)
             if(output!=null && meta!=null){
                 val b=connection.workspaceInfo.value?.bounds()
@@ -48,21 +82,22 @@ internal class WindowCapturePool @JvmOverloads constructor(private val connectio
                     output.mask(pts,if(masks==null)floatArrayOf() else FloatArray(minOf(16,masks.length())*4){i->val r=masks.getJSONArray(i/4);when(i%4){0->(r.getInt(0)-b[0]).toFloat()/b[2];1->(r.getInt(1)-b[1]).toFloat()/b[3];2->(r.getInt(0)+r.getInt(2)-b[0]).toFloat()/b[2];else->(r.getInt(1)+r.getInt(3)-b[1]).toFloat()/b[3]}})
                 }
             }
-        },presented={if(member.shown.compareAndSet(false,true))main.post{if(member in members.values)member.ready()}})})}
+        },ink={member.ink},crop={member.crop},presented={if(member.shown.compareAndSet(false,true))main.post{if(!retired && member in members.values)member.ready()}})})}
         fun close(){stream?.close();video.close()}
     }
-    internal class Lease(private val updateAction:(Float,Float,Boolean,Float)->Unit,private val closeAction:()->Unit):AutoCloseable{
+    internal class Lease(private val updateAction:(Float,Float,Boolean,Float)->Unit,private val closeAction:()->Unit,private val overlayAction:(VideoAim)->Unit):AutoCloseable{
         private var closed=false
+        fun overlay(value:VideoAim){if(!closed)overlayAction(value)}
         fun update(padX:Float,padY:Float,pinned:Boolean,aspect:Float){if(!closed)updateAction(padX,padY,pinned,aspect)}
         override fun close(){if(!closed){closed=true;closeAction()}}
     }
-    fun attach(id:Long,surface:Surface,onReady:()->Unit,onError:(String)->Unit,output:WindowDestination?=null):Lease{
+    @JvmOverloads fun attach(id:Long,surface:Surface,onReady:()->Unit,onError:(String)->Unit,output:WindowDestination?=null,regionId:Long?=null):Lease{
         val source=sources.getOrPut(id){Source(id)};val key=Any()
         source.outputSize().let{output?.size?.invoke(it.first,it.second)}
-        val member=Member(VideoMirror(surface),onReady,onError,output);source.members[key]=member;source.update()
+        val member=Member(VideoMirror(surface),onReady,onError,output,regionId);source.members[key]=member;source.update()
         return Lease({x,y,pin,aspect->if(member.mirror.padX!=x || member.mirror.padY!=y || member.mirror.pinned!=pin || member.mirror.aspect!=aspect){member.mirror=member.mirror.copy(padX=x,padY=y,pinned=pin,aspect=aspect);source.update()}},{
             source.members.remove(key);output?.clear?.invoke()
-            if(source.members.isEmpty()){sources.remove(id);source.stream?.stop();source.video.mirrors(emptyList());BackgroundRelease.close(AutoCloseable{source.close()})}else source.update()
-        })
+            if(source.members.isEmpty())source.retire() else if(!source.retired){source.update();source.video.flushOutputs()}
+        },{value->member.ink=value})
     }
 }

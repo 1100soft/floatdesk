@@ -8,6 +8,7 @@ internal class MagnifierContacts(private val points:MutableMap<String,Pair<Float
         if(point==null){if(owners[side]==owner){points.remove(side);owners.remove(side);windows.remove(side)}}
         else {points[side]=point;owners[side]=owner;if(window!=null)windows[side]=window else windows.remove(side)}
     }
+    fun owner(side:String)=owners[side]
     fun window(side:String)=windows[side]
     fun clear(){points.clear();owners.clear();windows.clear()}
 }

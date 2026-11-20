@@ -29,6 +29,7 @@ internal class MonitorMesh(
     val rows: Int = 40,
     focus:FloatArray?=null,
     val center:FloatArray=floatArrayOf(0f,0f,0f),
+    val planar:Boolean=false,
 ) {
     val radius = sqrt((0..2).sumOf { val d=eye[it]-center[it];(d*d).toDouble() }).toFloat()
     val normal = FloatArray(3) { (eye[it]-center[it]) / radius }
@@ -67,11 +68,11 @@ internal class MonitorMesh(
         get() = FloatArray(texCoords.size) { if (it % 2 == 1) 1f - texCoords[it] else texCoords[it] }
     val indices = IntArray(columns * rows * 6)
     val outline: List<FloatArray>
-
     init {
         require(width > 0f && height > 0f && width.isFinite() && height.isFinite() &&
             radius > 0f && radius.isFinite() && eye.size == 3 && eye.all { it.isFinite() } &&
             columns > 0 && rows > 0 && columns % 2 == 0 && rows % 2 == 0)
+        if(!planar){
         if(focus==null) {
         val halfX = columns/2; val halfY = rows/2
         val dx = (width*radiansPerMeter/columns).toDouble()
@@ -151,6 +152,13 @@ internal class MonitorMesh(
                 for(axis in 0..2) positions[vertex*3+axis]=eye[axis]+radius*(-cosine*n[axis]+sinc*(x*tx[axis]+y*ty[axis]))
             }
         }
+        }
+        if(planar) for(row in 0..rows) for(col in 0..columns) {
+            val flat=floatArrayOf((horizontalGrid[col]-.5f)*width,(.5f-verticalGrid[row])*height,0f)
+            val vertex=row*(columns+1)+col
+            texCoords[vertex*2]=horizontalGrid[col];texCoords[vertex*2+1]=verticalGrid[row]
+            for(axis in 0..2)positions[vertex*3+axis]=flat[axis]
+        }
         var offset=0
         for (row in 0 until rows) for (col in 0 until columns) {
             val a=row*(columns+1)+col
@@ -183,7 +191,7 @@ internal class MonitorMesh(
         val verts=if(x+y<=1f) intArrayOf(a,a+columns+1,a+1) else intArrayOf(a+1,a+columns+1,a+columns+2)
         val weights=if(x+y<=1f) floatArrayOf(1f-x-y,y,x) else floatArrayOf(1f-y,1f-x,x+y-1f)
         val direction=FloatArray(3) { axis -> (0..2).sumOf { (positions[verts[it]*3+axis]*weights[it]).toDouble() }.toFloat()-eye[axis] }
-        if(onTriangles) return FloatArray(3){eye[it]+direction[it]}
+        if(onTriangles || planar) return FloatArray(3){eye[it]+direction[it]}
         val length=sqrt(direction.sumOf { (it*it).toDouble() }).toFloat()
         return FloatArray(3) { eye[it]+direction[it]*radius/length }
     }

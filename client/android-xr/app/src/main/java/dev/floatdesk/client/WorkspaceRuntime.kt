@@ -497,7 +497,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
         var followLock: FollowLock? = null
         var seenGeneration = followGeneration
         var tick = 0
-        var depthLogAt=0L;var depthFrames=0;var depthUnreliable=0;var depthMaxGap=0L;var depthLastFrame=SystemClock.uptimeMillis();var depthProbe=dev.floatdesk.client.workspace.ViewLayers.DesktopDistanceM;var depthRigid=false
+        var deskFollowFrom:FloatArray?=null
         // Keep platform maintenance outside the gesture coroutine's bytecode body.
         // ART refuses to JIT oversized methods, leaving this hot loop interpreted.
         fun updateEyeTracking(wantEyes: Boolean, resumed: Boolean) {
@@ -607,33 +607,30 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 if(recovery!=null && !restoreViewerPending && workspace.anchorUuid==null) {
                     workspace=workspace.copy(viewerReference=Pose(recovery.first,recovery.second)).restoreViewer(reference)
                     grabs.values.forEach { it.cancel() };pointerControl.clear()
-                    manipulating=false;suppressFist=true;followLock=null
+                    manipulating=false;suppressFist=true;followLock=null;deskFollowFrom=null
                     magnification.dismiss(handTracking.nowMs);magnified=null;inPlaceWindow=null;connection.magnifierActive=false
                     Log.w("Floatdesk","Recovered workspace after tracking discontinuity")
                 }
                 if(restoreViewerPending && !workspace.layouts[workspace.activeLayout].isNullOrEmpty()) {
                     workspace=workspace.restoreViewer(reference)
-                    restoreViewerPending=false
+                    restoreViewerPending=false;deskFollowFrom=null
                 }
                 store.viewerReference=reference
                 store.viewerUnitsPerMeter=unitsPerMeter
                 val active=workspace.layouts[workspace.activeLayout]
                 if(active!=null && !manipulating && grabs.values.none{it.busy} && !pointerControl.nativeManipulating){
-                    val fixed=active.map{val f=fixedDesktopDepth(it,reference,unitsPerMeter,true,depthProbe);if(depthRigid && f!==it)f.copy(physicalWidthM=it.physicalWidthM,physicalHeightM=it.physicalHeightM) else f}
+                    // Rescaling about the eye alone leaves the image world-fixed; translation must follow the head.
+                    val from=deskFollowFrom
+                    val delta=from?.let{FloatArray(3){i->reference.position[i]-it[i]}}
+                    val follow=delta!=null && kotlin.math.sqrt(delta.sumOf{(it*it).toDouble()})>=.001f*unitsPerMeter
+                    if(from==null || follow)deskFollowFrom=reference.position.copyOf()
+                    val carried=if(!follow)active else active.map{it.copy(pose=Pose(FloatArray(3){i->it.pose.position[i]+delta!![i]},it.pose.rotation))}
+                    val fixed=carried.map{fixedDesktopDepth(it,reference,unitsPerMeter,true)}
                     if(fixed.indices.any{fixed[it] !== active[it]})workspace=workspace.copy(layouts=workspace.layouts.toMutableMap().also{it[workspace.activeLayout]=fixed.toMutableList()})
-                }
-            }
-            depthFrames++;if(!reliable)depthUnreliable++
-            depthMaxGap=maxOf(depthMaxGap,handTracking.nowMs-depthLastFrame);depthLastFrame=handTracking.nowMs
-            if(handTracking.nowMs-depthLogAt>=1000){
-                val probeText=runCatching{java.io.File(context.filesDir,"depth_probe").readText().trim()}.getOrNull().orEmpty()
-                depthRigid=probeText.startsWith("r");depthProbe=probeText.removePrefix("r").toFloatOrNull() ?: dev.floatdesk.client.workspace.ViewLayers.DesktopDistanceM
-                val screen0=workspace.monitorAt(0);val eye=displayHead.get()
-                val dist=if(screen0==null||eye==null)null else kotlin.math.sqrt((0..2).sumOf{val d=screen0.pose.position[it]-eye.position[it];(d*d).toDouble()})/unitsPerMeter
-                Log.i("Floatdesk","desk depth frames=$depthFrames unreliable=$depthUnreliable maxGapMs=$depthMaxGap manip=$manipulating grabBusy=${grabs.values.any{it.busy}} native=${pointerControl.nativeManipulating} head=${eye?.position?.joinToString(","){"%.3f".format(it)}} distM=${dist?.let{"%.3f".format(it)}} widthM=${screen0?.physicalWidthM?.let{"%.3f".format(it)}} perceived=${perceived?.translation} activitySpace=${runCatching{current.scene.activitySpace.getPose(androidx.xr.scenecore.Space.REAL_WORLD)}.getOrNull()}")
-                depthLogAt=handTracking.nowMs;depthFrames=0;depthUnreliable=0;depthMaxGap=0L
+                } else deskFollowFrom=reference.position.copyOf()
             }
             if (!reliable) {
+                deskFollowFrom=null
                 trackingRecovery.update(handTracking.nowMs,false,null,null,unitsPerMeter)
                 // Head quality controls follow, not availability of independently tracked hands.
                 followLock = null

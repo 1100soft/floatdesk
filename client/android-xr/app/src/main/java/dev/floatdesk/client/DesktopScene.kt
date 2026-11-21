@@ -159,7 +159,6 @@ internal fun DeskContent(
         LaunchedEffect(index, session) {
             val current = session ?: return@LaunchedEffect
             var grabProjectionAt=0L
-            var entityLogAt=0L
             var outputResizePending=false
             while (isActive) {
                 delay(20)
@@ -199,11 +198,6 @@ internal fun DeskContent(
                     }
                     if(outputResizePending){connection.refreshOutput(index);outputResizePending=false}
                     frozenMonitor?.update(screen,warp.mesh)
-                    if(projectionNow-entityLogAt>=1000){
-                        entityLogAt=projectionNow
-                        val e=warp.displayEntity
-                        Log.i("Floatdesk","desk entity index=$index placement=${screen.pose.position.joinToString(","){"%.3f".format(it)}} w=${"%.3f".format(screen.physicalWidthM)} parentPose=${e?.getPose()?.translation} parentScale=${e?.getScale()} sameParent=${e?.parent===root} activity=${e?.getPose(androidx.xr.scenecore.Space.ACTIVITY)?.translation} real=${runCatching{e?.getPose(androidx.xr.scenecore.Space.REAL_WORLD)?.translation}.getOrNull()} rootReal=${runCatching{root.getPose(androidx.xr.scenecore.Space.REAL_WORLD)}.getOrNull()} rootScale=${root.getScale(androidx.xr.scenecore.Space.REAL_WORLD)} composed=${placement.pose.position.joinToString(","){"%.3f".format(it)}}")
-                    }
                     warp.syncCurvedInput(current)
                     // Collider creation suspends: a newer resize event may arrive while awaiting it.
                     // Clear the pending update only after matching the latest canonical size.

@@ -87,7 +87,7 @@ internal fun focusDesktopRegion(screen:MonitorPlacement,rect:FloatArray,viewer:P
 
 
 /** Preserve angular location/size at a fixed spherical focus radius or flat-plane depth. */
-internal fun fixedDesktopDepth(screen:MonitorPlacement,viewer:Pose,unitsPerMeter:Float,spherical:Boolean=true):MonitorPlacement {
+internal fun fixedDesktopDepth(screen:MonitorPlacement,viewer:Pose,unitsPerMeter:Float,spherical:Boolean=true,targetM:Float=ViewLayers.DesktopDistanceM):MonitorPlacement {
     val units=unitsPerMeter.takeIf{it.isFinite() && it>0f} ?: 1f
     val x=(screen.viewCenterU-.5f)*screen.physicalWidthM
     val y=(.5f-screen.viewCenterV)*screen.physicalHeightM
@@ -100,7 +100,7 @@ internal fun fixedDesktopDepth(screen:MonitorPlacement,viewer:Pose,unitsPerMeter
     val normal=floatArrayOf(2f*(q[0]*q[2]+q[3]*q[1]),2f*(q[1]*q[2]-q[3]*q[0]),1f-2f*(q[0]*q[0]+q[1]*q[1]))
     val distance=if(spherical)radial else kotlin.math.abs((0..2).sumOf{(d[it]*normal[it]).toDouble()}).toFloat()
     if(!distance.isFinite() || distance<.05f*units)return screen
-    val target=ViewLayers.DesktopDistanceM*units
+    val target=targetM*units
     if(kotlin.math.abs(distance-target)<.002f*units)return screen
     val scale=target/distance
     return screen.copy(pose=Pose(FloatArray(3){viewer.position[it]+(screen.pose.position[it]-viewer.position[it])*scale},screen.pose.rotation),

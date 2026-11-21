@@ -121,8 +121,22 @@ internal fun DeskContent(
         }
     }
     palmPanel?.takeIf { handInputAllowed }?.let { panel ->
-        SpatialPanel(modifier = placedPanel(panel.pose, PALM_WIDTH * panel.unitsPerMeter, PALM_HEIGHT * panel.unitsPerMeter, density, pixelDensity)) {
-            PalmControls(latchedFollow, workspace.sphericalWarp, workspace.eyeAiming, workspace.mouseGestures, panelFocused, panelPressed, workspace.interactionMode, onPalmAction)
+        val unit = panel.unitsPerMeter
+        var hovered by remember(panel.page) { mutableStateOf<String?>(null) }
+        SpatialPanel(modifier = placedPanel(panel.pose, panel.widthM * unit, panel.heightM * unit, density, pixelDensity),
+            shape = androidx.xr.compose.subspace.layout.SpatialRoundedCornerShape(androidx.compose.foundation.shape.CornerSize(0.dp))) {
+            PalmControls(panel.page, workspace, connection.workspaceInfo.value, latchedFollow, panelFocused, panelPressed, { hovered = it }, onPalmAction)
+        }
+        (hovered ?: panelFocused?.takeIf { focused -> panel.buttons.any { it.action == focused } }?.let { palmTooltip(it, workspace, latchedFollow) })?.let { label ->
+            val tooltipPose = Pose(transformPoint(panel.pose, floatArrayOf(0f, panel.heightM * unit * .5f + .026f * unit, .006f * unit)), panel.pose.rotation)
+            SpatialPanel(modifier = placedPanel(tooltipPose, panel.widthM * unit, PalmMenuLayout.tooltipHeightM * unit, density, pixelDensity)) {
+                androidx.compose.foundation.layout.Box(Modifier.fillMaxSize().background(Color(0xFF18232E)), contentAlignment = Alignment.Center) {
+                    androidx.compose.foundation.text.BasicText(label, Modifier.padding(horizontal = 6.dp), style = androidx.compose.ui.text.TextStyle(color = Color.White),
+                        maxLines = 1, softWrap = false,
+                        autoSize = androidx.compose.foundation.text.TextAutoSize.StepBased(minFontSize = androidx.compose.ui.unit.TextUnit(6f, androidx.compose.ui.unit.TextUnitType.Sp),
+                            maxFontSize = androidx.compose.ui.unit.TextUnit(14f, androidx.compose.ui.unit.TextUnitType.Sp), stepSize = androidx.compose.ui.unit.TextUnit(.5f, androidx.compose.ui.unit.TextUnitType.Sp)))
+                }
+            }
         }
     }
     // Retain native assets across Workspace visits; hide them instead of destroying/re-instancing glTF.

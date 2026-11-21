@@ -90,7 +90,7 @@ private fun MenuIcon(action: String, description: String, cell: Dp, enabled: Boo
         }
 }
 
-private fun Modifier.trackMenuHover(onHover: (Offset?) -> Unit) = pointerInput(Unit) {
+internal fun Modifier.trackMenuHover(onHover: (Offset?) -> Unit) = pointerInput(Unit) {
     awaitPointerEventScope {
         while (true) {
             val event = awaitPointerEvent()

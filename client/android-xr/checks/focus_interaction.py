@@ -79,9 +79,11 @@ fun main() {
    bar.update(1700,pane,null,false,false);bar.update(1820,pane,null,false,false);check(bar.highlight==pane)
    bar.update(2721,null,null,false,false);check(bar.highlight==null)
    bar.update(3000,win,null,false,false);bar.update(3120,win,null,false,false);bar.update(3200,null,win,false,true);check(bar.highlight==null && bar.open==null)
-   val strip=toolbarStrip(Pose(floatArrayOf(0f,1f,-1f)),.5f,.05f,false)
-   check(abs(strip.width-.5f)<1e-5f && strip.pose.position[1]>1f && strip.contains(floatArrayOf(.2f,strip.pose.position[1],0f),floatArrayOf(0f,0f,-1f)))
-   check(!strip.contains(floatArrayOf(0f,.98f,0f),floatArrayOf(0f,0f,-1f)) && toolbarStrip(Pose(),.01f,.05f,true).width>.25f)
+   val strip=toolbarStrip(Pose(floatArrayOf(0f,1f,-1f)),.05f,false);val ratio=WindowMenuLayout.gapM/WindowMenuLayout.cellM
+   check(abs(strip.width-WindowMenuLayout.toolbarWidth(false,ratio)*.05f)<1e-5f && abs(strip.height-WindowMenuLayout.toolbarHeight(ratio)*.05f)<1e-5f)
+   check(strip.pose.position[1]>1f && strip.contains(floatArrayOf(.05f,strip.pose.position[1],0f),floatArrayOf(0f,0f,-1f)))
+   check(!strip.contains(floatArrayOf(0f,.98f,0f),floatArrayOf(0f,0f,-1f)) && !strip.contains(floatArrayOf(.2f,strip.pose.position[1],0f),floatArrayOf(0f,0f,-1f)))
+   check(toolbarStrip(Pose(),.05f,true).width>strip.width)
    val delayed=WindowGrabController{PinchThresholds.Default}
    val opened=mapOf("LEFT" to FingerPinch(.1f,.1f));val pinched=mapOf("LEFT" to FingerPinch(.001f,.1f))
    delayed.update(0,true,false,opened,emptyMap(),info)

@@ -43,8 +43,7 @@ internal class GrabGuideRenderer private constructor(
     private val nodeStates=java.util.IdentityHashMap<Entity,NativeNodeState>()
     private fun state(entity:Entity)=nodeStates.getOrPut(entity){NativeNodeState(entity)}
     private var pointerPoint: GltfModelEntity? = null
-    private var highlight: GltfModelEntity? = null
-    private var highlightSize: Vector3? = null
+    private val highlights=mutableMapOf<Int,SurfaceEntity>()
     private val aimBeams=mutableListOf<SurfaceEntity>()
     private val grabBeams=mutableListOf<SurfaceEntity>()
     private val grabPoints=mutableListOf<SurfaceEntity>()
@@ -101,17 +100,37 @@ internal class GrabGuideRenderer private constructor(
         point(entity,visibleGrabContact(position,eye,unitsPerMeter),.003f*unitsPerMeter)
     }
 
-    /** A faint flat box; glTF entities have no hit region, so hands aim through it. */
-    fun updateHighlight(parent: Entity, position: FloatArray?, rotation: FloatArray, width: Float, height: Float, depth: Float) {
+    /**
+     * A soft translucent rounded rectangle drawn on a plain native surface, which shares the video
+     * compositor path (so it is not hidden by the desktop) and has no hit region (so hands aim through).
+     * One texture per aspect ratio; [alpha] animates without redrawing.
+     */
+    @android.annotation.SuppressLint("RestrictedApi")
+    @OptIn(androidx.xr.scenecore.ExperimentalSurfaceEntityPixelDimensionsApi::class)
+    fun updateHighlight(parent: Entity, position: FloatArray?, rotation: FloatArray, width: Float, height: Float, alpha: Float) {
         if (closed) return
-        if (position == null) { highlight?.let { state(it).enabled(false) }; return }
-        val entity = highlight ?: GltfModelEntity.create(session, models[0]).also { highlight = it }
-        state(entity).parent(parent)
-        state(entity).alpha(.16f)
+        val key = if (position == null || width <= 0f || height <= 0f) null else (width / height * 4f).toInt()
+        for ((k, entity) in highlights) if (k != key) state(entity).enabled(false)
+        if (key == null || position == null) return
+        val entity = highlights.getOrPut(key) {
+            val pixelHeight = 64; val pixelWidth = (pixelHeight * key / 4f).toInt().coerceIn(pixelHeight, 1024)
+            SurfaceEntity.create(session, shape = decorationShape(1f, 1f), parent = null, superSampling = SurfaceEntity.SuperSampling.NONE).also { surface ->
+                surface.setSurfacePixelDimensions(IntSize2d(pixelWidth, pixelHeight))
+                surface.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.TRANSPARENT
+                val canvas = surface.getSurface().lockCanvas(null)
+                canvas.drawColor(android.graphics.Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
+                val feather = pixelHeight * .16f
+                val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+                paint.color = android.graphics.Color.argb(120, 138, 223, 255)
+                paint.maskFilter = android.graphics.BlurMaskFilter(feather, android.graphics.BlurMaskFilter.Blur.NORMAL)
+                canvas.drawRoundRect(android.graphics.RectF(feather, feather, pixelWidth - feather, pixelHeight - feather), pixelHeight * .28f, pixelHeight * .28f, paint)
+                surface.getSurface().unlockCanvasAndPost(canvas)
+            }
+        }
+        state(entity).scale(Vector3(width, height, 1f))
         state(entity).pose(Pose(vector(position), Quaternion(rotation[0], rotation[1], rotation[2], rotation[3])))
-        val size = Vector3(width, height, depth)
-        if (highlightSize != size) { entity.nodes.first().localScale = size; highlightSize = size }
-        state(entity).enabled(true)
+        state(entity).alpha(alpha)
+        state(entity).parent(parent); state(entity).enabled(true)
     }
 
     fun updateRays(parent: Entity,rays: Map<String,Pair<FloatArray,FloatArray>>,eye: FloatArray?,unitsPerMeter: Float,dimmed: Boolean) {
@@ -222,7 +241,7 @@ internal class GrabGuideRenderer private constructor(
         (aimBeams+grabBeams+grabPoints).forEach { if(!it.isDisposed){it.parent=null; it.dispose()} }
         aimBeams.clear(); grabBeams.clear(); grabPoints.clear()
         pointerPoint?.dispose(); pointerPoint = null
-        highlight?.dispose(); highlight = null
+        highlights.values.forEach { if(!it.isDisposed){it.parent=null; it.dispose()} }; highlights.clear()
         groups.clear()
         if(session.lifecycleOwner.lifecycle.currentState!=androidx.lifecycle.Lifecycle.State.DESTROYED)models.forEach { it.close() }
     }

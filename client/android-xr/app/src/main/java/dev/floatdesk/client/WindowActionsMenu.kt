@@ -52,7 +52,7 @@ internal fun WindowToolbar(window: Long?, magnifier: Boolean, snap: SnapCell?, s
                     Box(Modifier.width(gap).height(cell * .6f).background(Color(0xFF3A4752)))
                 }
                 MenuIcon("minimize", "Minimize window", cell, window != null, onTooltip) { onAction("minimize") }
-                MenuIcon("snap", if (snap == null) "Snap window" else "Snapped to ${snap.columns}×${snap.rows} grid", cell, window != null,
+                MenuIcon("snap", "Snap to grid", cell, window != null,
                     { onTooltip(it); onSnapHover(it != null) }, snap = snap, active = snapExpanded, onClick = onSnapToggle)
                 MenuIcon("close", "Close window", cell, window != null, onTooltip) { onAction("close") }
             }

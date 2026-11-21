@@ -19,14 +19,14 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
     pinned:Boolean,viewer:java.util.concurrent.atomic.AtomicReference<dev.floatdesk.client.workspace.Pose?>,
     units:()->Float,tracking:GrabTracking,
     onReady:()->Unit,onError:(String)->Unit,onHover:(String,Pair<Float,Float>?)->Unit,onTap:(Pair<Float,Float>)->Unit,
-    onPlacement:(MagnifiedWindow,Boolean)->Unit,onMoving:(Boolean)->Unit,onPointerHover:(Boolean)->Unit={},onHidden:()->Unit={},captureId:Long?=null,regionId:Long?=null,allowManipulation:Boolean=true,showFrame:Boolean=true,topologyKey:String?=null,receiveInput:Boolean=true,projectFrame:Boolean=true){
+    onPlacement:(MagnifiedWindow,Boolean)->Unit,onMoving:(Boolean)->Unit,onPointerHover:(hands:Boolean,gaze:Boolean)->Unit={_,_->},onHidden:()->Unit={},captureId:Long?=null,regionId:Long?=null,allowManipulation:Boolean=true,showFrame:Boolean=true,topologyKey:String?=null,receiveInput:Boolean=true,projectFrame:Boolean=true){
     val readyNow=rememberUpdatedState(onReady);val errorNow=rememberUpdatedState(onError);val hoverNow=rememberUpdatedState(onHover)
     val tapNow=rememberUpdatedState(onTap);val windowNow=rememberUpdatedState(window);val placementNow=rememberUpdatedState(onPlacement);val movingNow=rememberUpdatedState(onMoving)
     val pinNow=rememberUpdatedState(pinned)
     val pointerHoverNow=rememberUpdatedState(onPointerHover)
     val hiddenNow=rememberUpdatedState(onHidden)
     val resources=remember(session,root){MagnifierResources()}
-    fun clearPointerHover(){resources.hovering.clear();pointerHoverNow.value(false)}
+    fun clearPointerHover(){resources.hovering.clear();pointerHoverNow.value(false,false)}
     val captureEpoch by connection.windowCaptureEpoch
     var failureToken by remember(resources){mutableIntStateOf(0)}
     var retryToken by remember(resources){mutableIntStateOf(0)}
@@ -71,9 +71,10 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                         else if(uv!=null)hoverNow.value(side,uv)
                     }
                     if(uv!=null)resources.lastContact=uv
-                    val pointerKey="${event.source}:$side"
+                    val pointerKey=(if(event.source==InputEvent.Source.GAZE_AND_GESTURE)"gaze:" else "hand:")+side
                     val pointing=uv!=null && event.action!=InputEvent.Action.HOVER_EXIT && event.action!=InputEvent.Action.CANCEL
-                    if(if(pointing)resources.hovering.add(pointerKey)else resources.hovering.remove(pointerKey))pointerHoverNow.value(resources.hovering.isNotEmpty())
+                    if(if(pointing)resources.hovering.add(pointerKey)else resources.hovering.remove(pointerKey))
+                        pointerHoverNow.value(resources.hovering.any{it.startsWith("hand:")},resources.hovering.any{it.startsWith("gaze:")})
                     fun commitTap(point:Pair<Float,Float>){
                         tapNow.value(point)
                         val key=topologyKey ?: return

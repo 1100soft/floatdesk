@@ -166,7 +166,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
     var toolbarTarget by remember { mutableStateOf<ToolbarTarget?>(null) }
     var toolbarHovered by remember { mutableStateOf(false) }
     var snapGridHovered by remember { mutableStateOf(false) }
-    val magnifierPointerHover=remember { androidx.compose.runtime.mutableStateMapOf<String,Boolean>() }
+    val magnifierPointerHover=remember { androidx.compose.runtime.mutableStateMapOf<String,Pair<Boolean,Boolean>>() }
     var dragProxy by remember{mutableStateOf<MagnifiedWindow?>(null)}
     val windowDragRay=remember{WindowDragRay()}
     val windowGrab=remember{WindowGrabController{workspace.pinchThresholds}}
@@ -331,7 +331,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 val pane=(if(target.key=="floating")magnified?.takeIf{magnifierReady} else fixedRuntime[target.key]?.takeIf{fixedReady[target.key]==true}) ?: return null
                 val frame=.005f*pane.units
                 val anchor=Pose(transformPoint(pane.pose,floatArrayOf(0f,pane.height*.5f+frame,.004f*pane.units)),pane.pose.rotation)
-                toolbarStrip(anchor,pane.width+2*frame,(pane.layerDistanceM*pane.units*.075f).coerceIn(.035f*unit,.11f*unit),true)
+                toolbarStrip(anchor,(pane.layerDistanceM*pane.units*.075f).coerceIn(.035f*unit,.11f*unit),true)
             }
             is ToolbarTarget.Window->{
                 val info=connection.workspaceInfo.value ?: return null
@@ -341,10 +341,9 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     val display=connection.presentation().extendedDisplayPoint((x-b[0])/b[2],(source.y-b[1]).toFloat()/b[3]) ?: return null
                     return transformPoint(desktop.pose,pointerSurfacePoint(PointerTarget(0,display.first,display.second,FloatArray(3)),desktop.physicalWidthM,desktop.physicalHeightM,pointerControl.meshes[0]))
                 }
-                val left=edge(source.x.toFloat()) ?: return null;val right=edge((source.x+source.width).toFloat()) ?: return null
                 val centre=edge(source.x+source.width*.5f) ?: return null
                 val lifted=add(centre,rotateVector(desktop.pose.rotation,0f,0f,.02f*unit))
-                toolbarStrip(Pose(lifted,desktop.pose.rotation),distance(left,right),(dev.floatdesk.client.workspace.ViewLayers.DesktopDistanceM*unit*.075f).coerceIn(.035f*unit,.11f*unit),false)
+                toolbarStrip(Pose(lifted,desktop.pose.rotation),(dev.floatdesk.client.workspace.ViewLayers.DesktopDistanceM*unit*.075f).coerceIn(.035f*unit,.11f*unit),false)
             }
             null->null
         }
@@ -943,11 +942,13 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 if(hit.monitor!=0)return@mapNotNull null
                 connection.desktopPoint(hit.monitor,hit.u,hit.v)?.let{(u,v)->focusInfo.hover(u,v)}?.let{side to it}
             }.toMap() else emptyMap()
-            val magnifierHover=paneGaze?.first?.let{w->if(w.id==magnified?.id)"floating" else fixedWindows.get().firstOrNull{it.second.id==w.id}?.first}
-                ?: magnifierPointerHover.keys.firstOrNull{it=="floating" || workspace.fixedMagnifiers.any{record->record.id==it}}
+            // Gaze highlights only under system eye-and-hand aiming; with hand-only aiming the hand must hover.
+            val eyeAiming=pointerControl.systemGazeEnabled
+            val magnifierHover=(if(eyeAiming)paneGaze?.first?.let{w->if(w.id==magnified?.id)"floating" else fixedWindows.get().firstOrNull{it.second.id==w.id}?.first} else null)
+                ?: magnifierPointerHover.entries.firstOrNull{(key,hover)->(key=="floating" || workspace.fixedMagnifiers.any{record->record.id==key}) && (hover.first || eyeAiming && hover.second)}?.key
             fun windowAt(hit:PointerTarget?)=hit?.takeIf{it.monitor==0}?.let{connection.desktopPoint(it.monitor,it.u,it.v)}?.let{(u,v)->focusInfo?.hover(u,v)?.window?.windowId}
             val systemGaze=if(hudReading)null else pointerControl.systemGaze()
-            val windowHover=if(gazeBlockedByPane)null else windowAt(systemGaze) ?: windowAt(rawDesktopGazeTarget)
+            val windowHover=(if(!eyeAiming || gazeBlockedByPane)null else windowAt(systemGaze) ?: windowAt(rawDesktopGazeTarget))
                 ?: hoverHands.filterKeys{it !in magnifierHands}.values.firstNotNullOfOrNull{windowAt(it)}
             val viewerPoint=handTracking.points["VIEWER"] ?: handTracking.points["HEAD"]
             val stripRays=contentEyeRays+listOfNotNull(systemGaze?.let{g->
@@ -1084,7 +1085,8 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 runCatching { renderer.update(root, grabs.mapNotNull { (index,grab) -> workspace.monitorAt(index)?.let {grab.displayGuide(it,pointerControl.meshes[index])} ?: previews[index] })
                     // The desktop cursor is the target marker; avoid a second dot over it.
                     renderer.updatePointer(root,null,handTracking.points["HEAD"],handTracking.unitsPerMeter)
-                    renderer.updateHighlight(root,highlightStrip?.pose?.position,highlightStrip?.pose?.rotation ?: floatArrayOf(0f,0f,0f,1f),highlightStrip?.width ?: 0f,highlightStrip?.height ?: 0f,.001f*handTracking.unitsPerMeter)
+                    val pulse=.62f+.28f*kotlin.math.sin(SystemClock.uptimeMillis()%2400L/2400f*2f*Math.PI.toFloat())
+                    renderer.updateHighlight(root,highlightStrip?.pose?.position,highlightStrip?.pose?.rotation ?: floatArrayOf(0f,0f,0f,1f),highlightStrip?.width ?: 0f,highlightStrip?.height ?: 0f,(pulse*50).toInt()/50f)
                     val draw: ()->Unit = {
                         val contactsNow=pointerControl.hands(grips.keys,SystemClock.uptimeMillis(),aimPoses).filterValues {connection.desktopPoint(it.monitor,it.u,it.v)!=null}
                         val show=contactsNow.keys.none{it in magnifierHands} && contactsNow.isNotEmpty() && handPreviewMonitor(contactsNow)==null && palmPanel==null && !monitorGrab && !nativeManipulation
@@ -1207,7 +1209,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                         val point=magnified?.let{magnifierContentPoint(it,uv)} ?: uv
                         if(win!=null && bounds!=null)connection.movePointer(0,(win.x-bounds[0]+point.first*win.width)/bounds[2],(win.y-bounds[1]+point.second*win.height)/bounds[3])
                     }
-                },{next,_->magnified=next;magnifierMesh=next.mesh},{moving->magnifierMoving=moving},topologyKey="floating",onPointerHover={if(it)magnifierPointerHover["floating"]=true else magnifierPointerHover.remove("floating")},onHidden={magnifierReady=false})
+                },{next,_->magnified=next;magnifierMesh=next.mesh},{moving->magnifierMoving=moving},topologyKey="floating",onPointerHover={hands,gaze->if(gaze)pointerControl.noteSystemGaze();if(hands || gaze)magnifierPointerHover["floating"]=hands to gaze else magnifierPointerHover.remove("floating")},onHidden={magnifierReady=false})
         }
         val fixedDesktop=workspace.monitorAt(0)
         val fixedViewer=magnifierViewer.get()
@@ -1236,7 +1238,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     },{editing->
                         if(editing)fixedEditing.add(record.id)else{fixedEditing.remove(record.id);store.save(workspace)}
                         magnifierMoving=fixedEditing.isNotEmpty()
-                    },{if(it)magnifierPointerHover[record.id]=true else magnifierPointerHover.remove(record.id)},topologyKey=record.id,onHidden={fixedReady[record.id]=false})
+                    },{hands,gaze->if(gaze)pointerControl.noteSystemGaze();if(hands || gaze)magnifierPointerHover[record.id]=hands to gaze else magnifierPointerHover.remove(record.id)},topologyKey=record.id,onHidden={fixedReady[record.id]=false})
             }
         }
         val renderedSystem=mutableListOf<MagnifiedWindow>()

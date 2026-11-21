@@ -31,11 +31,11 @@ internal data class ToolbarStrip(val pose: Pose, val width: Float, val height: F
     fun contains(origin: FloatArray, direction: FloatArray) = surfaceRayDistance(pose, width, height, null, origin, direction) != null
 }
 
-/** [anchor] is the centre of the target's top edge; the strip spans at least the target width. */
-internal fun toolbarStrip(anchor: Pose, targetWidth: Float, cell: Float, magnifier: Boolean): ToolbarStrip {
+/** [anchor] is the centre of the target's top edge; the strip is exactly where the toolbar opens. */
+internal fun toolbarStrip(anchor: Pose, cell: Float, magnifier: Boolean): ToolbarStrip {
     val ratio = WindowMenuLayout.gapM / WindowMenuLayout.cellM; val gap = cell * ratio
     val height = WindowMenuLayout.toolbarHeight(ratio) * cell
-    val width = maxOf(targetWidth, WindowMenuLayout.toolbarWidth(magnifier, ratio) * cell)
+    val width = WindowMenuLayout.toolbarWidth(magnifier, ratio) * cell
     return ToolbarStrip(Pose(transformPoint(anchor, floatArrayOf(0f, gap + height * .5f, 0f)), anchor.rotation), width, height, cell, gap, magnifier)
 }
 

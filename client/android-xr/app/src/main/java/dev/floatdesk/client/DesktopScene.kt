@@ -122,12 +122,12 @@ internal fun DeskContent(
     }
     palmPanel?.takeIf { handInputAllowed }?.let { panel ->
         val unit = panel.unitsPerMeter
-        var hovered by remember(panel.page) { mutableStateOf<String?>(null) }
+        var hovered by remember(panel.page) { mutableStateOf<PalmAction?>(null) }
         SpatialPanel(modifier = placedPanel(panel.pose, panel.widthM * unit, panel.heightM * unit, density, pixelDensity),
             shape = androidx.xr.compose.subspace.layout.SpatialRoundedCornerShape(androidx.compose.foundation.shape.CornerSize(0.dp))) {
             PalmControls(panel.page, workspace, connection.workspaceInfo.value, latchedFollow, panelFocused, panelPressed, { hovered = it }, onPalmAction)
         }
-        (hovered ?: panelFocused?.takeIf { focused -> panel.buttons.any { it.action == focused } }?.let { palmTooltip(it, workspace, latchedFollow) })?.let { label ->
+        (hovered ?: panelFocused)?.takeIf { shown -> panel.buttons.any { it.action == shown } }?.let { palmTooltip(it, workspace, latchedFollow) }?.let { label ->
             val tooltipPose = Pose(transformPoint(panel.pose, floatArrayOf(0f, panel.heightM * unit * .5f + .026f * unit, .006f * unit)), panel.pose.rotation)
             SpatialPanel(modifier = placedPanel(tooltipPose, panel.widthM * unit, PalmMenuLayout.tooltipHeightM * unit, density, pixelDensity)) {
                 androidx.compose.foundation.layout.Box(Modifier.fillMaxSize().background(Color(0xFF18232E)), contentAlignment = Alignment.Center) {

@@ -31,9 +31,10 @@ fun main() {
     val revoked=lifecycle.update(7000,true,false,true,true,true)
     check(revoked.configureFine==false && revoked.clearResources && !revoked.refreshResources)
     check(lifecycle.update(7020,true,false,false,false,false).configureFine==null)
-    val panel=PanelGazeInput(listOf(PanelButtonArea(0,0f,0f,.45f,1f),PanelButtonArea(1,.55f,0f,.45f,1f)))
+    val panel=PanelGazeInput()
+    val buttons=listOf(PanelButtonArea(0,0f,0f,.45f,1f),PanelButtonArea(1,.55f,0f,.45f,1f))
     fun p(t:Long,x:Float?=.2f,thumb:Float=.07f,side:String?="LEFT")=
-        panel.update(t,side,x?.let {floatArrayOf(it,.5f)},thumb)
+        panel.update(t,side,x?.let {floatArrayOf(it,.5f)},thumb,buttons)
     p(0); p(120); check(panel.focused==0)
     check(p(140,thumb=.025f)==null)
     check(p(200,thumb=.025f)==0)

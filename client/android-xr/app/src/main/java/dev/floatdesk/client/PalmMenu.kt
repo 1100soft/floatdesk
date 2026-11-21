@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.IconButtonDefaults
@@ -17,17 +19,21 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.inset
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import dev.floatdesk.client.net.WorkspaceInfo
 import dev.floatdesk.client.workspace.InteractionMode
 import dev.floatdesk.client.workspace.WorkspaceFile
+import kotlin.math.cos
+import kotlin.math.sin
 
 internal enum class PalmAction { FOLLOW, RESET, SEARCH, SPACE, WARP, EYES, GESTURES, MODE, MORE, BACK, DIAGNOSTICS, GAZE_FOCUS, MAGNIFIER, MOUSE_SPACES }
 internal enum class PalmPage { MAIN, MORE }
@@ -63,16 +69,25 @@ internal fun palmActionEnabled(action: PalmAction, workspace: WorkspaceFile, inf
     else -> true
 }
 
-private fun palmActionActive(action: PalmAction, workspace: WorkspaceFile, latched: Boolean): Boolean = when (action) {
-    PalmAction.FOLLOW -> latched
-    PalmAction.WARP -> workspace.sphericalWarp
-    PalmAction.EYES -> workspace.eyeAiming
-    PalmAction.GESTURES -> workspace.mouseGestures
-    PalmAction.DIAGNOSTICS -> workspace.viewDetailDebug
-    PalmAction.GAZE_FOCUS -> workspace.gazeToFocus
-    PalmAction.MAGNIFIER -> workspace.magnifyWindow
-    PalmAction.MOUSE_SPACES -> workspace.cursorRemap
-    else -> false
+/** Toggles are a single state slot, multi-mode buttons have one slot per mode; immediate actions have none. */
+private data class PalmState(val slots: Int, val current: Int) {
+    val toggleOn get() = slots == 1 && current == 0
+}
+
+private fun palmState(action: PalmAction, workspace: WorkspaceFile, latched: Boolean): PalmState? {
+    fun toggle(on: Boolean) = PalmState(1, if (on) 0 else -1)
+    return when (action) {
+        PalmAction.FOLLOW -> toggle(latched)
+        PalmAction.EYES -> toggle(workspace.eyeAiming)
+        PalmAction.GESTURES -> toggle(workspace.mouseGestures)
+        PalmAction.DIAGNOSTICS -> toggle(workspace.viewDetailDebug)
+        PalmAction.GAZE_FOCUS -> toggle(workspace.gazeToFocus)
+        PalmAction.MOUSE_SPACES -> toggle(workspace.cursorRemap)
+        PalmAction.WARP -> PalmState(2, if (workspace.sphericalWarp) 1 else 0)
+        PalmAction.MODE -> PalmState(InteractionMode.entries.size, workspace.interactionMode.ordinal)
+        PalmAction.MAGNIFIER -> PalmState(3, listOf("fixed", "floating", "off").indexOf(magnifierLabel(workspace)))
+        PalmAction.SPACE, PalmAction.RESET, PalmAction.SEARCH, PalmAction.MORE, PalmAction.BACK -> null
+    }
 }
 
 internal fun magnifierLabel(workspace: WorkspaceFile) = when {
@@ -92,7 +107,11 @@ internal fun palmTooltip(action: PalmAction, workspace: WorkspaceFile, latched: 
     PalmAction.SPACE -> "Workspace"
     PalmAction.RESET -> "Reset desktop"
     PalmAction.FOLLOW -> if (latched) "Following · tap to stop" else "Follow"
-    PalmAction.WARP -> if (workspace.sphericalWarp) "Spherical · tap for flat" else "Flat · tap for spherical"
+    PalmAction.WARP -> when {
+        !RenderPolicy.CustomMeshes -> "Spherical view is paused in this build (custom meshes off)"
+        workspace.sphericalWarp -> "Spherical · tap for flat"
+        else -> "Flat · tap for spherical"
+    }
     PalmAction.MODE -> "${workspace.interactionMode.label} · tap for ${workspace.interactionMode.next().label}"
     PalmAction.MORE -> "More"
     PalmAction.BACK -> "Back"
@@ -107,15 +126,15 @@ internal fun palmTooltip(action: PalmAction, workspace: WorkspaceFile, latched: 
 
 @Composable
 internal fun PalmControls(page: PalmPage, workspace: WorkspaceFile, info: WorkspaceInfo?, latched: Boolean, focused: PalmAction?, pressed: PalmAction?,
-                          onTooltip: (String?) -> Unit, onAction: (PalmAction) -> Unit) {
+                          onHover: (PalmAction?) -> Unit, onAction: (PalmAction) -> Unit) {
     MaterialTheme(colorScheme = darkColorScheme()) {
         CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp(0f)) {
             BoxWithConstraints(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
                 for (button in PalmMenuLayout.buttons(page)) {
                     val action = button.action
                     PalmIcon(action, workspace, palmTooltip(action, workspace, latched), maxWidth * button.w,
-                        palmActionEnabled(action, workspace, info), palmActionActive(action, workspace, latched),
-                        action == focused, action == pressed, onTooltip,
+                        palmActionEnabled(action, workspace, info), palmState(action, workspace, latched),
+                        action == focused, action == pressed, { hovering -> onHover(action.takeIf { hovering }) },
                         Modifier.offset(maxWidth * button.x, maxHeight * button.y)) { onAction(action) }
                 }
             }
@@ -123,19 +142,44 @@ internal fun PalmControls(page: PalmPage, workspace: WorkspaceFile, info: Worksp
     }
 }
 
+/** Immediate actions keep the round window-menu button; state buttons are rounded squares with state pips. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PalmIcon(action: PalmAction, workspace: WorkspaceFile, description: String, cell: Dp, enabled: Boolean, active: Boolean,
-                     focused: Boolean, pressed: Boolean, onTooltip: (String?) -> Unit, modifier: Modifier, onClick: () -> Unit) {
-    val container = when { pressed -> Color(0xFF237E59); active -> Color(0xFF2F6F8F); else -> null }
-    FilledTonalIconButton(onClick = onClick, enabled = enabled,
+private fun PalmIcon(action: PalmAction, workspace: WorkspaceFile, description: String, cell: Dp, enabled: Boolean, state: PalmState?,
+                     focused: Boolean, pressed: Boolean, onHover: (Boolean) -> Unit, modifier: Modifier, onClick: () -> Unit) {
+    val shape = if (state == null) CircleShape else RoundedCornerShape(22)
+    val container = when {
+        pressed -> Color(0xFF237E59)
+        state?.toggleOn == true -> Color(0xFF2F7FA6)
+        state != null -> Color(0xFF26323C)
+        else -> null
+    }
+    FilledTonalIconButton(onClick = onClick, enabled = enabled, shape = shape,
         colors = container?.let { IconButtonDefaults.filledTonalIconButtonColors(containerColor = it) } ?: IconButtonDefaults.filledTonalIconButtonColors(),
-        modifier = modifier.size(cell).trackMenuHover { onTooltip(description.takeIf { _ -> it != null }) }.semantics { contentDescription = description }) {
-        Canvas(Modifier.fillMaxSize().padding(cell * .25f)) { drawPalmIcon(action, workspace) }
+        modifier = modifier.size(cell).trackMenuHover { onHover(it != null) }.semantics { contentDescription = description }) {
+        Canvas(Modifier.fillMaxSize()) {
+            val inset = size.minDimension * .25f
+            inset(inset, inset) { drawPalmIcon(action, workspace) }
+            if (state != null) drawStatePips(state, if (enabled) 1f else .38f)
+        }
     }
     if (focused) Canvas(modifier.size(cell)) {
         val width = size.minDimension * .035f
-        drawCircle(Color(0xFF8ADFFF), (size.minDimension - width) / 2, style = Stroke(width))
+        if (state == null) drawCircle(Color(0xFF8ADFFF), (size.minDimension - width) / 2, style = Stroke(width))
+        else drawRoundRect(Color(0xFF8ADFFF), Offset(width / 2, width / 2), Size(size.width - width, size.height - width),
+            CornerRadius(size.minDimension * .22f), style = Stroke(width))
+    }
+}
+
+private fun DrawScope.drawStatePips(state: PalmState, alpha: Float) {
+    val radius = size.minDimension * .035f
+    val pitch = size.minDimension * .12f
+    val y = size.height * .87f
+    val first = size.width / 2 - pitch * (state.slots - 1) / 2
+    for (slot in 0 until state.slots) {
+        val center = Offset(first + slot * pitch, y)
+        if (slot == state.current) drawCircle(Color(0xFFE8F6FF).copy(alpha = alpha), radius * 1.15f, center)
+        else drawCircle(Color(0xFF8FA9BA).copy(alpha = alpha), radius, center, style = Stroke(radius * .55f))
     }
 }
 
@@ -156,7 +200,19 @@ private fun DrawScope.drawPalmIcon(action: PalmAction, workspace: WorkspaceFile)
     }
     when (action) {
         PalmAction.SPACE -> { box(.05f, .05f, .45f, .45f); box(.55f, .05f, .95f, .45f); box(.05f, .55f, .45f, .95f); box(.55f, .55f, .95f, .95f) }
-        PalmAction.RESET -> { arc(.1f, .1f, .9f, .9f, 300f, 300f); line(.75f, .08f, .78f, .3f); line(.78f, .3f, .55f, .3f) }
+        PalmAction.RESET -> {
+            // Counter-clockwise "back to start" arrow: the head sits at the top and points left, into the gap.
+            val cx = .5f; val cy = .54f; val r = .38f; val start = 265f
+            arc(cx - r, cy - r, cx + r, cy + r, start, 300f)
+            val angle = Math.toRadians(start.toDouble())
+            val tip = Offset(cx + r * cos(angle).toFloat(), cy + r * sin(angle).toFloat())
+            val back = Offset(-sin(angle).toFloat(), cos(angle).toFloat())
+            for (turn in listOf(40.0, -40.0)) {
+                val t = Math.toRadians(turn)
+                val wing = Offset((back.x * cos(t) - back.y * sin(t)).toFloat(), (back.x * sin(t) + back.y * cos(t)).toFloat())
+                line(tip.x, tip.y, tip.x + wing.x * .24f, tip.y + wing.y * .24f)
+            }
+        }
         PalmAction.FOLLOW -> { line(.08f, .2f, .38f, .5f); line(.38f, .5f, .08f, .8f); line(.48f, .2f, .78f, .5f); line(.78f, .5f, .48f, .8f) }
         PalmAction.WARP -> if (workspace.sphericalWarp) {
             arc(.05f, .05f, .95f, .45f, 200f, 140f); arc(.05f, .7f, .95f, 1.1f, 200f, 140f)

@@ -33,6 +33,14 @@ internal class DeskConnection(
     private val dumpFile: java.io.File? = null,
 ) {
     val status = mutableStateOf("Looking for your computer…")
+    val problem = mutableStateOf<String?>(null)
+    @Volatile private var appContext: Context? = null
+    private var events = ConnectionEventLog(null)
+    @Volatile private var startedAt = 0L
+    @Volatile private var lastHostReplyAt = 0L
+    @Volatile private var lastBeaconAt = 0L
+    private var lastProblemCheck = 0L
+    private var lastProblem: String? = null
     val monitors = mutableStateOf<List<MonitorHello>>(emptyList())
     val cursors = mutableStateOf<Map<Int, CursorView>>(emptyMap())
 
@@ -144,6 +152,9 @@ internal class DeskConnection(
 
     fun start(context: Context) {
         if (running) return
+        appContext = context.applicationContext
+        events = ConnectionEventLog(java.io.File(context.applicationContext.filesDir, "connection-events.log"))
+        startedAt = android.os.SystemClock.elapsedRealtime(); lastHostReplyAt = 0L; lastBeaconAt = 0L; lastProblem = null
         val opened = ArrayList<DatagramSocket>()
         try {
             for (port in 48000 until 48006) {
@@ -159,6 +170,8 @@ internal class DeskConnection(
             control?.close()
             beacon?.close()
             status.value = "Could not listen for the computer: ${err.message}"
+            problem.value = status.value
+            Log.e("Floatdesk", status.value, err); events.append(status.value)
             return
         }
         videos = opened
@@ -214,6 +227,7 @@ internal class DeskConnection(
             workspaceInfo.value=null;focusBusy.value=false;focusResult.value=null
             reloading.value=false
             status.value = "Disconnected"
+            problem.value = null
         }
     }
 
@@ -433,13 +447,17 @@ internal class DeskConnection(
                 requestDisplays()
             }
             lastHello=0L;lastReplyAt=android.os.SystemClock.elapsedRealtime()
-            Log.w("Floatdesk","Control socket reopened: $reason")
+            Log.w("Floatdesk","Control socket reopened: $reason");events.append("control socket reopened: $reason")
             return true
         }
         while (running) {
             try {
             pollBeacon()
             val discoveryNow=android.os.SystemClock.elapsedRealtime()
+            if(discoveryNow-lastProblemCheck>=1000) {
+                lastProblemCheck=discoveryNow
+                reportProblem(connectionProblem(discoveryNow,startedAt,lastHostReplyAt,lastBeaconAt,headsetNetwork(appContext)))
+            }
             if(pendingRemote!=null && currentMonitors.isNotEmpty() && discoveryNow-lastReplyAt>=replyTimeoutMs) {
                 if(!reopenControl("host replies timed out"))Thread.sleep(250)
             }
@@ -461,10 +479,11 @@ internal class DeskConnection(
                 incoming.setLength(buffer.size)
                 socket.receive(incoming)
                 val decoded = Protocol.decode(buffer.copyOf(incoming.length)) ?: continue
-                if(incoming.address==pendingRemote?.address && incoming.port==pendingRemote?.port)lastReplyAt=android.os.SystemClock.elapsedRealtime()
+                if(incoming.address==pendingRemote?.address && incoming.port==pendingRemote?.port){lastReplyAt=android.os.SystemClock.elapsedRealtime();lastHostReplyAt=lastReplyAt}
                 when (decoded) {
                     is Packet.HostHello -> {
                         if(pendingRemote!=null && (incoming.address!=pendingRemote?.address || incoming.port!=pendingRemote?.port)) continue
+                        lastHostReplyAt=android.os.SystemClock.elapsedRealtime()
                         if (pendingRemote == null) {
                             pendingRemote = InetSocketAddress(incoming.address, incoming.port)
                         }
@@ -516,7 +535,7 @@ internal class DeskConnection(
             } catch (_: SocketTimeoutException) {
             } catch (error:java.net.SocketException) {
                 if(!running)break
-                Log.w("Floatdesk","Control socket failed",error)
+                Log.w("Floatdesk","Control socket failed",error);events.append("control socket failed: $error")
                 if(!reopenControl("socket failure"))Thread.sleep(250)
             } catch (error: Exception) {
                 // A malformed/unexpected reply must not permanently stop heartbeats and telemetry.
@@ -524,6 +543,18 @@ internal class DeskConnection(
                 Log.w("Floatdesk","Control packet rejected; keeping connection alive",error)
             }
         }
+    }
+
+    private fun reportProblem(next: String?) {
+        val previous = lastProblem
+        lastProblem = next
+        if (next == previous) return
+        if ((next == null) != (previous == null)) {
+            val message = next?.let { "connection problem: $it" } ?: "connection recovered"
+            if (next == null) Log.i("Floatdesk", message) else Log.w("Floatdesk", message)
+            events.append(message)
+        }
+        main.post { if (running) problem.value = next }
     }
 
     private fun pollBeacon() {
@@ -538,6 +569,7 @@ internal class DeskConnection(
         }
         val decoded = Protocol.decode(buffer.copyOf(packet.length)) ?: return
         if (decoded is Packet.Beacon) {
+            lastBeaconAt = android.os.SystemClock.elapsedRealtime()
             val remote = InetSocketAddress(packet.address, decoded.listenPort)
             hostDiscovery.observe(remote,decoded.name,android.os.SystemClock.elapsedRealtime())
             if(pendingRemote!=null)return

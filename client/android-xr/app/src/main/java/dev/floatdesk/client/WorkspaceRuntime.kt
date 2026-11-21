@@ -38,6 +38,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.xr.arcore.ArDevice
 import androidx.xr.arcore.Hand
 import androidx.xr.arcore.HandJointType
@@ -1309,6 +1310,19 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             }
         }
 
+        val connectionProblem by connection.problem
+        val problemHead=remember(connectionProblem!=null,displayHead.get()==null){displayHead.get()}
+        if(connectionProblem!=null && !displayControlsOpen)problemHead?.let{head->
+            val unit=handTracking.unitsPerMeter
+            val pose=Pose(transformPoint(head,floatArrayOf(0f,-.12f*unit,-dev.floatdesk.client.workspace.ViewLayers.ControlsDistanceM*unit)),head.rotation)
+            Subspace{SpatialPanel(modifier=placedPanel(pose,.30f*unit,.075f*unit,density,pixelDensity)){
+                androidx.compose.foundation.layout.Row(Modifier.fillMaxSize().background(Color(0xF02A1F1C)).padding(10.dp),
+                    verticalAlignment=androidx.compose.ui.Alignment.CenterVertically,horizontalArrangement=androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp)){
+                    androidx.compose.material3.CircularProgressIndicator(Modifier.size(20.dp),color=Color(0xFFFFC27A),strokeWidth=2.dp)
+                    Text(connectionProblem.orEmpty(),color=Color.White,fontSize=12.sp)
+                }
+            }}
+        }
         val menuPane=magnifierMenu?.let{key->if(key=="floating")magnified else fixedRuntime[key]}
         val menuWindow=windowMenu ?: menuPane?.id
         var menuTooltip by remember(magnifierMenu,windowMenu){mutableStateOf<String?>(null)}

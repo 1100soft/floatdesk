@@ -324,6 +324,31 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
         }
     }
     DisposableEffect(guideRenderer){val renderer=guideRenderer;onDispose{renderer?.close()}}
+    fun toolbarStripFor(target:ToolbarTarget?):ToolbarStrip?{
+        val unit=handTracking.unitsPerMeter
+        return when(target){
+            is ToolbarTarget.Magnifier->{
+                val pane=(if(target.key=="floating")magnified?.takeIf{magnifierReady} else fixedRuntime[target.key]?.takeIf{fixedReady[target.key]==true}) ?: return null
+                val frame=.005f*pane.units
+                val anchor=Pose(transformPoint(pane.pose,floatArrayOf(0f,pane.height*.5f+frame,.004f*pane.units)),pane.pose.rotation)
+                toolbarStrip(anchor,pane.width+2*frame,(pane.layerDistanceM*pane.units*.075f).coerceIn(.035f*unit,.11f*unit),true)
+            }
+            is ToolbarTarget.Window->{
+                val info=connection.workspaceInfo.value ?: return null
+                val source=info.windows.firstOrNull{it.id==target.id} ?: return null
+                val desktop=workspace.monitorAt(0) ?: return null;val b=info.bounds() ?: return null
+                fun edge(x:Float):FloatArray?{
+                    val display=connection.presentation().extendedDisplayPoint((x-b[0])/b[2],(source.y-b[1]).toFloat()/b[3]) ?: return null
+                    return transformPoint(desktop.pose,pointerSurfacePoint(PointerTarget(0,display.first,display.second,FloatArray(3)),desktop.physicalWidthM,desktop.physicalHeightM,pointerControl.meshes[0]))
+                }
+                val left=edge(source.x.toFloat()) ?: return null;val right=edge((source.x+source.width).toFloat()) ?: return null
+                val centre=edge(source.x+source.width*.5f) ?: return null
+                val lifted=add(centre,rotateVector(desktop.pose.rotation,0f,0f,.02f*unit))
+                toolbarStrip(Pose(lifted,desktop.pose.rotation),distance(left,right),(dev.floatdesk.client.workspace.ViewLayers.DesktopDistanceM*unit*.075f).coerceIn(.035f*unit,.11f*unit),false)
+            }
+            null->null
+        }
+    }
     var palmPanel by remember { mutableStateOf<PalmPanelState?>(null) }
     val poke = remember { PalmPoke() }
     var lastPalmAction by remember { mutableStateOf(0L) }
@@ -517,6 +542,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     deskSpace.get()?.let { parent ->
                         guideRenderer?.update(parent,emptyList())
                         guideRenderer?.updateRays(parent,emptyMap(),null,1f,true)
+                        guideRenderer?.updateHighlight(parent,null,floatArrayOf(0f,0f,0f,1f),0f,0f,0f)
                     }
                 }
                 inputWasResumed=false
@@ -919,9 +945,29 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             }.toMap() else emptyMap()
             val magnifierHover=paneGaze?.first?.let{w->if(w.id==magnified?.id)"floating" else fixedWindows.get().firstOrNull{it.second.id==w.id}?.first}
                 ?: magnifierPointerHover.keys.firstOrNull{it=="floating" || workspace.fixedMagnifiers.any{record->record.id==it}}
-            val windowHover=if(workspace.windowGrabMode)focusHover.values.firstNotNullOfOrNull{it.window?.windowId} else null
-            toolbarTarget=toolbar.update(handTracking.nowMs,magnifierHover?.let{ToolbarTarget.Magnifier(it)} ?: windowHover?.let{ToolbarTarget.Window(it)},toolbarEngaged,
+            fun windowAt(hit:PointerTarget?)=hit?.takeIf{it.monitor==0}?.let{connection.desktopPoint(it.monitor,it.u,it.v)}?.let{(u,v)->focusInfo?.hover(u,v)?.window?.windowId}
+            val systemGaze=if(hudReading)null else pointerControl.systemGaze()
+            val windowHover=if(gazeBlockedByPane)null else windowAt(systemGaze) ?: windowAt(rawDesktopGazeTarget)
+                ?: hoverHands.filterKeys{it !in magnifierHands}.values.firstNotNullOfOrNull{windowAt(it)}
+            val viewerPoint=handTracking.points["VIEWER"] ?: handTracking.points["HEAD"]
+            val stripRays=contentEyeRays+listOfNotNull(systemGaze?.let{g->
+                val placement=workspace.monitorAt(g.monitor)
+                if(placement==null || viewerPoint==null)null else {
+                    val point=transformPoint(placement.pose,pointerSurfacePoint(g,placement.physicalWidthM,placement.physicalHeightM,pointerControl.meshes[g.monitor]))
+                    viewerPoint to subtract(point,viewerPoint)
+                }
+            })
+            val openStrip=toolbarStripFor(toolbar.open);val litStrip=toolbarStripFor(toolbar.highlight)
+            val gazeStrip=when{
+                openStrip!=null && stripRays.any{(o,d)->openStrip.contains(o,d)}->toolbar.open
+                litStrip!=null && stripRays.any{(o,d)->litStrip.contains(o,d)}->toolbar.highlight
+                else->null
+            }
+            toolbar.update(handTracking.nowMs,magnifierHover?.let{ToolbarTarget.Magnifier(it)} ?: windowHover?.let{ToolbarTarget.Window(it)},gazeStrip,toolbarEngaged,
                 windowGrab.engaged || magnifierMoving || monitorGrab || nativeManipulation || displayControlsOpen || palmPanel!=null || !sceneActive || !resumed)
+            if(toolbar.open!=toolbarTarget)Log.i("Floatdesk","window toolbar open=${toolbar.open} highlight=${toolbar.highlight}")
+            toolbarTarget=toolbar.open
+            val highlightStrip=toolbarStripFor(toolbar.highlight?.takeIf{it!=toolbar.open})
             val focusGate=buildList {
                 if(magnifierMoving || toolbarEngaged)add("magnifier interaction")
                 if(choice.mode.reservesDesktop)add("two-hand manipulation")
@@ -1038,6 +1084,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 runCatching { renderer.update(root, grabs.mapNotNull { (index,grab) -> workspace.monitorAt(index)?.let {grab.displayGuide(it,pointerControl.meshes[index])} ?: previews[index] })
                     // The desktop cursor is the target marker; avoid a second dot over it.
                     renderer.updatePointer(root,null,handTracking.points["HEAD"],handTracking.unitsPerMeter)
+                    renderer.updateHighlight(root,highlightStrip?.pose?.position,highlightStrip?.pose?.rotation ?: floatArrayOf(0f,0f,0f,1f),highlightStrip?.width ?: 0f,highlightStrip?.height ?: 0f,.001f*handTracking.unitsPerMeter)
                     val draw: ()->Unit = {
                         val contactsNow=pointerControl.hands(grips.keys,SystemClock.uptimeMillis(),aimPoses).filterValues {connection.desktopPoint(it.monitor,it.u,it.v)!=null}
                         val show=contactsNow.keys.none{it in magnifierHands} && contactsNow.isNotEmpty() && handPreviewMonitor(contactsNow)==null && palmPanel==null && !monitorGrab && !nativeManipulation
@@ -1337,32 +1384,18 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
         var toolbarTooltip by remember(toolbarTarget){mutableStateOf<String?>(null)}
         var snapExpanded by remember(toolbarTarget){mutableStateOf(false)}
         var snapButtonHovered by remember(toolbarTarget){mutableStateOf(false)}
-        val toolbarHead=remember(toolbarTarget){displayHead.get()}
         LaunchedEffect(toolbarTarget){toolbarHovered=false;snapGridHovered=false}
         LaunchedEffect(snapButtonHovered,snapGridHovered){
             if(snapButtonHovered)snapExpanded=true else if(!snapGridHovered){delay(400);snapExpanded=false}
         }
-        val unit=handTracking.unitsPerMeter
-        // Top-centre of the target's visible edge, facing the same way as the target.
-        val toolbarAnchor=when{
-            toolbarPane!=null->Pose(transformPoint(toolbarPane.pose,floatArrayOf(0f,toolbarPane.height*.5f+.005f*toolbarPane.units,.004f*toolbarPane.units)),toolbarPane.pose.rotation)
-            toolbarTarget is ToolbarTarget.Window && toolbarSource!=null->{
-                val desktop=workspace.monitorAt(0);val b=systemInfo?.bounds()
-                val display=b?.let{connection.presentation().extendedDisplayPoint((toolbarSource.x+toolbarSource.width*.5f-it[0])/it[2],(toolbarSource.y-it[1]).toFloat()/it[3])}
-                if(desktop==null || display==null)null else {
-                    val local=pointerSurfacePoint(PointerTarget(0,display.first,display.second,FloatArray(3)),desktop.physicalWidthM,desktop.physicalHeightM,pointerControl.meshes[0])
-                    Pose(transformPoint(desktop.pose,floatArrayOf(local[0],local[1],local[2]+.02f*unit)),desktop.pose.rotation)
-                }
-            }
-            else->null
-        }
-        if(toolbarAnchor!=null && toolbarHead!=null){
-            val gapRatio=WindowMenuLayout.gapM/WindowMenuLayout.cellM
-            val cellW=(distance(toolbarHead.position,toolbarAnchor.position)*.075f).coerceIn(.035f*unit,.11f*unit)
-            val gapW=gapRatio*cellW
-            val magnifierBar=toolbarPane!=null
-            val barW=WindowMenuLayout.toolbarWidth(magnifierBar,gapRatio)*cellW;val barH=WindowMenuLayout.toolbarHeight(gapRatio)*cellW
-            val barPose=Pose(transformPoint(toolbarAnchor,floatArrayOf(0f,gapW+barH*.5f,0f)),toolbarAnchor.rotation)
+        val toolbarStrip=toolbarStripFor(toolbarTarget)
+        if(toolbarStrip!=null){
+            val unit=handTracking.unitsPerMeter
+            val cellW=toolbarStrip.cell;val gapW=toolbarStrip.gap
+            val magnifierBar=toolbarStrip.magnifier
+            val gapRatio=gapW/cellW
+            val barW=WindowMenuLayout.toolbarWidth(magnifierBar,gapRatio)*cellW;val barH=toolbarStrip.height
+            val barPose=toolbarStrip.pose
             val cell=cellW.meters(density,pixelDensity);val gap=gapW.meters(density,pixelDensity)
             val snap=toolbarSource?.let{source->systemInfo?.let{currentSnapCell(source,it)}}
             val square=androidx.xr.compose.subspace.layout.SpatialRoundedCornerShape(androidx.compose.foundation.shape.CornerSize(0.dp))

@@ -43,6 +43,8 @@ internal class GrabGuideRenderer private constructor(
     private val nodeStates=java.util.IdentityHashMap<Entity,NativeNodeState>()
     private fun state(entity:Entity)=nodeStates.getOrPut(entity){NativeNodeState(entity)}
     private var pointerPoint: GltfModelEntity? = null
+    private var highlight: GltfModelEntity? = null
+    private var highlightSize: Vector3? = null
     private val aimBeams=mutableListOf<SurfaceEntity>()
     private val grabBeams=mutableListOf<SurfaceEntity>()
     private val grabPoints=mutableListOf<SurfaceEntity>()
@@ -97,6 +99,19 @@ internal class GrabGuideRenderer private constructor(
         entity.parent=parent
         entity.setEnabled(true)
         point(entity,visibleGrabContact(position,eye,unitsPerMeter),.003f*unitsPerMeter)
+    }
+
+    /** A faint flat box; glTF entities have no hit region, so hands aim through it. */
+    fun updateHighlight(parent: Entity, position: FloatArray?, rotation: FloatArray, width: Float, height: Float, depth: Float) {
+        if (closed) return
+        if (position == null) { highlight?.let { state(it).enabled(false) }; return }
+        val entity = highlight ?: GltfModelEntity.create(session, models[0]).also { highlight = it }
+        state(entity).parent(parent)
+        state(entity).alpha(.16f)
+        state(entity).pose(Pose(vector(position), Quaternion(rotation[0], rotation[1], rotation[2], rotation[3])))
+        val size = Vector3(width, height, depth)
+        if (highlightSize != size) { entity.nodes.first().localScale = size; highlightSize = size }
+        state(entity).enabled(true)
     }
 
     fun updateRays(parent: Entity,rays: Map<String,Pair<FloatArray,FloatArray>>,eye: FloatArray?,unitsPerMeter: Float,dimmed: Boolean) {
@@ -207,6 +222,7 @@ internal class GrabGuideRenderer private constructor(
         (aimBeams+grabBeams+grabPoints).forEach { if(!it.isDisposed){it.parent=null; it.dispose()} }
         aimBeams.clear(); grabBeams.clear(); grabPoints.clear()
         pointerPoint?.dispose(); pointerPoint = null
+        highlight?.dispose(); highlight = null
         groups.clear()
         if(session.lifecycleOwner.lifecycle.currentState!=androidx.lifecycle.Lifecycle.State.DESTROYED)models.forEach { it.close() }
     }

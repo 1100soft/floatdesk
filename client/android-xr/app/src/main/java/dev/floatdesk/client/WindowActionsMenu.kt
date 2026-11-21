@@ -9,6 +9,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -108,7 +109,12 @@ private fun MenuIcon(action: String, description: String, cell: Dp, enabled: Boo
         }
 }
 
-internal fun Modifier.trackMenuHover(onHover: (Offset?) -> Unit) = pointerInput(Unit) {
+internal fun Modifier.trackMenuHover(onHover: (Offset?) -> Unit) = composed {
+    val latest by rememberUpdatedState(onHover)
+    trackMenuHoverLatest { latest(it) }
+}
+
+private fun Modifier.trackMenuHoverLatest(onHover: (Offset?) -> Unit) = pointerInput(Unit) {
     awaitPointerEventScope {
         while (true) {
             val event = awaitPointerEvent()

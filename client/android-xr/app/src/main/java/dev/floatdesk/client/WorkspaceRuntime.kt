@@ -497,6 +497,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
         var followLock: FollowLock? = null
         var seenGeneration = followGeneration
         var tick = 0
+        var depthLogAt=0L;var depthFrames=0;var depthUnreliable=0;var depthMaxGap=0L;var depthLastFrame=SystemClock.uptimeMillis()
         // Keep platform maintenance outside the gesture coroutine's bytecode body.
         // ART refuses to JIT oversized methods, leaving this hot loop interpreted.
         fun updateEyeTracking(wantEyes: Boolean, resumed: Boolean) {
@@ -621,6 +622,14 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     val fixed=active.map{fixedDesktopDepth(it,reference,unitsPerMeter,true)}
                     if(fixed.indices.any{fixed[it] !== active[it]})workspace=workspace.copy(layouts=workspace.layouts.toMutableMap().also{it[workspace.activeLayout]=fixed.toMutableList()})
                 }
+            }
+            depthFrames++;if(!reliable)depthUnreliable++
+            depthMaxGap=maxOf(depthMaxGap,handTracking.nowMs-depthLastFrame);depthLastFrame=handTracking.nowMs
+            if(handTracking.nowMs-depthLogAt>=1000){
+                val screen0=workspace.monitorAt(0);val eye=displayHead.get()
+                val dist=if(screen0==null||eye==null)null else kotlin.math.sqrt((0..2).sumOf{val d=screen0.pose.position[it]-eye.position[it];(d*d).toDouble()})/unitsPerMeter
+                Log.i("Floatdesk","desk depth frames=$depthFrames unreliable=$depthUnreliable maxGapMs=$depthMaxGap manip=$manipulating grabBusy=${grabs.values.any{it.busy}} native=${pointerControl.nativeManipulating} head=${eye?.position?.joinToString(","){"%.3f".format(it)}} distM=${dist?.let{"%.3f".format(it)}} widthM=${screen0?.physicalWidthM?.let{"%.3f".format(it)}}")
+                depthLogAt=handTracking.nowMs;depthFrames=0;depthUnreliable=0;depthMaxGap=0L
             }
             if (!reliable) {
                 trackingRecovery.update(handTracking.nowMs,false,null,null,unitsPerMeter)

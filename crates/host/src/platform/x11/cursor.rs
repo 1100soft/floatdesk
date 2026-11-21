@@ -158,14 +158,26 @@ mod tests {
     use super::*;
     use x11rb::protocol::xtest::ConnectionExt as _;
 
-    fn moved(cursor: &mut X11Cursor, link: &X11Link, steps: i16) -> ([f64; 2], (i16, i16), (i16, i16)) {
+    fn moved(
+        cursor: &mut X11Cursor,
+        link: &X11Link,
+        steps: i16,
+    ) -> ([f64; 2], (i16, i16), (i16, i16)) {
         let start = link.conn.query_pointer(link.root).unwrap().reply().unwrap();
         let _ = cursor.poll().unwrap();
         cursor.take_motion();
         let mut total = [0.0, 0.0];
         for _ in 0..steps {
             link.conn
-                .xtest_fake_input(x11rb::protocol::xproto::MOTION_NOTIFY_EVENT, 1, 0, link.root, 4, 0, 0)
+                .xtest_fake_input(
+                    x11rb::protocol::xproto::MOTION_NOTIFY_EVENT,
+                    1,
+                    0,
+                    link.root,
+                    4,
+                    0,
+                    0,
+                )
                 .unwrap()
                 .check()
                 .unwrap();
@@ -176,7 +188,11 @@ mod tests {
             total[1] += m[1];
         }
         let end = link.conn.query_pointer(link.root).unwrap().reply().unwrap();
-        (total, (start.root_x, start.root_y), (end.root_x, end.root_y))
+        (
+            total,
+            (start.root_x, start.root_y),
+            (end.root_x, end.root_y),
+        )
     }
 
     #[test]
@@ -185,17 +201,47 @@ mod tests {
         let link = X11Link::open().unwrap();
         let mut cursor = X11Cursor::open().unwrap();
         link.move_pointer(300, 300).unwrap();
-        let mut term = std::process::Command::new("xterm").args(["-geometry", "80x24+200+200"]).spawn().unwrap();
+        let mut term = std::process::Command::new("xterm")
+            .args(["-geometry", "80x24+200+200"])
+            .spawn()
+            .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(1500));
         link.move_pointer(300, 300).unwrap();
         let free = moved(&mut cursor, &link, 10);
-        link.conn.xtest_fake_input(x11rb::protocol::xproto::BUTTON_PRESS_EVENT, 1, 0, link.root, 0, 0, 0).unwrap().check().unwrap();
+        link.conn
+            .xtest_fake_input(
+                x11rb::protocol::xproto::BUTTON_PRESS_EVENT,
+                1,
+                0,
+                link.root,
+                0,
+                0,
+                0,
+            )
+            .unwrap()
+            .check()
+            .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(100));
         let grabbed = moved(&mut cursor, &link, 10);
-        link.conn.xtest_fake_input(x11rb::protocol::xproto::BUTTON_RELEASE_EVENT, 1, 0, link.root, 0, 0, 0).unwrap().check().unwrap();
+        link.conn
+            .xtest_fake_input(
+                x11rb::protocol::xproto::BUTTON_RELEASE_EVENT,
+                1,
+                0,
+                link.root,
+                0,
+                0,
+                0,
+            )
+            .unwrap()
+            .check()
+            .unwrap();
         let _ = term.kill();
         eprintln!("free={free:?} grabbed={grabbed:?}");
         assert!(free.0[0] > 0.0, "no raw motion without a grab");
-        assert!(grabbed.0[0] > 0.0, "raw motion withheld during another client's grab");
+        assert!(
+            grabbed.0[0] > 0.0,
+            "raw motion withheld during another client's grab"
+        );
     }
 }

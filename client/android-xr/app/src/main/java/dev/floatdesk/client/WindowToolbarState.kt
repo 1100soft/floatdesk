@@ -29,6 +29,8 @@ internal sealed interface ToolbarTarget {
 /** The space just above a target's top edge: a gaze target while highlighted, then the toolbar's place. */
 internal data class ToolbarStrip(val pose: Pose, val width: Float, val height: Float, val cell: Float, val gap: Float, val magnifier: Boolean) {
     fun contains(origin: FloatArray, direction: FloatArray) = surfaceRayDistance(pose, width, height, null, origin, direction) != null
+    /** The one-icon highlight at the strip centre, with a little margin for gaze jitter. */
+    fun containsMarker(origin: FloatArray, direction: FloatArray) = surfaceRayDistance(pose, cell * 1.6f, cell * 1.6f, null, origin, direction) != null
 }
 
 /** [anchor] is the centre of the target's top edge; the strip is exactly where the toolbar opens. */

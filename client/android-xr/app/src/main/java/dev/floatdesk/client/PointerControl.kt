@@ -22,6 +22,8 @@ internal class PointerControl {
     private val handOrder=mutableMapOf<String,Long>()
     fun focusHands(contacts:Map<String,PointerTarget>):Map<String,PointerTarget> = contacts.filter{(side,_)->departedAt[side]==null && (gazeHover==null || (handOrder[side] ?: 0L)>gazeOrder)}
     fun systemGaze():PointerTarget?=gazeHover
+    /** Native hover left this hand's surface; its retained target is only a stationary-hand fallback. */
+    fun departed(side:String)=departedAt[side]!=null
     /** System gaze events also arrive on magnifiers; any of them means eye-and-hand aiming is on. */
     fun noteSystemGaze(){systemGazeEnabled=true}
     val qualityReferences=mutableMapOf<Int,MonitorMesh?>()

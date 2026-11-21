@@ -27,8 +27,10 @@ impl X11Cursor {
         let link = X11Link::open()?;
         use x11rb::protocol::xinput::{ConnectionExt as _, EventMask, XIEventMask};
         let motion_setup = (|| -> Result<()> {
+            // XI 2.0 withholds root raw events while any client holds a pointer grab,
+            // including the implicit grab of every button drag; 2.1+ always delivers them.
             link.conn
-                .xinput_xi_query_version(2, 0)
+                .xinput_xi_query_version(2, 2)
                 .map_err(Error::x11)?
                 .reply()
                 .map_err(Error::x11)?;

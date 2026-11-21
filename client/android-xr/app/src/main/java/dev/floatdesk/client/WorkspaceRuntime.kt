@@ -166,6 +166,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
     var toolbarTarget by remember { mutableStateOf<ToolbarTarget?>(null) }
     var toolbarHovered by remember { mutableStateOf(false) }
     var snapGridHovered by remember { mutableStateOf(false) }
+    val toolbarPanels=remember { AtomicReference<List<ToolbarStrip>>(emptyList()) }
     val magnifierPointerHover=remember { androidx.compose.runtime.mutableStateMapOf<String,Pair<Boolean,Boolean>>() }
     var dragProxy by remember{mutableStateOf<MagnifiedWindow?>(null)}
     val windowDragRay=remember{WindowDragRay()}
@@ -541,7 +542,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     deskSpace.get()?.let { parent ->
                         guideRenderer?.update(parent,emptyList())
                         guideRenderer?.updateRays(parent,emptyMap(),null,1f,true)
-                        guideRenderer?.updateHighlight(parent,null,floatArrayOf(0f,0f,0f,1f),0f,0f,0f)
+                        guideRenderer?.updateHighlight(parent,null,floatArrayOf(0f,0f,0f,1f),0f,0f)
                     }
                 }
                 inputWasResumed=false
@@ -869,8 +870,10 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 else magnifierPoint(window,o,d)?.let{uv->depth to (window to uv)}
             }}.minByOrNull{it.first}?.second
             val gazeBlockedByPane=paneGaze!=null
+            // The toolbar is opaque to gaze: nothing behind it may take focus, magnify or move the eye mouse.
+            val toolbarGaze=toolbarTarget!=null && contentEyeRays.any{(o,d)->toolbarPanels.get().any{it.contains(o,d)}}
             val magnifierGaze=paneGaze?.let{(window,uv)->magnifiedTarget(magnifierContentPoint(window,uv),window.id)}
-            val rawGazeTarget=if(gazeBlockedByPane)magnifierGaze else rawDesktopGazeTarget
+            val rawGazeTarget=if(toolbarGaze)null else if(gazeBlockedByPane)magnifierGaze else rawDesktopGazeTarget
             val gazeTarget=if(contextHands.isEmpty() && !hudReading) gazeStabilizer.update(rawGazeTarget?.takeIf {connection.desktopPoint(it.monitor,it.u,it.v)!=null},handTracking.nowMs) else { gazeStabilizer.reset(); null }
             val monitorGrab=grabs.values.any { it.engaged }
             val nativeManipulation=pointerControl.nativeManipulating
@@ -887,7 +890,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             val paneOwner=paneGaze?.first?.id?.let{connection.windowCaptures.owner(it)}
             val popupGaze=paneOwner!=null && paneOwner!=paneGaze?.first?.id
             val shellGaze=paneOwner?.let{id->focusInfo?.systemWindows?.any{it.id==id}}==true
-            val toolbarEngaged=toolbarTarget!=null && (toolbarHovered || snapGridHovered)
+            val toolbarEngaged=toolbarTarget!=null && (toolbarHovered || snapGridHovered || toolbarGaze)
             val autoFocusBlocked=windowGrab.engaged || shellGaze || hudReading || typingLocked || magnifierMoving || toolbarEngaged || !reliable || !resumed || displayControlsOpen || palmPanel!=null ||
                 choice.mode.reservesDesktop || monitorGrab || nativeManipulation || mouseGestures.engaged || connection.focusBusy.value || focusInfo?.gazeFocus!=true
             val autoFocusWindow=if(!autoFocusBlocked && workspace.gazeToFocus)paneOwner?.takeIf{id->focusInfo?.windows?.any{it.id==id}==true} ?: rawGazeTarget?.takeIf{it.monitor==0}?.let{hit->
@@ -895,7 +898,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             }else null
             gazeWindowFocus.update(handTracking.nowMs,workspace.gazeToFocus,autoFocusBlocked,autoFocusWindow)?.let{connection.requestGazeFocus(it)}
             if(autoFocusBlocked || !workspace.gazeToFocus)connection.cancelGazeFocus()
-            val magnifyTarget=if(gazeBlockedByPane)null else rawDesktopGazeTarget?.let{hit->connection.desktopPoint(hit.monitor,hit.u,hit.v)?.let{(u,v)->focusInfo?.hover(u,v)?.window?.windowId}}
+            val magnifyTarget=if(gazeBlockedByPane || toolbarGaze)null else rawDesktopGazeTarget?.let{hit->connection.desktopPoint(hit.monitor,hit.u,hit.v)?.let{(u,v)->focusInfo?.hover(u,v)?.window?.windowId}}
             magnified?.let { panel ->
                 val source=connection.windowCaptures.source(panel.id)
                 val width=source?.width ?: panel.sourceWidth
@@ -961,7 +964,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             val openStrip=toolbarStripFor(toolbar.open);val litStrip=toolbarStripFor(toolbar.highlight)
             val gazeStrip=when{
                 openStrip!=null && stripRays.any{(o,d)->openStrip.contains(o,d)}->toolbar.open
-                litStrip!=null && stripRays.any{(o,d)->litStrip.contains(o,d)}->toolbar.highlight
+                litStrip!=null && stripRays.any{(o,d)->litStrip.containsMarker(o,d)}->toolbar.highlight
                 else->null
             }
             toolbar.update(handTracking.nowMs,magnifierHover?.let{ToolbarTarget.Magnifier(it)} ?: windowHover?.let{ToolbarTarget.Window(it)},gazeStrip,toolbarEngaged,
@@ -1085,12 +1088,13 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 runCatching { renderer.update(root, grabs.mapNotNull { (index,grab) -> workspace.monitorAt(index)?.let {grab.displayGuide(it,pointerControl.meshes[index])} ?: previews[index] })
                     // The desktop cursor is the target marker; avoid a second dot over it.
                     renderer.updatePointer(root,null,handTracking.points["HEAD"],handTracking.unitsPerMeter)
-                    val pulse=.62f+.28f*kotlin.math.sin(SystemClock.uptimeMillis()%2400L/2400f*2f*Math.PI.toFloat())
-                    renderer.updateHighlight(root,highlightStrip?.pose?.position,highlightStrip?.pose?.rotation ?: floatArrayOf(0f,0f,0f,1f),highlightStrip?.width ?: 0f,highlightStrip?.height ?: 0f,(pulse*50).toInt()/50f)
+                    val pulse=.5f+.5f*kotlin.math.sin(SystemClock.uptimeMillis()%2400L/2400f*2f*Math.PI.toFloat())
+                    renderer.updateHighlight(root,highlightStrip?.pose?.position,highlightStrip?.pose?.rotation ?: floatArrayOf(0f,0f,0f,1f),highlightStrip?.cell ?: 0f,pulse)
                     val draw: ()->Unit = {
                         val contactsNow=pointerControl.hands(grips.keys,SystemClock.uptimeMillis(),aimPoses).filterValues {connection.desktopPoint(it.monitor,it.u,it.v)!=null}
                         val show=contactsNow.keys.none{it in magnifierHands} && contactsNow.isNotEmpty() && handPreviewMonitor(contactsNow)==null && palmPanel==null && !monitorGrab && !nativeManipulation
-                        val rays=(if(show) contactsNow else emptyMap()).mapNotNull { (side,hit) ->
+                        val inToolbar=toolbarHovered || snapGridHovered
+                        val rays=(if(show) contactsNow.filterKeys{!(inToolbar && pointerControl.departed(it))} else emptyMap()).mapNotNull { (side,hit) ->
                             val origin=grips[side]; val placement=workspace.monitorAt(hit.monitor)
                             if(origin==null || placement==null) null else {
                                 val local=pointerSurfacePoint(hit,placement.physicalWidthM,placement.physicalHeightM,pointerControl.meshes[hit.monitor])
@@ -1391,6 +1395,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             if(snapButtonHovered)snapExpanded=true else if(!snapGridHovered){delay(400);snapExpanded=false}
         }
         val toolbarStrip=toolbarStripFor(toolbarTarget)
+        val shownPanels=mutableListOf<ToolbarStrip>()
         if(toolbarStrip!=null){
             val unit=handTracking.unitsPerMeter
             val cellW=toolbarStrip.cell;val gapW=toolbarStrip.gap
@@ -1402,6 +1407,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             val snap=toolbarSource?.let{source->systemInfo?.let{currentSnapCell(source,it)}}
             val square=androidx.xr.compose.subspace.layout.SpatialRoundedCornerShape(androidx.compose.foundation.shape.CornerSize(0.dp))
             fun closeToolbar(){toolbar.clear();toolbarTarget=null}
+            shownPanels+=toolbarStrip.copy(width=barW)
             Subspace{SpatialPanel(modifier=placedPanel(barPose,barW,barH,density,pixelDensity),shape=square){
                 WindowToolbar(toolbarWindow,magnifierBar,snap,snapExpanded,cell,gap,onHover={toolbarHovered=it},onTooltip={toolbarTooltip=it},
                     onSnapHover={snapButtonHovered=it},onSnapToggle={snapExpanded=!snapExpanded},
@@ -1418,6 +1424,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 val gridW=WindowMenuLayout.gridWidth(gapRatio)*cellW;val gridH=WindowMenuLayout.gridHeight(gapRatio)*cellW
                 val snapOffset=if(magnifierBar)cellW+2*gapW else 0f
                 val gridPose=Pose(transformPoint(barPose,floatArrayOf(snapOffset,-(barH+gridH)*.5f,.002f*unit)),barPose.rotation)
+                shownPanels+=toolbarStrip.copy(pose=gridPose,width=gridW,height=gridH)
                 Subspace{SpatialPanel(modifier=placedPanel(gridPose,gridW,gridH,density,pixelDensity),shape=square){
                     SnapGridMenu(toolbarWindow,snap,cell,gap,onHover={snapGridHovered=it}){columns,rows,col,row->
                         val screen=systemInfo?.screens?.firstOrNull{r->toolbarSource!=null && toolbarSource.x+toolbarSource.width/2 in r.x until r.x+r.width && toolbarSource.y+toolbarSource.height/2 in r.y until r.y+r.height} ?: systemInfo?.screens?.firstOrNull{it.primary}
@@ -1429,6 +1436,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             toolbarTooltip?.let{label->
                 val tipW=maxOf(barW,cellW*4);val tipH=cellW*.5f
                 val tipPose=Pose(transformPoint(barPose,floatArrayOf(0f,barH*.5f+gapW+tipH*.5f,0f)),barPose.rotation)
+                shownPanels+=toolbarStrip.copy(pose=tipPose,width=tipW,height=tipH)
                 Subspace{SpatialPanel(modifier=placedPanel(tipPose,tipW,tipH,density,pixelDensity)){
                     androidx.compose.foundation.layout.Box(Modifier.fillMaxSize().background(Color(0xFF18232E)),contentAlignment=androidx.compose.ui.Alignment.Center){
                         androidx.compose.foundation.text.BasicText(label,Modifier.padding(horizontal=6.dp),style=androidx.compose.ui.text.TextStyle(color=Color.White),maxLines=1,softWrap=false,
@@ -1438,6 +1446,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             }
         }
 
+        SideEffect{toolbarPanels.set(shownPanels.toList())}
     } else {
         controls()
     }

@@ -84,6 +84,7 @@ fun main() {
    check(strip.pose.position[1]>1f && strip.contains(floatArrayOf(.05f,strip.pose.position[1],0f),floatArrayOf(0f,0f,-1f)))
    check(!strip.contains(floatArrayOf(0f,.98f,0f),floatArrayOf(0f,0f,-1f)) && !strip.contains(floatArrayOf(.2f,strip.pose.position[1],0f),floatArrayOf(0f,0f,-1f)))
    check(toolbarStrip(Pose(),.05f,true).width>strip.width)
+   val y=strip.pose.position[1];check(strip.containsMarker(floatArrayOf(.035f,y,0f),floatArrayOf(0f,0f,-1f)) && !strip.containsMarker(floatArrayOf(.06f,y,0f),floatArrayOf(0f,0f,-1f)) && strip.contains(floatArrayOf(.06f,y,0f),floatArrayOf(0f,0f,-1f)))
    val delayed=WindowGrabController{PinchThresholds.Default}
    val opened=mapOf("LEFT" to FingerPinch(.1f,.1f));val pinched=mapOf("LEFT" to FingerPinch(.001f,.1f))
    delayed.update(0,true,false,opened,emptyMap(),info)

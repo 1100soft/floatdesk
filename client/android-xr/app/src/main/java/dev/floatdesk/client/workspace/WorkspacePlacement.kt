@@ -5,11 +5,13 @@ import dev.floatdesk.client.focusViewHalfAngles
 
 /** UI panel compositing plus ordered physical planes; all values are in meters. */
 internal object ViewLayers {
-    const val DesktopDistanceM=1.2f
-    const val MagnifierDistanceM=.85f
-    const val ShellDistanceM=.55f
-    const val ControlsDistanceM=.40f
-    const val DiagnosticsDistanceM=.35f
+    // Nearest layer sits at the headset's ~0.9 m accommodation distance; layers step evenly in
+    // diopters (~0.11 D) out to 1.5 m so neighbouring planes cannot swap apparent depth.
+    const val DesktopDistanceM=1.5f
+    const val MagnifierDistanceM=1.29f
+    const val ShellDistanceM=1.125f
+    const val ControlsDistanceM=1.0f
+    const val DiagnosticsDistanceM=.9f
     fun popupDistance(owner:Float,level:Int=0):Float {
         val near=if(owner>ShellDistanceM)ShellDistanceM else DiagnosticsDistanceM
         return near+(owner-near)*Math.pow(.5,level.coerceAtMost(8)+1.0).toFloat()
@@ -86,8 +88,12 @@ internal fun focusDesktopRegion(screen:MonitorPlacement,rect:FloatArray,viewer:P
 }
 
 
-/** Preserve angular location/size at a fixed spherical focus radius or flat-plane depth. */
-internal fun fixedDesktopDepth(screen:MonitorPlacement,viewer:Pose,unitsPerMeter:Float,spherical:Boolean=true):MonitorPlacement {
+/**
+ * Hold the desktop at a fixed spherical focus radius or flat-plane depth. Scaling about the eye
+ * preserves angular location/size (for explicit placement); a rigid push along the view ray keeps
+ * physical size, so head motion changes parallax but never depth.
+ */
+internal fun fixedDesktopDepth(screen:MonitorPlacement,viewer:Pose,unitsPerMeter:Float,spherical:Boolean=true,preserveAngularSize:Boolean=true):MonitorPlacement {
     val units=unitsPerMeter.takeIf{it.isFinite() && it>0f} ?: 1f
     val x=(screen.viewCenterU-.5f)*screen.physicalWidthM
     val y=(.5f-screen.viewCenterV)*screen.physicalHeightM
@@ -102,6 +108,13 @@ internal fun fixedDesktopDepth(screen:MonitorPlacement,viewer:Pose,unitsPerMeter
     if(!distance.isFinite() || distance<.05f*units)return screen
     val target=ViewLayers.DesktopDistanceM*units
     if(kotlin.math.abs(distance-target)<.002f*units)return screen
+    if(!preserveAngularSize) {
+        val axis=if(spherical)FloatArray(3){d[it]/radial} else {
+            val facing=if((0..2).sumOf{(d[it]*normal[it]).toDouble()}<0.0)-1f else 1f
+            FloatArray(3){normal[it]*facing}
+        }
+        return screen.copy(pose=Pose(FloatArray(3){screen.pose.position[it]+axis[it]*(target-distance)},screen.pose.rotation))
+    }
     val scale=target/distance
     return screen.copy(pose=Pose(FloatArray(3){viewer.position[it]+(screen.pose.position[it]-viewer.position[it])*scale},screen.pose.rotation),
         physicalWidthM=screen.physicalWidthM*scale,physicalHeightM=screen.physicalHeightM*scale)

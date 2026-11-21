@@ -224,7 +224,7 @@ internal fun framedMagnifierGeometry(window:MagnifiedWindow):VideoGeometry {
     val expanded=MonitorMesh(width+2*pad,height+2*pad,mesh.eye,columns=mesh.columns,rows=mesh.rows,focus=mesh.focus,center=mesh.center,planar=mesh.planar)
     val perimeter=buildList{for(c in 0..mesh.columns)add(c);for(r in 1..mesh.rows)add(r*(mesh.columns+1)+mesh.columns);for(c in mesh.columns-1 downTo 0)add(mesh.rows*(mesh.columns+1)+c);for(r in mesh.rows-1 downTo 1)add(r*(mesh.columns+1))}
     val positions=mesh.positions.toMutableList();val uv=ArrayList<Float>();val indices=mesh.indices.toMutableList()
-    fun tex(u:Float,v:Float){uv.add((pad+u*width)/(width+2*pad));uv.add(1f-(pad+v*height)/(height+2*pad))}
+    fun tex(u:Float,v:Float){uv.add(((pad+u*width)/(width+2*pad)).coerceIn(0f,1f));uv.add((1f-(pad+v*height)/(height+2*pad)).coerceIn(0f,1f))}
     for(i in 0 until mesh.positions.size/3)tex(mesh.texCoords[i*2],mesh.texCoords[i*2+1])
     val base=mesh.positions.size/3
     for(i in perimeter){val u=mesh.texCoords[i*2];val v=mesh.texCoords[i*2+1]

@@ -544,7 +544,7 @@ fun main() {
   val mesh=if(spherical)MonitorMesh(fitted.physicalWidthM,fitted.physicalHeightM,eye,focus=center.copyOf(2),center=center) else null
   val p=mesh?.project(center) ?: center
   val goal=viewerInMonitor(viewer.position,fitted.pose.position,fitted.pose.rotation)
-  check(abs(p[0]-goal[0])<.0001f && abs(p[1]-goal[1])<.0001f && abs(goal[2]-p[2]-1.2f*1.785f)<.0001f)
+  check(abs(p[0]-goal[0])<.0001f && abs(p[1]-goal[1])<.0001f && abs(goal[2]-p[2]-ViewLayers.DesktopDistanceM*1.785f)<.0001f)
   if(mesh!=null) {
    val selected=sphericalViewFocus(mesh,floatArrayOf(0f,0f,-1f))!!
    check(abs(selected[0]-center[0])<.001f && abs(selected[1]-center[1])<.001f)

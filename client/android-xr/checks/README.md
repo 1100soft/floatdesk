@@ -64,7 +64,7 @@ Remaining device gesture failures are [deferred](../../../docs/gesture-issues.md
 Run all JVM checks from the repository root with a cached Gradle Kotlin compiler directory:
 
 ```bash
-for check in gestures monitor_warp frozen_frame rtp pointer_protocol pointer_dispatch mouse_gestures panel_input curved_resize hand_quality; do
+for check in gestures monitor_warp frozen_frame rtp pointer_protocol pointer_dispatch mouse_gestures panel_input curved_resize hand_quality connection_health; do
   python3 "client/android-xr/checks/$check.py" /path/to/gradle/lib || exit
 done
 ```
@@ -76,6 +76,7 @@ done
 | `mouse_gestures.py` | Gaze filter; cross-hand clicks; drag/scroll cancellation; stationary and short middle clicks; independent binary rearming; minimal opening; event-buffer triple-click bursts; stale-batch cancellation. |
 | `panel_input.py` | Sticky eye focus, same-hand palm pinch, timing/rearming and hand switching. |
 | `curved_resize.py` | Tangent/perspective frame placement, bounds, native controller ownership and resize synchronization. |
+| `connection_health.py` | Headset connection-problem messages: startup grace, never reached, lost after replies, beacon-only host, no network and non-Wi-Fi. |
 | `hand_quality.py` | Pose jumps, unknown/overlapping identities, established-owner retention, clone disappearance, continued mouse routing and invalidated palm callback epochs. |
 
 Current mouse joint contact/release thresholds: left index/middle 15.5/15 mm, right index/middle 12.5/14 mm. These are fixed tracked-joint distances, not skin gaps. Palm activation remains separate (26 mm contact, 35 mm rearm, 60 ms confirmation). No device acceptance of fast desktop taps is implied.

@@ -37,7 +37,12 @@ guard_source = (Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/cli
 pointer_source = (Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client/PointerControl.kt').read_text().split('\n',1)[1]
 pinch_source=(Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client/MouseGestures.kt').read_text()
 stub=stub.replace("private ","internal ")
-code = mesh_source + guard_source + (Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client/PinchPolicy.kt').read_text().split('\n',1)[1] + pinch_source[pinch_source.index('internal fun mouseIndexContactMetres'):pinch_source.index('internal fun mouseMiddleContactMetres')] + stub + pointer_source + section('private const val PALM_WIDTH', '@Composable\nprivate fun PalmControls')
+code = mesh_source + guard_source + (Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client/PinchPolicy.kt').read_text().split('\n',1)[1] + pinch_source[pinch_source.index('internal fun mouseIndexContactMetres'):pinch_source.index('internal fun mouseMiddleContactMetres')] + stub + pointer_source
+window_menu=(Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client/WindowActionsMenu.kt').read_text()
+palm_menu=(Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client/PalmMenu.kt').read_text()
+code += window_menu[window_menu.index('internal object WindowMenuLayout'):window_menu.index('private val ToolbarSurface')]
+code += palm_menu[palm_menu.index('internal enum class PalmAction'):palm_menu.index('internal fun palmActionEnabled')]
+code += section('internal data class PalmPanelState', 'internal fun Vector3.toArray()')
 code += section('private fun palmRayPoint(', '/** Direct fingertip contact')
 code += section('private class PalmPoke', '/** Find the parent')
 code += '\n'.join(line for line in (Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client/GrabInteraction.kt').read_text().splitlines() if not line.startswith(('package ', 'import ')))
@@ -324,8 +329,6 @@ fun main() {
     check(curvedMoved.pose.position[2] != initial.pose.position[2])
     near(curvedGrab.guide!!.contacts[0],point(curvedMoved,curvedL,curvedMoved.physicalWidthM/initial.physicalWidthM))
     curvedGrab.cancel(); check(curvedGrab.frozenMesh == null)
-    check(sphericalActionLabel(false) == "Enable spherical")
-    check(sphericalActionLabel(true) == "Disable spherical")
     // Ray contacts ignore incorrect SDK-localized coordinates and stay on actual visible bounds.
     near(monitorRayHit(floatArrayOf(0f,0f,1f),floatArrayOf(.1f,0f,-1f),.8f,.45f,null)!!,floatArrayOf(.1f,0f,0f))
     check(monitorRayHit(floatArrayOf(0f,0f,1f),floatArrayOf(1f,0f,-1f),.8f,.45f,null) == null)
@@ -407,23 +410,32 @@ fun main() {
     check(distance(centeredSphere.project(floatArrayOf(.4f,0f,0f)),floatArrayOf(.4f,0f,0f)) > .01f)
     check(distance(centeredSphere.project(floatArrayOf(0f,.25f,0f)),floatArrayOf(0f,.25f,0f)) > .01f)
     val panel = PalmPanelState("LEFT",Pose(floatArrayOf(0f,0f,0f)))
-    val panelRay=palmRayPoint(panel,floatArrayOf(-.06f,.06f,1f),floatArrayOf(0f,0f,-1f))!!
+    // Main page: 3 x 2 window-menu cells (0.189 m x 0.128 m); quarter points map to u=v=0.25.
+    val qx=-PalmMenuLayout.widthM/4; val qy=PalmMenuLayout.heightM(PalmPage.MAIN)/4
+    val panelRay=palmRayPoint(panel,floatArrayOf(qx,qy,1f),floatArrayOf(0f,0f,-1f))!!
     check(kotlin.math.abs(panelRay[0]-.25f)<.00001f && kotlin.math.abs(panelRay[1]-.25f)<.00001f)
     check(palmRayPoint(panel,floatArrayOf(0f,0f,-1f),floatArrayOf(0f,0f,1f))==null)
-    val scaledRay=palmRayPoint(panel.copy(unitsPerMeter=5f),floatArrayOf(-.3f,.3f,1f),floatArrayOf(0f,0f,-1f))!!
+    val scaledRay=palmRayPoint(panel.copy(unitsPerMeter=5f),floatArrayOf(qx*5,qy*5,1f),floatArrayOf(0f,0f,-1f))!!
     check(kotlin.math.abs(scaledRay[0]-.25f)<.00001f)
+    val pc=.061f; val pr=.0305f
     val poke = PalmPoke()
-    check(poke.update(panel,floatArrayOf(-.06f,.06f,.04f)) == null)
-    check(poke.update(panel,floatArrayOf(-.06f,.06f,-.02f)) == PalmAction.FOLLOW)
-    check(poke.update(panel,floatArrayOf(-.06f,.06f,-.01f)) == null)
+    check(poke.update(panel,floatArrayOf(pc,pr,.04f)) == null)
+    check(poke.update(panel,floatArrayOf(pc,pr,-.02f)) == PalmAction.FOLLOW)
+    check(poke.update(panel,floatArrayOf(pc,pr,-.01f)) == null)
     check(poke.update(panel,null) == null)
     val scaledPanel=panel.copy(unitsPerMeter=5f)
-    check(poke.update(scaledPanel,floatArrayOf(-.3f,.3f,.2f)) == null)
-    check(poke.update(scaledPanel,floatArrayOf(-.3f,.3f,-.1f)) == PalmAction.FOLLOW)
-    for((x,y,expected) in listOf(Triple(-.06f,-.04f,PalmAction.WARP),Triple(.06f,-.04f,PalmAction.EYES),Triple(-.06f,-.09f,PalmAction.GESTURES),Triple(.06f,-.09f,PalmAction.MODE))) {
+    check(poke.update(scaledPanel,floatArrayOf(pc*5,pr*5,.2f)) == null)
+    check(poke.update(scaledPanel,floatArrayOf(pc*5,pr*5,-.1f)) == PalmAction.FOLLOW)
+    val more=panel.copy(page=PalmPage.MORE)
+    val pokes=listOf(Triple(panel,floatArrayOf(-pc,pr),PalmAction.SPACE),Triple(panel,floatArrayOf(0f,pr),PalmAction.RESET),
+        Triple(panel,floatArrayOf(-pc,-pr),PalmAction.WARP),Triple(panel,floatArrayOf(0f,-pr),PalmAction.MODE),Triple(panel,floatArrayOf(pc,-pr),PalmAction.MORE),
+        Triple(panel,floatArrayOf(-.0305f,pr),null), // gap between cells
+        Triple(more,floatArrayOf(-pc,pc),PalmAction.DIAGNOSTICS),Triple(more,floatArrayOf(pc,pc),PalmAction.GESTURES),Triple(more,floatArrayOf(pc,0f),PalmAction.MAGNIFIER),
+        Triple(more,floatArrayOf(-pc,-pc),PalmAction.MOUSE_SPACES),Triple(more,floatArrayOf(0f,-pc),PalmAction.BACK),Triple(more,floatArrayOf(pc,-pc),null))
+    for((page,point,expected) in pokes) {
         poke.clear()
-        check(poke.update(panel,floatArrayOf(x,y,.04f)) == null)
-        check(poke.update(panel,floatArrayOf(x,y,-.02f)) == expected)
+        check(poke.update(page,floatArrayOf(point[0],point[1],.04f)) == null)
+        check(poke.update(page,floatArrayOf(point[0],point[1],-.02f)) == expected)
     }
     println("Passed: mouse priority/off/tracking loss, gaze hit bounds, observational grab preview, mouse palm toggle, equal actual neighboring-ray angles and angular aspect, video/PNG orientation separation, planar-input curved grabbing and regrab, action labels, spherical radius/inverse projection, curved grab/guide geometry, spherical palm button, virtual-copy gain, 3D endpoints, depth, close-contact and close-hand rejection, DEFAULT release, physical release without UP, tracking-loss cancellation, rearm, discontinuity rejection, miniature wireframe and endpoint alignment, guide cleanup, view-ray visibility offset, rotation, palm and fist")
 }

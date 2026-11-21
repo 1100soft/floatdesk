@@ -5,11 +5,35 @@ import dev.floatdesk.client.focusViewHalfAngles
 
 /** UI panel compositing plus ordered physical planes; all values are in meters. */
 internal object ViewLayers {
-    const val DesktopDistanceM=1.2f
-    const val MagnifierDistanceM=.85f
-    const val ShellDistanceM=.55f
-    const val ControlsDistanceM=.40f
-    const val DiagnosticsDistanceM=.35f
+    // The nearest layer defaults to the headset's ~0.9 m accommodation distance. Layers step evenly
+    // in diopters between the user's nearest and farthest distances so neighbouring planes keep
+    // their depth order.
+    const val DefaultNearestM=.9f
+    const val DefaultFarthestM=1.2f
+    const val MinNearestM=.6f
+    const val MaxNearestM=4.7f
+    const val MinSpanM=.3f
+    const val MaxFarthestM=5f
+    /** The palm menu is touched directly, so it stays at arm's length whatever the layers are. */
+    const val PalmMenuDistanceM=.40f
+    private const val Steps=4
+    @Volatile var nearestM=DefaultNearestM; private set
+    @Volatile var farthestM=DefaultFarthestM; private set
+    fun clampNearest(value:Float)=(if(value.isFinite())value else DefaultNearestM).coerceIn(MinNearestM,MaxNearestM)
+    fun clampFarthest(nearest:Float,value:Float)=(if(value.isFinite())value else DefaultFarthestM).coerceIn(clampNearest(nearest)+MinSpanM,MaxFarthestM)
+    fun configure(nearest:Float,farthest:Float){val near=clampNearest(nearest);nearestM=near;farthestM=clampFarthest(near,farthest)}
+    /** Layer [step] from 0 (nearest) to 4 (farthest), evenly spaced in diopters. */
+    fun layer(step:Int,nearest:Float=nearestM,farthest:Float=farthestM):Float {
+        val near=1f/nearest;val far=1f/farthest
+        return 1f/(near+(far-near)*step.coerceIn(0,Steps)/Steps)
+    }
+    val DiagnosticsDistanceM get()=layer(0)
+    val ControlsDistanceM get()=layer(1)
+    val ShellDistanceM get()=layer(2)
+    val MagnifierDistanceM get()=layer(3)
+    val DesktopDistanceM get()=layer(4)
+    /** Size factor that keeps a fixed-size object on layer [step] at its default apparent size. */
+    fun sizeScale(step:Int)=layer(step)/layer(step,DefaultNearestM,DefaultFarthestM)
     fun popupDistance(owner:Float,level:Int=0):Float {
         val near=if(owner>ShellDistanceM)ShellDistanceM else DiagnosticsDistanceM
         return near+(owner-near)*Math.pow(.5,level.coerceAtMost(8)+1.0).toFloat()
@@ -86,8 +110,12 @@ internal fun focusDesktopRegion(screen:MonitorPlacement,rect:FloatArray,viewer:P
 }
 
 
-/** Preserve angular location/size at a fixed spherical focus radius or flat-plane depth. */
-internal fun fixedDesktopDepth(screen:MonitorPlacement,viewer:Pose,unitsPerMeter:Float,spherical:Boolean=true):MonitorPlacement {
+/**
+ * Hold the desktop at a fixed spherical focus radius or flat-plane depth. Scaling about the eye
+ * preserves angular location/size (for explicit placement); a rigid push along the view ray keeps
+ * physical size, so head motion changes parallax but never depth.
+ */
+internal fun fixedDesktopDepth(screen:MonitorPlacement,viewer:Pose,unitsPerMeter:Float,spherical:Boolean=true,preserveAngularSize:Boolean=true,distanceM:Float=ViewLayers.DesktopDistanceM):MonitorPlacement {
     val units=unitsPerMeter.takeIf{it.isFinite() && it>0f} ?: 1f
     val x=(screen.viewCenterU-.5f)*screen.physicalWidthM
     val y=(.5f-screen.viewCenterV)*screen.physicalHeightM
@@ -100,9 +128,37 @@ internal fun fixedDesktopDepth(screen:MonitorPlacement,viewer:Pose,unitsPerMeter
     val normal=floatArrayOf(2f*(q[0]*q[2]+q[3]*q[1]),2f*(q[1]*q[2]-q[3]*q[0]),1f-2f*(q[0]*q[0]+q[1]*q[1]))
     val distance=if(spherical)radial else kotlin.math.abs((0..2).sumOf{(d[it]*normal[it]).toDouble()}).toFloat()
     if(!distance.isFinite() || distance<.05f*units)return screen
-    val target=ViewLayers.DesktopDistanceM*units
+    val target=distanceM*units
     if(kotlin.math.abs(distance-target)<.002f*units)return screen
+    if(!preserveAngularSize) {
+        val axis=if(spherical)FloatArray(3){d[it]/radial} else {
+            val facing=if((0..2).sumOf{(d[it]*normal[it]).toDouble()}<0.0)-1f else 1f
+            FloatArray(3){normal[it]*facing}
+        }
+        return screen.copy(pose=Pose(FloatArray(3){screen.pose.position[it]+axis[it]*(target-distance)},screen.pose.rotation))
+    }
     val scale=target/distance
     return screen.copy(pose=Pose(FloatArray(3){viewer.position[it]+(screen.pose.position[it]-viewer.position[it])*scale},screen.pose.rotation),
         physicalWidthM=screen.physicalWidthM*scale,physicalHeightM=screen.physicalHeightM*scale)
+}
+
+/**
+ * Move every saved object onto the layers for new viewing distances without changing its direction
+ * or apparent size. Magnifier records are desktop-relative, so their offsets follow the desktop's
+ * scale about the eye and their sizes follow their own layer.
+ */
+internal fun WorkspaceFile.withViewingDistances(nearest:Float,farthest:Float,viewer:Pose?,unitsPerMeter:Float):WorkspaceFile {
+    val near=ViewLayers.clampNearest(nearest);val far=ViewLayers.clampFarthest(near,farthest)
+    fun ratio(step:Int)=ViewLayers.layer(step,near,far)/ViewLayers.layer(step,nearestDistanceM,farthestDistanceM)
+    val before=layouts[activeLayout]?.firstOrNull()
+    val nextLayouts=if(viewer==null)layouts else layouts.mapValues{(_,screens)->
+        screens.map{fixedDesktopDepth(it,viewer,unitsPerMeter,true,true,ViewLayers.layer(4,near,far))}.toMutableList()
+    }.toMutableMap()
+    val after=nextLayouts[activeLayout]?.firstOrNull()
+    val desktopScale=if(before!=null && after!=null && before.physicalWidthM>0f)after.physicalWidthM/before.physicalWidthM else 1f
+    fun rescale(records:List<FixedMagnifierPlacement>,size:Float)=records.map{
+        it.copy(pose=Pose(FloatArray(3){i->it.pose.position[i]*desktopScale},it.pose.rotation),widthM=it.widthM*size,heightM=it.heightM*size)
+    }
+    return copy(layouts=nextLayouts,fixedMagnifiers=rescale(fixedMagnifiers,ratio(3)),systemPanels=rescale(systemPanels,ratio(2)),
+        nearestDistanceM=near,farthestDistanceM=far)
 }

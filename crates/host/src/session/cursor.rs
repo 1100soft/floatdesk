@@ -11,6 +11,7 @@ pub(super) fn cursor_loop(shared: Arc<Shared>, socket: UdpSocket) {
     };
     let mut router = cursor_map::Router::default();
     let mut last_root = None;
+    let mut last_target = None;
     let mut owner_sent = Instant::now() - Duration::from_secs(1);
     while !shared.stop.load(Ordering::Relaxed) {
         match cursor.poll() {
@@ -33,7 +34,12 @@ pub(super) fn cursor_loop(shared: Arc<Shared>, socket: UdpSocket) {
                             {
                                 let x = target[0].round() as i32;
                                 let y = target[1].round() as i32;
-                                if (x != sample.root_x || y != sample.root_y)
+                                // Without new motion, only follow a changed mapping; never pull
+                                // the pointer back from a position something else moved it to.
+                                let retarget = motion != [0.0, 0.0] || last_target != Some((x, y));
+                                last_target = Some((x, y));
+                                if retarget
+                                    && (x != sample.root_x || y != sample.root_y)
                                     && cursor.move_to(x, y).is_ok()
                                 {
                                     sample.root_x = x;

@@ -16,7 +16,7 @@ while end<len(topology):
 topology=topology[:start]+topology[end:]
 workspace=body('workspace/Workspace.kt');workspace=workspace[workspace.index('internal data class Pose'):workspace.index('internal class WorkspaceStore')]
 metadata=body('net/WorkspaceInfo.kt');metadata=metadata[:metadata.index('    companion object')]+'}\n'
-code='import kotlin.math.*\n'+body('MonitorMesh.kt')+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+re.search(r'internal fun deskLayout\(.*?\n}',(root/'workspace/Workspace.kt').read_text(),re.S).group(0)+body('workspace/WorkspacePlacement.kt')+metadata+body('WindowMagnification.kt')+body('WindowInteraction.kt').replace('dev.floatdesk.client.workspace.MonitorPlacement','MonitorPlacement')+topology+body('VideoGeometry.kt')+body('MagnifierContacts.kt')+body('BoundedHistory.kt')+body('RenderPolicy.kt')+body('net/WindowCaptureRetry.kt')+body('net/WindowCaptureFormat.kt').replace('dev.floatdesk.client.RenderPolicy','RenderPolicy')+''.join(re.search(r'internal fun '+name+r'\(.*?\n}',application_sources(),re.S).group(0) for name in ('transformPoint','rotateVector','quaternionBetween','multiplyQuaternion','normalize3','normalize4'))+re.search(r'internal fun dot\(a: FloatArray[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun cross3\(.*',application_sources()).group(0)+'\n'+r'''
+code='import kotlin.math.*\n'+body('MonitorMesh.kt')+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+re.search(r'internal fun deskLayout\(.*?\n}',(root/'workspace/Workspace.kt').read_text(),re.S).group(0)+body('workspace/WorkspacePlacement.kt')+metadata+body('WindowMagnification.kt')+body('WindowInteraction.kt').replace('dev.floatdesk.client.workspace.MonitorPlacement','MonitorPlacement')+body('WindowToolbarState.kt')+re.search(r'internal object WindowMenuLayout \{.*?\n}',(root/'WindowActionsMenu.kt').read_text(),re.S).group(0)+'\n'+topology+body('VideoGeometry.kt')+body('MagnifierContacts.kt')+body('BoundedHistory.kt')+body('RenderPolicy.kt')+body('net/WindowCaptureRetry.kt')+body('net/WindowCaptureFormat.kt').replace('dev.floatdesk.client.RenderPolicy','RenderPolicy')+''.join(re.search(r'internal fun '+name+r'\(.*?\n}',application_sources(),re.S).group(0) for name in ('transformPoint','rotateVector','quaternionBetween','multiplyQuaternion','normalize3','normalize4'))+re.search(r'internal fun dot\(a: FloatArray[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun cross3\(.*',application_sources()).group(0)+'\n'+r'''
 fun main() {
  run {
    val retry=WindowCaptureRetry()
@@ -64,10 +64,27 @@ fun main() {
    val moving=step(210,true,.25f,.25f);check(moving.move==null && moving.preview==WindowMove(77,150,150))
    check(step(220,false,.26f,.26f).move==WindowMove(77,150,150))
    check(!drag.engaged)
-   step(300,true);check(step(1001,true).menu==77L)
-   check(step(1100,true).menu==null);step(1101,false)
-   step(1200,true,blocked=true);check(step(2000,true).menu==null)
-   step(2001,false);step(2002,true);check(step(2703,true).menu==77L)
+   step(300,true);check(step(1001,true)==WindowGrabUpdate());step(1101,false)
+   val sized=DesktopWindow(77,500,0,500,500);val snapInfo=info.copy(windows=listOf(sized))
+   check(currentSnapCell(sized,snapInfo)==SnapCell(2,2,1,0))
+   check(currentSnapCell(sized.copy(x=510,width=490),snapInfo)==SnapCell(2,2,1,0))
+   check(currentSnapCell(sized.copy(x=400,width=300),snapInfo)==null)
+   check(currentSnapCell(DesktopWindow(77,0,0,1000,1000),snapInfo)==SnapCell(1,1,0,0))
+   val bar=HoverToolbarState(120,900,200,600);val win=ToolbarTarget.Window(77);val other=ToolbarTarget.Window(78);val pane=ToolbarTarget.Magnifier("floating")
+   bar.update(0,win,null,false,false);check(bar.highlight==null);bar.update(120,win,null,false,false);check(bar.highlight==win && bar.open==null)
+   bar.update(500,other,win,false,false);bar.update(699,other,win,false,false);check(bar.highlight==win && bar.open==null)
+   bar.update(700,other,win,false,false);check(bar.open==win)
+   bar.update(1000,null,null,true,false);check(bar.open==win)
+   bar.update(1600,win,null,false,false);check(bar.open==win);bar.update(1601,win,null,false,false);check(bar.open==null && bar.highlight==win)
+   bar.update(1700,pane,null,false,false);bar.update(1820,pane,null,false,false);check(bar.highlight==pane)
+   bar.update(2721,null,null,false,false);check(bar.highlight==null)
+   bar.update(3000,win,null,false,false);bar.update(3120,win,null,false,false);bar.update(3200,null,win,false,true);check(bar.highlight==null && bar.open==null)
+   val strip=toolbarStrip(Pose(floatArrayOf(0f,1f,-1f)),.05f,false);val ratio=WindowMenuLayout.gapM/WindowMenuLayout.cellM
+   check(abs(strip.width-WindowMenuLayout.toolbarWidth(false,ratio)*.05f)<1e-5f && abs(strip.height-WindowMenuLayout.toolbarHeight(ratio)*.05f)<1e-5f)
+   check(strip.pose.position[1]>1f && strip.contains(floatArrayOf(.05f,strip.pose.position[1],0f),floatArrayOf(0f,0f,-1f)))
+   check(!strip.contains(floatArrayOf(0f,.98f,0f),floatArrayOf(0f,0f,-1f)) && !strip.contains(floatArrayOf(.2f,strip.pose.position[1],0f),floatArrayOf(0f,0f,-1f)))
+   check(toolbarStrip(Pose(),.05f,true).width>strip.width)
+   val y=strip.pose.position[1];check(strip.containsMarker(floatArrayOf(.035f,y,0f),floatArrayOf(0f,0f,-1f)) && !strip.containsMarker(floatArrayOf(.06f,y,0f),floatArrayOf(0f,0f,-1f)) && strip.contains(floatArrayOf(.06f,y,0f),floatArrayOf(0f,0f,-1f)))
    val delayed=WindowGrabController{PinchThresholds.Default}
    val opened=mapOf("LEFT" to FingerPinch(.1f,.1f));val pinched=mapOf("LEFT" to FingerPinch(.001f,.1f))
    delayed.update(0,true,false,opened,emptyMap(),info)
@@ -527,7 +544,7 @@ fun main() {
   val mesh=if(spherical)MonitorMesh(fitted.physicalWidthM,fitted.physicalHeightM,eye,focus=center.copyOf(2),center=center) else null
   val p=mesh?.project(center) ?: center
   val goal=viewerInMonitor(viewer.position,fitted.pose.position,fitted.pose.rotation)
-  check(abs(p[0]-goal[0])<.0001f && abs(p[1]-goal[1])<.0001f && abs(goal[2]-p[2]-1.2f*1.785f)<.0001f)
+  check(abs(p[0]-goal[0])<.0001f && abs(p[1]-goal[1])<.0001f && abs(goal[2]-p[2]-ViewLayers.DesktopDistanceM*1.785f)<.0001f)
   if(mesh!=null) {
    val selected=sphericalViewFocus(mesh,floatArrayOf(0f,0f,-1f))!!
    check(abs(selected[0]-center[0])<.001f && abs(selected[1]-center[1])<.001f)

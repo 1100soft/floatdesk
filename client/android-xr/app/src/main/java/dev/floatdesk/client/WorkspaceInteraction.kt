@@ -125,48 +125,10 @@ internal class PinchMemory {
     }
 }
 
-internal const val PALM_WIDTH = 0.24f
-internal const val PALM_HEIGHT = 0.24f
-internal enum class PalmAction { FOLLOW, RESET, SEARCH, SPACE, WARP, EYES, GESTURES, MODE }
-internal data class PalmPanelState(val side: String, val pose: Pose, val unitsPerMeter: Float = 1f)
-internal data class PalmButton(val action: PalmAction, val x: Float, val y: Float, val w: Float = 0.44f, val h: Float = 0.17f)
-internal val palmButtons = listOf(
-    PalmButton(PalmAction.FOLLOW, 0.04f, 0.16f), PalmButton(PalmAction.RESET, 0.52f, 0.16f),
-    PalmButton(PalmAction.SEARCH, 0.04f, 0.37f), PalmButton(PalmAction.SPACE, 0.52f, 0.37f),
-    PalmButton(PalmAction.WARP, 0.04f, 0.58f),
-    PalmButton(PalmAction.EYES, 0.52f, 0.58f),
-    PalmButton(PalmAction.GESTURES, 0.04f, 0.79f), PalmButton(PalmAction.MODE,0.52f,0.79f),
-)
-
-internal fun sphericalActionLabel(enabled: Boolean): String = if (enabled) "Disable spherical" else "Enable spherical"
-
-@Composable
-internal fun PalmControls(latched: Boolean, warped: Boolean, eyes: Boolean, gestures: Boolean, focused: PalmAction?, pressed: PalmAction?, mode:dev.floatdesk.client.workspace.InteractionMode, onAction: (PalmAction) -> Unit) {
-    BoxWithConstraints(Modifier.fillMaxSize().background(Color(0xF01C2430))) {
-        Text("Floatdesk", color = Color.White, fontSize = 14.sp,
-            modifier = Modifier.offset(maxWidth * 0.06f, maxHeight * 0.04f))
-        Text("Look + middle pinch",color=Color(0xFFB8D9EA),fontSize=8.sp,modifier=Modifier.offset(maxWidth*.06f,maxHeight*.105f))
-        for (button in palmButtons) {
-            Button(enabled=button.action!=PalmAction.WARP || RenderPolicy.CustomMeshes,onClick = { onAction(button.action) },
-                colors=ButtonDefaults.buttonColors(containerColor=when(button.action) { pressed -> Color(0xFF237E59); focused -> Color(0xFF315B82); else -> Color(0xFF354356) }),
-                border=if(button.action==focused) BorderStroke(2.dp,Color(0xFF8ADFFF)) else null,
-                contentPadding = PaddingValues(horizontal = 2.dp, vertical = 1.dp), modifier = Modifier
-                .offset(maxWidth * button.x, maxHeight * button.y)
-                .width(maxWidth * button.w).height(maxHeight * button.h)) {
-                BasicText(when (button.action) {
-                    PalmAction.FOLLOW -> if (latched) "Unlock" else "Follow"
-                    PalmAction.RESET -> "Reset desk"
-                    PalmAction.SEARCH -> "Reconnect"
-                    PalmAction.SPACE -> "Workspace"
-                    PalmAction.WARP -> sphericalActionLabel(warped)
-                    PalmAction.EYES -> if (eyes) "Disable eye mouse" else "Enable eye mouse"
-                    PalmAction.GESTURES -> if (gestures) "Mouse gestures on" else "Mouse gestures off"
-                    PalmAction.MODE -> "${mode.label} → ${mode.next().label}"
-                }, style = TextStyle(color = Color.White), maxLines = 1, softWrap = false,
-                    autoSize = TextAutoSize.StepBased(minFontSize = 4.sp, maxFontSize = 14.sp, stepSize = 0.25.sp))
-            }
-        }
-    }
+internal data class PalmPanelState(val side: String, val pose: Pose, val unitsPerMeter: Float = 1f, val page: PalmPage = PalmPage.MAIN) {
+    val widthM get() = PalmMenuLayout.widthM
+    val heightM get() = PalmMenuLayout.heightM(page)
+    val buttons get() = PalmMenuLayout.buttons(page)
 }
 
 internal fun Vector3.toArray() = floatArrayOf(x, y, z)
@@ -207,8 +169,8 @@ internal fun palmRayPoint(panel: PalmPanelState, origin: FloatArray, direction: 
     val d=subtract(end,local)
     if(local[2]<=0f || d[2]>=-.000001f) return null
     val t=-local[2]/d[2]
-    val u=(local[0]+t*d[0])/(PALM_WIDTH*panel.unitsPerMeter)+.5f
-    val v=.5f-(local[1]+t*d[1])/(PALM_HEIGHT*panel.unitsPerMeter)
+    val u=(local[0]+t*d[0])/(panel.widthM*panel.unitsPerMeter)+.5f
+    val v=.5f-(local[1]+t*d[1])/(panel.heightM*panel.unitsPerMeter)
     return if(u in -.03f..1.03f && v in -.03f..1.03f) floatArrayOf(u,v) else null
 }
 
@@ -228,9 +190,9 @@ internal class PalmPoke {
         if (!armed || before == null || before[2] <= 0.006f || local[2] > 0.006f) return null
         armed = false
         val t = ((before[2] - 0.006f) / (before[2] - local[2])).coerceIn(0f, 1f)
-        val x = (before[0] + (local[0] - before[0]) * t) / PALM_WIDTH + 0.5f
-        val y = 0.5f - (before[1] + (local[1] - before[1]) * t) / PALM_HEIGHT
-        val action = palmButtons.firstOrNull { x in it.x..(it.x + it.w) && y in it.y..(it.y + it.h) }?.action
+        val x = (before[0] + (local[0] - before[0]) * t) / panel.widthM + 0.5f
+        val y = 0.5f - (before[1] + (local[1] - before[1]) * t) / panel.heightM
+        val action = panel.buttons.firstOrNull { x in it.x..(it.x + it.w) && y in it.y..(it.y + it.h) }?.action
         latchedContact = action != null
         return action
     }

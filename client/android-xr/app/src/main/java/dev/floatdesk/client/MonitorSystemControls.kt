@@ -3,6 +3,8 @@ package dev.floatdesk.client
 import android.annotation.SuppressLint
 import android.graphics.Color
 import android.graphics.PorterDuff
+import android.os.SystemClock
+import android.util.Log
 import androidx.xr.runtime.Session
 import androidx.xr.runtime.math.FloatSize2d
 import androidx.xr.runtime.math.FloatSize3d
@@ -66,9 +68,10 @@ internal class MonitorSystemControls : AutoCloseable {
         frameWidth=frame.width
         val padding=if(allowMove).02f*unitsPerMeter else 0f
         val nextWidth=frame.width+2f*padding;val nextHeight=frame.height+2f*padding
+        // Head jitter moves the viewer-dependent frame by fractions of a millimetre; ignore that.
         val geometryChanged=!shapeWidth.isFinite() || !shapeHeight.isFinite() ||
-            kotlin.math.abs(shapeWidth-nextWidth)>maxOf(.00001f,kotlin.math.abs(nextWidth)*.0001f) ||
-            kotlin.math.abs(shapeHeight-nextHeight)>maxOf(.00001f,kotlin.math.abs(nextHeight)*.0001f)
+            kotlin.math.abs(shapeWidth-nextWidth)>maxOf(.00001f,kotlin.math.abs(nextWidth)*.002f) ||
+            kotlin.math.abs(shapeHeight-nextHeight)>maxOf(.00001f,kotlin.math.abs(nextHeight)*.002f)
         val boundsChanged=geometryChanged || canonicalWidth!=width || canonicalHeight!=height
         if(entity==null) {
             val token=++generation
@@ -80,9 +83,7 @@ internal class MonitorSystemControls : AutoCloseable {
             check(root.addComponent(pointer));pointer.spatialPointerIcon=SpatialPointerIcon.NONE
             root.setSurfacePixelDimensions(IntSize2d(256,256))
             root.mediaBlendingMode=SurfaceEntity.MediaBlendingMode.TRANSPARENT
-            val canvas=root.getSurface().lockCanvas(null)
-            canvas.drawColor(Color.TRANSPARENT,PorterDuff.Mode.CLEAR)
-            root.getSurface().unlockCanvasAndPost(canvas)
+            clear(root)
             }
             val resize=ResizableComponent.create(session,resizeEventListener=java.util.function.Consumer { event ->
                 if(visible && token==generation && !moving) {
@@ -132,7 +133,14 @@ internal class MonitorSystemControls : AutoCloseable {
         entity?.takeIf{ownsEntity}?.let {
             submitted!!.parent(video.parent);submitted!!.pose(video.getPose().compose(Pose(offset,Quaternion.fromLookTowards(normal,up))))
             submitted!!.scale(scale);submitted!!.enabled(enabled && visible)
-            if(geometryChanged) it.shape=SurfaceEntity.Shape.Quad(FloatSize2d(nextWidth,nextHeight))
+            if(geometryChanged) {
+                it.shape=SurfaceEntity.Shape.Quad(FloatSize2d(nextWidth,nextHeight))
+                // A reshaped surface may come back with an undefined buffer drawn over the desktop.
+                clear(it)
+                reshapes++
+                val now=SystemClock.uptimeMillis()
+                if(now-reshapeLogAt>=5000){Log.i("Floatdesk","system frame reshapes=$reshapes size=${nextWidth}x$nextHeight");reshapeLogAt=now}
+            }
         }
         if(boundsChanged) component?.let {
             val x=frame.width/width;val y=frame.height/height
@@ -144,6 +152,17 @@ internal class MonitorSystemControls : AutoCloseable {
         }
         if(geometryChanged) movable?.size=FloatSize3d(nextWidth,nextHeight,.001f)
         if(geometryChanged) {shapeWidth=nextWidth;shapeHeight=nextHeight};canonicalWidth=width;canonicalHeight=height
+    }
+
+    private var reshapes=0
+    private var reshapeLogAt=0L
+
+    private fun clear(surface:SurfaceEntity) {
+        runCatching {
+            val canvas=surface.getSurface().lockCanvas(null)
+            canvas.drawColor(Color.TRANSPARENT,PorterDuff.Mode.CLEAR)
+            surface.getSurface().unlockCanvasAndPost(canvas)
+        }.onFailure{Log.w("Floatdesk","system frame clear failed",it)}
     }
 
     @SuppressLint("RestrictedApi")

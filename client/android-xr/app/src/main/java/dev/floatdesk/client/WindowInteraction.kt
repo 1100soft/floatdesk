@@ -8,7 +8,6 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 internal object WindowInteractionPolicy {
-    const val ContextHoldMs=700L
     const val SlopFraction=.025f
     const val MotionConfirmMs=100L
     const val SnapFraction=.0125f
@@ -16,7 +15,7 @@ internal object WindowInteractionPolicy {
     const val GridEdgeFraction=.12f
 }
 internal data class WindowMove(val id:Long,val x:Int,val y:Int,val width:Int?=null,val height:Int?=null)
-internal data class WindowGrabUpdate(val move:WindowMove?=null,val menu:Long?=null,val preview:WindowMove?=null)
+internal data class WindowGrabUpdate(val move:WindowMove?=null,val preview:WindowMove?=null)
 internal fun snapWindowMove(window:DesktopWindow,x:Int,y:Int,info:WorkspaceInfo):WindowMove {
     val tolerance=(minOf(window.width,window.height)*WindowInteractionPolicy.SnapFraction).coerceAtLeast(1f)
     val xs=info.screens.flatMap{listOf(it.x,it.x+it.width/2,it.x+it.width)}+info.windows.filter{it.id!=window.id}.flatMap{listOf(it.x,it.x+it.width)}
@@ -27,9 +26,9 @@ internal fun snapWindowMove(window:DesktopWindow,x:Int,y:Int,info:WorkspaceInfo)
     }
     return WindowMove(window.id,snap(x,window.width,xs),snap(y,window.height,ys))
 }
-/** Shared saved pinch policy; a stationary hold and a drag are mutually exclusive. */
+/** Shared saved pinch policy for dragging desktop windows; menus open on hover, not on a held pinch. */
 internal class WindowGrabController(private val thresholds:()->PinchThresholds){
-    private data class Hold(val side:String,val aimSide:String,val window:DesktopWindow,val u:Float,val v:Float,val at:Long,val layout:WorkspaceInfo,var outsideAt:Long?=null,var moved:Boolean=false,var menu:Boolean=false,var candidate:WindowMove?=null)
+    private data class Hold(val side:String,val aimSide:String,val window:DesktopWindow,val u:Float,val v:Float,val at:Long,val layout:WorkspaceInfo,var outsideAt:Long?=null,var moved:Boolean=false,var candidate:WindowMove?=null)
     private var hold:Hold?=null
     private val closed=mutableMapOf<String,Boolean>()
     private val pending=mutableMapOf<String,Long>()
@@ -54,7 +53,7 @@ internal class WindowGrabController(private val thresholds:()->PinchThresholds){
             if(h.side !in samples){hold=null;return WindowGrabUpdate()}
             val contact=hover[h.aimSide]?.window ?: hover[h.aimSide]?.screen
             val released=closed[h.side]!=true
-            if(contact!=null && !h.menu && !released){
+            if(contact!=null && !released){
                 val dx=((contact.contactU-h.u)*bounds[2]).roundToInt()
                 val dy=((contact.contactV-h.v)*bounds[3]).roundToInt()
                 val slop=minOf(bounds[2],bounds[3])*WindowInteractionPolicy.SlopFraction
@@ -65,7 +64,6 @@ internal class WindowGrabController(private val thresholds:()->PinchThresholds){
                 if(h.moved)h.candidate=snapWindowDrop(h.window,h.window.x+dx,h.window.y+dy,contact.contactU,contact.contactV,h.layout)
             }
             if(released){hold=null;return WindowGrabUpdate(move=h.candidate)}
-            if(!h.moved && !h.menu && now-h.at>=WindowInteractionPolicy.ContextHoldMs){h.menu=true;return WindowGrabUpdate(menu=h.window.id)}
             return WindowGrabUpdate(preview=h.candidate)
         }
         for(side in pending.keys.toList()){

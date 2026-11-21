@@ -73,6 +73,10 @@ internal data class WorkspaceFile(
     val detailTargetFps:Int=30,
     val showResources:Boolean=true,
     val pinchThresholds:PinchThresholds=PinchThresholds.Default,
+    val nearestDistanceM:Float=ViewLayers.DefaultNearestM,
+    val farthestDistanceM:Float=ViewLayers.DefaultFarthestM,
+    /** Loaded from a file laid out for the fixed 0.9–1.5 m layers; not persisted. */
+    val legacyDistances:Boolean=false,
 ){
     val focusMode get()=interactionMode==InteractionMode.FOCUS
     val windowGrabMode get()=interactionMode==InteractionMode.WINDOW_GRAB
@@ -175,6 +179,7 @@ private fun encode(workspace: WorkspaceFile): JSONObject {
         .put("pinch_thresholds_mm",JSONArray(listOf(workspace.pinchThresholds.leftIndexMm,workspace.pinchThresholds.rightIndexMm,workspace.pinchThresholds.leftMiddleMm,workspace.pinchThresholds.rightMiddleMm)))
         .put("mouse_gestures", workspace.mouseGestures)
         .put("screen_spacing",workspace.screenSpacing.toDouble())
+        .put("nearest_distance_m",workspace.nearestDistanceM.toDouble()).put("farthest_distance_m",workspace.farthestDistanceM.toDouble())
         .put("viewer_reference",workspace.viewerReference?.let {JSONObject().put("position",JSONArray(it.position.toList())).put("rotation",JSONArray(it.rotation.toList()))})
 }
 
@@ -240,7 +245,12 @@ private fun decode(json: JSONObject): WorkspaceFile {
         mouseGestures = json.optBoolean("mouse_gestures", false),
         viewerReference=json.optJSONObject("viewer_reference")?.let {Pose(floatArray(it,"position",3),floatArray(it,"rotation",4))},
         screenSpacing=json.optDouble("screen_spacing",0.0).toFloat().takeIf {it.isFinite()}?.coerceIn(0f,.15f)?.let { kotlin.math.round(it*1000)/1000f } ?: 0f,
-    )
+    ).let{decoded->
+        val legacy=!json.has("farthest_distance_m") && layouts.values.any{it.isNotEmpty()}
+        val nearest=ViewLayers.clampNearest(json.optDouble("nearest_distance_m",ViewLayers.DefaultNearestM.toDouble()).toFloat())
+        val farthest=if(legacy)1.5f else json.optDouble("farthest_distance_m",ViewLayers.DefaultFarthestM.toDouble()).toFloat()
+        decoded.copy(nearestDistanceM=nearest,farthestDistanceM=ViewLayers.clampFarthest(nearest,farthest),legacyDistances=legacy)
+    }
 }
 
 private fun encodePanel(panel: PanelPlacement): JSONObject {

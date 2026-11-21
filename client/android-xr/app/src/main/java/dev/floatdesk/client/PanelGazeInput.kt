@@ -3,7 +3,7 @@ package dev.floatdesk.client
 internal data class PanelButtonArea(val id: Int,val x: Float,val y: Float,val width: Float,val height: Float)
 
 /** Discrete, sticky gaze focus is more stable than a continuously moving gaze cursor. */
-internal class PanelGazeInput(private val buttons: List<PanelButtonArea>) {
+internal class PanelGazeInput {
     var focused: Int?=null
         private set
     private var hand: String?=null
@@ -15,7 +15,7 @@ internal class PanelGazeInput(private val buttons: List<PanelButtonArea>) {
 
     fun clear() { focused=null; hand=null; candidate=null; pinchArmed=false; foldedSince=null }
 
-    fun update(now: Long,side: String?,gaze: FloatArray?,pinchMetres: Float?): Int? {
+    fun update(now: Long,side: String?,gaze: FloatArray?,pinchMetres: Float?,buttons: List<PanelButtonArea>): Int? {
         if(side==null) { clear(); return null }
         if(side!=hand) { clear(); hand=side }
         fun contains(button: PanelButtonArea,padding: Float)=gaze!=null &&

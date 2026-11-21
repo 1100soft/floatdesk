@@ -43,6 +43,8 @@ internal class GrabGuideRenderer private constructor(
     private val nodeStates=java.util.IdentityHashMap<Entity,NativeNodeState>()
     private fun state(entity:Entity)=nodeStates.getOrPut(entity){NativeNodeState(entity)}
     private var pointerPoint: GltfModelEntity? = null
+    private var highlight: SurfaceEntity? = null
+    private var highlightLevel = -1
     private val aimBeams=mutableListOf<SurfaceEntity>()
     private val grabBeams=mutableListOf<SurfaceEntity>()
     private val grabPoints=mutableListOf<SurfaceEntity>()
@@ -97,6 +99,42 @@ internal class GrabGuideRenderer private constructor(
         entity.parent=parent
         entity.setEnabled(true)
         point(entity,visibleGrabContact(position,eye,unitsPerMeter),.003f*unitsPerMeter)
+    }
+
+    /**
+     * A soft glowing disc drawn on a plain native surface, which shares the video compositor path
+     * (so it is not hidden by the desktop) and has no hit region (so hands aim through). Entity alpha
+     * is not applied to transparent surfaces, so the pulse redraws this small texture instead.
+     */
+    @android.annotation.SuppressLint("RestrictedApi")
+    @OptIn(androidx.xr.scenecore.ExperimentalSurfaceEntityPixelDimensionsApi::class)
+    fun updateHighlight(parent: Entity, position: FloatArray?, rotation: FloatArray, diameter: Float, pulse: Float) {
+        if (closed) return
+        val existing = highlight
+        if (position == null || diameter <= 0f) { existing?.let { state(it).enabled(false) }; return }
+        val entity = existing ?: SurfaceEntity.create(session, shape = decorationShape(1f, 1f), parent = null, superSampling = SurfaceEntity.SuperSampling.NONE).also {
+            it.setSurfacePixelDimensions(IntSize2d(HighlightPixels, HighlightPixels))
+            it.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.TRANSPARENT
+            highlight = it
+        }
+        val level = (pulse.coerceIn(0f, 1f) * 12).toInt()
+        if (level != highlightLevel) { drawHighlight(entity, .55f + .4f * level / 12f); highlightLevel = level }
+        state(entity).scale(Vector3(diameter, diameter, 1f))
+        state(entity).pose(Pose(vector(position), Quaternion(rotation[0], rotation[1], rotation[2], rotation[3])))
+        state(entity).parent(parent); state(entity).enabled(true)
+    }
+
+    private fun drawHighlight(surface: SurfaceEntity, strength: Float) {
+        val canvas = surface.getSurface().lockCanvas(null)
+        canvas.drawColor(android.graphics.Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
+        val centre = HighlightPixels / 2f
+        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+        val core = (255 * strength).toInt()
+        paint.shader = android.graphics.RadialGradient(centre, centre, centre,
+            intArrayOf(android.graphics.Color.argb(core, 225, 248, 255), android.graphics.Color.argb(core, 170, 232, 255), android.graphics.Color.argb(0, 140, 220, 255)),
+            floatArrayOf(0f, .55f, 1f), android.graphics.Shader.TileMode.CLAMP)
+        canvas.drawCircle(centre, centre, centre, paint)
+        surface.getSurface().unlockCanvasAndPost(canvas)
     }
 
     fun updateRays(parent: Entity,rays: Map<String,Pair<FloatArray,FloatArray>>,eye: FloatArray?,unitsPerMeter: Float,dimmed: Boolean) {
@@ -207,11 +245,13 @@ internal class GrabGuideRenderer private constructor(
         (aimBeams+grabBeams+grabPoints).forEach { if(!it.isDisposed){it.parent=null; it.dispose()} }
         aimBeams.clear(); grabBeams.clear(); grabPoints.clear()
         pointerPoint?.dispose(); pointerPoint = null
+        highlight?.let { if(!it.isDisposed){it.parent=null; it.dispose()} }; highlight = null
         groups.clear()
         if(session.lifecycleOwner.lifecycle.currentState!=androidx.lifecycle.Lifecycle.State.DESTROYED)models.forEach { it.close() }
     }
 
     companion object {
+        private const val HighlightPixels = 64
         suspend fun create(session: Session): GrabGuideRenderer {
             val loaded = mutableListOf<GltfModel>()
             try {

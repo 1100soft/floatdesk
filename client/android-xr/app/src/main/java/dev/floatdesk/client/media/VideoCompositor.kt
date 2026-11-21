@@ -145,6 +145,8 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     private var retainedSize=0 to 0
     @Volatile private var handoff=false
     @Volatile private var outputPixels=0 to 0
+    private var primaryPixels=0 to 0
+    private var degenerateOutputs=0
     private var rejectedViews=0L
     @Volatile private var viewCurrent:dev.floatdesk.client.net.ViewFrame?=null
     fun hasViewedDetail():Boolean=viewCurrent!=null && diagnostics.enabled
@@ -392,6 +394,12 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         val drawStarted=System.nanoTime()
         val w=IntArray(1); val h=IntArray(1)
         EGL14.eglQuerySurface(display,window,EGL14.EGL_WIDTH,w,0); EGL14.eglQuerySurface(display,window,EGL14.EGL_HEIGHT,h,0)
+        if(activeMirror==null && primaryPixels!=(w[0] to h[0])){
+            primaryPixels=w[0] to h[0];degenerateOutputs++
+            if(degenerateOutputs<=6 || degenerateOutputs%200==0)Log.i("Floatdesk","desktop output ${w[0]}x${h[0]} base ${baseWidth}x$baseHeight changes=$degenerateOutputs")
+        }
+        // A surface briefly reporting a placeholder size would stretch one pixel over the screen.
+        if(w[0]<=2 || h[0]<=2){requestDraw();return}
         outputPixels=w[0] to h[0]
         val view=viewCurrent?.takeIf{viewLatched && (diagnostics.enabled || handoff)}
         if(view==null && !hasFrame)return

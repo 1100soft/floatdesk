@@ -63,6 +63,7 @@ import dev.floatdesk.client.workspace.focusDesktopRegion
 import dev.floatdesk.client.workspace.ViewLayers
 import dev.floatdesk.client.workspace.fixedDesktopDepth
 import dev.floatdesk.client.workspace.restoreViewer
+import dev.floatdesk.client.workspace.withViewingDistances
 import dev.floatdesk.client.workspace.reconcileMonitors
 import dev.floatdesk.client.workspace.monitorPlaced
 import kotlinx.coroutines.Dispatchers
@@ -92,6 +93,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
     var workspace by remember { mutableStateOf(store.load()) }
     val workspaceAtLifecycle=rememberUpdatedState(workspace)
     var restoreViewerPending by remember {mutableStateOf(true)}
+    val depthPushes=remember {IntArray(1)}
     DisposableEffect(session,connection) {
         val current = session
         onSession(current)
@@ -156,6 +158,17 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
     val systemWindows=remember {AtomicReference<List<MagnifiedWindow>>(emptyList())}
     val systemRuntime=remember {androidx.compose.runtime.mutableStateMapOf<Long,MagnifiedWindow>()}
     val systemPlacements=remember {mutableMapOf<String,dev.floatdesk.client.workspace.FixedMagnifierPlacement>()}
+    val appliedDistances=remember {floatArrayOf(Float.NaN,Float.NaN)}
+    if(appliedDistances[0]!=workspace.nearestDistanceM || appliedDistances[1]!=workspace.farthestDistanceM) {
+        val first=appliedDistances[0].isNaN()
+        ViewLayers.configure(workspace.nearestDistanceM,workspace.farthestDistanceM)
+        appliedDistances[0]=workspace.nearestDistanceM;appliedDistances[1]=workspace.farthestDistanceM
+        if(!first) {
+            // Saved records were rescaled with the workspace; re-read them and move live panes.
+            systemPlacements.clear()
+            magnified=magnified?.let{it.copy(width=it.width*MagnifierDistanceM/it.layerDistanceM,height=it.height*MagnifierDistanceM/it.layerDistanceM,layerDistanceM=MagnifierDistanceM,mesh=null)}
+        }
+    }
     val systemReady=remember {androidx.compose.runtime.mutableStateMapOf<Long,Boolean>()}
     val fixedRuntime=remember { androidx.compose.runtime.mutableStateMapOf<String,MagnifiedWindow>() }
     val fixedPins=remember { androidx.compose.runtime.mutableStateMapOf<String,Long>() }
@@ -284,7 +297,10 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
     fun toggleDisplays() {
         displayControlsOpen=!displayControlsOpen
         if(displayControlsOpen) {
-            displayHead.get()?.let { head-> displayControlsPose=Pose(transformPoint(head,floatArrayOf(0f,-.15f,-.9f)),head.rotation.copyOf()) }
+            displayHead.get()?.let { head->
+                val scale=settingsPanelScale(handTracking.unitsPerMeter)
+                displayControlsPose=Pose(transformPoint(head,floatArrayOf(0f,-.15f*scale,-.9f*scale)),head.rotation.copyOf())
+            }
             connection.requestDisplays()
         }
     }
@@ -332,7 +348,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 val pane=(if(target.key=="floating")magnified?.takeIf{magnifierReady} else fixedRuntime[target.key]?.takeIf{fixedReady[target.key]==true}) ?: return null
                 val frame=.005f*pane.units
                 val anchor=Pose(transformPoint(pane.pose,floatArrayOf(0f,pane.height*.5f+frame,.004f*pane.units)),pane.pose.rotation)
-                toolbarStrip(anchor,(pane.layerDistanceM*pane.units*.075f).coerceIn(.035f*unit,.11f*unit),true)
+                toolbarStrip(anchor,pane.layerDistanceM*pane.units*.075f,true)
             }
             is ToolbarTarget.Window->{
                 val info=connection.workspaceInfo.value ?: return null
@@ -344,7 +360,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 }
                 val centre=edge(source.x+source.width*.5f) ?: return null
                 val lifted=add(centre,rotateVector(desktop.pose.rotation,0f,0f,.02f*unit))
-                toolbarStrip(Pose(lifted,desktop.pose.rotation),(dev.floatdesk.client.workspace.ViewLayers.DesktopDistanceM*unit*.075f).coerceIn(.035f*unit,.11f*unit),false)
+                toolbarStrip(Pose(lifted,desktop.pose.rotation),dev.floatdesk.client.workspace.ViewLayers.DesktopDistanceM*unit*.075f,false)
             }
             null->null
         }
@@ -616,10 +632,19 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 }
                 store.viewerReference=reference
                 store.viewerUnitsPerMeter=unitsPerMeter
+                if(workspace.legacyDistances && !restoreViewerPending){
+                    workspace=workspace.withViewingDistances(ViewLayers.DefaultNearestM,ViewLayers.DefaultFarthestM,reference,unitsPerMeter).copy(legacyDistances=false)
+                    ViewLayers.configure(workspace.nearestDistanceM,workspace.farthestDistanceM)
+                    store.save(workspace)
+                }
                 val active=workspace.layouts[workspace.activeLayout]
                 if(active!=null && !manipulating && grabs.values.none{it.busy} && !pointerControl.nativeManipulating){
                     val fixed=active.map{fixedDesktopDepth(it,reference,unitsPerMeter,true,preserveAngularSize=false)}
-                    if(fixed.indices.any{fixed[it] !== active[it]})workspace=workspace.copy(layouts=workspace.layouts.toMutableMap().also{it[workspace.activeLayout]=fixed.toMutableList()})
+                    if(fixed.indices.any{fixed[it] !== active[it]}){
+                        val pushes=++depthPushes[0]
+                        if(pushes<=3 || pushes%100==0)Log.i("Floatdesk","desk depth pushes=$pushes")
+                        workspace=workspace.copy(layouts=workspace.layouts.toMutableMap().also{it[workspace.activeLayout]=fixed.toMutableList()})
+                    }
                 }
             }
             if (!reliable) {
@@ -793,7 +818,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 panelHand = candidate.side
                 lastPalmSeen = SystemClock.uptimeMillis()
                 val centered=candidate.copy(page=palmPanel?.page ?: PalmPage.MAIN,pose=palmPanel?.pose ?: (head ?: candidate.pose.toRuntimePose()).compose(
-                    androidx.xr.runtime.math.Pose(Vector3(0f,0f,-ViewLayers.ControlsDistanceM*unitsPerMeter))).toWorkspacePose())
+                    androidx.xr.runtime.math.Pose(Vector3(0f,0f,-ViewLayers.PalmMenuDistanceM*unitsPerMeter))).toWorkspacePose())
                 palmPanel = centered
                 val other = if (candidate.side == "LEFT") "RIGHT" else "LEFT"
                 poke.update(centered, fingerTips[other])?.let { palmActionNow.value(it) }
@@ -1375,8 +1400,9 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
         val problemHead=remember(connectionProblem!=null,displayHead.get()==null){displayHead.get()}
         if(connectionProblem!=null && !displayControlsOpen)problemHead?.let{head->
             val unit=handTracking.unitsPerMeter
-            val pose=Pose(transformPoint(head,floatArrayOf(0f,-.12f*unit,-dev.floatdesk.client.workspace.ViewLayers.ControlsDistanceM*unit)),head.rotation)
-            Subspace{SpatialPanel(modifier=placedPanel(pose,.30f*unit,.075f*unit,density,pixelDensity)){
+            val scale=ViewLayers.sizeScale(1)
+            val pose=Pose(transformPoint(head,floatArrayOf(0f,-.12f*unit*scale,-ViewLayers.ControlsDistanceM*unit)),head.rotation)
+            Subspace{SpatialPanel(modifier=placedPanel(pose,.30f*unit,.075f*unit,density,pixelDensity,scale=scale)){
                 androidx.compose.foundation.layout.Row(Modifier.fillMaxSize().background(Color(0xF02A1F1C)).padding(10.dp),
                     verticalAlignment=androidx.compose.ui.Alignment.CenterVertically,horizontalArrangement=androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp)){
                     androidx.compose.material3.CircularProgressIndicator(Modifier.size(20.dp),color=Color(0xFFFFC27A),strokeWidth=2.dp)

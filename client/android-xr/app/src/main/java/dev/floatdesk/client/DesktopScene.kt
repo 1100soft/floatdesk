@@ -51,7 +51,10 @@ import androidx.xr.scenecore.PixelDensity
 import dev.floatdesk.client.net.CursorView
 import dev.floatdesk.client.net.DeskConnection
 import dev.floatdesk.client.net.MonitorHello
+import androidx.xr.compose.subspace.draw.scale
 import dev.floatdesk.client.workspace.MonitorPlacement
+import dev.floatdesk.client.workspace.ViewLayers
+import dev.floatdesk.client.workspace.withViewingDistances
 import dev.floatdesk.client.workspace.Pose
 import dev.floatdesk.client.workspace.WorkspaceFile
 import dev.floatdesk.client.workspace.WorkspaceStore
@@ -100,15 +103,21 @@ internal fun DeskContent(
     DiagnosticsPanel(connection,viewer,{handTracking.unitsPerMeter},{viewerAngles.get()},
         workspace.showResources,workspace.experimentalViewedDetail,workspace.viewDetailDebug,workspace.sphericalWarp)
     var managerPage by remember{mutableStateOf("Screens")}
-    val managerHeight=when(managerPage){"Settings"->.40f;"Focus & magnification"->.40f;"Pinches"->.48f;"Virtual screen setup"->.38f;else->.65f}
-    if(displayControlsOpen) SpatialPanel(modifier=placedPanel(displayControlsPose,if(managerPage=="Screens") .60f else .52f,managerHeight,density,pixelDensity)) {
+    val managerHeight=when(managerPage){"Settings"->.40f;"Focus & magnification"->.40f;"Pinches"->.48f;"Viewing distance"->.42f;"Virtual screen setup"->.38f;else->.65f}
+    val managerScale=remember(displayControlsPose){settingsPanelScale(handTracking.unitsPerMeter)}
+    if(displayControlsOpen) SpatialPanel(modifier=placedPanel(displayControlsPose,if(managerPage=="Screens") .60f else .52f,managerHeight,density,pixelDensity,scale=managerScale)) {
         MonitorManagerPanel(connection,workspace.screenSpacing,{onWorkspace(workspace.copy(screenSpacing=it))},{store.save(latest.value)},onCloseDisplays,workspace.pinchThresholds,{profile->
             val next=latest.value.copy(pinchThresholds=profile);onWorkspace(next);store.save(next)
         },workspace.experimentalViewedDetail,{enabled->
             val next=latest.value.copy(experimentalViewedDetail=enabled);onWorkspace(next);store.save(next)
         },workspace.viewDetailDebug,{enabled->
             val next=latest.value.copy(viewDetailDebug=enabled);onWorkspace(next);store.save(next)
-        },workspace,{next->onWorkspace(next);store.save(next)},onPage={managerPage=it},onAddFixed=onAddFixed)
+        },workspace,{next->onWorkspace(next);store.save(next)},onPage={managerPage=it},onAddFixed=onAddFixed,
+            onViewingDistances={nearest,farthest,persist->
+                val next=latest.value.withViewingDistances(nearest,farthest,store.viewerReference,store.viewerUnitsPerMeter)
+                ViewLayers.configure(next.nearestDistanceM,next.farthestDistanceM)
+                onWorkspace(next);if(persist)store.save(next)
+            })
     }
     if(reloading && layout.isNotEmpty()) {
         val screen=layout.first()
@@ -355,9 +364,10 @@ internal fun placedPanel(
     dx: Float = 0f,
     dy: Float = 0f,
     dz: Float = 0f,
+    scale: Float = 1f,
 ): SubspaceModifier {
     // Translation must wrap rotation: T * R, so turning a panel cannot orbit its center.
-    return SubspaceModifier
+    val placed = SubspaceModifier
         .requiredWidth(widthM.meters(density, pixelDensity))
         .requiredHeight(heightM.meters(density, pixelDensity))
         .offset3d(
@@ -366,7 +376,11 @@ internal fun placedPanel(
             z = (pose.position[2] + dz).meters(density, pixelDensity),
         )
         .rotate(pose.toQuaternion())
+    return if (scale == 1f) placed else placed.scale(scale)
 }
+
+/** The Settings panel was laid out for 0.9 scene units; keep that apparent size on the controls layer. */
+internal fun settingsPanelScale(unitsPerMeter: Float) = ViewLayers.ControlsDistanceM * unitsPerMeter / .9f
 
 @Composable
 internal fun MonitorCursor(

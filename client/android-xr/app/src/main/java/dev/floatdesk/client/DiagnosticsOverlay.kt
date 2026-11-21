@@ -45,7 +45,7 @@ internal fun DiagnosticsPanel(connection:dev.floatdesk.client.net.DeskConnection
     }
     val pose=head ?: return
     val fov=angles();val h=kotlin.math.round(fov[0]*100f)/100f;val v=kotlin.math.round(fov[1]*100f)/100f
-    val patches=androidx.compose.runtime.remember(h,v,spherical){hudForegroundPatches(h,v,ViewLayers.DiagnosticsDistanceM,spherical)}
+    val patches=androidx.compose.runtime.remember(h,v,spherical,ViewLayers.DiagnosticsDistanceM){hudForegroundPatches(h,v,ViewLayers.DiagnosticsDistanceM,spherical)}
     val state=androidx.compose.runtime.remember(snapshot,resources,quality,qualityDebug){snapshot.copy(frame=if(quality)snapshot.frame else null,state=snapshot.state.copy(enabled=quality,showOverlay=qualityDebug,showResources=resources))}
     val unit=units().takeIf{it.isFinite() && it>0f} ?: 1f
     // Only this parent follows the head. Text refreshes never update individual block poses.

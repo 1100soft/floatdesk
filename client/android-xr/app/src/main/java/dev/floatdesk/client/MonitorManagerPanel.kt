@@ -29,7 +29,7 @@ import androidx.compose.ui.unit.sp
 import dev.floatdesk.client.net.DeskConnection
 
 @Composable
-internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpacing:(Float)->Unit,onSpacingFinished:()->Unit,onClose:()->Unit,pinches:PinchThresholds,onPinches:(PinchThresholds)->Unit,viewedDetail:Boolean,onViewedDetail:(Boolean)->Unit,viewDebug:Boolean,onViewDebug:(Boolean)->Unit,quality:dev.floatdesk.client.workspace.WorkspaceFile,onQuality:(dev.floatdesk.client.workspace.WorkspaceFile)->Unit,onPage:(String)->Unit={},onAddFixed:()->Unit={}) {
+internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpacing:(Float)->Unit,onSpacingFinished:()->Unit,onClose:()->Unit,pinches:PinchThresholds,onPinches:(PinchThresholds)->Unit,viewedDetail:Boolean,onViewedDetail:(Boolean)->Unit,viewDebug:Boolean,onViewDebug:(Boolean)->Unit,quality:dev.floatdesk.client.workspace.WorkspaceFile,onQuality:(dev.floatdesk.client.workspace.WorkspaceFile)->Unit,onPage:(String)->Unit={},onAddFixed:()->Unit={},onViewingDistances:(Float,Float,Boolean)->Unit={_,_,_->}) {
     val monitors by connection.monitors
     val state by connection.displayState
     val busy by connection.displayBusy
@@ -82,7 +82,7 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
         if(!state.ok) Text(state.message,color=Color(0xFFFFB4AB),fontSize=13.sp)
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(8.dp)) {
         if(section=="Settings") {
-            listOf("Focus & magnification","Streaming","Pinches","Virtual screen setup").forEach{label->Button(onClick={section=label},modifier=Modifier.fillMaxWidth()){Text(label)}}
+            listOf("Focus & magnification","Viewing distance","Streaming","Pinches","Virtual screen setup").forEach{label->Button(onClick={section=label},modifier=Modifier.fillMaxWidth()){Text(label)}}
         }
         if(section=="Focus & magnification") {
             Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)){
@@ -122,6 +122,7 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
             if(viewedDetail)Text(connection.detailStatus.value,color=Color(0xFFB8D9EA),fontSize=13.sp)
             StreamingSettings(quality,onQuality)
         }
+        if(section=="Viewing distance")ViewingDistanceSettings(quality,onViewingDistances)
         if(section=="Pinches")PinchSettings(pinches,onPinches)
         if(section=="Virtual screen setup") {
             Text("Virtual screen setup",color=Color.White,fontSize=18.sp)
@@ -169,6 +170,29 @@ private fun ResolutionChoice(current:Pair<Int,Int>,modes:List<Pair<Int,Int>>,ena
         androidx.compose.material3.OutlinedTextField(height,{height=it.filter(Char::isDigit)},Modifier.weight(1f),label={Text("Height")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number),enabled=enabled)
         val w=width.toIntOrNull();val h=height.toIntOrNull()
         Button(enabled=enabled && w!=null && h!=null && w in 1..65535 && h in 1..65535,onClick={onChoose(w!! to h!!)}) {Text("Set")}
+    }
+}
+
+@Composable
+private fun ViewingDistanceSettings(value:dev.floatdesk.client.workspace.WorkspaceFile,onChange:(Float,Float,Boolean)->Unit) {
+    val layers=dev.floatdesk.client.workspace.ViewLayers
+    Text("Floating objects sit between these distances; the desktop is farthest. Changes keep each object's apparent size.",color=Color(0xFFB8D9EA),fontSize=13.sp)
+    DistanceControl("Closest",value.nearestDistanceM,layers.MinNearestM,layers.MaxNearestM){nearest,persist->onChange(nearest,value.farthestDistanceM,persist)}
+    DistanceControl("Farthest",value.farthestDistanceM,value.nearestDistanceM+layers.MinSpanM,layers.MaxFarthestM){farthest,persist->onChange(value.nearestDistanceM,farthest,persist)}
+    Button(onClick={onChange(layers.DefaultNearestM,layers.DefaultFarthestM,true)}){Text("Reset to 0.90 – 1.20 m")}
+}
+
+@Composable
+private fun DistanceControl(label:String,meters:Float,minimum:Float,maximum:Float,onChange:(Float,Boolean)->Unit) {
+    var text by remember(meters){mutableStateOf(String.format(Locale.ROOT,"%.2f",meters))}
+    Text(String.format(Locale.ROOT,"%s: %.2f m · %.2f–%.2f m",label,meters,minimum,maximum),color=Color.White)
+    Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+        if(maximum-minimum>=.01f)androidx.compose.material3.Slider(value=meters.coerceIn(minimum,maximum),onValueChange={onChange((it*100).roundToInt()/100f,false)},
+            onValueChangeFinished={onChange(meters,true)},valueRange=minimum..maximum,modifier=Modifier.weight(1f))
+        else Spacer(Modifier.weight(1f))
+        androidx.compose.material3.OutlinedTextField(text,{text=it},Modifier.width(96.dp),label={Text("m")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Decimal))
+        val parsed=text.toFloatOrNull()?.takeIf{it.isFinite() && it>=minimum-.0001f && it<=maximum+.0001f}
+        Button(enabled=parsed!=null,onClick={parsed?.let{onChange(it,true)}}){Text("Set")}
     }
 }
 

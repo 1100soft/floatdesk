@@ -54,7 +54,7 @@ internal class NativeSurfaceTap {
         return null
     }
 }
-internal const val MagnifierDistanceM=ViewLayers.MagnifierDistanceM
+internal val MagnifierDistanceM get()=ViewLayers.MagnifierDistanceM
 internal data class MagnifiedWindow(val id:Long,val pose:Pose,val width:Float,val height:Float,val sourceWidth:Int,val sourceHeight:Int,val spherical:Boolean=false,val mesh:MonitorMesh?=null,val units:Float=1f,val headOffset:FloatArray=floatArrayOf(0f,0f,-1f),val sizeScale:Float=1f,val fixed:Boolean=false,val desktopRotation:FloatArray?=null,val requestedPosition:FloatArray?=null,val headRotation:FloatArray?=null,val layerDistanceM:Float=MagnifierDistanceM)
 internal fun magnifiedWindow(id:Long,width:Int,height:Int,viewer:Pose,horizontal:Float,vertical:Float,units:Float,spherical:Boolean=false,previous:MagnifiedWindow?=null,layerDistanceM:Float=MagnifierDistanceM):MagnifiedWindow{
     val source=deskLayout(listOf(Triple("Window",width,height)))
@@ -230,7 +230,9 @@ internal fun framedMagnifierGeometry(window:MagnifiedWindow):VideoGeometry {
     for(i in perimeter){val u=mesh.texCoords[i*2];val v=mesh.texCoords[i*2+1]
         val x=(u-.5f)*width+if(u==0f)-pad else if(u==1f)pad else 0f
         val y=(.5f-v)*height+if(v==0f)pad else if(v==1f)-pad else 0f
-        positions.addAll(expanded.project(floatArrayOf(x,y,0f)).toList());tex(x/width+.5f,.5f-y/height)
+        positions.addAll(expanded.project(floatArrayOf(x,y,0f)).toList())
+        uv.add(if(u==0f)0f else if(u==1f)1f else ((pad+u*width)/(width+2*pad)).coerceIn(0f,1f))
+        uv.add(if(v==0f)1f else if(v==1f)0f else (1f-(pad+v*height)/(height+2*pad)).coerceIn(0f,1f))
     }
     for(j in perimeter.indices){val next=(j+1)%perimeter.size;val a=perimeter[j];val b=perimeter[next];val c=base+j;val d=base+next;indices.addAll(listOf(a,b,c,c,b,d))}
     return VideoGeometry(positions.toFloatArray(),uv.toFloatArray(),indices.toIntArray())

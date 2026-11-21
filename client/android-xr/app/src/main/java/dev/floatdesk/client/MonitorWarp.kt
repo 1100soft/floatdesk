@@ -154,6 +154,7 @@ internal class MonitorWarp : AutoCloseable {
         val target = session.scene.getEntitiesOfType(SurfaceEntity::class.java)
             .firstOrNull { it.getSurface() === inputSurface }
             ?: error("Could not find monitor input entity")
+        Log.i("Floatdesk","desktop surface attached ${placement.physicalWidthM}x${placement.physicalHeightM}")
         // onSurfaceCreated can run while the system renderer is transitioning.
         // Size the texture from the resumed frame loop, never synchronously here.
         target.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE

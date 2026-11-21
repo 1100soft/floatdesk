@@ -66,6 +66,8 @@ internal data class IntSize2d(val width:Int,val height:Int)
 internal class Ray
 internal object Color { const val TRANSPARENT=0; fun rgb(r:Int,g:Int,b:Int)=1;fun argb(a:Int,r:Int,g:Int,b:Int)=1 }
 internal object PorterDuff { enum class Mode { CLEAR } }
+internal object SystemClock { fun uptimeMillis()=System.nanoTime()/1_000_000 }
+internal object Log { fun i(tag:String,message:String)=0; fun w(tag:String,message:String,error:Throwable?=null)=0 }
 internal class Paint(flags:Int) {
     var color=0;var textSize=0f;var textAlign=Align.CENTER;var style=Style.STROKE;var strokeWidth=1f
     enum class Style { STROKE }

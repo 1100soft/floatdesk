@@ -120,6 +120,11 @@ fun main() {
     near(resizeHandleEdge(1.2f,2f),.014f*6f)
     near(cornerResizeFactor(2f,1f,1,1,.1f,.05f),1.1f)
     near(cornerResizeFactor(2f,1f,-1,1,-.1f,.05f),1.1f)
+    near(anchoredCornerFactor(2f,2f,2f),1f)
+    near(anchoredCornerFactor(2.2f,2.2f,2f),1f)
+    near(anchoredCornerFactor(2.4f,2.2f,2f),1.1f)
+    check(resizeDimensions(.1f,.1f,1f)==(.1f to .1f))
+    check(resizeDimensions(1f,1f,.1f)==(.28f to .28f))
     for((label,mesh) in listOf(
         "left-middle" to MonitorMesh(1.4094946f,.8809341f,floatArrayOf(-.3641987f,-.037884656f,1.4811001f)),
         "bottom" to MonitorMesh(1.1701335f,.73133343f,floatArrayOf(.00200787f,-.6641777f,1.0608732f)),

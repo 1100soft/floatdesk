@@ -28,10 +28,15 @@ internal class PaneCornerResize : AutoCloseable {
     private data class HandResize(val side:String,val frame:dev.floatdesk.client.workspace.Pose,val local:FloatArray,val scale:Float,val gain:Float,val base:Float)
     private var handResize:HandResize?=null
     private var live=false
-    private var drawn=false
+    private var drawnShow=false
+    private var drawnThick=false
+    private var drawnHeld=false
     private var shownUntil=0L
     private var closed=false
     private var lastFactor=1f
+    private var grabProjection=Float.NaN
+    private var grabPlane=0f
+    private var planeZ=0f
     private var submittedWidth=Float.NaN;private var submittedHeight=Float.NaN;private var submittedEdge=Float.NaN;private var submittedFront=Float.NaN
     private var frontSign=1f
     private var host:SurfaceEntity?=null
@@ -41,7 +46,7 @@ internal class PaneCornerResize : AutoCloseable {
         this.width=width;this.height=height;callback=onResize
         if(host!==video){
             corners.forEach{release(it)};corners.clear();active=null;handResize=null;host=video
-            submittedEdge=Float.NaN;submittedFront=Float.NaN;drawn=false;live=false
+            submittedEdge=Float.NaN;submittedFront=Float.NaN;drawnShow=false;drawnThick=false;drawnHeld=false;live=false
         }
         if(corners.isEmpty())for(y in listOf(-1,1))for(x in listOf(-1,1)){
             val surface=SurfaceEntity.create(session,shape=SurfaceEntity.Shape.Quad(FloatSize2d(.001f,.001f)),parent=video,superSampling=SurfaceEntity.SuperSampling.NONE)
@@ -54,26 +59,31 @@ internal class PaneCornerResize : AutoCloseable {
                 val leaving=event.action==InputEvent.Action.HOVER_EXIT || event.action==InputEvent.Action.CANCEL
                 if(hovering && !corner.hovered){corner.hovered=true;aimedHandles.incrementAndGet()}
                 if(leaving && corner.hovered){corner.hovered=false;aimedHandles.decrementAndGet()}
-                if(event.action==InputEvent.Action.DOWN && active==null){active=corner;handResize=null;startWidth=this.width;startHeight=this.height;lastFactor=1f;callback(true,1f)}
+                if(event.action==InputEvent.Action.DOWN && active==null){
+                    active=corner;handResize=null;startWidth=this.width;startHeight=this.height;lastFactor=1f
+                    grabPlane=planeZ;grabProjection=cornerProjection(session,video,event,grabPlane,x,y) ?: Float.NaN
+                    callback(true,1f)
+                }
                 if(active===corner){
                     val end=event.action==InputEvent.Action.UP || event.action==InputEvent.Action.CANCEL
                     if(event.action==InputEvent.Action.MOVE || end){
-                        fun point(v:Vector3)=session.scene.activitySpace.transformPoseTo(Pose(v),video).translation
-                        val o=point(event.origin);val p=point(Vector3(event.origin.x+event.direction.x,event.origin.y+event.direction.y,event.origin.z+event.direction.z))
-                        val dz=p.z-o.z
-                        val factor=if(kotlin.math.abs(dz)>.00001f){
-                            val t=-o.z/dz;val px=o.x+(p.x-o.x)*t;val py=o.y+(p.y-o.y)*t
-                            (px*x*startWidth*.5f+py*y*startHeight*.5f)/((startWidth*startWidth+startHeight*startHeight)*.25f)
-                        }else 1f
-                        if(handResize==null && factor.isFinite() && factor>.01f)lastFactor=factor
+                        val radius=(startWidth*startWidth+startHeight*startHeight)*.25f
+                        val hit=cornerProjection(session,video,event,grabPlane,x,y)
+                        if(hit!=null && radius>0f && handResize==null){
+                            if(grabProjection.isNaN())grabProjection=hit
+                            else {
+                                val factor=anchoredCornerFactor(hit,grabProjection,radius)
+                                if(factor.isFinite() && factor>.01f)lastFactor=factor
+                            }
+                        }
                         callback(!end,if(event.action==InputEvent.Action.CANCEL)1f else lastFactor)
-                        if(end){active=null;handResize=null}
+                        if(end){active=null;handResize=null;grabProjection=Float.NaN}
                     }
                 }
             }
             check(surface.addComponent(input));corner=Corner(x,y,surface,input);corners.add(corner)
             val pointer=SpatialPointerComponent.create(session);surface.addComponent(pointer);pointer.spatialPointerIcon=SpatialPointerIcon.NONE
-            paint(corner,false)
+            paint(corner,false,false,false)
         }
         active?.let{corner->
             if(handResize==null){
@@ -102,12 +112,18 @@ internal class PaneCornerResize : AutoCloseable {
         if(eyeZ.isFinite() && kotlin.math.abs(eyeZ)>.001f)frontSign=if(eyeZ>0f)1f else -1f
         // One centimetre toward the viewer, so the square wins the ray where it crosses the object.
         val front=.01f*(units.takeIf{it.isFinite() && it>0f} ?: 1f)*frontSign
+        planeZ=front
         if(!live){corners.forEach{if(!it.surface.isDisposed)it.surface.setEnabled(true)};live=true}
         val now=SystemClock.uptimeMillis()
         val want=objectAimed || aimedHandles.get()>0 || active!=null
         if(want)shownUntil=now+160
         val show=want || now<shownUntil
-        if(show!=drawn){corners.forEach{paint(it,show)};drawn=show}
+        val thick=aimedHandles.get()>0 || active!=null
+        val held=active!=null
+        if(show!=drawnShow || thick!=drawnThick || held!=drawnHeld){
+            corners.forEach{paint(it,show,thick,held)}
+            drawnShow=show;drawnThick=thick;drawnHeld=held
+        }
         for(corner in corners){
             if(edge!=submittedEdge && !corner.surface.isDisposed)corner.surface.shape=SurfaceEntity.Shape.Quad(FloatSize2d(edge,edge))
             if(width!=submittedWidth || height!=submittedHeight || edge!=submittedEdge || front!=submittedFront){
@@ -116,19 +132,19 @@ internal class PaneCornerResize : AutoCloseable {
         }
         submittedWidth=width;submittedHeight=height;submittedEdge=edge;submittedFront=front
     }
-    private fun paint(corner:Corner,show:Boolean){
+    private fun paint(corner:Corner,show:Boolean,thick:Boolean,held:Boolean){
         if(corner.surface.isDisposed)return
         runCatching{
             val canvas=corner.surface.getSurface().lockCanvas(null)
             canvas.drawColor(Color.TRANSPARENT,PorterDuff.Mode.CLEAR)
-            if(show)drawRoundedCorner(canvas,corner.x,corner.y)
+            if(show)drawRoundedCorner(canvas,corner.x,corner.y,thick,held)
             corner.surface.getSurface().unlockCanvasAndPost(canvas)
         }
     }
     fun cancel(){
-        active=null;handResize=null;lastFactor=1f;shownUntil=0L
+        active=null;handResize=null;lastFactor=1f;grabProjection=Float.NaN;shownUntil=0L
         corners.forEach{if(it.hovered){it.hovered=false;aimedHandles.decrementAndGet()}}
-        if(drawn){corners.forEach{paint(it,false)};drawn=false}
+        if(drawnShow || drawnThick || drawnHeld){corners.forEach{paint(it,false,false,false)};drawnShow=false;drawnThick=false;drawnHeld=false}
         if(live){corners.forEach{if(!it.surface.isDisposed)it.surface.setEnabled(false)};live=false}
     }
     private fun release(corner:Corner){
@@ -140,9 +156,20 @@ internal class PaneCornerResize : AutoCloseable {
         corners.forEach{release(it)};corners.clear()
     }
 
+    private fun cornerProjection(session:Session,video:SurfaceEntity,event:InputEvent,plane:Float,x:Int,y:Int):Float?{
+        fun point(v:Vector3)=session.scene.activitySpace.transformPoseTo(Pose(v),video).translation
+        val o=point(event.origin);val p=point(Vector3(event.origin.x+event.direction.x,event.origin.y+event.direction.y,event.origin.z+event.direction.z))
+        val dz=p.z-o.z
+        if(kotlin.math.abs(dz)<=.00001f)return null
+        val t=(plane-o.z)/dz
+        val px=o.x+(p.x-o.x)*t;val py=o.y+(p.y-o.y)*t
+        val projection=px*x*startWidth*.5f+py*y*startHeight*.5f
+        return projection.takeIf{it.isFinite()}
+    }
+
     companion object {
         private const val HandlePixels=128
-        private fun drawRoundedCorner(canvas:android.graphics.Canvas,sx:Int,sy:Int){
+        private fun drawRoundedCorner(canvas:android.graphics.Canvas,sx:Int,sy:Int,thick:Boolean,glow:Boolean){
             val n=canvas.width.toFloat()
             val stroke=n*.05f
             // The bitmap centre is the object corner. The mark occupies the outer quadrant only,
@@ -163,10 +190,15 @@ internal class PaneCornerResize : AutoCloseable {
             if(sweep<=-180f)sweep+=360f
             path.arcTo(RectF(centre[0]-radius,centre[1]-radius,centre[0]+radius,centre[1]+radius),startAngle,sweep,false)
             path.lineTo(end[0],end[1])
-            canvas.drawPath(path,Paint(Paint.ANTI_ALIAS_FLAG).apply{
-                color=Color.CYAN;style=Paint.Style.STROKE;strokeWidth=stroke
+            fun ink(color:Int,width:Float)=Paint(Paint.ANTI_ALIAS_FLAG).apply{
+                this.color=color;style=Paint.Style.STROKE;strokeWidth=width
                 strokeCap=Paint.Cap.BUTT;strokeJoin=Paint.Join.ROUND
-            })
+            }
+            if(glow){
+                canvas.drawPath(path,ink(Color.argb(70,255,255,255),stroke*3.6f))
+                canvas.drawPath(path,ink(Color.argb(170,255,255,255),stroke*2.2f))
+            }
+            canvas.drawPath(path,ink(Color.CYAN,if(thick || glow)stroke*1.85f else stroke))
         }
     }
 }

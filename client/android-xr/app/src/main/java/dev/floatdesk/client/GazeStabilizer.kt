@@ -19,8 +19,8 @@ internal class GazeStabilizer {
         if (target == null) { if(nowMs-lastMs>120) reset(); return null }
         val previous=lastRaw
         val before=filtered
-        if(previous == null || before == null || target.monitor != previous.monitor || nowMs-lastMs>120) {
-            lastRaw=target; filtered=target; output=target; lastMs=nowMs; velocityU=0f; velocityV=0f
+        if(previous == null || before == null || target.monitor != previous.monitor || target.spaceKey != previous.spaceKey || nowMs-lastMs>120) {
+            lastRaw=target; filtered=target; output=target; pendingJump=null; lastMs=nowMs; velocityU=0f; velocityV=0f
             return target
         }
         val distance=hypot(target.u-previous.u,target.v-previous.v)

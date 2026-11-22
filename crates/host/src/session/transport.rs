@@ -1,4 +1,4 @@
-//! Authenticated control routing, discovery and pointer mapping.
+//! Peer-scoped control routing, discovery and pointer mapping.
 use super::*;
 
 pub(super) fn handle_datagram(
@@ -42,6 +42,17 @@ pub(super) fn handle_datagram(
                 touchpad_sequence: None,
             });
             drop(client);
+            shared
+                .cursor_map
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .0
+                .clear();
+            shared
+                .cursor_claim
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
             send_hello(shared, socket, hellos);
             send_layout(shared, socket, hellos);
         }

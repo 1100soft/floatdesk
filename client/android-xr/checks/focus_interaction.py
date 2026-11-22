@@ -483,6 +483,10 @@ fun main() {
  val pointer=PointerControl();val hit=PointerTarget(0,.5f,.5f,floatArrayOf(0f,0f,0f))
  val preview=pointer.choose(false,null,mapOf("LEFT" to hit,"RIGHT" to hit),false,0)
  check(preview.mode.reservesDesktop)
+ val panel=hit.copy(spaceKey="shell:42")
+ val paneChoice=pointer.choose(false,null,mapOf("LEFT" to panel,"RIGHT" to hit),false,0,
+     previewHands=mapOf("RIGHT" to hit))
+ check(paneChoice.mode==PointerMode.HAND && paneChoice.target?.spaceKey=="shell:42")
  check(frame(.01f,.05f,blocked=preview.mode.reservesDesktop)==null)
  check(frame(.05f,.05f,blocked=preview.mode.reservesDesktop)==null)
  val single=pointer.choose(false,null,mapOf("LEFT" to hit),false,1)

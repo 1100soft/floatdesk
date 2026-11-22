@@ -11,11 +11,22 @@ pub(super) fn cursor_loop(shared: Arc<Shared>, socket: UdpSocket) {
     };
     let mut router = cursor_map::Router::default();
     let mut last_root = None;
+    let mut client_generation = None;
     let mut owner_sent = Instant::now() - Duration::from_secs(1);
     while !shared.stop.load(Ordering::Relaxed) {
         match cursor.poll() {
             Ok(mut sample) => {
                 let motion = cursor.take_motion();
+                let generation = shared
+                    .client
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                    .map(|client| client.generation);
+                if generation != client_generation {
+                    router.reset();
+                    client_generation = generation;
+                }
                 if let Ok(map) = shared.cursor_map.lock() {
                     if map.2.elapsed() < Duration::from_secs(2) && !map.0.is_empty() {
                         let root = [f64::from(sample.root_x), f64::from(sample.root_y)];
@@ -74,7 +85,13 @@ pub(super) fn cursor_loop(shared: Arc<Shared>, socket: UdpSocket) {
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
                             .take();
-                        router.inactive(motion);
+                        if last_root.is_some_and(|old| {
+                            old != [f64::from(sample.root_x), f64::from(sample.root_y)]
+                        }) {
+                            router.reset();
+                        } else {
+                            router.inactive(motion);
+                        }
                     }
                 }
                 last_root = Some([f64::from(sample.root_x), f64::from(sample.root_y)]);

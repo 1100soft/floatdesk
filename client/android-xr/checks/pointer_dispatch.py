@@ -36,6 +36,8 @@ private class Sender(port: Int) {
     val monitors = Box(listOf(MonitorHello(0,2560,1600,48000,1,"test")))
     val control: java.net.DatagramSocket = CheckedSocket()
     val pendingRemote = java.net.InetSocketAddress("127.0.0.1",port)
+    var lastAcceptedHello = 1L
+    val inputEpoch = java.util.concurrent.atomic.AtomicInteger()
     var pointerDragging=false
     val clickSeq=java.util.concurrent.atomic.AtomicInteger()
     val pointerSeq = java.util.concurrent.atomic.AtomicInteger()
@@ -120,7 +122,26 @@ fun main() {
             }
         } finally { sender.running=false; sender.control.close(); sender.outgoing.pool.shutdownNow() }
     }
-    println("Passed: real UDP pointer/keyframe dispatch off UI thread, bounded coalescing, latest target delivery, uncoalesced drag edges, atomic click retries")
+    java.net.DatagramSocket(0).use { receiver ->
+        receiver.soTimeout=1000
+        val sender=Sender(receiver.localPort)
+        try {
+            sender.clickPointer(0,.1f,.2f,3)
+            sender.movePointer(0,.1f,.2f,true)
+            sender.touchpad(2,.1f,.2f)
+            sender.inputEpoch.incrementAndGet()
+            sender.requestKeyframe()
+            sender.outgoing.pool.shutdown()
+            sender.outgoing.gate.countDown()
+            check(sender.outgoing.pool.awaitTermination(3,java.util.concurrent.TimeUnit.SECONDS))
+            val packet=java.net.DatagramPacket(ByteArray(256),256)
+            receiver.receive(packet)
+            check(packet.data[5].toInt()==4) // Only the new-connection message reaches the host.
+            receiver.soTimeout=100
+            check(runCatching {receiver.receive(packet)}.exceptionOrNull() is java.net.SocketTimeoutException)
+        } finally { sender.running=false; sender.control.close(); sender.outgoing.pool.shutdownNow() }
+    }
+    println("Passed: real UDP pointer/keyframe dispatch off UI thread, bounded coalescing, latest target delivery, uncoalesced drag edges, atomic click retries, old input discarded on reconnect")
 }
 '''
 lib = Path(sys.argv[1])

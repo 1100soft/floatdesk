@@ -19,6 +19,12 @@ fun main() {
  discovery.clear();check(discovery.select(null,false,13000)==null)
  discovery.observe(stranger,"another computer",13000)
  check(discovery.select(wifi,false,13001)==wifi) // No same-name advertisement: do not switch to another machine.
+ // A host selected by its reply can learn its name from a later beacon.
+ val lateBeacon=HostDiscovery()
+ check(lateBeacon.select(wifi,true,0)==wifi)
+ lateBeacon.observe(wifi,"computer",500);lateBeacon.observe(ethernet,"computer",501)
+ check(lateBeacon.select(wifi,true,1000)==wifi)
+ check(lateBeacon.select(wifi,false,2500)==ethernet)
  // Actual UDP: wildcard server replies from .1 although the first advertised address is .2.
  java.net.DatagramSocket(0,java.net.InetAddress.getByName("0.0.0.0")).use { server->
   java.net.DatagramSocket(0,java.net.InetAddress.getByName("127.0.0.1")).use { client->

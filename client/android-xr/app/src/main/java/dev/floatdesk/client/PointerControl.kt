@@ -1,11 +1,11 @@
 package dev.floatdesk.client
 
-internal data class PointerTarget(val monitor: Int, val u: Float, val v: Float, val local: FloatArray)
+internal data class PointerTarget(val monitor: Int, val u: Float, val v: Float, val local: FloatArray, val spaceKey: String = "desktop")
 internal data class HandAimPose(val position: FloatArray,val rotation: FloatArray)
 internal enum class PointerMode { OFF, GAZE, HAND, PREVIEW, GRAB;
     val reservesDesktop get()=this==PREVIEW || this==GRAB
 }
-internal data class PointerChoice(val mode: PointerMode, val target: PointerTarget? = null, val hand: String? = null)
+internal data class PointerChoice(val mode: PointerMode, val target: PointerTarget? = null)
 
 /** Hover is observational: it never arms a pinch or changes the monitor pose. */
 internal class PointerControl {
@@ -101,10 +101,7 @@ internal class PointerControl {
         return when {
             grabbing || nowMs < resumeAfterGrab -> PointerChoice(PointerMode.GRAB)
             handPreviewMonitor(previewHands)!=null -> PointerChoice(PointerMode.PREVIEW)
-            hands.isNotEmpty() -> {
-                val (side,target)=hands.maxBy {lastHoverAt[it.key] ?: 0L}
-                PointerChoice(PointerMode.HAND,target,side)
-            }
+            hands.isNotEmpty() -> PointerChoice(PointerMode.HAND,hands.maxBy {lastHoverAt[it.key] ?: 0L}.value)
             enabled -> PointerChoice(PointerMode.GAZE,gaze)
             else -> PointerChoice(PointerMode.OFF)
         }

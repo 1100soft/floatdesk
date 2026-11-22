@@ -872,7 +872,16 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 return PointerTarget(0,mapped.first,mapped.second,floatArrayOf(0f,0f,0f))
             }
             val desktopHands=(if(workspace.focusMode || workspace.windowGrabMode)pointerControl.focusHands(hoverHands) else hoverHands).filterKeys{it !in magnifierHands}
-            val panelHands=magnifierHands.mapNotNull{(side,uv)->magnifiedTarget(uv,magnifierHands.window(side))?.let{side to it}}.toMap()
+            val panelHands=magnifierHands.mapNotNull { (side,uv) ->
+                val window=magnifierHands.window(side)
+                val owner=magnifierHands.owner(side) ?: return@mapNotNull null
+                val key=when {
+                    owner.startsWith("system:")->"shell:$window"
+                    owner.startsWith("popup:")->"menu:$window"
+                    else->owner
+                }
+                magnifiedTarget(uv,window)?.let { side to it.copy(spaceKey=key) }
+            }.toMap()
             val contextHands=if(workspace.focusMode || workspace.windowGrabMode)desktopHands else desktopHands+panelHands
             val nativeFocusGazeEnabled=(workspace.focusMode || workspace.windowGrabMode) && pointerControl.systemGazeEnabled
             val nativeFocusGaze=if(nativeFocusGazeEnabled && !hudReading)pointerControl.systemGaze() else null
@@ -897,7 +906,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             val gazeBlockedByPane=paneGaze!=null
             // The toolbar is opaque to gaze: nothing behind it may take focus, magnify or move the eye mouse.
             val toolbarGaze=toolbarTarget!=null && contentEyeRays.any{(o,d)->toolbarPanels.get().any{it.contains(o,d)}}
-            val magnifierGaze=paneGaze?.let{(window,uv)->magnifiedTarget(magnifierContentPoint(window,uv),window.id)}
+            val magnifierGaze=paneGaze?.let{(window,uv,key)->magnifiedTarget(magnifierContentPoint(window,uv),window.id)?.copy(spaceKey=key)}
             val rawGazeTarget=if(toolbarGaze)null else if(gazeBlockedByPane)magnifierGaze else rawDesktopGazeTarget
             val gazeTarget=if(contextHands.isEmpty() && !hudReading) gazeStabilizer.update(rawGazeTarget?.takeIf {connection.desktopPoint(it.monitor,it.u,it.v)!=null},handTracking.nowMs) else { gazeStabilizer.reset(); null }
             val monitorGrab=grabs.values.any { it.engaged }
@@ -1048,9 +1057,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 }
                 mouse.target?.let {target->connection.desktopPoint(target.monitor,target.u,target.v)?.let {(u,v)->
                     connection.movePointer(target.monitor,u,v,mouse.dragging)
-                    val side=choice.hand;val owner=side?.let{magnifierHands.owner(it)}
-                    val space=when{choice.mode==PointerMode.GAZE && target===choice.target->paneGaze?.third ?: "desktop";owner==null->"desktop";owner.startsWith("system:")->owner.replaceFirst("system:","shell:");owner.startsWith("popup:")->"menu:${magnifierHands.window(side!!)}";else->owner}
-                    connection.claimCursor(space,u,v)
+                    connection.claimCursor(target.spaceKey,u,v)
                 }}
                 mouse.click?.let {
                     if(it.button==3) clickView.playSoundEffect(android.view.SoundEffectConstants.CLICK)

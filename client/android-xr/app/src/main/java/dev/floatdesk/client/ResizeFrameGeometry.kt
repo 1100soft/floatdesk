@@ -49,14 +49,12 @@ internal fun resizeDimensions(width:Float,height:Float,factor:Float):Pair<Float,
 
 /**
  * Corner-handle length in the surface's local units. 1.4 cm at arm's length (0.40 m), growing in
- * proportion to the viewing distance so the handle keeps that angle. Never larger than half the surface.
+ * proportion to the viewing distance so every handle keeps that angle, including on a thin panel.
  */
-internal fun resizeHandleEdge(distanceM: Float, localPerMeter: Float, width: Float, height: Float): Float {
+internal fun resizeHandleEdge(distanceM: Float, localPerMeter: Float): Float {
     val scale = localPerMeter.takeIf { it.isFinite() && it > 0f } ?: 1f
     val distance = distanceM.takeIf { it.isFinite() && it >= .05f } ?: .40f
-    val edge = .014f * scale * distance / .40f
-    val cap = minOf(width, height) * .5f
-    return if (cap.isFinite() && cap > 0f) minOf(edge, cap) else edge
+    return .014f * scale * distance / .40f
 }
 
 /** Aspect-preserving resize at a visible corner, measured in that pane's frozen axes. */

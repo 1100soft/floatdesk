@@ -62,6 +62,7 @@ internal class PointerControl {
         hovering.remove(side);departedAt.remove(side);lastHoverAt.remove(side);handPoses.remove(side);hoverPoses.remove(side);handOrder.remove(side)
     }
 
+    fun aimedAt(monitor:Int)=gazeHover?.monitor==monitor || hovering.values.any{it.monitor==monitor}
     fun clearMonitor(monitor: Int) {
         if(gazeHover?.monitor==monitor)gazeHover=null
         hovering.entries.removeAll { it.value.monitor == monitor }

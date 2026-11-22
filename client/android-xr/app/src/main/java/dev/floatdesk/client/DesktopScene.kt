@@ -249,7 +249,7 @@ internal fun DeskContent(
                     })
                     val handleEntity=warp.displayEntity
                     if(handleEntity!=null && !hands.engaged && handInputNow.value) {
-                        cornerHandles.update(current,handleEntity,screen.physicalWidthM,screen.physicalHeightM,handTracking.unitsPerMeter,ViewLayers.DesktopDistanceM,handTracking) { active,factor ->
+                        cornerHandles.update(current,handleEntity,screen.physicalWidthM,screen.physicalHeightM,handTracking.unitsPerMeter,ViewLayers.DesktopDistanceM,handTracking,pointerControl.aimedAt(index)) { active,factor ->
                             if(!handInputNow.value || hands.engaged) { nativeResize=false; return@update }
                             val existing=latest.value.monitorAt(index) ?: return@update
                             if(active && !nativeResize) {

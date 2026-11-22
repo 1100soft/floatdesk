@@ -42,13 +42,30 @@ internal fun flatResizeFrame(width: Float,height: Float,eye: FloatArray?): Resiz
 /** One aspect-preserving size for preview and release; no fixed workspace-size ceiling. */
 internal fun resizeDimensions(width:Float,height:Float,factor:Float):Pair<Float,Float>? {
     if(!width.isFinite() || !height.isFinite() || !factor.isFinite() || width<=0f || height<=0f || factor<=0f)return null
-    val scale=maxOf(factor,.28f/width,.16f/height)
+    // An object already under the floor must stay put when the grab starts at factor 1.
+    val scale=maxOf(factor,minOf(1f,.28f/width),minOf(1f,.16f/height))
     val w=width*scale;val h=height*scale
     return if(w.isFinite() && h.isFinite()) w to h else null
+}
+
+/**
+ * Corner-handle length in the surface's local units. 1.4 cm at arm's length (0.40 m), growing in
+ * proportion to the viewing distance so every handle keeps that angle, including on a thin panel.
+ */
+internal fun resizeHandleEdge(distanceM: Float, localPerMeter: Float): Float {
+    val scale = localPerMeter.takeIf { it.isFinite() && it > 0f } ?: 1f
+    val distance = distanceM.takeIf { it.isFinite() && it >= .05f } ?: .40f
+    return .014f * scale * distance / .40f
 }
 
 /** Aspect-preserving resize at a visible corner, measured in that pane's frozen axes. */
 internal fun cornerResizeFactor(width:Float,height:Float,x:Int,y:Int,dx:Float,dy:Float,base:Float=1f):Float {
     val radius=(width*width+height*height)*.25f
     return if(radius>0f)base+(dx*x*width*.5f+dy*y*height*.5f)/radius else base
+}
+
+/** Scale relative to the grabbed point, so a hit away from the corner does not resize immediately. */
+internal fun anchoredCornerFactor(projection:Float,grabbed:Float,radius:Float):Float {
+    if(!projection.isFinite() || !grabbed.isFinite() || !(radius>0f))return Float.NaN
+    return 1f+(projection-grabbed)/radius
 }

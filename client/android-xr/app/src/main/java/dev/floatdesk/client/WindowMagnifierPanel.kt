@@ -184,7 +184,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                 resources.pending=null
                 val next=if(projectFrame)magnifierFrame(current,prior,head,units(),updateGeometry)else current
                 if(allowManipulation){
-                    resources.corners.update(session,entity,next.width,next.height,units(),tracking){active,factor->
+                    resources.corners.update(session,entity,next.width,next.height,units(),next.layerDistanceM,tracking,resources.hovering.isNotEmpty()){active,factor->
                         if(resources.resizeStart==null){resources.resizeStart=resources.rendered;resources.dragged=true;resources.taps.clear()}
                         resources.resizeStart?.let{resources.pending=resizedMagnifier(it,factor)}
                         resources.resizing=active

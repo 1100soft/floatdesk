@@ -1,0 +1,16 @@
+---
+description: Recover a dropped adb server before reporting the headset as disconnected
+alwaysApply: true
+---
+
+# Headset adb
+
+An empty `adb devices` list means this adb server does not currently see the headset. It does not mean the cable is unplugged. The server often keeps running after it has dropped the USB device, and `adb start-server` does nothing while that server is already up.
+
+Before telling the user the headset is not connected:
+
+1. Run `adb kill-server`, then `adb start-server`, then `adb devices -l`.
+2. If it is still empty, check `lsusb` for the headset (Galaxy XR, `SM_I610`, `xrvst2`).
+3. Say it is unplugged only when it is absent from both. Otherwise say adb had dropped it and the restart recovered it.
+
+Use `~/Android/Sdk/platform-tools/adb`. These commands need to run outside the sandbox so they can see USB.

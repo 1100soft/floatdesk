@@ -202,10 +202,14 @@ internal class PaneCornerResize : AutoCloseable {
             }
             val weight=if(thick || glow)stroke*1.85f else stroke
             if(glow){
-                val steps=14
+                // Wide faint rings. They stack to a soft white cloud beside the stroke, then the cyan covers the mark.
+                val steps=18
+                val spread=n*.42f
                 for(i in steps downTo 1){
-                    val t=i/steps.toFloat()
-                    canvas.drawPath(path,ink(Color.argb(10,255,255,255),weight+stroke*5f*t))
+                    val halo=ink(Color.argb(22,255,255,255),weight+spread*(i/steps.toFloat()))
+                    halo.strokeCap=Paint.Cap.ROUND
+                    halo.strokeJoin=Paint.Join.ROUND
+                    canvas.drawPath(path,halo)
                 }
             }
             canvas.drawPath(path,ink(Color.CYAN,weight))

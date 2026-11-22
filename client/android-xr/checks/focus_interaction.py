@@ -19,6 +19,19 @@ metadata=body('net/WorkspaceInfo.kt');metadata=metadata[:metadata.index('    com
 code='import kotlin.math.*\n'+body('MonitorMesh.kt')+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+re.search(r'internal fun deskLayout\(.*?\n}',(root/'workspace/Workspace.kt').read_text(),re.S).group(0)+body('workspace/WorkspacePlacement.kt')+metadata+body('WindowMagnification.kt')+body('WindowInteraction.kt').replace('dev.floatdesk.client.workspace.MonitorPlacement','MonitorPlacement')+body('WindowToolbarState.kt')+re.search(r'internal object WindowMenuLayout \{.*?\n}',(root/'WindowActionsMenu.kt').read_text(),re.S).group(0)+'\n'+topology+body('VideoGeometry.kt')+body('MagnifierContacts.kt')+body('BoundedHistory.kt')+body('RenderPolicy.kt')+body('net/WindowCaptureRetry.kt')+body('net/WindowCaptureFormat.kt').replace('dev.floatdesk.client.RenderPolicy','RenderPolicy')+''.join(re.search(r'internal fun '+name+r'\(.*?\n}',application_sources(),re.S).group(0) for name in ('transformPoint','rotateVector','quaternionBetween','multiplyQuaternion','normalize3','normalize4'))+re.search(r'internal fun dot\(a: FloatArray[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun cross3\(.*',application_sources()).group(0)+'\n'+r'''
 fun main() {
  run {
+   val local=FixedMagnifierPlacement("pane",Pose(floatArrayOf(.3f,-.1f,.2f)),.45f,.3f,freePose=true)
+   val old=Pose(floatArrayOf(0f,0f,-1.2f))
+   val moved=Pose(floatArrayOf(.6f,.4f,-1.8f),floatArrayOf(0f,.70710677f,0f,.70710677f))
+   val updated=rebaseSupportingPlacement(local,old,moved,1f)
+   val expected=transformPoint(old,local.pose.position)
+   val result=transformPoint(moved,updated.pose.position)
+   check((0..2).all{abs(expected[it]-result[it])<.0001f} && updated.freePose)
+   val free=MagnifiedWindow(1,Pose(floatArrayOf(0f,0f,-2f)),.45f,.3f,450,300,freePose=true)
+   val displaced=floatArrayOf(1.2f,0f,-1.6f)
+   val angularResult=angularMagnifierPlacement(free,Pose(),1f,displaced)
+   check(angularResult.freePose && angularResult.pose.position.contentEquals(displaced))
+ }
+ run {
    val retry=WindowCaptureRetry()
    check(List(7){retry.nextDelayMs()}==listOf(500L,1000L,2000L,4000L,5000L,5000L,5000L))
    retry.reset();check(retry.nextDelayMs()==500L)

@@ -35,7 +35,7 @@ import dev.floatdesk.client.workspace.WorkspaceFile
 import kotlin.math.cos
 import kotlin.math.sin
 
-internal enum class PalmAction { FOLLOW, RESET, SEARCH, SPACE, WARP, EYES, GESTURES, MODE, MORE, BACK, DIAGNOSTICS, GAZE_FOCUS, MAGNIFIER, MOUSE_SPACES }
+internal enum class PalmAction { FOLLOW, RESET, SEARCH, SPACE, WARP, MOVE, HAND_MOUSE, FREE, REFERENCE, MODE, MORE, BACK, DIAGNOSTICS, GAZE_FOCUS, MAGNIFIER, MOUSE_SPACES }
 internal enum class PalmPage { MAIN, MORE }
 internal data class PalmButton(val action: PalmAction, val x: Float, val y: Float, val w: Float, val h: Float)
 
@@ -46,8 +46,8 @@ internal object PalmMenuLayout {
     const val gapM = WindowMenuLayout.gapM
     const val widthM = columns * cellM + (columns + 1) * gapM
     const val tooltipHeightM = .038f
-    private val main = listOf(PalmAction.SPACE, PalmAction.RESET, PalmAction.FOLLOW, PalmAction.WARP, PalmAction.MODE, PalmAction.MORE)
-    private val more = listOf(PalmAction.DIAGNOSTICS, PalmAction.EYES, PalmAction.GESTURES, PalmAction.SEARCH,
+    private val main = listOf(PalmAction.SPACE, PalmAction.RESET, PalmAction.FOLLOW, PalmAction.WARP, PalmAction.MOVE, PalmAction.HAND_MOUSE, PalmAction.MODE, PalmAction.FREE, PalmAction.MORE)
+    private val more = listOf(PalmAction.DIAGNOSTICS, PalmAction.REFERENCE, PalmAction.SEARCH,
         PalmAction.GAZE_FOCUS, PalmAction.MAGNIFIER, PalmAction.MOUSE_SPACES, PalmAction.BACK)
     fun actions(page: PalmPage) = if (page == PalmPage.MAIN) main else more
     fun rows(page: PalmPage) = (actions(page).size + columns - 1) / columns
@@ -63,6 +63,7 @@ internal object PalmMenuLayout {
 
 internal fun palmActionEnabled(action: PalmAction, workspace: WorkspaceFile, info: WorkspaceInfo?): Boolean = when (action) {
     PalmAction.WARP -> RenderPolicy.CustomMeshes
+    PalmAction.HAND_MOUSE, PalmAction.MODE -> !workspace.grabToMove
     PalmAction.GAZE_FOCUS -> info?.gazeFocus == true || workspace.gazeToFocus
     PalmAction.MAGNIFIER -> info?.windowMagnify == true || workspace.magnifyWindow
     PalmAction.MOUSE_SPACES -> RenderPolicy.CursorTopology
@@ -78,8 +79,10 @@ private fun palmState(action: PalmAction, workspace: WorkspaceFile, latched: Boo
     fun toggle(on: Boolean) = PalmState(1, if (on) 0 else -1)
     return when (action) {
         PalmAction.FOLLOW -> toggle(latched)
-        PalmAction.EYES -> toggle(workspace.eyeAiming)
-        PalmAction.GESTURES -> toggle(workspace.mouseGestures)
+        PalmAction.MOVE -> toggle(workspace.grabToMove)
+        PalmAction.HAND_MOUSE -> toggle(workspace.handMouseActive)
+        PalmAction.FREE -> toggle(workspace.freeManipulation)
+        PalmAction.REFERENCE -> toggle(workspace.desktopReference)
         PalmAction.DIAGNOSTICS -> toggle(workspace.viewDetailDebug)
         PalmAction.GAZE_FOCUS -> toggle(workspace.gazeToFocus)
         PalmAction.MOUSE_SPACES -> toggle(workspace.cursorRemap)
@@ -116,8 +119,10 @@ internal fun palmTooltip(action: PalmAction, workspace: WorkspaceFile, latched: 
     PalmAction.MORE -> "More"
     PalmAction.BACK -> "Back"
     PalmAction.DIAGNOSTICS -> if (workspace.viewDetailDebug) "Hide diagnostics" else "Show diagnostics"
-    PalmAction.EYES -> if (workspace.eyeAiming) "Eye mouse on" else "Eye mouse off"
-    PalmAction.GESTURES -> if (workspace.mouseGestures) "Mouse gestures on" else "Mouse gestures off"
+    PalmAction.MOVE -> "Grab to move"
+    PalmAction.HAND_MOUSE -> "Hand mouse"
+    PalmAction.FREE -> "Two-hand free manipulation"
+    PalmAction.REFERENCE -> "Desktop reference"
     PalmAction.SEARCH -> "Reconnect"
     PalmAction.GAZE_FOCUS -> if (workspace.gazeToFocus) "Gaze to focus on" else "Gaze to focus off"
     PalmAction.MAGNIFIER -> "Magnifier ${magnifierLabel(workspace)} · tap for ${magnifierLabel(nextMagnifier(workspace))}"
@@ -219,7 +224,7 @@ private fun DrawScope.drawPalmIcon(action: PalmAction, workspace: WorkspaceFile)
             line(.1f, .17f, .1f, .82f); line(.9f, .17f, .9f, .82f)
         } else box(.05f, .2f, .95f, .8f)
         PalmAction.MODE -> when (workspace.interactionMode) {
-            InteractionMode.MOUSE -> { line(.25f, .05f, .25f, .8f); line(.25f, .8f, .45f, .62f); line(.45f, .62f, .7f, .95f); line(.25f, .05f, .8f, .58f); line(.8f, .58f, .52f, .6f) }
+
             InteractionMode.FOCUS -> {
                 line(.05f, .05f, .32f, .05f); line(.05f, .05f, .05f, .32f); line(.95f, .05f, .68f, .05f); line(.95f, .05f, .95f, .32f)
                 line(.05f, .95f, .32f, .95f); line(.05f, .95f, .05f, .68f); line(.95f, .95f, .68f, .95f); line(.95f, .95f, .95f, .68f)
@@ -230,11 +235,10 @@ private fun DrawScope.drawPalmIcon(action: PalmAction, workspace: WorkspaceFile)
         PalmAction.MORE -> { dot(.15f, .5f, .09f); dot(.5f, .5f, .09f); dot(.85f, .5f, .09f) }
         PalmAction.BACK -> { line(.65f, .1f, .25f, .5f); line(.25f, .5f, .65f, .9f) }
         PalmAction.DIAGNOSTICS -> { line(.05f, .95f, .95f, .95f); line(.22f, .95f, .22f, .55f); line(.5f, .95f, .5f, .1f); line(.78f, .95f, .78f, .38f) }
-        PalmAction.EYES -> eye(.5f, .5f, .45f)
-        PalmAction.GESTURES -> {
-            line(.05f, .7f, .3f, .3f); line(.3f, .3f, .55f, .7f); line(.55f, .7f, .85f, .25f)
-            line(.85f, .25f, .62f, .28f); line(.85f, .25f, .88f, .48f)
-        }
+        PalmAction.HAND_MOUSE -> { line(.25f, .05f, .25f, .8f); line(.25f, .8f, .45f, .62f); line(.45f, .62f, .7f, .95f); line(.25f, .05f, .8f, .58f); line(.8f, .58f, .52f, .6f) }
+        PalmAction.MOVE -> { line(.1f,.5f,.9f,.5f); line(.5f,.1f,.5f,.9f); line(.1f,.5f,.27f,.32f); line(.9f,.5f,.73f,.68f) }
+        PalmAction.FREE -> { line(.06f,.72f,.42f,.27f); line(.58f,.72f,.94f,.27f); line(.06f,.72f,.3f,.72f); line(.70f,.27f,.94f,.27f) }
+        PalmAction.REFERENCE -> box(.08f,.16f,.92f,.84f)
         PalmAction.SEARCH -> { arc(.05f, .25f, .95f, 1.15f, 225f, 90f); arc(.22f, .42f, .78f, .98f, 225f, 90f); dot(.5f, .78f, .08f) }
         PalmAction.GAZE_FOCUS -> {
             line(.05f, .05f, .28f, .05f); line(.05f, .05f, .05f, .28f); line(.95f, .05f, .72f, .05f); line(.95f, .05f, .95f, .28f)

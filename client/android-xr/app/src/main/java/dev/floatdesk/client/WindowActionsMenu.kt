@@ -26,7 +26,7 @@ internal object WindowMenuLayout {
     const val cellM = .055f
     const val gapM = .006f
     val gridRows get() = (grids.size + columns - 1) / columns
-    fun toolbarButtons(magnifier: Boolean) = if (magnifier) 5 else 3
+    fun toolbarButtons(magnifier: Boolean) = if (magnifier) 6 else 3
     /** Sizes in units of one button cell, for a gap of [gap] cells. */
     fun toolbarWidth(magnifier: Boolean, gap: Float) = toolbarButtons(magnifier) + (toolbarButtons(magnifier) + 1) * gap + if (magnifier) 2 * gap else 0f
     fun toolbarHeight(gap: Float) = 1 + 2 * gap
@@ -41,13 +41,14 @@ private val SelectedCell = Color(0xFF2F7FA6)
 @Composable
 internal fun WindowToolbar(window: Long?, magnifier: Boolean, snap: SnapCell?, snapExpanded: Boolean, cell: Dp, gap: Dp,
                            onHover: (Boolean) -> Unit, onTooltip: (String?) -> Unit, onSnapHover: (Boolean) -> Unit,
-                           onSnapToggle: () -> Unit, onAction: (String) -> Unit, onAdd: () -> Unit, onRemove: () -> Unit) {
+                           onSnapToggle: () -> Unit, onAction: (String) -> Unit, onAdd: () -> Unit, onRemove: () -> Unit, pinned:Boolean, onPin: () -> Unit) {
     MaterialTheme(colorScheme = darkColorScheme()) {
         CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp(0f)) {
             Row(Modifier.background(ToolbarSurface).trackMenuHover { onHover(it != null) }.padding(gap),
                 horizontalArrangement = Arrangement.spacedBy(gap), verticalAlignment = Alignment.CenterVertically) {
                 if (magnifier) {
                     MenuIcon("add", "Add a magnifier", cell, true, onTooltip, onClick = onAdd)
+                    MenuIcon("pin", if(pinned) "Unpin this window" else "Pin this window",cell,window!=null,onTooltip,active=pinned,onClick=onPin)
                     MenuIcon("remove", "Remove this magnifier", cell, true, onTooltip, onClick = onRemove)
                     Box(Modifier.width(gap).height(cell * .6f).background(Color(0xFF3A4752)))
                 }
@@ -98,6 +99,7 @@ private fun MenuIcon(action: String, description: String, cell: Dp, enabled: Boo
                         }
                         drawRect(ink, Offset.Zero, size, style = outline)
                     }
+                    "pin" -> {line(.25f,.19f,.75f,.19f);line(.38f,.19f,.33f,.56f);line(.62f,.19f,.67f,.56f);line(.25f,.56f,.75f,.56f);line(.5f,.56f,.5f,.94f)}
                     "add" -> { line(.05f,.5f,.95f,.5f); line(.5f,.05f,.5f,.95f) }
                     "remove" -> {
                         line(.1f,.2f,.9f,.2f); line(.35f,.05f,.65f,.05f)

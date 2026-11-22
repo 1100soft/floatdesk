@@ -55,7 +55,7 @@ internal class NativeSurfaceTap {
     }
 }
 internal val MagnifierDistanceM get()=ViewLayers.MagnifierDistanceM
-internal data class MagnifiedWindow(val id:Long,val pose:Pose,val width:Float,val height:Float,val sourceWidth:Int,val sourceHeight:Int,val spherical:Boolean=false,val mesh:MonitorMesh?=null,val units:Float=1f,val headOffset:FloatArray=floatArrayOf(0f,0f,-1f),val sizeScale:Float=1f,val fixed:Boolean=false,val desktopRotation:FloatArray?=null,val requestedPosition:FloatArray?=null,val headRotation:FloatArray?=null,val layerDistanceM:Float=MagnifierDistanceM)
+internal data class MagnifiedWindow(val id:Long,val pose:Pose,val width:Float,val height:Float,val sourceWidth:Int,val sourceHeight:Int,val spherical:Boolean=false,val mesh:MonitorMesh?=null,val units:Float=1f,val headOffset:FloatArray=floatArrayOf(0f,0f,-1f),val sizeScale:Float=1f,val fixed:Boolean=false,val desktopRotation:FloatArray?=null,val requestedPosition:FloatArray?=null,val headRotation:FloatArray?=null,val layerDistanceM:Float=MagnifierDistanceM,val freePose:Boolean=false)
 internal fun magnifiedWindow(id:Long,width:Int,height:Int,viewer:Pose,horizontal:Float,vertical:Float,units:Float,spherical:Boolean=false,previous:MagnifiedWindow?=null,layerDistanceM:Float=MagnifierDistanceM):MagnifiedWindow{
     val source=deskLayout(listOf(Triple("Window",width,height)))
     val fitted=fitDesktopInView(source,viewer,horizontal,vertical,units,spherical,centralView=true,distanceM=layerDistanceM).single()
@@ -75,7 +75,7 @@ internal fun magnifierGeometry(window:MagnifiedWindow,viewer:Pose,units:Float,pr
         if(length>.00001f)FloatArray(3){local[it]/length} else window.headOffset
     }
     val center=transformPoint(viewer,FloatArray(3){offset[it]*radius})
-    val facing=if(window.spherical || proposed!=null)facingMagnifierRotation(center,viewer,viewer.rotation) else null
+    val facing=if(window.spherical || proposed!=null)facingMagnifierRotation(center,viewer,window.desktopRotation ?: viewer.rotation) else null
     val headRotation=if(proposed!=null) {
         val q=viewer.rotation
         multiplyQuaternion(floatArrayOf(-q[0],-q[1],-q[2],q[3]),facing!!)
@@ -87,6 +87,16 @@ internal fun magnifierGeometry(window:MagnifiedWindow,viewer:Pose,units:Float,pr
     return window.copy(pose=pose,width=width,height=height,mesh=mesh,units=stableUnits,headOffset=offset,headRotation=headRotation)
 
 }
+internal fun angularMagnifierPlacement(window:MagnifiedWindow,viewer:Pose,units:Float,position:FloatArray,updateMesh:Boolean=true):MagnifiedWindow {
+    if(window.freePose) {
+        // The angular drag already preserves the original radius, including a custom free depth.
+        val rotation=facingMagnifierRotation(position,viewer,window.desktopRotation ?: window.pose.rotation)
+        return magnifierFrame(window.copy(pose=Pose(position,rotation),requestedPosition=position),window,viewer,units,updateMesh)
+    }
+    return if(window.fixed)fixedMagnifierGeometry(window,viewer,position,updateMesh)
+        else magnifierGeometry(window,viewer,units,position,updateMesh)
+}
+
 /** Projection mode changes are immediate even when ordinary mesh updates are deferred. */
 internal fun magnifierFrame(window:MagnifiedWindow, previous:MagnifiedWindow, viewer:Pose, units:Float, updateGeometry:Boolean):MagnifiedWindow {
     // The native input surface, resize affordance and image share the content aspect.
@@ -96,6 +106,10 @@ internal fun magnifierFrame(window:MagnifiedWindow, previous:MagnifiedWindow, vi
     val changed=fitted.spherical!=previous.spherical || fitted.width!=previous.width || fitted.height!=previous.height
     val rebuild=updateGeometry || changed || fitted.spherical && previous.mesh==null
     val source=fitted.copy(mesh=if(changed)null else previous.mesh)
+    if(source.freePose) {
+        val mesh=projectMagnifier(source,viewer,source.pose,source.width,source.height,rebuild,.003f,.003f)
+        return source.copy(mesh=mesh)
+    }
     return if(fitted.fixed)fixedMagnifierGeometry(source,viewer,updateMesh=rebuild)
         else magnifierGeometry(source,viewer,units,updateMesh=rebuild)
 }
@@ -179,12 +193,21 @@ internal fun saveFixedMagnifier(id:String,window:MagnifiedWindow,desktop:Monitor
     val local=viewerInMonitor(window.pose.position,desktop.pose.position,desktop.pose.rotation)
     val q=desktop.pose.rotation
     val rotation=multiplyQuaternion(floatArrayOf(-q[0],-q[1],-q[2],q[3]),window.pose.rotation)
-    return FixedMagnifierPlacement(id,Pose(FloatArray(3){local[it]/units},rotation),window.width/units,window.height/units)
+    return FixedMagnifierPlacement(id,Pose(FloatArray(3){local[it]/units},rotation),window.width/units,window.height/units,window.freePose)
+}
+/** Change the desktop reference without moving the supporting pane in scene space. */
+internal fun rebaseSupportingPlacement(record:FixedMagnifierPlacement,old:Pose,next:Pose,units:Float):FixedMagnifierPlacement {
+    val world=transformPoint(old,FloatArray(3){record.pose.position[it]*units})
+    val local=viewerInMonitor(world,next.position,next.rotation)
+    val worldRotation=multiplyQuaternion(old.rotation,record.pose.rotation)
+    val q=next.rotation
+    val rotation=multiplyQuaternion(floatArrayOf(-q[0],-q[1],-q[2],q[3]),worldRotation)
+    return record.copy(pose=Pose(FloatArray(3){local[it]/units},rotation))
 }
 internal fun fixedMagnifier(record:FixedMagnifierPlacement,desktop:MonitorPlacement,source:DesktopWindow?,viewer:Pose,units:Float,spherical:Boolean,previous:MagnifiedWindow?=null,layerDistanceM:Float=MagnifierDistanceM):MagnifiedWindow{
     val pose=Pose(transformPoint(desktop.pose,FloatArray(3){record.pose.position[it]*units}),multiplyQuaternion(desktop.pose.rotation,record.pose.rotation))
     val window=MagnifiedWindow(source?.id ?: 0,pose,record.widthM*units,record.heightM*units,source?.width ?: 1280,source?.height ?: 800,
-        spherical,units=units,fixed=true,desktopRotation=desktop.pose.rotation,requestedPosition=pose.position,layerDistanceM=layerDistanceM)
+        spherical,units=units,fixed=true,desktopRotation=desktop.pose.rotation,requestedPosition=pose.position,layerDistanceM=layerDistanceM,freePose=record.freePose)
     return magnifierFrame(window,previous ?: window,viewer,units,true)
 }
 

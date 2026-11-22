@@ -52,7 +52,7 @@ internal fun WorkspaceFile.restoreViewer(viewer:Pose):WorkspaceFile {
         val rotated=floatArrayOf(v[0]+q[3]*t[0]+q[1]*t[2]-q[2]*t[1],v[1]+q[3]*t[1]+q[2]*t[0]-q[0]*t[2],v[2]+q[3]*t[2]+q[0]*t[1]-q[1]*t[0])
         return Pose(FloatArray(3){viewer.position[it]+rotated[it]},multiply(q,p.rotation))
     }
-    return copy(viewerReference=viewer,layouts=layouts.mapValues {(_,screens)->screens.map {it.copy(pose=transform(it.pose))}.toMutableList()}.toMutableMap(),control=control.copy(pose=transform(control.pose)))
+    return copy(viewerReference=viewer,supportBasis=supportBasis?.let(::transform),layouts=layouts.mapValues {(_,screens)->screens.map {it.copy(pose=transform(it.pose))}.toMutableList()}.toMutableMap(),control=control.copy(pose=transform(control.pose)))
 }
 
 /** Fit the complete desktop into a symmetric, inset portion of the current camera view. */
@@ -106,7 +106,7 @@ internal fun focusDesktopRegion(screen:MonitorPlacement,rect:FloatArray,viewer:P
     val tx=-2f*q[2]*y;val ty=2f*q[2]*x;val tz=2f*(q[0]*y-q[1]*x)
     val offset=floatArrayOf(x+q[3]*tx+q[1]*tz-q[2]*ty,y+q[3]*ty+q[2]*tx-q[0]*tz,q[3]*tz+q[0]*ty-q[1]*tx)
     return screen.copy(pose=Pose(FloatArray(3){fitted.pose.position[it]-offset[it]},q.copyOf()),
-        physicalWidthM=width,physicalHeightM=height,viewCenterU=u,viewCenterV=v)
+        physicalWidthM=width,physicalHeightM=height,viewCenterU=u,viewCenterV=v,freePose=false)
 }
 
 
@@ -160,5 +160,6 @@ internal fun WorkspaceFile.withViewingDistances(nearest:Float,farthest:Float,vie
         it.copy(pose=Pose(FloatArray(3){i->it.pose.position[i]*desktopScale},it.pose.rotation),widthM=it.widthM*size,heightM=it.heightM*size)
     }
     return copy(layouts=nextLayouts,fixedMagnifiers=rescale(fixedMagnifiers,ratio(3)),systemPanels=rescale(systemPanels,ratio(2)),
+        referencePlacement=rescale(listOfNotNull(referencePlacement),ratio(3)).firstOrNull(),
         nearestDistanceM=near,farthestDistanceM=far)
 }

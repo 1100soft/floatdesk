@@ -13,6 +13,7 @@ import dev.floatdesk.client.workspace.Pose
 internal class GrabTracking {
     val points = mutableMapOf<String, FloatArray>()
     val pinched = mutableSetOf<String>()
+    val paneGuides = mutableMapOf<String, GrabGuide>()
     var pointerHeld=false
     var unitsPerMeter = 1f
     var nowMs = 0L

@@ -6,6 +6,7 @@ import androidx.xr.runtime.math.*
 import androidx.xr.scenecore.*
 import dev.floatdesk.client.media.*
 import dev.floatdesk.client.net.DeskConnection
+import dev.floatdesk.client.workspace.MonitorPlacement
 import java.nio.FloatBuffer
 import java.nio.IntBuffer
 import kotlinx.coroutines.delay
@@ -18,10 +19,12 @@ import kotlinx.coroutines.isActive
 internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWindow?,connection:DeskConnection,
     pinned:Boolean,viewer:java.util.concurrent.atomic.AtomicReference<dev.floatdesk.client.workspace.Pose?>,
     units:()->Float,tracking:GrabTracking,
-    onReady:()->Unit,onError:(String)->Unit,onHover:(String,Pair<Float,Float>?)->Unit,onTap:(Pair<Float,Float>)->Unit,
-    onPlacement:(MagnifiedWindow,Boolean)->Unit,onMoving:(Boolean)->Unit,onPointerHover:(hands:Boolean,gaze:Boolean)->Unit={_,_->},onHidden:()->Unit={},captureId:Long?=null,regionId:Long?=null,allowManipulation:Boolean=true,showFrame:Boolean=true,topologyKey:String?=null,receiveInput:Boolean=true,projectFrame:Boolean=true){
+    onReady:()->Unit,onError:(String)->Unit,onHover:(String,Pair<Float,Float>?)->Unit,
+    onPlacement:(MagnifiedWindow,Boolean)->Unit,onMoving:(Boolean)->Unit,onPointerHover:(hands:Boolean,gaze:Boolean)->Unit={_,_->},onHidden:()->Unit={},captureId:Long?=null,regionId:Long?=null,allowManipulation:Boolean=true,showFrame:Boolean=true,topologyKey:String?=null,receiveInput:Boolean=true,projectFrame:Boolean=true,freeManipulation:Boolean=false,desktopMirror:Boolean=false,mirrorOverlay:(()->VideoAim)?=null){
     val readyNow=rememberUpdatedState(onReady);val errorNow=rememberUpdatedState(onError);val hoverNow=rememberUpdatedState(onHover)
-    val tapNow=rememberUpdatedState(onTap);val windowNow=rememberUpdatedState(window);val placementNow=rememberUpdatedState(onPlacement);val movingNow=rememberUpdatedState(onMoving)
+    val windowNow=rememberUpdatedState(window);val placementNow=rememberUpdatedState(onPlacement);val movingNow=rememberUpdatedState(onMoving)
+    val moveMode=rememberUpdatedState(allowManipulation);val freeMode=rememberUpdatedState(freeManipulation)
+    val mirrorOverlayNow=rememberUpdatedState(mirrorOverlay)
     val pinNow=rememberUpdatedState(pinned)
     val pointerHoverNow=rememberUpdatedState(onPointerHover)
     val hiddenNow=rememberUpdatedState(onHidden)
@@ -35,10 +38,10 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
         if(failureToken>0 && window!=null){delay(retryPolicy.nextDelayMs());retryToken++}
     }
     DisposableEffect(resources){onDispose{hoverNow.value("LEFT",null);hoverNow.value("RIGHT",null);clearPointerHover();hiddenNow.value();movingNow.value(false);resources.close()}}
-    LaunchedEffect(resources,window?.id,captureId,regionId,captureEpoch,retryToken){
+    LaunchedEffect(resources,window?.id,captureId,regionId,captureEpoch,retryToken,desktopMirror){
         hiddenNow.value();resources.visible=false;resources.stream?.close();resources.stream=null;resources.entity?.setEnabled(false);resources.curved?.entity?.setEnabled(false)
         hoverNow.value("LEFT",null);hoverNow.value("RIGHT",null);clearPointerHover()
-        val initial=window?.takeIf{it.id>0L && it.sourceWidth>0 && it.sourceHeight>0} ?: return@LaunchedEffect
+        val initial=window?.takeIf{(desktopMirror || it.id>0L) && it.sourceWidth>0 && it.sourceHeight>0} ?: return@LaunchedEffect
         var initialViewer=viewer.get()
         while(initialViewer==null){withFrameNanos{};initialViewer=viewer.get()}
         val target=if(projectFrame)magnifierFrame(initial,initial,initialViewer,units(),true)else initial
@@ -70,46 +73,41 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                         if(event.action==InputEvent.Action.HOVER_EXIT || event.action==InputEvent.Action.CANCEL)hoverNow.value(side,null)
                         else if(uv!=null)hoverNow.value(side,uv)
                     }
-                    if(uv!=null)resources.lastContact=uv
+                    if(freeMode.value && event.source==InputEvent.Source.HANDS && side in setOf("LEFT","RIGHT")) {
+                        if(local!=null && uv!=null && uv.first in 0f..1f && uv.second in 0f..1f)
+                            resources.freeContacts[side]=local
+                        if(event.action==InputEvent.Action.HOVER_EXIT || event.action==InputEvent.Action.CANCEL)
+                            resources.freeContacts.remove(side)
+                    }
                     val pointerKey=(if(event.source==InputEvent.Source.GAZE_AND_GESTURE)"gaze:" else "hand:")+side
                     val pointing=uv!=null && event.action!=InputEvent.Action.HOVER_EXIT && event.action!=InputEvent.Action.CANCEL
                     if(if(pointing)resources.hovering.add(pointerKey)else resources.hovering.remove(pointerKey))
                         pointerHoverNow.value(resources.hovering.any{it.startsWith("hand:")},resources.hovering.any{it.startsWith("gaze:")})
-                    fun commitTap(point:Pair<Float,Float>){
-                        tapNow.value(point)
-                        val key=topologyKey ?: return
-                        val source=connection.windowCaptures.source(active.id) ?: return
-                        val bounds=connection.workspaceInfo.value?.bounds() ?: return
-                        val uv=magnifierContentPoint(active,point)
-                        connection.claimCursor(key,(source.x+uv.first*source.width-bounds[0])/bounds[2],(source.y+uv.second*source.height-bounds[1])/bounds[3])
-                    }
                     fun rootRay():Pair<FloatArray,FloatArray>{
                         fun point(v:Vector3):FloatArray{val p=session.scene.activitySpace.transformPoseTo(Pose(v),root).translation;return floatArrayOf(p.x,p.y,p.z)}
                         val origin=point(event.origin)
                         val end=point(Vector3(event.origin.x+event.direction.x,event.origin.y+event.direction.y,event.origin.z+event.direction.z))
                         return origin to FloatArray(3){end[it]-origin[it]}
                     }
-                    if(allowManipulation && event.action==InputEvent.Action.DOWN && local!=null && !resources.resizing && !resources.moving){
+                    if(moveMode.value && event.action==InputEvent.Action.DOWN && local!=null && !resources.resizing && !resources.moving){
                         val head=viewer.get()
-                        if(head!=null){resources.dragged=false;resources.tapCommitted=false;resources.taps.clear();val ray=rootRay()
+                        if(head!=null){resources.dragged=false;val ray=rootRay()
                             val handSide=side.takeIf{it=="LEFT" || it=="RIGHT"} ?: tracking.pinched.filter{it in tracking.points}.singleOrNull()
                             val hand=handSide?.let{tracking.points[it]}
                             resources.drag.begin(active,head,ray.first,ray.second,transformPoint(active.pose,local),hand)
-                            resources.dragHandSide=handSide.takeIf{hand!=null};resources.dragSide=side;resources.moveContact=uv;resources.moving=true;movingNow.value(true)}
+                            resources.dragHandSide=handSide.takeIf{hand!=null};resources.dragSide=side;resources.moveContact=uv;resources.moveStarted=tracking.nowMs;resources.moving=true;movingNow.value(true)}
                     }
                     if(event.action==InputEvent.Action.MOVE && resources.moving && side==resources.dragSide && resources.dragHandSide==null && !resources.resizing){
                         val head=viewer.get()
                         if(head!=null){val ray=rootRay();val proposed=resources.drag.move(head,ray.first,ray.second)
-                            if(proposed!=null){if(!resources.dragged)movingNow.value(true);resources.dragged=true;resources.taps.clear();resources.pending=if(active.fixed)fixedMagnifierGeometry(active,head,proposed)else magnifierGeometry(active,head,units(),proposed)}
+                            if(proposed!=null){if(!resources.dragged)movingNow.value(true);resources.dragged=true;resources.pending=angularMagnifierPlacement(active,head,units(),proposed)}
                         }
                     }
                     if((event.action==InputEvent.Action.UP || event.action==InputEvent.Action.CANCEL) && side==resources.dragSide){
                         resources.pending?.let{placementNow.value(it,resources.dragged || resources.resizing)}
-                        if(event.action==InputEvent.Action.UP && !resources.dragged && !resources.tapCommitted){resources.moveContact?.let{resources.tapCommitted=true;resources.taps.clear();commitTap(it)}}
                         resources.drag.clear();resources.dragSide=null;resources.dragHandSide=null;resources.moving=false;movingNow.value(false)
                     }
-                    if(event.action==InputEvent.Action.DOWN && !resources.moving){resources.dragged=false;resources.tapCommitted=false}
-                    if(!resources.dragged)resources.taps.update(side,event.action.toString(),uv)?.let{if(!resources.tapCommitted){resources.tapCommitted=true;commitTap(it)}}
+                    if(event.action==InputEvent.Action.DOWN && !resources.moving){resources.dragged=false}
                 }
                 resources.listener=listener
 
@@ -129,17 +127,33 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
             entity.parent=root;entity.setPose(targetPose)
             val generation=++resources.generation
             var shown=false
-            resources.stream=connection.windowCaptures.attach(captureId ?: target.id,entity.getSurface(),{
+            if(!desktopMirror)resources.stream=connection.windowCaptures.attach(captureId ?: target.id,entity.getSurface(),{
                 if(resources.generation==generation && !entity.isDisposed){shown=true;retryPolicy.reset();failureToken=0;resources.visible=true;entity.setEnabled(true);resources.curved?.entity?.setEnabled(true);android.util.Log.i("Floatdesk","pane ready key=$topologyKey id=${target.id}");readyNow.value()}
             },{message->if(resources.generation==generation){resources.visible=false;entity.setEnabled(false);resources.curved?.entity?.setEnabled(false);hoverNow.value("LEFT",null);hoverNow.value("RIGHT",null);clearPointerHover();errorNow.value(message);failureToken++}},regionId=regionId)
             resources.stream?.update(if(showFrame).005f*target.units/(target.width+.01f*target.units)else 0f,if(showFrame).005f*target.units/(target.height+.01f*target.units)else 0f,showFrame && pinNow.value,target.width/target.height)
             var prior=target
             var geometryAt=0L
+            val mirrorPresented=java.util.concurrent.atomic.AtomicBoolean(false)
+            val mirrorInk=java.util.concurrent.atomic.AtomicReference(VideoAim())
+            val mirror=if(desktopMirror)VideoMirror(entity.getSurface(),presented={mirrorPresented.set(true)},ink=mirrorInk::get)else null
             while(isActive){
                 withFrameNanos{ }
                 if(entity.isDisposed)return@LaunchedEffect
                 if(!session.lifecycleOwner.lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)){delay(100);continue}
                 val now=android.os.SystemClock.uptimeMillis()
+                if(mirror!=null){
+                    val renderer=connection.windowRenderer()
+                    if(renderer!==resources.mirrorRenderer){
+                        resources.detachMirror()
+                        mirrorPresented.set(false)
+                        shown=false;resources.visible=false;entity.setEnabled(false);resources.curved?.entity?.setEnabled(false);hiddenNow.value()
+                        resources.mirrorRenderer=renderer
+                        renderer?.mirrors(listOf(mirror))
+                    }
+                    if(!shown && mirrorPresented.get()){
+                        shown=true;resources.visible=true;entity.setEnabled(true);resources.curved?.entity?.setEnabled(true);readyNow.value()
+                    }
+                }
                 if(!shown)continue
                 val wire=connection.cursorWires[topologyKey]
                 val renderedPane=resources.rendered
@@ -157,8 +171,42 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                 val location=connection.cursorLocation?.takeIf{it.key==topologyKey}
                 val glow=surfaceCoordinates(location?.let{loc->renderedPane?.let{p->cursorGlow(loc.u,loc.v,p.width,p.height,p.layerDistanceM*p.units)}} ?: floatArrayOf())
                 val colors=FloatArray((ink.size+cue.size+glow.size)/4*3){i->if(i/3<ink.size/4)listOf(.6f,.85f,1f)[i%3]else if(i/3<(ink.size+cue.size)/4)listOf(1f,.75f,.25f)[i%3]else listOf(0f,1f,1f)[i%3]}
-                resources.stream?.overlay(VideoAim(ink+cue+glow,opacity=.85f,colors=colors))
+                val overlay=VideoAim(ink+cue+glow,opacity=.85f,colors=colors)
+                resources.stream?.overlay(overlay)
+                if(mirror!=null){
+                    val focus=mirrorOverlayNow.value?.invoke()
+                    mirrorInk.set(if(focus==null)overlay else overlay.copy(
+                        segments=overlay.segments+focus.segments,colors=overlay.colors+focus.colors))
+                }
                 val head=viewer.get() ?: continue
+                if(freeMode.value && !resources.resizing) {
+                    val active=resources.rendered ?: prior
+                    val current=MonitorPlacement("pane","pane",active.pose,active.width,active.height,0f,active.sourceWidth,active.sourceHeight,0)
+                    val wasEngaged=resources.free.engaged
+                    if(!wasEngaged && resources.freeContacts.keys.containsAll(listOf("LEFT","RIGHT")) &&
+                        tracking.pinched.containsAll(listOf("LEFT","RIGHT"))) {
+                        for(side in listOf("LEFT","RIGHT"))resources.free.acquire(side,resources.freeContacts.getValue(side),current,tracking,active.mesh)
+                    }
+                    resources.free.advance(tracking,current)?.let { next ->
+                        resources.pending=active.copy(pose=next.pose,width=next.physicalWidthM,height=next.physicalHeightM,freePose=true,mesh=null)
+                        resources.dragged=true
+                    }
+                    if(wasEngaged!=resources.free.engaged)movingNow.value(resources.free.engaged)
+                    if(topologyKey!=null){
+                        val guide=resources.free.guide ?: resources.freeContacts.takeIf{it.size==2}?.let{
+                            previewGrabGuide(current,it.getValue("LEFT"),it.getValue("RIGHT"),tracking,active.mesh)
+                        }
+                        if(guide==null)tracking.paneGuides.remove(topologyKey)else tracking.paneGuides[topologyKey]=guide
+                    }
+                } else {
+                    topologyKey?.let { tracking.paneGuides.remove(it) }
+                    if(resources.free.busy){resources.free.cancel();movingNow.value(false)}
+                }
+                if(resources.moving && (!moveMode.value ||
+                    resources.dragHandSide?.let{tracking.nowMs-resources.moveStarted>=120 && it !in tracking.pinched}==true)){
+                    resources.pending?.let{placementNow.value(it,resources.dragged)}
+                    resources.drag.clear();resources.dragHandSide=null;resources.dragSide=null;resources.moving=false;movingNow.value(false)
+                }
                 if(resources.moving && !resources.resizing){
                     // Mixed gaze input can arrive before the joint sampler confirms which hand pinched.
                     // Bind once it becomes unambiguous, without switching hands or jumping position.
@@ -175,17 +223,17 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                     val hand=resources.dragHandSide?.let{tracking.points[it]}
                     val active=windowNow.value
                     if(hand!=null && active!=null){resources.drag.moveHand(head,hand)?.let{proposed->
-                        resources.dragged=true;resources.taps.clear()
-                        resources.pending=if(active.fixed)fixedMagnifierGeometry(active,head,proposed,updateMesh=false)else magnifierGeometry(active,head,units(),proposed,updateMesh=false)
+                        resources.dragged=true
+                        resources.pending=angularMagnifierPlacement(active,head,units(),proposed,updateMesh=false)
                     }}
                 }
                 val updateGeometry=now-geometryAt>=if(windowNow.value?.fixed==true)100 else 50
                 val current=resources.pending ?: windowNow.value ?: continue
                 resources.pending=null
                 val next=if(projectFrame)magnifierFrame(current,prior,head,units(),updateGeometry)else current
-                if(allowManipulation){
-                    resources.corners.update(session,entity,next.width,next.height,units(),next.layerDistanceM,tracking,resources.hovering.isNotEmpty()){active,factor->
-                        if(resources.resizeStart==null){resources.resizeStart=resources.rendered;resources.dragged=true;resources.taps.clear()}
+                if(moveMode.value || freeMode.value){
+                    resources.corners.update(session,entity,next.width,next.height,units(),next.layerDistanceM,tracking,resources.hovering.isNotEmpty() && !resources.free.engaged){active,factor->
+                        if(resources.resizeStart==null){resources.resizeStart=resources.rendered;resources.dragged=true}
                         resources.resizeStart?.let{resources.pending=resizedMagnifier(it,factor)}
                         resources.resizing=active
                         if(!active){resources.pending?.let{placementNow.value(it,true)};resources.resizeStart=null}
@@ -217,7 +265,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
             }
         }catch(e:kotlinx.coroutines.CancellationException){throw e}
         catch(e:Exception){resources.close();errorNow.value(e.message ?: "Window magnifier unavailable")}
-        finally{hiddenNow.value();resources.clearInteraction();movingNow.value(false);resources.visible=false;resources.generation++;resources.stream?.close();resources.stream=null;resources.entity?.setEnabled(false);resources.curved?.entity?.setEnabled(false);hoverNow.value("LEFT",null);hoverNow.value("RIGHT",null);clearPointerHover()}
+        finally{topologyKey?.let{tracking.paneGuides.remove(it)};resources.detachMirror();hiddenNow.value();resources.clearInteraction();movingNow.value(false);resources.visible=false;resources.generation++;resources.stream?.close();resources.stream=null;resources.entity?.setEnabled(false);resources.curved?.entity?.setEnabled(false);hoverNow.value("LEFT",null);hoverNow.value("RIGHT",null);clearPointerHover()}
     }
 
 }
@@ -258,22 +306,32 @@ private suspend fun syncMagnifierInput(session:Session,resources:MagnifierResour
 @android.annotation.SuppressLint("RestrictedApi")
 private class MagnifierResources:AutoCloseable{
     var entity:SurfaceEntity?=null;var stream:dev.floatdesk.client.net.WindowCapturePool.Lease?=null
+    var mirrorRenderer:VideoCompositor?=null
+    fun detachMirror(){
+        val renderer=mirrorRenderer ?: return
+        mirrorRenderer=null
+        renderer.mirrors(emptyList())
+        renderer.flushOutputs()
+    }
     var flatInput:InteractableComponent?=null
     var curved:CurvedMonitorInput?=null;var mesh:MonitorMesh?=null;var listener:((InputEvent)->Unit)?=null
     var rendered:MagnifiedWindow?=null;var pending:MagnifiedWindow?=null
+    val free=TwoHandState();val freeContacts=mutableMapOf<String,FloatArray>()
     val corners=PaneCornerResize();var resizing=false;var resizeStart:MagnifiedWindow?=null
-    val drag=MagnifierRayDrag();var dragSide:String?=null;var dragHandSide:String?=null;var moving=false;var dragged=false;var tapCommitted=false
-    var lastContact:Pair<Float,Float>?=null;var moveContact:Pair<Float,Float>?=null
+    val drag=MagnifierRayDrag();var dragSide:String?=null;var dragHandSide:String?=null;var moving=false;var dragged=false
+    var moveContact:Pair<Float,Float>?=null
+    var moveStarted=0L
     val hovering=mutableSetOf<String>()
-    var visible=false;var generation=0;val taps=NativeSurfaceTap();val shapes=RetainedSurfaceShapes(128,16L*1024*1024)
+    var visible=false;var generation=0;val shapes=RetainedSurfaceShapes(128,16L*1024*1024)
     fun clearInteraction(){
+        if(free.busy)free.cancel();freeContacts.clear()
         corners.cancel();drag.clear();dragSide=null;dragHandSide=null;pending=null
         resizing=false;resizeStart=null;moving=false
-        taps.clear();lastContact=null;moveContact=null
+        moveContact=null
     }
     fun retain(shape:SurfaceEntity.Shape){shapes.retain(shape)}
     override fun close(){
-        clearInteraction();visible=false;generation++
+        detachMirror();clearInteraction();visible=false;generation++
         val lease=stream;stream=null;lease?.close()
         flatInput?.let{component->entity?.takeUnless{it.isDisposed}?.removeComponent(component)};flatInput=null
         corners.close()

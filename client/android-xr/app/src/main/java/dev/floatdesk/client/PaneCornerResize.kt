@@ -14,7 +14,7 @@ import androidx.xr.runtime.math.Vector3
 import androidx.xr.scenecore.*
 import java.util.concurrent.atomic.AtomicInteger
 
-/** Four corner marks. Each is the corner of a rounded rectangle, with no fill. */
+/** Four corner squares. The cyan mark is only the outer quadrant of each square. */
 @android.annotation.SuppressLint("RestrictedApi")
 @OptIn(ExperimentalSurfaceEntityPixelDimensionsApi::class)
 internal class PaneCornerResize : AutoCloseable {
@@ -32,7 +32,8 @@ internal class PaneCornerResize : AutoCloseable {
     private var shownUntil=0L
     private var closed=false
     private var lastFactor=1f
-    private var submittedWidth=Float.NaN;private var submittedHeight=Float.NaN;private var submittedEdge=Float.NaN
+    private var submittedWidth=Float.NaN;private var submittedHeight=Float.NaN;private var submittedEdge=Float.NaN;private var submittedFront=Float.NaN
+    private var frontSign=1f
     private var host:SurfaceEntity?=null
     private var callback:(Boolean,Float)->Unit={_,_->}
     fun update(session:Session,video:SurfaceEntity,width:Float,height:Float,units:Float,distanceM:Float,tracking:GrabTracking,objectAimed:Boolean,onResize:(Boolean,Float)->Unit){
@@ -40,7 +41,7 @@ internal class PaneCornerResize : AutoCloseable {
         this.width=width;this.height=height;callback=onResize
         if(host!==video){
             corners.forEach{release(it)};corners.clear();active=null;handResize=null;host=video
-            submittedEdge=Float.NaN;drawn=false;live=false
+            submittedEdge=Float.NaN;submittedFront=Float.NaN;drawn=false;live=false
         }
         if(corners.isEmpty())for(y in listOf(-1,1))for(x in listOf(-1,1)){
             val surface=SurfaceEntity.create(session,shape=SurfaceEntity.Shape.Quad(FloatSize2d(.001f,.001f)),parent=video,superSampling=SurfaceEntity.SuperSampling.NONE)
@@ -95,7 +96,12 @@ internal class PaneCornerResize : AutoCloseable {
             }}
         }
         val edge=resizeHandleEdge(distanceM,units)
-        val front=.01f*(units.takeIf{it.isFinite() && it>0f} ?: 1f)
+        val eye=tracking.points["VIEWER"] ?: tracking.points["HEAD"]
+        val videoPose=video.getPose();val videoRotation=videoPose.rotation
+        val eyeZ=if(eye!=null)viewerInMonitor(eye,floatArrayOf(videoPose.translation.x,videoPose.translation.y,videoPose.translation.z),floatArrayOf(videoRotation.x,videoRotation.y,videoRotation.z,videoRotation.w))[2] else 1f
+        if(eyeZ.isFinite() && kotlin.math.abs(eyeZ)>.001f)frontSign=if(eyeZ>0f)1f else -1f
+        // One centimetre toward the viewer, so the square wins the ray where it crosses the object.
+        val front=.01f*(units.takeIf{it.isFinite() && it>0f} ?: 1f)*frontSign
         if(!live){corners.forEach{if(!it.surface.isDisposed)it.surface.setEnabled(true)};live=true}
         val now=SystemClock.uptimeMillis()
         val want=objectAimed || aimedHandles.get()>0 || active!=null
@@ -104,13 +110,11 @@ internal class PaneCornerResize : AutoCloseable {
         if(show!=drawn){corners.forEach{paint(it,show)};drawn=show}
         for(corner in corners){
             if(edge!=submittedEdge && !corner.surface.isDisposed)corner.surface.shape=SurfaceEntity.Shape.Quad(FloatSize2d(edge,edge))
-            if(width!=submittedWidth || height!=submittedHeight || edge!=submittedEdge){
-                // Local +Z is this surface's facing normal. One centimetre keeps the mark in front of the image.
-                val pose=Pose(Vector3(corner.x*(width-edge)*.5f,corner.y*(height-edge)*.5f,front))
-                corner.surface.setPose(pose)
+            if(width!=submittedWidth || height!=submittedHeight || edge!=submittedEdge || front!=submittedFront){
+                corner.surface.setPose(Pose(Vector3(corner.x*width*.5f,corner.y*height*.5f,front)))
             }
         }
-        submittedWidth=width;submittedHeight=height;submittedEdge=edge
+        submittedWidth=width;submittedHeight=height;submittedEdge=edge;submittedFront=front
     }
     private fun paint(corner:Corner,show:Boolean){
         if(corner.surface.isDisposed)return
@@ -140,28 +144,29 @@ internal class PaneCornerResize : AutoCloseable {
         private const val HandlePixels=128
         private fun drawRoundedCorner(canvas:android.graphics.Canvas,sx:Int,sy:Int){
             val n=canvas.width.toFloat()
-            val stroke=n*.09f
-            val radius=n*.26f
-            val arm=n*.62f
-            val px=if(sx>0)n-stroke*.5f else stroke*.5f
-            val py=if(sy>0)stroke*.5f else n-stroke*.5f
-            val ix=-sx.toFloat();val iy=sy.toFloat()
-            val acx=px+ix*radius;val acy=py+iy*radius
+            val stroke=n*.05f
+            // The bitmap centre is the object corner. The mark occupies the outer quadrant only,
+            // out to its midpoint, so four marks on a point form a rounded square of side n/2.
+            val reach=n*.25f-stroke*.5f
+            val radius=reach*.5f
+            val ou=sx.toFloat();val ov=-sy.toFloat()
+            val cx=n*.5f;val cy=n*.5f
+            fun at(pu:Float,pv:Float)=floatArrayOf(cx+ou*pu,cy+ov*pv)
+            val start=at(0f,reach);val arcStart=at(reach-radius,reach);val arcEnd=at(reach,reach-radius);val end=at(reach,0f)
+            val centre=at(reach-radius,reach-radius)
             val path=Path()
-            path.moveTo(px+ix*(radius+arm),py)
-            path.lineTo(px+ix*radius,py)
-            val start=Math.toDegrees(kotlin.math.atan2((-sy).toDouble(),0.0)).toFloat()
-            val end=Math.toDegrees(kotlin.math.atan2(0.0,sx.toDouble())).toFloat()
-            var sweep=end-start
+            path.moveTo(start[0],start[1]);path.lineTo(arcStart[0],arcStart[1])
+            val startAngle=Math.toDegrees(kotlin.math.atan2(ov.toDouble(),0.0)).toFloat()
+            val endAngle=Math.toDegrees(kotlin.math.atan2(0.0,ou.toDouble())).toFloat()
+            var sweep=endAngle-startAngle
             if(sweep>180f)sweep-=360f
             if(sweep<=-180f)sweep+=360f
-            path.arcTo(RectF(acx-radius,acy-radius,acx+radius,acy+radius),start,sweep,false)
-            path.lineTo(px,py+iy*(radius+arm))
-            val paint=Paint(Paint.ANTI_ALIAS_FLAG).apply{
+            path.arcTo(RectF(centre[0]-radius,centre[1]-radius,centre[0]+radius,centre[1]+radius),startAngle,sweep,false)
+            path.lineTo(end[0],end[1])
+            canvas.drawPath(path,Paint(Paint.ANTI_ALIAS_FLAG).apply{
                 color=Color.CYAN;style=Paint.Style.STROKE;strokeWidth=stroke
-                strokeCap=Paint.Cap.ROUND;strokeJoin=Paint.Join.ROUND
-            }
-            canvas.drawPath(path,paint)
+                strokeCap=Paint.Cap.BUTT;strokeJoin=Paint.Join.ROUND
+            })
         }
     }
 }

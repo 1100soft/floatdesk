@@ -115,6 +115,9 @@ fun main() {
     fun dot(a:FloatArray,b:FloatArray)=(0..2).sumOf { (a[it]*b[it]).toDouble() }.toFloat()
     fun unit(v:FloatArray):FloatArray { val n=kotlin.math.sqrt(dot(v,v)); return FloatArray(3){v[it]/n} }
     fun near(a:Float,b:Float)=check(kotlin.math.abs(a-b)<.00002f) { "$a != $b" }
+    near(resizeHandleEdge(.40f,1f,1f,1f),.014f)
+    near(resizeHandleEdge(1.2f,1f,1f,1f),.014f*3f)
+    near(resizeHandleEdge(1.2f,2f,.02f,1f),.01f)
     near(cornerResizeFactor(2f,1f,1,1,.1f,.05f),1.1f)
     near(cornerResizeFactor(2f,1f,-1,1,-.1f,.05f),1.1f)
     for((label,mesh) in listOf(

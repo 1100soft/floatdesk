@@ -23,9 +23,12 @@ internal class PaneCornerResize : AutoCloseable {
     private var closed=false
     private var lastFactor=1f
     private var submittedWidth=Float.NaN;private var submittedHeight=Float.NaN;private var submittedEdge=Float.NaN
+    private var host:SurfaceEntity?=null
     private var callback:(Boolean,Float)->Unit={_,_->}
-    fun update(session:Session,video:SurfaceEntity,width:Float,height:Float,units:Float,tracking:GrabTracking,onResize:(Boolean,Float)->Unit){
+    fun update(session:Session,video:SurfaceEntity,width:Float,height:Float,units:Float,distanceM:Float,tracking:GrabTracking,onResize:(Boolean,Float)->Unit){
+        if(video.isDisposed){cancel();return}
         this.width=width;this.height=height;callback=onResize
+        if(host!==video){corners.forEach{if(!it.surface.isDisposed){it.surface.removeComponent(it.input);it.surface.dispose()}};corners.clear();active=null;handResize=null;host=video;submittedEdge=Float.NaN}
         if(corners.isEmpty())for(y in listOf(-1,1))for(x in listOf(-1,1)){
             val surface=SurfaceEntity.create(session,shape=SurfaceEntity.Shape.Quad(FloatSize2d(.001f,.001f)),parent=video,superSampling=SurfaceEntity.SuperSampling.NONE)
             surface.setSurfacePixelDimensions(IntSize2d(32,32))
@@ -78,7 +81,7 @@ internal class PaneCornerResize : AutoCloseable {
                 if(factor.isFinite() && factor>.01f){lastFactor=factor;callback(true,factor)}
             }}
         }
-        val edge=minOf(.014f*units,minOf(width,height)*.5f)
+        val edge=resizeHandleEdge(distanceM,units,width,height)
         if(!visible){corners.forEach{it.surface.setEnabled(true)};visible=true}
         for(corner in corners){
             if(edge!=submittedEdge)corner.surface.shape=SurfaceEntity.Shape.Quad(FloatSize2d(edge,edge))
@@ -86,6 +89,6 @@ internal class PaneCornerResize : AutoCloseable {
         }
         submittedWidth=width;submittedHeight=height;submittedEdge=edge
     }
-    fun cancel(){active=null;handResize=null;lastFactor=1f;if(visible){corners.forEach{it.surface.setEnabled(false)};visible=false}}
-    override fun close(){closed=true;active=null;corners.forEach{if(!it.surface.isDisposed){it.surface.removeComponent(it.input);it.surface.dispose()}};corners.clear()}
+    fun cancel(){active=null;handResize=null;lastFactor=1f;if(visible){corners.forEach{if(!it.surface.isDisposed)it.surface.setEnabled(false)};visible=false}}
+    override fun close(){closed=true;active=null;host=null;corners.forEach{if(!it.surface.isDisposed){it.surface.removeComponent(it.input);it.surface.dispose()}};corners.clear()}
 }

@@ -11,7 +11,6 @@ pub(super) fn cursor_loop(shared: Arc<Shared>, socket: UdpSocket) {
     };
     let mut router = cursor_map::Router::default();
     let mut last_root = None;
-    let mut last_target = None;
     let mut owner_sent = Instant::now() - Duration::from_secs(1);
     while !shared.stop.load(Ordering::Relaxed) {
         match cursor.poll() {
@@ -20,13 +19,20 @@ pub(super) fn cursor_loop(shared: Arc<Shared>, socket: UdpSocket) {
                 if let Ok(map) = shared.cursor_map.lock() {
                     if map.2.elapsed() < Duration::from_secs(2) && !map.0.is_empty() {
                         let root = [f64::from(sample.root_x), f64::from(sample.root_y)];
-                        if let Some((key, point)) = shared
+                        let claim = shared
                             .cursor_claim
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
-                            .take()
+                            .take();
+                        let claimed =
+                            claim.is_some_and(|(key, point)| router.claim(&map.0, &key, point));
+                        // Absolute X11 motion (including a window-manager warp) invalidates
+                        // stale virtual ownership. Explicit XR claims take precedence.
+                        if !claimed
+                            && motion == [0.0, 0.0]
+                            && last_root.is_some_and(|old| old != root)
                         {
-                            router.claim(&map.0, &key, point);
+                            router.reset();
                         }
                         if motion != [0.0, 0.0] || router.has_point() {
                             if let Some(target) =
@@ -34,12 +40,7 @@ pub(super) fn cursor_loop(shared: Arc<Shared>, socket: UdpSocket) {
                             {
                                 let x = target[0].round() as i32;
                                 let y = target[1].round() as i32;
-                                // Without new motion, only follow a changed mapping; never pull
-                                // the pointer back from a position something else moved it to.
-                                let retarget = motion != [0.0, 0.0] || last_target != Some((x, y));
-                                last_target = Some((x, y));
-                                if retarget
-                                    && (x != sample.root_x || y != sample.root_y)
+                                if (x != sample.root_x || y != sample.root_y)
                                     && cursor.move_to(x, y).is_ok()
                                 {
                                     sample.root_x = x;
@@ -68,6 +69,11 @@ pub(super) fn cursor_loop(shared: Arc<Shared>, socket: UdpSocket) {
                             owner_sent = Instant::now();
                         }
                     } else {
+                        shared
+                            .cursor_claim
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .take();
                         router.inactive(motion);
                     }
                 }

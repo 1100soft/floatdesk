@@ -39,11 +39,12 @@ internal class PaneCornerResize : AutoCloseable {
     private var planeZ=0f
     private var submittedWidth=Float.NaN;private var submittedHeight=Float.NaN;private var submittedEdge=Float.NaN;private var submittedFront=Float.NaN
     private var frontSign=1f
+    private var objectAimed=false
     private var host:SurfaceEntity?=null
     private var callback:(Boolean,Float)->Unit={_,_->}
     fun update(session:Session,video:SurfaceEntity,width:Float,height:Float,units:Float,distanceM:Float,tracking:GrabTracking,objectAimed:Boolean,onResize:(Boolean,Float)->Unit){
         if(video.isDisposed){cancel();return}
-        this.width=width;this.height=height;callback=onResize
+        this.width=width;this.height=height;this.objectAimed=objectAimed;callback=onResize
         if(host!==video){
             corners.forEach{release(it)};corners.clear();active=null;handResize=null;host=video
             submittedEdge=Float.NaN;submittedFront=Float.NaN;drawnShow=false;drawnThick=false;drawnHeld=false;live=false
@@ -57,6 +58,7 @@ internal class PaneCornerResize : AutoCloseable {
                 if(closed || video.isDisposed || surface.isDisposed)return@listener
                 val hovering=event.action==InputEvent.Action.HOVER_ENTER || event.action==InputEvent.Action.HOVER_MOVE
                 val leaving=event.action==InputEvent.Action.HOVER_EXIT || event.action==InputEvent.Action.CANCEL
+                val wasHeld=active!=null
                 if(hovering && !corner.hovered){corner.hovered=true;aimedHandles.incrementAndGet()}
                 if(leaving && corner.hovered){corner.hovered=false;aimedHandles.decrementAndGet()}
                 if(event.action==InputEvent.Action.DOWN && active==null){
@@ -80,6 +82,7 @@ internal class PaneCornerResize : AutoCloseable {
                         if(end){active=null;handResize=null;grabProjection=Float.NaN}
                     }
                 }
+                if(corner.hovered || active!=null || wasHeld)present()
             }
             check(surface.addComponent(input));corner=Corner(x,y,surface,input);corners.add(corner)
             val pointer=SpatialPointerComponent.create(session);surface.addComponent(pointer);pointer.spatialPointerIcon=SpatialPointerIcon.NONE
@@ -114,6 +117,16 @@ internal class PaneCornerResize : AutoCloseable {
         val front=.01f*(units.takeIf{it.isFinite() && it>0f} ?: 1f)*frontSign
         planeZ=front
         if(!live){corners.forEach{if(!it.surface.isDisposed)it.surface.setEnabled(true)};live=true}
+        present()
+        for(corner in corners){
+            if(edge!=submittedEdge && !corner.surface.isDisposed)corner.surface.shape=SurfaceEntity.Shape.Quad(FloatSize2d(edge,edge))
+            if(width!=submittedWidth || height!=submittedHeight || edge!=submittedEdge || front!=submittedFront){
+                corner.surface.setPose(Pose(Vector3(corner.x*width*.5f,corner.y*height*.5f,front)))
+            }
+        }
+        submittedWidth=width;submittedHeight=height;submittedEdge=edge;submittedFront=front
+    }
+    private fun present(){
         val now=SystemClock.uptimeMillis()
         val want=objectAimed || aimedHandles.get()>0 || active!=null
         if(want)shownUntil=now+160
@@ -124,13 +137,6 @@ internal class PaneCornerResize : AutoCloseable {
             corners.forEach{paint(it,show,thick,held)}
             drawnShow=show;drawnThick=thick;drawnHeld=held
         }
-        for(corner in corners){
-            if(edge!=submittedEdge && !corner.surface.isDisposed)corner.surface.shape=SurfaceEntity.Shape.Quad(FloatSize2d(edge,edge))
-            if(width!=submittedWidth || height!=submittedHeight || edge!=submittedEdge || front!=submittedFront){
-                corner.surface.setPose(Pose(Vector3(corner.x*width*.5f,corner.y*height*.5f,front)))
-            }
-        }
-        submittedWidth=width;submittedHeight=height;submittedEdge=edge;submittedFront=front
     }
     private fun paint(corner:Corner,show:Boolean,thick:Boolean,held:Boolean){
         if(corner.surface.isDisposed)return
@@ -194,11 +200,15 @@ internal class PaneCornerResize : AutoCloseable {
                 this.color=color;style=Paint.Style.STROKE;strokeWidth=width
                 strokeCap=Paint.Cap.BUTT;strokeJoin=Paint.Join.ROUND
             }
+            val weight=if(thick || glow)stroke*1.85f else stroke
             if(glow){
-                canvas.drawPath(path,ink(Color.argb(70,255,255,255),stroke*3.6f))
-                canvas.drawPath(path,ink(Color.argb(170,255,255,255),stroke*2.2f))
+                val steps=14
+                for(i in steps downTo 1){
+                    val t=i/steps.toFloat()
+                    canvas.drawPath(path,ink(Color.argb(10,255,255,255),weight+stroke*5f*t))
+                }
             }
-            canvas.drawPath(path,ink(Color.CYAN,if(thick || glow)stroke*1.85f else stroke))
+            canvas.drawPath(path,ink(Color.CYAN,weight))
         }
     }
 }

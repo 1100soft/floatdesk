@@ -2,7 +2,7 @@ package dev.floatdesk.client
 
 /** Shared native surface and capture limits. */
 internal object RenderPolicy {
-    const val CustomMeshes=true
+    const val CustomMeshes=false
     const val SphericalDesktop=true
     const val GrabGuides=true
     const val CursorTopology=true

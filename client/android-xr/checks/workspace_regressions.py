@@ -109,6 +109,17 @@ fun main() {
  check(kotlin.math.abs(restored.pose.position[1]-2f)<.00001f)
  check(kotlin.math.abs(restored.pose.position[2]-4f)<.00001f)
  check(restored.physicalWidthM==original.physicalWidthM)
+ val scaled=old.copy(referenceUnitsPerMeter=2f).restoreViewer(Pose(),1f)
+ check(scaled.layouts["Desk"]!!.single().physicalWidthM==original.physicalWidthM*.5f)
+ check(scaled.supportBasis!!.position[2]==original.pose.position[2]*.5f)
+ val spread=FixedMagnifierPlacement("offscreen",Pose(floatArrayOf(8f,-7f,-2f)),3f,2f,true)
+ val reset=old.copy(fixedMagnifiers=listOf(spread),systemPanels=listOf(spread),referencePlacement=spread)
+     .fitSupportingInView(.6f,.45f)
+ check(reset.supportBasis==null)
+ check((reset.fixedMagnifiers+reset.systemPanels+listOfNotNull(reset.referencePlacement)).all{
+     kotlin.math.abs(it.pose.position[0])<1f && kotlin.math.abs(it.pose.position[1])<1f &&
+         it.pose.position[2]>0f && it.widthM<2f
+ })
  val again=old.restoreViewer(turned).restoreViewer(Pose()).layouts["Desk"]!!.single()
  check((0..2).all {kotlin.math.abs(again.pose.position[it]-original.pose.position[it])<.00001f})
  check(old.copy(viewerReference=null).restoreViewer(turned).viewerReference===turned)

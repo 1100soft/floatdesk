@@ -48,6 +48,7 @@ import dev.floatdesk.client.workspace.Pose
 import dev.floatdesk.client.workspace.WorkspaceFile
 import dev.floatdesk.client.workspace.WorkspaceStore
 import dev.floatdesk.client.workspace.fitDesktopInView
+import dev.floatdesk.client.workspace.fitSupportingInView
 import dev.floatdesk.client.workspace.deskLayout
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -67,7 +68,7 @@ internal fun WorkspaceFile.reset(monitors: List<MonitorHello>, store: WorkspaceS
     if (monitors.isEmpty()) return this
     val nextLayouts = layouts.toMutableMap()
     nextLayouts[activeLayout] = fitDesktopInView(deskLayout(monitors.map { Triple(it.name, it.width, it.height) }),viewer,angles[0],angles[1],units,sphericalWarp,centralView=true)
-    val next = copy(layouts = nextLayouts, control = PanelPlacement(pose=Pose(transformPoint(viewer,floatArrayOf(0f,-.55f*units,-1f*units)),viewer.rotation.copyOf())),viewerReference=viewer)
+    val next = fitSupportingInView(angles[0],angles[1]).copy(layouts = nextLayouts, control = PanelPlacement(pose=Pose(transformPoint(viewer,floatArrayOf(0f,-.55f*units,-1f*units)),viewer.rotation.copyOf())),viewerReference=viewer,referenceUnitsPerMeter=units)
     store.save(next)
     return next
 }

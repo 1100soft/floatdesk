@@ -59,6 +59,7 @@ internal data class WorkspaceFile(
     val supportBasis:Pose?=null,
     val screenSpacing:Float=0f,
     val viewerReference:Pose?=null,
+    val referenceUnitsPerMeter:Float?=null,
     val interactionMode:InteractionMode=InteractionMode.FOCUS,
     val cursorRemap:Boolean=true,
     val gazeToFocus:Boolean=false,
@@ -101,7 +102,8 @@ internal class WorkspaceStore(private val file: File) {
     fun save(workspace: WorkspaceFile) = synchronized(lock) {
         file.parentFile?.mkdirs()
         val temporary=File(file.parentFile,file.name+".tmp")
-        temporary.writeText(encode(workspace.copy(viewerReference=viewerReference ?: workspace.viewerReference)).toString(2))
+        temporary.writeText(encode(workspace.copy(viewerReference=viewerReference ?: workspace.viewerReference,
+            referenceUnitsPerMeter=if(viewerReference!=null)viewerUnitsPerMeter else workspace.referenceUnitsPerMeter)).toString(2))
         java.nio.file.Files.move(temporary.toPath(),file.toPath(),java.nio.file.StandardCopyOption.REPLACE_EXISTING,java.nio.file.StandardCopyOption.ATOMIC_MOVE)
 
     }
@@ -189,6 +191,7 @@ private fun encode(workspace: WorkspaceFile): JSONObject {
 
         .put("screen_spacing",workspace.screenSpacing.toDouble())
         .put("nearest_distance_m",workspace.nearestDistanceM.toDouble()).put("farthest_distance_m",workspace.farthestDistanceM.toDouble())
+        .put("viewer_units_per_meter",workspace.referenceUnitsPerMeter?.toDouble())
         .put("viewer_reference",workspace.viewerReference?.let {JSONObject().put("position",JSONArray(it.position.toList())).put("rotation",JSONArray(it.rotation.toList()))})
 }
 
@@ -256,6 +259,7 @@ private fun decode(json: JSONObject): WorkspaceFile {
         desktopReference = json.optBoolean("desktop_reference",false),
         referencePlacement = decodePlacements(json.optJSONArray("reference_placement")).firstOrNull(),
         supportBasis = json.optJSONObject("support_basis")?.let{Pose(floatArray(it,"position",3),floatArray(it,"rotation",4))},
+        referenceUnitsPerMeter=json.optDouble("viewer_units_per_meter",Double.NaN).toFloat().takeIf{it.isFinite() && it>0f},
         viewerReference=json.optJSONObject("viewer_reference")?.let {Pose(floatArray(it,"position",3),floatArray(it,"rotation",4))},
         screenSpacing=json.optDouble("screen_spacing",0.0).toFloat().takeIf {it.isFinite()}?.coerceIn(0f,.15f)?.let { kotlin.math.round(it*1000)/1000f } ?: 0f,
     ).let{decoded->

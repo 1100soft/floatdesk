@@ -30,6 +30,13 @@ fun main() {
    val displaced=floatArrayOf(1.2f,0f,-1.6f)
    val angularResult=angularMagnifierPlacement(free,Pose(),1f,displaced)
    check(angularResult.freePose && angularResult.pose.position.contentEquals(displaced))
+   for(pane in listOf(free,free.copy(freePose=false))){
+       val inside=placePaneInsideDesktop(pane,Pose(),1.2f)
+       for(x in listOf(-inside.width*.5f,inside.width*.5f))for(y in listOf(-inside.height*.5f,inside.height*.5f)){
+           val corner=transformPoint(inside.pose,floatArrayOf(x,y,0f))
+           check(sqrt(corner.sumOf{(it*it).toDouble()})<1.2)
+       }
+   }
  }
  run {
    val retry=WindowCaptureRetry()

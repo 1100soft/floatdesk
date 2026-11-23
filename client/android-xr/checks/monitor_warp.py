@@ -7,7 +7,7 @@ import tempfile
 
 folder = Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client'
 mesh = (folder/'MonitorMesh.kt').read_text().split('\n', 1)[1]+'\n'+(folder/'VideoGeometry.kt').read_text().split('\n',1)[1]
-mesh+='\n'+''.join('\n'.join(l for l in (folder/n).read_text().splitlines() if not l.startswith(('package ','import ','@android.annotation.SuppressLint')))+'\n' for n in ('BoundedHistory.kt','NativeSurfaceResources.kt'))
+mesh+='\n'+''.join('\n'.join(l for l in (folder/n).read_text().splitlines() if not l.startswith(('package ','import ','@android.annotation.SuppressLint')))+'\n' for n in ('BoundedHistory.kt','NativeSurfaceResources.kt','NativeNodeState.kt'))
 warp = (folder/'MonitorWarp.kt').read_text()
 warp = warp[warp.index('internal class MonitorWarp'):].replace('@SuppressLint("RestrictedApi")', '').replace('androidx.xr.runtime.math.IntSize2d','IntSize2d').replace('android.os.SystemClock','SystemClock')
 stubs = '''
@@ -62,6 +62,7 @@ internal open class Entity {
     fun setPose(value: Pose) { pose = value }
     fun getScale(space: Space = Space.PARENT) = scale
     fun setScale(value: Float) { scale = value }
+    fun setScale(value: Vector3) { scale = value.x }
     fun transformVectorTo(v: Vector3,other: Entity) = v
     fun transformPoseTo(p: Pose, other: Entity): Pose {
         val a = p.translation; val b = other.getPose().translation

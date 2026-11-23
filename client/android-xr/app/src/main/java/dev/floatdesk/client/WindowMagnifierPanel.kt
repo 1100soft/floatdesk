@@ -45,7 +45,8 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
         val initial=window?.takeIf{(desktopMirror || it.id>0L) && it.sourceWidth>0 && it.sourceHeight>0} ?: return@LaunchedEffect
         var initialViewer=viewer.get()
         while(initialViewer==null){withFrameNanos{};initialViewer=viewer.get()}
-        val target=if(projectFrame)magnifierFrame(initial,initial,initialViewer,units(),true)else initial
+        val initialFrame=if(projectFrame)magnifierFrame(initial,initial,initialViewer,units(),true)else initial
+        val target=placePaneInsideDesktop(initialFrame,initialViewer,tracking.desktopSphereRadius)
         try{
             fun shape(surface:MagnifiedWindow):SurfaceEntity.Shape{
                 if(!RenderPolicy.CustomMeshes || !surface.spherical || surface.mesh==null){
@@ -237,7 +238,8 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                 if(updateGeometry)geometryAt=now
                 val current=resources.pending ?: windowNow.value ?: continue
                 resources.pending=null
-                val next=if(projectFrame)magnifierFrame(current,prior,head,units(),updateGeometry)else current
+                val frame=if(projectFrame)magnifierFrame(current,prior,head,units(),updateGeometry)else current
+                val next=placePaneInsideDesktop(frame,head,tracking.desktopSphereRadius)
                 if(moveMode.value || freeMode.value){
                     resources.corners.update(session,entity,next.width,next.height,units(),next.layerDistanceM,tracking,resources.hovering.isNotEmpty() && !resources.free.engaged){active,factor->
                         if(resources.resizeStart==null){resources.resizeStart=resources.rendered;resources.dragged=true}

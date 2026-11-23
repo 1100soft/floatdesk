@@ -97,6 +97,39 @@ internal fun angularMagnifierPlacement(window:MagnifiedWindow,viewer:Pose,units:
         else magnifierGeometry(window,viewer,units,position,updateMesh)
 }
 
+/** A flat supporting pane must fit inside the desktop sphere along every overlapping eye ray. */
+internal fun placePaneInsideDesktop(window:MagnifiedWindow,viewer:Pose,desktopRadius:Float?):MagnifiedWindow {
+    val radius=desktopRadius?.takeIf{it.isFinite() && it>0f} ?: return window
+    if(window.spherical)return window
+    val clearance=window.units*(ViewLayers.DesktopDistanceM-window.layerDistanceM).coerceAtLeast(.015f)
+    val limit=(radius-clearance).coerceAtLeast(radius*.5f)
+    val ray=FloatArray(3){window.pose.position[it]-viewer.position[it]}
+    val range=sqrt(ray.sumOf{(it*it).toDouble()}).toFloat()
+    if(range<.0001f)return window
+    if(window.freePose){
+        val eye=viewerInMonitor(viewer.position,window.pose.position,window.pose.rotation)
+        val extent=hypot(hypot(abs(eye[0])+window.width*.5f,abs(eye[1])+window.height*.5f),eye[2])
+        if(extent<=limit)return window
+        val scale=limit/extent
+        return window.copy(pose=window.pose.copy(position=FloatArray(3){viewer.position[it]+ray[it]*scale}),
+            width=window.width*scale,height=window.height*scale,mesh=null)
+    }
+    val direction=FloatArray(3){ray[it]/range}
+    val scale=minOf(1f,.98f*limit/hypot(window.width*.5f,window.height*.5f))
+    val w=window.width*scale
+    val h=window.height*scale
+    var maxRange=limit
+    for(x in floatArrayOf(-w*.5f,w*.5f))for(y in floatArrayOf(-h*.5f,h*.5f)){
+        val offset=rotateVector(window.pose.rotation,x,y,0f)
+        val along=(0..2).sumOf{(offset[it]*direction[it]).toDouble()}.toFloat()
+        val perpendicular=x*x+y*y-along*along
+        maxRange=minOf(maxRange,sqrt((limit*limit-perpendicular).coerceAtLeast(0f))-along)
+    }
+    if(scale==1f && range<=maxRange)return window
+    val center=FloatArray(3){viewer.position[it]+direction[it]*maxRange.coerceIn(0f,range)}
+    return window.copy(pose=window.pose.copy(position=center),width=w,height=h,mesh=null)
+}
+
 /** Projection mode changes are immediate even when ordinary mesh updates are deferred. */
 internal fun magnifierFrame(window:MagnifiedWindow, previous:MagnifiedWindow, viewer:Pose, units:Float, updateGeometry:Boolean):MagnifiedWindow {
     // The native input surface, resize affordance and image share the content aspect.

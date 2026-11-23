@@ -41,18 +41,43 @@ internal object ViewLayers {
 }
 
 /** Without a restored room anchor, keep the saved arrangement relative to the startup viewer. */
-internal fun WorkspaceFile.restoreViewer(viewer:Pose):WorkspaceFile {
+internal fun WorkspaceFile.restoreViewer(viewer:Pose,unitsPerMeter:Float=referenceUnitsPerMeter ?: 1f):WorkspaceFile {
     val prior=viewerReference ?: Pose()
     if(anchorUuid!=null)return this
+    val scale=referenceUnitsPerMeter?.let{unitsPerMeter/it}?.takeIf{it.isFinite() && it>0f} ?: 1f
     fun multiply(a:FloatArray,b:FloatArray)=floatArrayOf(a[3]*b[0]+a[0]*b[3]+a[1]*b[2]-a[2]*b[1],a[3]*b[1]-a[0]*b[2]+a[1]*b[3]+a[2]*b[0],a[3]*b[2]+a[0]*b[1]-a[1]*b[0]+a[2]*b[3],a[3]*b[3]-a[0]*b[0]-a[1]*b[1]-a[2]*b[2])
     val q=multiply(viewer.rotation,floatArrayOf(-prior.rotation[0],-prior.rotation[1],-prior.rotation[2],prior.rotation[3]))
     fun transform(p:Pose):Pose {
-        val v=FloatArray(3){p.position[it]-prior.position[it]}
+        val v=FloatArray(3){(p.position[it]-prior.position[it])*scale}
         val t=floatArrayOf(2*(q[1]*v[2]-q[2]*v[1]),2*(q[2]*v[0]-q[0]*v[2]),2*(q[0]*v[1]-q[1]*v[0]))
         val rotated=floatArrayOf(v[0]+q[3]*t[0]+q[1]*t[2]-q[2]*t[1],v[1]+q[3]*t[1]+q[2]*t[0]-q[0]*t[2],v[2]+q[3]*t[2]+q[0]*t[1]-q[1]*t[0])
         return Pose(FloatArray(3){viewer.position[it]+rotated[it]},multiply(q,p.rotation))
     }
-    return copy(viewerReference=viewer,supportBasis=supportBasis?.let(::transform),layouts=layouts.mapValues {(_,screens)->screens.map {it.copy(pose=transform(it.pose))}.toMutableList()}.toMutableMap(),control=control.copy(pose=transform(control.pose)))
+    return copy(viewerReference=viewer,referenceUnitsPerMeter=unitsPerMeter,supportBasis=supportBasis?.let(::transform),
+        layouts=layouts.mapValues {(_,screens)->screens.map {
+            it.copy(pose=transform(it.pose),physicalWidthM=it.physicalWidthM*scale,physicalHeightM=it.physicalHeightM*scale)
+        }.toMutableList()}.toMutableMap(),control=control.copy(pose=transform(control.pose)))
+}
+
+/** Reset uses the whole desktop's fitted view and keeps supporting panes inside that view. */
+internal fun WorkspaceFile.fitSupportingInView(horizontal:Float,vertical:Float):WorkspaceFile {
+    val angles=viewHalfAngles(horizontal,vertical)
+    fun fit(record:FixedMagnifierPlacement,distance:Float):FixedMagnifierPlacement {
+        val xLimit=distance*kotlin.math.tan(angles.first)*.90f
+        val yLimit=distance*kotlin.math.tan(angles.second)*.90f
+        val scale=minOf(1f,2f*xLimit/record.widthM,2f*yLimit/record.heightM)
+        val width=record.widthM*scale
+        val height=record.heightM*scale
+        val position=record.pose.position
+        fun clamp(value:Float,limit:Float)=value.coerceIn(-limit.coerceAtLeast(0f),limit.coerceAtLeast(0f))
+        val desired=floatArrayOf(clamp(position[0],xLimit-width*.5f),clamp(position[1],yLimit-height*.5f),
+            ViewLayers.DesktopDistanceM-distance)
+        return record.copy(pose=record.pose.copy(position=desired),widthM=width,heightM=height)
+    }
+    return copy(supportBasis=null,
+        fixedMagnifiers=fixedMagnifiers.map{fit(it,ViewLayers.MagnifierDistanceM)},
+        systemPanels=systemPanels.map{fit(it,ViewLayers.ShellDistanceM)},
+        referencePlacement=referencePlacement?.let{fit(it,ViewLayers.MagnifierDistanceM)})
 }
 
 /** Fit the complete desktop into a symmetric, inset portion of the current camera view. */

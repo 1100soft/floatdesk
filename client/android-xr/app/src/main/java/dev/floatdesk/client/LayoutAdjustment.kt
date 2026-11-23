@@ -14,76 +14,59 @@ internal enum class LayoutAdjustment { ALIGN, SNAP, FACE, AUTO }
 
 internal data class LayoutBox(val center:FloatArray,val width:Float,val height:Float)
 
-/** Pack logical rectangles by minimizing their enclosing area while keeping edges connected. */
+/** Seat each rectangle against the desktop or an earlier rectangle in nearest-first order. */
 internal fun snapLayoutBoxes(boxes:List<LayoutBox>):List<FloatArray>{
     if(boxes.isEmpty())return emptyList()
-    val placed=mutableMapOf(0 to boxes[0].center.copyOf())
-    val remaining=(1 until boxes.size).toMutableSet()
-    fun overlaps(i:Int,x:Float,y:Float)=placed.any{(j,p)->
-        abs(p[0]-x)<(boxes[i].width+boxes[j].width)*.5f-.0001f &&
-            abs(p[1]-y)<(boxes[i].height+boxes[j].height)*.5f-.0001f
+    val anchor=boxes[0].center
+    val ordered=(1 until boxes.size).sortedBy{i->
+        val dx=boxes[i].center[0]-anchor[0];val dy=boxes[i].center[1]-anchor[1]
+        dx*dx+dy*dy
     }
-    while(remaining.isNotEmpty()){
-        var bestIndex=-1
-        var bestArea=Float.POSITIVE_INFINITY
-        var bestContact=Float.NEGATIVE_INFINITY
-        var bestTravel=Float.POSITIVE_INFINITY
+    val placed=linkedMapOf(0 to anchor.copyOf())
+    val epsilon=.00001f
+    for(i in ordered){
+        val box=boxes[i];val origin=box.center
+        fun clear(x:Float,y:Float)=placed.none{(j,p)->
+            abs(p[0]-x)<(box.width+boxes[j].width)*.5f-epsilon &&
+                abs(p[1]-y)<(box.height+boxes[j].height)*.5f-epsilon
+        }
         var best:FloatArray?=null
-        val left=placed.minOf{(i,p)->p[0]-boxes[i].width*.5f}
-        val right=placed.maxOf{(i,p)->p[0]+boxes[i].width*.5f}
-        val bottom=placed.minOf{(i,p)->p[1]-boxes[i].height*.5f}
-        val top=placed.maxOf{(i,p)->p[1]+boxes[i].height*.5f}
-        for(i in remaining){
-            val box=boxes[i]
-            for((j,p) in placed){
-                val other=boxes[j]
-                val xSpan=(box.width+other.width)*.5f
-                val ySpan=(box.height+other.height)*.5f
-                val xAligned=placed.flatMap{(k,c)->
-                    val half=boxes[k].width*.5f
-                    listOf(c[0]-half+box.width*.5f,c[0]+half-box.width*.5f)
-                }
-                val yAligned=placed.flatMap{(k,c)->
-                    val half=boxes[k].height*.5f
-                    listOf(c[1]-half+box.height*.5f,c[1]+half-box.height*.5f)
-                }
-                fun consider(cx:Float,cy:Float) {
-                    if(overlaps(i,cx,cy))return
-                    val bx=box.width*.5f;val by=box.height*.5f
-                    val area=(maxOf(right,cx+bx)-minOf(left,cx-bx))*(maxOf(top,cy+by)-minOf(bottom,cy-by))
-                    var contact=0f
-                    for((k,c) in placed){
-                        val kx=boxes[k].width*.5f;val ky=boxes[k].height*.5f
-                        if(abs(abs(c[0]-cx)-kx-bx)<.0001f)
-                            contact+=(minOf(c[1]+ky,cy+by)-maxOf(c[1]-ky,cy-by)).coerceAtLeast(0f)
-                        if(abs(abs(c[1]-cy)-ky-by)<.0001f)
-                            contact+=(minOf(c[0]+kx,cx+bx)-maxOf(c[0]-kx,cx-bx)).coerceAtLeast(0f)
-                    }
-                    if(contact<=.00001f)return
-                    val dx=cx-box.center[0];val dy=cy-box.center[1]
-                    val travel=dx*dx+dy*dy
-                    if(area<bestArea-.00001f || abs(area-bestArea)<.00001f &&
-                        (contact>bestContact+.00001f || abs(contact-bestContact)<.00001f && travel<bestTravel)){
-                        bestArea=area;bestContact=contact;bestTravel=travel
-                        bestIndex=i;best=floatArrayOf(cx,cy,box.center[2])
-                    }
-                }
-                for(sign in listOf(-1f,1f)){
-                    for(y in yAligned+listOf(p[1],box.center[1]))if(abs(y-p[1])<ySpan)
-                        consider(p[0]+sign*xSpan,y)
-                    for(x in xAligned+listOf(p[0],box.center[0]))if(abs(x-p[0])<xSpan)
-                        consider(x,p[1]+sign*ySpan)
-                }
+        var bestDistance=Float.POSITIVE_INFINITY
+        fun consider(x:Float,y:Float){
+            if(!clear(x,y))return
+            val dx=x-origin[0];val dy=y-origin[1]
+            val distance=dx*dx+dy*dy
+            if(distance<bestDistance){bestDistance=distance;best=floatArrayOf(x,y,origin[2])}
+        }
+        for((j,p) in placed){
+            val dx=(box.width+boxes[j].width)*.5f
+            val dy=(box.height+boxes[j].height)*.5f
+            if(abs(p[1]-origin[1])<dy-epsilon){
+                consider(p[0]-dx,origin[1]);consider(p[0]+dx,origin[1])
+            }
+            if(abs(p[0]-origin[0])<dx-epsilon){
+                consider(origin[0],p[1]-dy);consider(origin[0],p[1]+dy)
             }
         }
         if(best==null){
-            bestIndex=remaining.first()
-            val (j,p)=placed.maxBy{(index,center)->center[0]+boxes[index].width*.5f}
-            val box=boxes[bestIndex]
-            best=floatArrayOf(p[0]+(boxes[j].width+box.width)*.5f,p[1],box.center[2])
+            // A diagonally isolated rectangle needs alignment on the other axis first.
+            for((j,p) in placed){
+                val other=boxes[j]
+                val dx=(box.width+other.width)*.5f;val dy=(box.height+other.height)*.5f
+                val overlapX=minOf(box.width,other.width)*.10f
+                val overlapY=minOf(box.height,other.height)*.10f
+                val x=origin[0].coerceIn(p[0]-dx+overlapX,p[0]+dx-overlapX)
+                val y=origin[1].coerceIn(p[1]-dy+overlapY,p[1]+dy-overlapY)
+                consider(p[0]-dx,y);consider(p[0]+dx,y)
+                consider(x,p[1]-dy);consider(x,p[1]+dy)
+                consider(p[0]-dx,p[1]);consider(p[0]+dx,p[1])
+            }
         }
-        placed[bestIndex]=best
-        remaining.remove(bestIndex)
+        if(best==null){
+            val (j,p)=placed.maxBy{(index,center)->center[0]+boxes[index].width*.5f}
+            best=floatArrayOf(p[0]+(boxes[j].width+box.width)*.5f,p[1],origin[2])
+        }
+        placed[i]=requireNotNull(best)
     }
     return boxes.indices.map(placed::getValue)
 }

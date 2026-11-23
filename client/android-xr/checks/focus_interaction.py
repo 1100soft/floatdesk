@@ -47,6 +47,16 @@ fun main() {
     for(j in 0 until i)check(abs(snapped[i][0]-snapped[j][0])+1e-4f>=(boxes[i].width+boxes[j].width)*.5f ||
         abs(snapped[i][1]-snapped[j][1])+1e-4f>=(boxes[i].height+boxes[j].height)*.5f)
  }
+ val sequence=snapLayoutBoxes(listOf(
+    LayoutBox(floatArrayOf(0f,0f,0f),4f,4f),
+    LayoutBox(floatArrayOf(8f,0f,2f),2f,2f),
+    LayoutBox(floatArrayOf(1.8f,0f,1f),2f,2f)))
+ check(sequence[2].contentEquals(floatArrayOf(3f,0f,1f)))
+ check(sequence[1].contentEquals(floatArrayOf(5f,0f,2f)))
+ val vertical=snapLayoutBoxes(listOf(
+    LayoutBox(floatArrayOf(0f,0f,0f),8f,2f),
+    LayoutBox(floatArrayOf(.4f,.7f,1f),2f,2f)))
+ check(vertical[1].contentEquals(floatArrayOf(.4f,2f,1f)))
  val sphereGeometry=layoutOriginSphereGeometry()
  for(i in sphereGeometry.positions.indices step 3){
     val r=sphereGeometry.positions.sliceArray(i..i+2)

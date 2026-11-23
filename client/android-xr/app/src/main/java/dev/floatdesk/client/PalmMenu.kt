@@ -157,7 +157,7 @@ internal fun PalmControls(page: PalmPage, workspace: WorkspaceFile, info: Worksp
                           onHover: (PalmAction?) -> Unit, onAction: (PalmAction) -> Unit) {
     MaterialTheme(colorScheme = darkColorScheme()) {
         CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp(0f)) {
-            BoxWithConstraints(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
+            BoxWithConstraints(Modifier.fillMaxSize().background(if(page==PalmPage.LAYOUT)Color(0xFF28344F) else MaterialTheme.colorScheme.surface)) {
                 for (button in PalmMenuLayout.buttons(page)) {
                     val action = button.action
                     PalmIcon(action, workspace, palmTooltip(action, workspace, latched), maxWidth * button.w,
@@ -175,9 +175,11 @@ internal fun PalmControls(page: PalmPage, workspace: WorkspaceFile, info: Worksp
 @Composable
 private fun PalmIcon(action: PalmAction, workspace: WorkspaceFile, description: String, cell: Dp, enabled: Boolean, state: PalmState?,
                      focused: Boolean, pressed: Boolean, onHover: (Boolean) -> Unit, modifier: Modifier, onClick: () -> Unit) {
-    val shape = if (state == null) CircleShape else RoundedCornerShape(22)
+    val done=action==PalmAction.DONE
+    val shape = if(done)RoundedCornerShape(28) else if(state==null)CircleShape else RoundedCornerShape(22)
     val container = when {
         pressed -> Color(0xFF237E59)
+        done -> Color(0xFF2E8052)
         state?.toggleOn == true -> Color(0xFF145D77)
         state != null -> Color(0xFF405369)
         else -> null
@@ -194,7 +196,7 @@ private fun PalmIcon(action: PalmAction, workspace: WorkspaceFile, description: 
     }
     if (focused) Canvas(modifier.size(cell)) {
         val width = size.minDimension * .035f
-        if (state == null) drawCircle(Color(0xFF8ADFFF), (size.minDimension - width) / 2, style = Stroke(width))
+        if (state == null && !done) drawCircle(Color(0xFF8ADFFF), (size.minDimension - width) / 2, style = Stroke(width))
         else drawRoundRect(Color(0xFF8ADFFF), Offset(width / 2, width / 2), Size(size.width - width, size.height - width),
             CornerRadius(size.minDimension * .22f), style = Stroke(width))
     }

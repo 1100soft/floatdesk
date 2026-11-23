@@ -244,6 +244,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
     }
     val grabs = remember { mutableMapOf<Int, TwoHandState>() }
     val originGrab=remember{LayoutOriginGrab()}
+    var originDownAt by remember{mutableStateOf<Long?>(null)}
     DisposableEffect(session) {
         session?.scene?.panelClippingConfig=androidx.xr.scenecore.PanelClippingConfig(isDepthTestEnabled=false)
         val current = session
@@ -873,20 +874,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             }
             if(quality.overlapping) palmCandidates.clear()
             val candidate = palmCandidates[panelHand] ?: palmCandidates.values.firstOrNull()
-            if(workspace.layoutModeActive){
-                if(palmPanel?.page!=PalmPage.LAYOUT){
-                    val view=head?.toWorkspacePose()
-                    if(view!=null){
-                        val pose=Pose(transformPoint(view,floatArrayOf(0f,0f,-ViewLayers.PalmMenuDistanceM*unitsPerMeter)),view.rotation)
-                        palmPanel=PalmPanelState(panelHand ?: candidate?.side ?: "RIGHT",pose,unitsPerMeter,PalmPage.LAYOUT)
-                    }
-                }
-                palmPanel?.let{locked->
-                    val other=if(locked.side=="LEFT")"RIGHT" else "LEFT"
-                    poke.update(locked,fingerTips[other])?.let{palmActionNow.value(it)}
-                    if(poke.latchedContact)lastPalmAction=SystemClock.uptimeMillis()
-                }
-            } else if (candidate == null) {
+            if (candidate == null) {
                 val hostTracked = hands.any { (side, hand) ->
                     side == panelHand && hand.state.value.trackingState == TrackingState.TRACKING
                 }
@@ -902,7 +890,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 if (palmPanel == null) Log.i("Floatdesk", "palm panel shown side=${candidate.side} unitsPerMeter=${candidate.unitsPerMeter} pose=${candidate.pose.toRuntimePose()}")
                 panelHand = candidate.side
                 lastPalmSeen = SystemClock.uptimeMillis()
-                val centered=candidate.copy(page=palmPanel?.page ?: PalmPage.MAIN,pose=palmPanel?.pose ?: (head ?: candidate.pose.toRuntimePose()).compose(
+                val centered=candidate.copy(page=if(workspace.layoutModeActive)PalmPage.LAYOUT else palmPanel?.page?.takeUnless{it==PalmPage.LAYOUT} ?: PalmPage.MAIN,pose=palmPanel?.pose ?: (head ?: candidate.pose.toRuntimePose()).compose(
                     androidx.xr.runtime.math.Pose(Vector3(0f,0f,-ViewLayers.PalmMenuDistanceM*unitsPerMeter))).toWorkspacePose())
                 palmPanel = centered
                 val other = if (candidate.side == "LEFT") "RIGHT" else "LEFT"
@@ -918,6 +906,20 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             val originGuide=if(reliable && !displayControlsOpen && (workspace.grabToMove || workspace.freeManipulation))
                 workspace.layoutOrigin?.let{origin->originViewer?.let{view->layoutOriginGuide(origin,view,
                     workspace.nearestDistanceM*unitsPerMeter,workspace.farthestDistanceM*unitsPerMeter,workspace.sphericalWarp)}}else null
+            val pendingOrigin=originDownAt
+            if(pendingOrigin!=null){
+                if(originGuide==null || manipulating || handTracking.nowMs-pendingOrigin>180L)originDownAt=null
+                else {
+                    val side=handTracking.pinched.singleOrNull()
+                    val hand=side?.let{grips[it]}
+                    val origin=workspace.layoutOrigin
+                    if(side!=null && hand!=null && origin!=null && originViewer!=null){
+                        originDownAt=null
+                        originGrab.begin(side,handTracking.nowMs,origin,originViewer,hand,unitsPerMeter)
+                        if(originGrab.active){grabs.values.forEach{it.cancel()};pointerControl.clear();updateManipulation(true)}
+                    }
+                }
+            }
             if(originGrab.active){
                 if(originGuide==null || originViewer==null)originGrab.clear()
                 else originGrab.advance(originViewer,grips,handTracking.pinched,handTracking.nowMs,workspace.freeManipulation)
@@ -937,12 +939,18 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                         if(!(workspace.grabToMove || workspace.freeManipulation) || displayControlsOpen || manipulating)return@updateLayoutOrigin
                         val origin=workspace.layoutOrigin ?: return@updateLayoutOrigin
                         val view=magnifierViewer.get() ?: return@updateLayoutOrigin
-                        val handSide=side.takeIf{it=="LEFT" || it=="RIGHT"} ?: handTracking.pinched.singleOrNull() ?: return@updateLayoutOrigin
-                        val hand=grips[handSide] ?: return@updateLayoutOrigin
+                        val handSide=side.takeIf{it=="LEFT" || it=="RIGHT"} ?: handTracking.pinched.singleOrNull()
+                        val hand=handSide?.let{grips[it]}
+                        if(handSide==null || hand==null){
+                            originDownAt=handTracking.nowMs
+                            return@updateLayoutOrigin
+                        }
+                        originDownAt=null
                         originGrab.begin(handSide,handTracking.nowMs,origin,view,hand,handTracking.unitsPerMeter)
                         if(originGrab.active){grabs.values.forEach{it.cancel()};pointerControl.clear();updateManipulation(true)}
                     }
                     androidx.xr.scenecore.InputEvent.Action.UP, androidx.xr.scenecore.InputEvent.Action.CANCEL->{
+                        originDownAt=null
                         if(originGrab.active){
                             if(side=="LEFT" || side=="RIGHT")originGrab.end(side) else originGrab.clear()
                             if(!originGrab.active){updateManipulation(false);store.save(workspace)}

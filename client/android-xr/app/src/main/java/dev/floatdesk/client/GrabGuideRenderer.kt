@@ -50,30 +50,48 @@ internal class GrabGuideRenderer private constructor(
     private val grabPoints=mutableListOf<SurfaceEntity>()
 
     private var originCollider:SurfaceEntity?=null
+    private var originSphere:SurfaceEntity?=null
     private val originOverlay=LayoutGuideOverlay(session)
 
     fun updateLayoutOrigin(parent:Entity,guide:LayoutOriginGuide?,angles:FloatArray,units:Float,desktopRange:Float?=null,onInput:(androidx.xr.scenecore.InputEvent)->Unit) {
         if(closed)return
         originOverlay.update(parent,guide,angles,units,desktopRange)
-        if(guide==null){originCollider?.let{state(it).enabled(false)};return}
-        val collider=originCollider ?: createOriginSphere(onInput).also{originCollider=it}
+        if(guide==null){
+            originCollider?.let{state(it).enabled(false)}
+            originSphere?.let{state(it).enabled(false)}
+            return
+        }
+        val sphere=originSphere ?: createOriginSphere().also{originSphere=it}
+        val collider=originCollider ?: SurfaceEntity.create(session,shape=SurfaceEntity.Shape.Quad(androidx.xr.runtime.math.FloatSize2d(1f,1f)),
+            parent=null,superSampling=SurfaceEntity.SuperSampling.NONE,mediaBlendingMode=SurfaceEntity.MediaBlendingMode.TRANSPARENT).also{
+            check(it.addComponent(NativeMonitorInput.create(session,onInput)))
+            originCollider=it
+        }
         val hitGuide=guide.foreground(desktopRange,units)
+        val normal=vector(guide.viewer.position)-vector(hitGuide.near)
+        val rotation=Quaternion.fromLookTowards(normal,Vector3.Up)
+        state(sphere).apply{
+            this.parent(parent)
+            pose(Pose(vector(hitGuide.near),rotation))
+            scale(hitGuide.gripRadius)
+            enabled(true)
+        }
+        val hitCenter=(vector(hitGuide.near)+vector(guide.viewer.position)*.04f)*(1f/1.04f)
         state(collider).apply{
             this.parent(parent)
-            val normal=vector(guide.viewer.position)-vector(hitGuide.near)
-            pose(Pose(vector(hitGuide.near),Quaternion.fromLookTowards(normal,Vector3.Up)))
-            scale(hitGuide.gripRadius)
+            pose(Pose(hitCenter,rotation))
+            scale(Vector3(hitGuide.gripRadius*2.65f,hitGuide.gripRadius*2.65f,1f))
             enabled(true)
         }
     }
 
     @OptIn(androidx.xr.scenecore.ExperimentalSurfaceEntityPixelDimensionsApi::class)
-    private fun createOriginSphere(onInput:(androidx.xr.scenecore.InputEvent)->Unit):SurfaceEntity {
+    private fun createOriginSphere():SurfaceEntity {
         val entity=SurfaceEntity.create(session,shape=nativeVideoMesh(layoutOriginSphereGeometry()),parent=null,
             superSampling=SurfaceEntity.SuperSampling.NONE,mediaBlendingMode=SurfaceEntity.MediaBlendingMode.OPAQUE)
         entity.setEnabled(false)
         entity.setSurfacePixelDimensions(IntSize2d(128,8))
-        check(entity.addComponent(NativeMonitorInput.create(session,onInput)))
+        SurfaceInput.disableCollider(entity)
         val surface=entity.getSurface()
         val canvas=surface.lockCanvas(null)
         try{
@@ -280,6 +298,8 @@ internal class GrabGuideRenderer private constructor(
         originOverlay.close()
         originCollider?.let{if(!it.isDisposed){it.setEnabled(false);it.parent=null}}
         originCollider=null
+        originSphere?.let{if(!it.isDisposed){it.setEnabled(false);it.parent=null}}
+        originSphere=null
         nodeStates.clear()
         groups.forEach { group ->
             if(!group.root.isDisposed)group.root.dispose()

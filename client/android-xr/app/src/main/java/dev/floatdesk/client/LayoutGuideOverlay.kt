@@ -54,11 +54,6 @@ internal class LayoutGuideOverlay(private val session:Session):AutoCloseable {
         val viewer=guide.viewer
         val position=transformPoint(viewer,floatArrayOf(0f,0f,-depth))
         val q=viewer.rotation
-        node?.apply{
-            this.parent(parent)
-            pose(Pose(Vector3(position[0],position[1],position[2]),Quaternion(q[0],q[1],q[2],q[3])))
-            scale(Vector3(2f*halfWidth*depth,2f*halfHeight*depth,1f))
-        }
         val now=android.os.SystemClock.uptimeMillis()
         val previous=lastGuide
         if(previous==null || now-drawnAt>=32 &&
@@ -68,13 +63,20 @@ internal class LayoutGuideOverlay(private val session:Session):AutoCloseable {
             q.indices.any{abs(q[it]-previous.viewer.rotation[it])>.001f} ||
             guide.rotation.indices.any{abs(guide.rotation[it]-previous.rotation[it])>.001f})){
             if(draw(owner,guide,halfWidth,halfHeight)){
+                // A newer head pose paired with the previous canvas moves the axes twice.
+                // Keep the media node at the pose used to project its currently posted frame.
+                node?.apply{
+                    this.parent(parent)
+                    pose(Pose(Vector3(position[0],position[1],position[2]),Quaternion(q[0],q[1],q[2],q[3])))
+                    scale(Vector3(2f*halfWidth*depth,2f*halfHeight*depth,1f))
+                }
                 if(previous==null)android.util.Log.i("Floatdesk","Layout guide foreground frame posted (spherical=${guide.spherical})")
                 lastGuide=guide
                 drawnWidth=halfWidth;drawnHeight=halfHeight
                 drawnAt=now
             }
         }
-        node?.enabled(true)
+        node?.enabled(lastGuide!=null)
     }
 
     private fun draw(owner:SurfaceEntity,guide:LayoutOriginGuide,halfWidth:Float,halfHeight:Float):Boolean{

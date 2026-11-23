@@ -35,8 +35,8 @@ import dev.floatdesk.client.workspace.WorkspaceFile
 import kotlin.math.cos
 import kotlin.math.sin
 
-internal enum class PalmAction { FOLLOW, RESET, SEARCH, SPACE, WARP, MOVE, HAND_MOUSE, FREE, REFERENCE, MODE, MORE, BACK, DIAGNOSTICS, GAZE_FOCUS, MAGNIFIER, MOUSE_SPACES }
-internal enum class PalmPage { MAIN, MORE }
+internal enum class PalmAction { FOLLOW, RESET, SEARCH, SPACE, WARP, MOVE, HAND_MOUSE, FREE, REFERENCE, MODE, MORE, BACK, DIAGNOSTICS, GAZE_FOCUS, MAGNIFIER, MOUSE_SPACES, LAYOUT, ALIGN_AXES, SNAP_OBJECTS, FACE_USER, AUTO_ADJUST, DONE }
+internal enum class PalmPage { MAIN, MORE, LAYOUT }
 internal data class PalmButton(val action: PalmAction, val x: Float, val y: Float, val w: Float, val h: Float)
 
 /** Same cell metrics as [WindowMenuLayout]; button rectangles are normalized to the panel. */
@@ -47,16 +47,22 @@ internal object PalmMenuLayout {
     const val widthM = columns * cellM + (columns + 1) * gapM
     const val tooltipHeightM = .038f
     private val main = listOf(
-        PalmAction.MOVE, PalmAction.FREE, PalmAction.FOLLOW,
+        PalmAction.LAYOUT, PalmAction.FOLLOW, PalmAction.RESET,
         PalmAction.HAND_MOUSE, PalmAction.MODE, PalmAction.WARP,
-        PalmAction.RESET, PalmAction.SPACE, PalmAction.MORE,
+        PalmAction.SPACE, PalmAction.MORE,
     )
     private val more = listOf(
         PalmAction.GAZE_FOCUS, PalmAction.MAGNIFIER, PalmAction.REFERENCE,
         PalmAction.MOUSE_SPACES, PalmAction.DIAGNOSTICS, PalmAction.SEARCH,
         PalmAction.BACK,
     )
-    fun actions(page: PalmPage) = if (page == PalmPage.MAIN) main else more
+    val layout=listOf(PalmAction.MOVE,PalmAction.FREE,PalmAction.ALIGN_AXES,PalmAction.SNAP_OBJECTS,
+        PalmAction.FACE_USER,PalmAction.AUTO_ADJUST,PalmAction.DONE)
+    fun actions(page:PalmPage)=when(page){
+        PalmPage.MAIN->main
+        PalmPage.MORE->more
+        PalmPage.LAYOUT->layout
+    }
     fun rows(page: PalmPage) = (actions(page).size + columns - 1) / columns
     fun heightM(page: PalmPage) = rows(page) * cellM + (rows(page) + 1) * gapM
     fun buttons(page: PalmPage): List<PalmButton> {
@@ -68,10 +74,9 @@ internal object PalmMenuLayout {
     }
 }
 
-private val palmLayoutActions=setOf(PalmAction.MOVE,PalmAction.FREE,PalmAction.RESET,PalmAction.WARP,PalmAction.SPACE,PalmAction.BACK)
-
 internal fun palmActionEnabled(action:PalmAction,workspace:WorkspaceFile,info:WorkspaceInfo?):Boolean {
-    if(workspace.layoutModeActive && action !in palmLayoutActions)return false
+    if(workspace.layoutModeActive)return action in PalmMenuLayout.layout
+    if(action in PalmMenuLayout.layout)return false
     return when(action){
         PalmAction.WARP->RenderPolicy.SphericalDesktop
         PalmAction.GAZE_FOCUS->info?.gazeFocus==true || workspace.gazeToFocus
@@ -100,7 +105,7 @@ private fun palmState(action: PalmAction, workspace: WorkspaceFile, latched: Boo
         PalmAction.WARP -> PalmState(2, if (workspace.sphericalWarp) 1 else 0)
         PalmAction.MODE -> PalmState(InteractionMode.entries.size, workspace.interactionMode.ordinal)
         PalmAction.MAGNIFIER -> PalmState(3, listOf("fixed", "floating", "off").indexOf(magnifierLabel(workspace)))
-        PalmAction.SPACE, PalmAction.RESET, PalmAction.SEARCH, PalmAction.MORE, PalmAction.BACK -> null
+        else -> null
     }
 }
 
@@ -130,14 +135,20 @@ internal fun palmTooltip(action: PalmAction, workspace: WorkspaceFile, latched: 
     PalmAction.MORE -> "More"
     PalmAction.BACK -> "Back"
     PalmAction.DIAGNOSTICS -> if (workspace.viewDetailDebug) "Hide diagnostics" else "Show diagnostics"
-    PalmAction.MOVE -> "Grab to move"
+    PalmAction.MOVE -> "One-hand auto layout"
     PalmAction.HAND_MOUSE -> "Hand mouse"
-    PalmAction.FREE -> "Two-hand free manipulation"
+    PalmAction.FREE -> "Two-hand manual layout"
     PalmAction.REFERENCE -> "Desktop reference"
     PalmAction.SEARCH -> "Reconnect"
     PalmAction.GAZE_FOCUS -> if (workspace.gazeToFocus) "Gaze to focus on" else "Gaze to focus off"
     PalmAction.MAGNIFIER -> "Magnifier ${magnifierLabel(workspace)} · tap for ${magnifierLabel(nextMagnifier(workspace))}"
     PalmAction.MOUSE_SPACES -> if (workspace.cursorRemap) "Mouse spaces connected" else "Mouse spaces separate"
+    PalmAction.LAYOUT -> "Layout"
+    PalmAction.ALIGN_AXES -> "Align with axes"
+    PalmAction.SNAP_OBJECTS -> "Snap to objects"
+    PalmAction.FACE_USER -> "Face the user"
+    PalmAction.AUTO_ADJUST -> "Auto adjust"
+    PalmAction.DONE -> "Done"
 }
 
 @Composable
@@ -259,6 +270,12 @@ private fun DrawScope.drawPalmIcon(action: PalmAction, workspace: WorkspaceFile,
         PalmAction.BACK -> { line(.65f, .1f, .25f, .5f); line(.25f, .5f, .65f, .9f) }
         PalmAction.DIAGNOSTICS -> { line(.05f, .95f, .95f, .95f); line(.22f, .95f, .22f, .55f); line(.5f, .95f, .5f, .1f); line(.78f, .95f, .78f, .38f) }
         PalmAction.HAND_MOUSE -> { line(.25f, .05f, .25f, .8f); line(.25f, .8f, .45f, .62f); line(.45f, .62f, .7f, .95f); line(.25f, .05f, .8f, .58f); line(.8f, .58f, .52f, .6f) }
+        PalmAction.LAYOUT -> { box(.12f,.12f,.88f,.88f);line(.5f,.12f,.5f,.88f);line(.12f,.5f,.88f,.5f) }
+        PalmAction.ALIGN_AXES -> { line(.1f,.5f,.9f,.5f);line(.5f,.1f,.5f,.9f);ring(.5f,.5f,.17f) }
+        PalmAction.SNAP_OBJECTS -> { box(.06f,.27f,.49f,.73f);box(.51f,.27f,.94f,.73f) }
+        PalmAction.FACE_USER -> eye(.5f,.5f,.39f)
+        PalmAction.AUTO_ADJUST -> { ring(.5f,.5f,.24f);line(.5f,.1f,.5f,.9f);line(.1f,.5f,.9f,.5f) }
+        PalmAction.DONE -> { line(.12f,.53f,.39f,.77f);line(.39f,.77f,.88f,.24f) }
         PalmAction.MOVE -> { line(.1f,.5f,.9f,.5f); line(.5f,.1f,.5f,.9f); line(.1f,.5f,.27f,.32f); line(.9f,.5f,.73f,.68f) }
         PalmAction.FREE -> { line(.06f,.72f,.42f,.27f); line(.58f,.72f,.94f,.27f); line(.06f,.72f,.3f,.72f); line(.70f,.27f,.94f,.27f) }
         PalmAction.REFERENCE -> box(.08f,.16f,.92f,.84f)

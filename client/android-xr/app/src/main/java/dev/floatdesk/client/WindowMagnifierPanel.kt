@@ -225,7 +225,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                         tracking.pinched.containsAll(listOf("LEFT","RIGHT"))) {
                         for(side in listOf("LEFT","RIGHT"))resources.free.acquire(side,resources.freeContacts.getValue(side),current,tracking,active.mesh)
                     }
-                    resources.free.advance(tracking,current)?.let { next ->
+                    resources.free.advance(tracking,current,smoothingMs=if(desktopMirror)42f else 0f)?.let { next ->
                         resources.pending=active.copy(pose=next.pose,width=next.physicalWidthM,height=next.physicalHeightM,freePose=true,mesh=null)
                         resources.dragged=true
                     }

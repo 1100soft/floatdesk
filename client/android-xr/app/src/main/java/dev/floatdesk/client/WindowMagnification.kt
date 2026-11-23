@@ -113,13 +113,15 @@ internal fun placePaneInsideDesktop(window:MagnifiedWindow,viewer:Pose,desktopRa
     val radius=desktopRadius?.takeIf{it.isFinite() && it>0f} ?: return window
     val nominal=window.nominalLayerDistanceM ?: window.layerDistanceM
     val clearance=window.units*(ViewLayers.DesktopDistanceM-nominal).coerceAtLeast(.015f)
-    val limit=(radius-clearance).coerceAtLeast(radius*.5f)
+    val limit=(radius-maxOf(clearance,radius*.035f)).coerceAtLeast(radius*.5f)
     val ray=FloatArray(3){window.pose.position[it]-viewer.position[it]}
     val range=sqrt(ray.sumOf{(it*it).toDouble()}).toFloat()
     if(range<.0001f)return window
     if(window.spherical){
-        if(range<=limit+.0001f && (window.mesh?.radius ?: range)<=limit+.0001f)return window
-        val scale=minOf(1f,limit/range)
+        val localEye=viewerInMonitor(viewer.position,window.pose.position,window.pose.rotation)
+        val extent=maxOf(range,window.mesh?.let{it.radius+distance(localEye,it.eye)} ?: range)
+        if(extent<=limit+.0001f)return window
+        val scale=limit/extent
         val pose=window.pose.copy(position=FloatArray(3){viewer.position[it]+ray[it]*scale})
         val w=window.width*scale
         val h=window.height*scale
@@ -131,28 +133,13 @@ internal fun placePaneInsideDesktop(window:MagnifiedWindow,viewer:Pose,desktopRa
         return window.copy(pose=pose,width=w,height=h,mesh=mesh,
             layerDistanceM=minOf(window.layerDistanceM,limit/window.units),nominalLayerDistanceM=nominal)
     }
-    if(window.freePose){
-        val eye=viewerInMonitor(viewer.position,window.pose.position,window.pose.rotation)
-        val extent=hypot(hypot(abs(eye[0])+window.width*.5f,abs(eye[1])+window.height*.5f),eye[2])
-        if(extent<=limit)return window
-        val scale=limit/extent
-        return window.copy(pose=window.pose.copy(position=FloatArray(3){viewer.position[it]+ray[it]*scale}),
-            width=window.width*scale,height=window.height*scale,mesh=null)
-    }
-    val direction=FloatArray(3){ray[it]/range}
-    val scale=minOf(1f,.98f*limit/hypot(window.width*.5f,window.height*.5f))
-    val w=window.width*scale
-    val h=window.height*scale
-    var maxRange=limit
-    for(x in floatArrayOf(-w*.5f,w*.5f))for(y in floatArrayOf(-h*.5f,h*.5f)){
-        val offset=rotateVector(window.pose.rotation,x,y,0f)
-        val along=(0..2).sumOf{(offset[it]*direction[it]).toDouble()}.toFloat()
-        val perpendicular=x*x+y*y-along*along
-        maxRange=minOf(maxRange,sqrt((limit*limit-perpendicular).coerceAtLeast(0f))-along)
-    }
-    if(scale==1f && range<=maxRange)return window
-    val center=FloatArray(3){viewer.position[it]+direction[it]*maxRange.coerceIn(0f,range)}
-    return window.copy(pose=window.pose.copy(position=center),width=w,height=h,mesh=null)
+    val eye=viewerInMonitor(viewer.position,window.pose.position,window.pose.rotation)
+    val extent=hypot(hypot(abs(eye[0])+window.width*.5f,abs(eye[1])+window.height*.5f),eye[2])
+    if(extent<=limit)return window
+    val scale=limit/extent
+    return window.copy(pose=window.pose.copy(position=FloatArray(3){viewer.position[it]+ray[it]*scale}),
+        width=window.width*scale,height=window.height*scale,mesh=null)
+
 }
 
 /** Projection mode changes are immediate even when ordinary mesh updates are deferred. */

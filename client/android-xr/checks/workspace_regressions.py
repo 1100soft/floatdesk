@@ -128,6 +128,13 @@ fun main() {
  val resized=reset.restoreDefaultDesktopSize(target,listOf(original.copy(physicalWidthM=.7f,physicalHeightM=.4f)))
  val resetDesk=resized.layouts["Desk"]!!.single()
  check(resetDesk.pose===movedDesk.pose && resetDesk.physicalWidthM==.7f && resetDesk.physicalHeightM==.4f)
+ val home=Pose(floatArrayOf(-.6f,.15f,-2f))
+ val zoomed=placed.copy(desktopHome=home,layouts=mutableMapOf("Desk" to mutableListOf(original.copy(viewCenterU=.9f))))
+ val centered=zoomed.moveLayoutOrigin(target)
+ val resetHome=centered.restoreDefaultDesktopSize(target,listOf(original)).layouts.getValue("Desk").single()
+ check(resetHome.pose===centered.desktopHome && resetHome.viewCenterU==.5f)
+ check(!resetHome.pose.position.contentEquals(centered.layouts.getValue("Desk").single().pose.position))
+
 
  check(reset.fixedMagnifiers==placed.fixedMagnifiers && reset.systemPanels==placed.systemPanels && reset.referencePlacement==spread)
  val rebased=placed.rebaseLayoutOrigin(target,1f)

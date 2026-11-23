@@ -57,6 +57,7 @@ internal data class WorkspaceFile(
     val desktopReference: Boolean = false,
     val referencePlacement: FixedMagnifierPlacement? = null,
     val layoutOrigin:Pose?=null,
+    val desktopHome:Pose?=null,
     val screenSpacing:Float=0f,
     val viewerReference:Pose?=null,
     val referenceUnitsPerMeter:Float?=null,
@@ -147,7 +148,8 @@ internal fun WorkspaceFile.monitorPlaced(
     updated[index] = if(placement.freePose || grabToMove)placement else store.viewerReference?.let{fixedDesktopDepth(placement,it,store.viewerUnitsPerMeter,sphericalWarp)} ?: placement
     val nextLayouts = layouts.toMutableMap()
     nextLayouts[activeLayout] = updated
-    val next = copy(layouts = nextLayouts)
+    val home=if(index==0 && layoutModeActive)updated[index].pose else desktopHome
+    val next = copy(layouts = nextLayouts,desktopHome=home)
     if (persist) store.save(next)
     return next
 }
@@ -176,13 +178,13 @@ private fun encode(workspace: WorkspaceFile): JSONObject {
         .put("layouts", layouts)
         .put("control", encodePanel(workspace.control))
         .put("spherical_warp", workspace.sphericalWarp)
-        .put("hand_mouse", workspace.handMouse).put("grab_to_move",workspace.grabToMove)
-        .put("free_manipulation",workspace.freeManipulation).put("desktop_reference",workspace.desktopReference)
+        .put("hand_mouse", workspace.handMouse).put("desktop_reference",workspace.desktopReference)
         .put("interaction_mode",workspace.interactionMode.name).put("cursor_remap",workspace.cursorRemap).put("window_grab_mode",workspace.windowGrabMode).put("focus_mode",workspace.focusMode).put("gaze_to_focus",workspace.gazeToFocus).put("magnify_window",workspace.magnifyWindow).put("typing_quiet_ms",workspace.typingQuietMs)
         .put("magnifier_mode",workspace.magnifierMode).put("magnify_system_panels",workspace.magnifySystemPanels)
         .put("fixed_magnifiers",encodePlacements(workspace.fixedMagnifiers))
         .put("system_panels",encodePlacements(workspace.systemPanels))
         .put("reference_placement",encodePlacements(listOfNotNull(workspace.referencePlacement)))
+        .put("desktop_home",workspace.desktopHome?.let{JSONObject().put("position",JSONArray(it.position.toList())).put("rotation",JSONArray(it.rotation.toList()))})
         .put("layout_origin",workspace.layoutOrigin?.let{JSONObject().put("position",JSONArray(it.position.toList())).put("rotation",JSONArray(it.rotation.toList()))})
         .put("experimental_viewed_detail",workspace.experimentalViewedDetail)
         .put("view_detail_debug",workspace.viewDetailDebug)
@@ -255,10 +257,9 @@ private fun decode(json: JSONObject): WorkspaceFile {
             PinchThresholds(a.optDouble(0,Double.NaN).toFloat(),a.optDouble(1,Double.NaN).toFloat(),a.optDouble(2,Double.NaN).toFloat(),a.optDouble(3,Double.NaN).toFloat()).takeIf{it.valid()}
         } ?: PinchThresholds.Default,
         handMouse = json.optBoolean("hand_mouse", json.optBoolean("mouse_gestures", false) && json.optString("interaction_mode", "MOUSE")=="MOUSE"),
-        grabToMove = json.optBoolean("grab_to_move",false),
-        freeManipulation = !json.optBoolean("grab_to_move",false) && json.optBoolean("free_manipulation",false),
         desktopReference = json.optBoolean("desktop_reference",false),
         referencePlacement = decodePlacements(json.optJSONArray("reference_placement")).firstOrNull(),
+        desktopHome=json.optJSONObject("desktop_home")?.let{Pose(floatArray(it,"position",3),floatArray(it,"rotation",4))},
         layoutOrigin = (json.optJSONObject("layout_origin") ?: json.optJSONObject("support_basis"))?.let{Pose(floatArray(it,"position",3),floatArray(it,"rotation",4))},
         referenceUnitsPerMeter=json.optDouble("viewer_units_per_meter",Double.NaN).toFloat().takeIf{it.isFinite() && it>0f},
         viewerReference=json.optJSONObject("viewer_reference")?.let {Pose(floatArray(it,"position",3),floatArray(it,"rotation",4))},

@@ -199,7 +199,9 @@ suspend fun main() {
     session.scene.activitySpace.setPose(Pose(Vector3(.3f,-.5f,1.2f)))
     val events = mutableListOf<SpatialInputEvent>()
     val hovering=mutableListOf<Pair<String,FloatArray?>>()
-    warp.attach(session,input.getSurface(),screen,PixelDensity(),onEvent={ events.add(it) },onHover={ side,point,flat,w,h -> hovering.add(side to flat) })
+    var oneHandLayout=false
+    warp.attach(session,input.getSurface(),screen,PixelDensity(),onEvent={ events.add(it) },
+        onHover={ side,point,flat,w,h -> hovering.add(side to flat) },forwardGaze={oneHandLayout})
     val component = input.component!!
     input.setScale(1.785f)
     val ip = input.getPose().translation
@@ -221,6 +223,13 @@ suspend fun main() {
     emit("DEFAULT",InputEvent.Action.DOWN,InputEvent.Source.GAZE_AND_GESTURE)
     emit("DEFAULT",InputEvent.Action.UP,InputEvent.Source.GAZE_AND_GESTURE)
     check(events.size==beforeGazeEvents) // Eye+hand selection cannot arm a custom monitor grab.
+    oneHandLayout=true
+    emit("DEFAULT",InputEvent.Action.DOWN,InputEvent.Source.GAZE_AND_GESTURE)
+    emit("DEFAULT",InputEvent.Action.UP,InputEvent.Source.GAZE_AND_GESTURE)
+    check(events.size==beforeGazeEvents+2)
+    events.subList(beforeGazeEvents,events.size).clear()
+    oneHandLayout=false
+
     check(input.pointer?.spatialPointerIcon==SpatialPointerIcon.NONE)
     component.listener(InputEvent(InputEvent.Action.CANCEL,InputEvent.Source.GAZE_AND_GESTURE,"DEFAULT",0,Vector3(0f,0f,0f),Vector3(0f,0f,0f),emptyList()))
     check(hovering.last().first=="GAZE" && hovering.last().second==null)

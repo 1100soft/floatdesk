@@ -148,7 +148,7 @@ internal class MonitorWarp : AutoCloseable {
     }
 
     @SuppressLint("RestrictedApi")
-    fun attach(session: Session, inputSurface: Surface, placement: MonitorPlacement, density: PixelDensity? = null, onEvent: ((SpatialInputEvent) -> Unit)? = null, onHover: ((String, FloatArray?, FloatArray?, Float, Float) -> Unit)? = null): Surface {
+    fun attach(session: Session, inputSurface: Surface, placement: MonitorPlacement, density: PixelDensity? = null, onEvent: ((SpatialInputEvent) -> Unit)? = null, onHover: ((String, FloatArray?, FloatArray?, Float, Float) -> Unit)? = null, forwardGaze:()->Boolean={false}): Surface {
         close()
         val target = session.scene.getEntitiesOfType(SurfaceEntity::class.java)
             .firstOrNull { it.getSurface() === inputSurface }
@@ -230,7 +230,7 @@ internal class MonitorWarp : AutoCloseable {
                     // A release can omit HitInfo; keep a still-hovered gaze target for repeated taps.
                     if(!gazeSource || point!=null)onHover?.invoke(side,point,point?.let { mesh?.unproject(it) ?: it },flatWidth,flatHeight)
                 }
-                if(gazeSource){
+                if(gazeSource && !forwardGaze()){
                     if(event.action==InputEvent.Action.UP || event.action==InputEvent.Action.CANCEL)sequences.remove(side)
                     return@listener
                 }

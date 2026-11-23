@@ -105,6 +105,7 @@ internal class TwoHandState {
         val mapping=grabMapping(current,leftLocal,rightLocal,tracking,mesh)
         if(mapping==null) {cancel();return null}
         startLeft = left.copyOf(); startRight = right.copyOf()
+        filteredLeft=startLeft;filteredRight=startRight;filteredAt=tracking.nowMs
         worldLeft = mapping.left;worldRight = mapping.right
         gain = mapping.gain;alignment = mapping.alignment
         previousLeft = left.copyOf(); previousRight = right.copyOf()
@@ -115,7 +116,11 @@ internal class TwoHandState {
         return null
     }
 
-    fun advance(tracking: GrabTracking, current: MonitorPlacement): MonitorPlacement? {
+    private var filteredLeft:FloatArray?=null
+    private var filteredRight:FloatArray?=null
+    private var filteredAt=0L
+
+    fun advance(tracking:GrabTracking,current:MonitorPlacement,smoothingMs:Float=0f):MonitorPlacement? {
         rearm(tracking)
         if (!busy) return null
         // A delayed render/input tick is not tracking loss when both fresh samples
@@ -147,9 +152,15 @@ internal class TwoHandState {
             val mapped = rotateVector(alignment, delta[0] * gain, delta[1] * gain, delta[2] * gain)
             return add(world, mapped)
         }
+        val alpha=if(smoothingMs<=0f)1f else 1f-kotlin.math.exp(-(tracking.nowMs-filteredAt).coerceIn(1L,100L)/smoothingMs)
+        fun filter(previous:FloatArray?,now:FloatArray)=if(previous==null || alpha>=1f)now
+            else FloatArray(3){previous[it]+alpha*(now[it]-previous[it])}
+        val stableLeft=filter(filteredLeft,left)
+        val stableRight=filter(filteredRight,right)
+        filteredLeft=stableLeft;filteredRight=stableRight;filteredAt=tracking.nowMs
         val original = base ?: return null
         val result = placeGrabbed(hands.getValue("LEFT").local, hands.getValue("RIGHT").local,
-            target(startLeft, left, worldLeft), target(startRight, right, worldRight),
+            target(startLeft, stableLeft, worldLeft), target(startRight, stableRight, worldRight),
             current.pose.rotation, original.physicalWidthM, original.physicalHeightM, current)
         if (result != null) {
             last = result

@@ -21,10 +21,10 @@ fun main() {
  val cooling=ThermalVideoGate()
  check(!cooling.update(3,0))
  check(cooling.update(4,1000))
- check(cooling.update(2,2000) && cooling.update(2,11_000))
- check(cooling.update(3,12_000)) // A reheating sample restarts the cooldown.
- check(cooling.update(2,13_000) && cooling.update(2,22_999))
- check(!cooling.update(2,23_000))
+ check(cooling.update(2,2000) && cooling.update(2,2_999))
+ check(cooling.update(3,3_000)) // A reheating sample restarts the cooldown.
+ check(cooling.update(2,4_000) && cooling.update(2,5_999))
+ check(!cooling.update(2,6_000))
  println("PASS thermal critical pause and sustained recovery")
  println("PASS connection problem: startup grace, never reached, lost after replies, beacon-only host, no network, non-Wi-Fi, restart reset")
 }

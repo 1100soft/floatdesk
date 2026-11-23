@@ -1,7 +1,7 @@
 package dev.floatdesk.client.net
 
 /** Android thermal levels: pause at critical, recover after sustained moderate or cooler. */
-internal class ThermalVideoGate(private val recoveryMs:Long=10_000){
+internal class ThermalVideoGate(private val recoveryMs:Long=2_000){
     private var paused=false
     private var coolSince:Long?=null
 

@@ -456,11 +456,21 @@ internal class DeskConnection(
 
     @Synchronized
     fun projection(index:Int,value:ViewProjection?) {viewProjections[index]=value;decoders[index]?.projection(value)}
+    private var nextNativeMeshUpdate=0L
+    /** Mesh replacements share one SceneCore command queue, even across different video decoders. */
+    fun tryNativeMeshUpdate(submit:()->Boolean):Boolean {
+        val now=android.os.SystemClock.uptimeMillis()
+        if(now<nextNativeMeshUpdate || thermalPaused.value)return false
+        if(!submit())return false
+        nextNativeMeshUpdate=now+if(limitOptionalRendering)64 else 32
+        return true
+    }
+
     fun tryDesktopShapeUpdate(index:Int,update:()->Unit):Boolean {
         val compositor=decoders[index]?.windowRenderer()
-        if(compositor!=null)return compositor.tryShapeUpdate(update)
-        update()
-        return true
+        return tryNativeMeshUpdate {
+            if(compositor!=null)compositor.tryShapeUpdate(update) else {update();true}
+        }
     }
     fun aimOverlay(index: Int,value: VideoAim) { decoders[index]?.overlay(value) }
 

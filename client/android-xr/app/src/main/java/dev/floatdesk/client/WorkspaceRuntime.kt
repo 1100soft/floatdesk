@@ -1377,7 +1377,9 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 var retainedRow by remember{mutableStateOf(row)}
                 if(row!=null)retainedRow=row
                 val live=row ?: requireNotNull(retainedRow)
-                val source=connection.windowCaptures.source(live.id) ?: live
+                // Plasma reuses its preview X11 window ID across icons. The live catalogue
+                // has the current extent before the retained capture reports another frame.
+                val source=if(live.panel)connection.windowCaptures.source(live.id) ?: live else live
                 val output=systemInfo?.screens?.firstOrNull{source.x+source.width/2 in it.x until it.x+it.width && source.y+source.height/2 in it.y until it.y+it.height}
                 val edge=if(source.height>source.width){if(output!=null && source.x<output.x+output.width/2)"left" else "right"}else{if(output!=null && source.y<output.y+output.height/2)"top" else "bottom"}
                 val placementKey="panel:${output?.name ?: "desktop"}:$edge"
@@ -1398,7 +1400,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 val panels=renderedSystem.mapNotNull{pane->
                     shellRows.firstOrNull{it.id==pane.id && it.panel}?.let{pane to (connection.windowCaptures.source(it.id) ?: it)}
                 }
-                val entry=remember(row?.id,panels.map{it.first.id}){
+                val entry=remember(row,panels.map{it.first.id}){
                     if(live.panel)null else {
                         val cursor=androidx.compose.runtime.snapshots.Snapshot.withoutReadObservation{connection.cursors.value[0]?.fragment}
                         val bounds=systemInfo?.bounds()

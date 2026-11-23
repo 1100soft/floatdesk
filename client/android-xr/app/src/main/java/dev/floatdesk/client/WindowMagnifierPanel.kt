@@ -43,11 +43,14 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
         if(failureToken>0 && window!=null){delay(retryPolicy.nextDelayMs());retryToken++}
     }
     DisposableEffect(resources){onDispose{hoverNow.value("LEFT",null);hoverNow.value("RIGHT",null);clearPointerHover();hiddenNow.value();movingNow.value(false)}}
-    LaunchedEffect(resources,window?.id,captureId,regionId,captureEpoch,retryToken,desktopMirror){
+    val transientSize=if(transientSurface)window?.let{it.sourceWidth to it.sourceHeight} else null
+    LaunchedEffect(resources,window?.id,transientSize,captureId,regionId,captureEpoch,retryToken,desktopMirror){
         hiddenNow.value();resources.visible=false;resources.stream?.close();resources.stream=null;resources.entity?.setEnabled(false);resources.curved?.entity?.setEnabled(false)
         hoverNow.value("LEFT",null);hoverNow.value("RIGHT",null);clearPointerHover()
         fun surfaceMode(value:MagnifiedWindow)=if(value.spherical==projectionMode)value else value.copy(spherical=projectionMode,mesh=null)
         val initial=window?.takeIf{(desktopMirror || it.id>0L) && it.sourceWidth>0 && it.sourceHeight>0}?.let(::surfaceMode) ?: return@LaunchedEffect
+        if(transientSurface)delay(80) // Let a reused shell window settle on its new size.
+        while(connection.thermalPaused.value)delay(100)
         var initialViewer=viewer.get()
         while(initialViewer==null){withFrameNanos{};initialViewer=viewer.get()}
         val initialFrame=if(projectFrame)magnifierFrame(initial,initial,initialViewer,units(),true)else projectPaneAtPlacement(initial,initial,initialViewer,true)
@@ -129,7 +132,8 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
             val targetPose=Pose(Vector3(p.position[0],p.position[1],p.position[2]),Quaternion(q[0],q[1],q[2],q[3]))
             resources.mesh=target.mesh?.takeIf{RenderPolicy.CustomMeshes && !it.planar}
             if(reusedSurface && resources.rendered?.let{!samePaneGeometry(it,target)}!=false){
-                val nextShape=shape(target);resources.retain(nextShape);entity.shape=nextShape
+                val nextShape=shape(target)
+                while(!connection.tryNativeMeshUpdate{resources.retain(nextShape);entity.shape=nextShape;true})withFrameNanos{}
             }
             resources.rendered=target
             entity.parent=root;entity.setPose(targetPose)
@@ -276,9 +280,11 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                         resources.retain(nextShape)
                         entity.shape=nextShape
                     }
-                    val submitted=resources.stream?.tryShapeUpdate(submit)
-                        ?: resources.mirrorRenderer?.tryShapeUpdate(submit)
-                        ?: run {submit();true}
+                    val submitted=connection.tryNativeMeshUpdate {
+                        resources.stream?.tryShapeUpdate(submit)
+                            ?: resources.mirrorRenderer?.tryShapeUpdate(submit)
+                            ?: run {submit();true}
+                    }
                     if(!submitted)continue
                     if(receiveInput)syncMagnifierInput(session,resources,entity,mesh,next.width,next.height)
                     if(modeChanged)logMagnifierSubmission("mode",next,entity)

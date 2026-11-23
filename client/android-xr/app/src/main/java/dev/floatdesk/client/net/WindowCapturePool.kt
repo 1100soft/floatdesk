@@ -96,7 +96,14 @@ internal class WindowCapturePool @JvmOverloads constructor(private val connectio
         val source=sources.getOrPut(id){Source(id)};val key=Any()
         source.outputSize().let{output?.size?.invoke(it.first,it.second)}
         val member=Member(VideoMirror(surface),onReady,onError,output,regionId);source.members[key]=member;source.update()
-        return Lease(source.video::tryShapeUpdate,{x,y,pin,aspect->if(member.mirror.padX!=x || member.mirror.padY!=y || member.mirror.pinned!=pin || member.mirror.aspect!=aspect){member.mirror=member.mirror.copy(padX=x,padY=y,pinned=pin,aspect=aspect);source.update()}},{
+        return Lease(source.video::tryShapeUpdate,{x,y,pin,aspect->
+            val prior=member.mirror
+            if(kotlin.math.abs(prior.padX-x)>.0001f || kotlin.math.abs(prior.padY-y)>.0001f ||
+                prior.pinned!=pin || kotlin.math.abs(prior.aspect-aspect)>.0001f){
+                member.mirror=prior.copy(padX=x,padY=y,pinned=pin,aspect=aspect)
+                source.update()
+            }
+        },{
             source.members.remove(key);output?.clear?.invoke()
             if(source.members.isEmpty())source.retire() else if(!source.retired){source.update();source.video.flushOutputs()}
         },{value->member.ink=value})

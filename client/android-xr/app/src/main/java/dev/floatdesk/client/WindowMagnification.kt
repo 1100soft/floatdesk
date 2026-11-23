@@ -99,7 +99,7 @@ internal fun angularMagnifierPlacement(window:MagnifiedWindow,viewer:Pose,units:
 
 /** Equality of the actual submitted mesh, independent of capture identity. */
 internal fun samePaneGeometry(previous:MagnifiedWindow,next:MagnifiedWindow):Boolean {
-    if(previous.spherical!=next.spherical || previous.width!=next.width || previous.height!=next.height)return false
+    if(previous.spherical!=next.spherical || abs(previous.width-next.width)>.0005f || abs(previous.height-next.height)>.0005f)return false
     if(!next.spherical)return true
     val a=previous.mesh ?: return next.mesh==null
     val b=next.mesh ?: return false

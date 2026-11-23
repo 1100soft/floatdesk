@@ -63,6 +63,7 @@ pub(super) fn start(
                     let mut current_id = 0;
                     let mut client_size = (0, 0);
                     let mut frame = 0u64;
+                    let mut last_sent = None;
                     let mut last = Instant::now() - Duration::from_secs(1);
                     while !shared.stop.load(Ordering::Relaxed) {
                         let mut size = [0u8; 4];
@@ -90,6 +91,7 @@ pub(super) fn start(
                             .and_then(|v| u32::try_from(v).ok())
                             .ok_or_else(|| Error::Msg("Missing window".into()))?;
                         if request["paused"].as_bool() == Some(true) {
+                            last_sent = None;
                             let header=serde_json::json!({"type":"window-paused-v1","windowId":id,"bytes":0}).to_string();
                             socket.write_all(&(header.len() as u32).to_be_bytes())?;
                             socket.write_all(header.as_bytes())?;
@@ -186,6 +188,7 @@ pub(super) fn start(
                             || current_id != id
                             || client_size != (geometry.width, geometry.height)
                         {
+                            last_sent = None;
                             encoder.take();
                             capture.take();
                             popup_captures.clear();
@@ -362,6 +365,26 @@ pub(super) fn start(
                                 (0, 0, w.into(), h.into()),
                             )
                         }
+                        if mask_at.elapsed() >= Duration::from_millis(100) {
+                            mask = crate::platform::x11::windows::occluders(&position_link, id)
+                                .unwrap_or_default();
+                            mask_at = Instant::now();
+                        }
+                        let mut header = serde_json::json!({"type":"window-h264-v1","windowId":id,"width":w,"height":h,"occluders":mask,"ownerX":owner_x,"ownerY":owner_y,"ownerWidth":owner_width,"ownerHeight":owner_height,"popups":popups,"sourceX":source_x,"sourceY":source_y,"sourceWidth":source_width,"sourceHeight":source_height});
+                        // Compare the exact capture and mapping. A static surface can keep its
+                        // last buffer, including at full resolution and with all overlays.
+                        if request["skipIdentical"].as_bool() == Some(true)
+                            && last_sent.as_ref().is_some_and(
+                                |(pixels, metadata): &(Vec<u8>, serde_json::Value)| {
+                                    pixels == &image.bgra && metadata == &header
+                                },
+                            )
+                        {
+                            let response=serde_json::json!({"type":"window-unchanged-v1","windowId":id,"bytes":0}).to_string();
+                            socket.write_all(&(response.len() as u32).to_be_bytes())?;
+                            socket.write_all(response.as_bytes())?;
+                            continue;
+                        }
                         encoder.as_mut().unwrap().submit(&image)?;
                         let encoded = encoder
                             .as_mut()
@@ -371,13 +394,15 @@ pub(super) fn start(
                         if encoded.bytes.len() > 8 * 1024 * 1024 {
                             return Err(Error::Msg("Window frame too large".into()));
                         }
-                        if mask_at.elapsed() >= Duration::from_millis(100) {
-                            mask = crate::platform::x11::windows::occluders(&position_link, id)
-                                .unwrap_or_default();
-                            mask_at = Instant::now();
+                        if request["skipIdentical"].as_bool() == Some(true) {
+                            last_sent = Some((image.bgra, header.clone()));
+                        } else {
+                            last_sent = None;
                         }
                         frame += 1;
-                        let header=serde_json::json!({"type":"window-h264-v1","windowId":id,"frame":frame,"width":w,"height":h,"occluders":mask,"ownerX":owner_x,"ownerY":owner_y,"ownerWidth":owner_width,"ownerHeight":owner_height,"popups":popups,"sourceX":source_x,"sourceY":source_y,"sourceWidth":source_width,"sourceHeight":source_height,"bytes":encoded.bytes.len()}).to_string();
+                        header["frame"] = frame.into();
+                        header["bytes"] = encoded.bytes.len().into();
+                        let header = header.to_string();
                         socket.write_all(&(header.len() as u32).to_be_bytes())?;
                         socket.write_all(header.as_bytes())?;
                         socket.write_all(&encoded.bytes)?;

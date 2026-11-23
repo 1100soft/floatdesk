@@ -16,7 +16,6 @@ import androidx.xr.runtime.math.FloatSize2d
 import androidx.xr.runtime.math.Vector3
 import androidx.xr.scenecore.Entity
 import androidx.xr.scenecore.SurfaceEntity
-import androidx.xr.scenecore.Texture
 import androidx.xr.scenecore.scene
 import dev.floatdesk.client.workspace.MonitorPlacement
 import java.nio.FloatBuffer
@@ -60,7 +59,6 @@ internal class MonitorWarp : AutoCloseable {
     private var ownsInputPointer=false
     private var pointerRefreshAt=0L
     private var inputListener: ((InputEvent) -> Unit)? = null
-    private var mask: Texture? = null
     private var shown=true
     fun setVisible(visible:Boolean) {
         if(shown==visible)return
@@ -112,21 +110,13 @@ internal class MonitorWarp : AutoCloseable {
         if (sphere == null) {
             curvedInput?.entity?.setEnabled(false)
             input?.setEnabled(ownerEnabled)
-            if(input?.primaryAlphaMaskTexture!=null){
-                input?.primaryAlphaMaskTexture = null
-                input?.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE
-            }
             if (!directInteraction) interaction?.let { component ->
                 check(input?.addComponent(component) == true)
                 directInteraction = true
             }
             return
         }
-        if (mask == null) mask = Texture.create(session, java.nio.file.Paths.get("transparent-monitor-mask.png"))
-        if(input?.primaryAlphaMaskTexture!==mask){
-            input?.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.TRANSPARENT
-            input?.primaryAlphaMaskTexture = mask
-        }
+        input?.setEnabled(false)
         if (directInteraction) {
             interaction?.let { input?.removeComponent(it) }
             directInteraction = false
@@ -349,16 +339,17 @@ internal class MonitorWarp : AutoCloseable {
                 syncCurvedPose(original)
                 applyPixels(it,placement)
             } else if(live === original) SurfaceEntity.create(session,
-                shape = shape, pose = original.getPose(), parent = original.parent,
-                superSampling = SurfaceEntity.SuperSampling.NONE).also {
+                shape = shape, pose = original.getPose(), parent = null,
+                superSampling = SurfaceEntity.SuperSampling.NONE,mediaBlendingMode=SurfaceEntity.MediaBlendingMode.OPAQUE).also {
+                it.setEnabled(false)
                 it.setScale(original.getScale())
                 applyPixels(it,placement)
-                it.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE
                 val pointer=SpatialPointerComponent.create(session)
                 check(it.addComponent(pointer))
                 pointer.spatialPointerIcon=SpatialPointerIcon.NONE
                 live = it;retainedCurved=it;curvedState=NativeNodeState(it);appliedShape=shape
                 recentShapes.retain(shape)
+                syncCurvedPose(original)
             } else live!!
             if(submitShape!=null){
                 if(!submitShape{applyShape(target,shape)})return
@@ -374,8 +365,7 @@ internal class MonitorWarp : AutoCloseable {
         // Restore the Compose-owned surface before releasing our independent curved resources.
         curvedInput?.close(); curvedInput = null
         retainedCurved?.takeUnless{it.isDisposed}?.let { it.parent = null; it.dispose() };retainedCurved=null;curvedState=null
-        input?.takeUnless{it.isDisposed}?.let{it.setEnabled(ownerEnabled);it.primaryAlphaMaskTexture=null;it.mediaBlendingMode=SurfaceEntity.MediaBlendingMode.OPAQUE}
-        mask?.close(); mask = null
+        input?.takeUnless{it.isDisposed}?.setEnabled(ownerEnabled)
         inputListener = null
         interaction?.let { component -> runCatching { input?.removeComponent(component) } }
         interaction = null; sequences.clear()

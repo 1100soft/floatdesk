@@ -30,6 +30,14 @@ fun main() {
    val displaced=floatArrayOf(1.2f,0f,-1.6f)
    val angularResult=angularMagnifierPlacement(free,Pose(),1f,displaced)
    check(angularResult.freePose && angularResult.pose.position.contentEquals(displaced))
+   val curved=placePaneInsideDesktop(projectPaneAtPlacement(free.copy(spherical=true),free,Pose(),true),Pose(),1.2f)
+   val copied=projectPaneAtPlacement(curved.copy(id=99),curved,Pose(),true)
+   check(curved.mesh!=null && curved.mesh!!.radius<1.2f && samePaneGeometry(curved,copied))
+   check(!samePaneGeometry(curved,curved.copy(spherical=false)))
+   val limited=placePaneInsideDesktop(curved,Pose(),.85f)
+   val reframed=magnifierFrame(limited,limited,Pose(),1f,true)
+   check(placePaneInsideDesktop(reframed,Pose(),.85f).width==limited.width)
+
    for(pane in listOf(free,free.copy(freePose=false))){
        val inside=placePaneInsideDesktop(pane,Pose(),1.2f)
        for(x in listOf(-inside.width*.5f,inside.width*.5f))for(y in listOf(-inside.height*.5f,inside.height*.5f)){
@@ -171,6 +179,12 @@ fun main() {
   val popup=DesktopWindow(2,1250,700,300,240)
   val note=stickyMagnifier(pane,source,popup,layerViewer)
   check(note.sourceWidth==300 && note.sourceHeight==240 && note.layerDistanceM<pane.layerDistanceM)
+  val single=stickyMagnifier(pane,source,popup,layerViewer,viewHalfAngles=floatArrayOf(.45f,.35f))
+  val wide=stickyMagnifier(pane,source,popup.copy(width=1800),layerViewer,viewHalfAngles=floatArrayOf(.45f,.35f))
+  check(single.layerDistanceM==wide.layerDistanceM && wide.spherical==curved)
+  check(abs(wide.width/wide.height-1800f/240f)<.0001f)
+  check(wide.width<stickyMagnifier(pane,source,popup.copy(width=1800),layerViewer).width)
+
   check(pane.sourceWidth==1200 && pane.width<=distance*4 && abs(pane.width/pane.height-1.5f)<.0001f)
   check(magnifierFrame(pane,pane,Pose(floatArrayOf(.02f,0f,0f)),1f,false).mesh===pane.mesh)
  }

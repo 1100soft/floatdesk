@@ -103,7 +103,7 @@ internal class SurfaceEntity(var shape: Shape): Entity() {
         class CustomMesh(val mesh: TriangleMesh, val rightEye: TriangleMesh? = null): Shape {val leftEye get()=mesh}
     }
     companion object {
-        fun create(session: Session, shape: Shape,pose: Pose=Pose(),parent: Entity?=null,superSampling: SuperSampling=SuperSampling.NONE) = SurfaceEntity(shape).also { it.setPose(pose); it.parent=parent; session.scene.entities.add(it) }
+        fun create(session: Session, shape: Shape,pose: Pose=Pose(),parent: Entity?=null,superSampling: SuperSampling=SuperSampling.NONE,mediaBlendingMode:MediaBlendingMode=MediaBlendingMode.TRANSPARENT) = SurfaceEntity(shape).also { it.mediaBlendingMode=mediaBlendingMode;it.setPose(pose); it.parent=parent; session.scene.entities.add(it) }
     }
 }
 '''
@@ -252,7 +252,7 @@ suspend fun main() {
     warp.syncCurvedInput(session)
     check(warp.mesh!==beforeCorrection && CurvedMonitorInput.last===patch && patch.mesh===warp.mesh)
     check(patch.entity.parent === session.scene.entities.last())
-    check(input.primaryAlphaMaskTexture != null && input.component == null && !input.enabled)
+    check(input.primaryAlphaMaskTexture == null && input.component == null && !input.enabled)
     check(session.scene.entities.last().enabled)
     val offAxis=MonitorMesh(1.4094946f,.8809341f,floatArrayOf(-.3641987f,-.037884656f,1.4811001f))
     check(offAxis.project(floatArrayOf(-.25f,0f,0f))[2]<0f) // Previously occluded left-middle area lies behind the old flat owner.

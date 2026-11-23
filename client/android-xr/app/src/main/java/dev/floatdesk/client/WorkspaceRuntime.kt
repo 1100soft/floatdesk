@@ -159,6 +159,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
     var inPlaceWindow by remember { mutableStateOf<Long?>(null) }
     var magnified by remember { mutableStateOf<MagnifiedWindow?>(null) }
     val magnifierViewer=remember { AtomicReference<Pose?>(null) }
+    var magnifierViewerReady by remember { mutableStateOf(false) }
     var magnifierMoving by remember { mutableStateOf(false) }
     var magnifierPinned by remember { mutableStateOf(false) }
     var typingLocked by remember { mutableStateOf(false) }
@@ -754,7 +755,10 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 androidx.xr.runtime.math.Pose((perceived.translation + rightEye.translation) * 0.5f)
             } else perceived
             viewer?.takeIf { reliable }?.let { grips["VIEWER"] = deskPose(current, root, it).translation.toArray() }
-            displayHead.get()?.let{reference->if(reliable)magnifierViewer.set(Pose(grips["VIEWER"]?.copyOf() ?: reference.position,reference.rotation))}
+            displayHead.get()?.takeIf{reliable}?.let{reference->
+                magnifierViewer.set(Pose(grips["VIEWER"]?.copyOf() ?: reference.position,reference.rotation))
+                if(!magnifierViewerReady)magnifierViewerReady=true
+            }
             sampledHands.set(hands)
             val handStates=hands.map { (side,hand)->val state=hand.state.value;Triple(side,state,snapshotHandJoints(state)) }
             val handSamples=handStates.mapNotNull { (side,state,joints) ->
@@ -982,7 +986,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             val magnifyTarget=if(gazeBlockedByPane || toolbarGaze)null else rawDesktopGazeTarget?.let{hit->connection.desktopPoint(hit.monitor,hit.u,hit.v)?.let{(u,v)->focusInfo?.hover(u,v)?.window?.windowId}}
             val detailTarget=magnifyTarget.takeIf{reliable && resumed && !displayControlsOpen && palmPanel==null &&
                 !hudReading && !monitorGrab && !nativeManipulation && !windowGrab.engaged && !magnifierMoving}
-            val canPatchByGaze=!connection.limitOptionalRendering && !workspace.magnifyWindow && focusInfo?.windowMagnify==true && resumed && !displayControlsOpen && !connection.reloading.value
+            val canPatchByGaze=!connection.thermalPaused.value && focusInfo?.windowMagnify==true && resumed && !displayControlsOpen && !connection.reloading.value
             if(detailTarget==gazeDetailWindow && detailTarget!=null)detailSeenAt=handTracking.nowMs
             gazeDetail.update(handTracking.nowMs,canPatchByGaze,false,detailTarget)?.let{
                 gazeDetailWindow=it;detailSeenAt=handTracking.nowMs
@@ -1302,8 +1306,8 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
         }
         key(sceneEpoch){Subspace { desk() }}
         val magnifierPatch=if(workspace.magnifierMode=="fixed")inPlaceWindow ?: lastFixedWindow else magnified?.id ?: inPlaceWindow
-        val detailsVisible=sceneActive && !displayControlsOpen && !connection.limitOptionalRendering && !connection.thermalPaused.value
-        InPlaceWindowDetail(connection,if(!detailsVisible)null else if(workspace.magnifyWindow)magnifierPatch else gazeDetailWindow,
+        val detailsVisible=sceneActive && !displayControlsOpen && !connection.thermalPaused.value
+        InPlaceWindowDetail(connection,if(!detailsVisible)null else gazeDetailWindow ?: magnifierPatch.takeIf{workspace.magnifyWindow},
             {if(workspace.magnifyWindow && magnified==null)magnifierReady=true},
             {message->if(workspace.magnifyWindow)magnifierFailed=true;Log.w("Floatdesk",message)})
         val magnifierRoot=remember(deskRootVersion){deskSpace.get()}
@@ -1311,10 +1315,10 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             WindowMagnifierPanel(session,magnifierRoot,magnified?.copy(desktopRotation=workspace.monitorAt(0)?.pose?.rotation).takeIf{workspace.magnifierMode=="floating" && magnifierSurfacesAllowed(workspace.magnifyWindow,sceneActive,displayControlsOpen)},connection,magnifierPinned,magnifierViewer,{handTracking.unitsPerMeter},handTracking,
                 {magnifierReady=true},{message->magnifierFailed=true;Log.w("Floatdesk",message)},
                 {side,uv->magnifierHands.update("floating",side,uv,magnified?.id)},
-                {next,_->if(workspace.magnifierMode=="floating" && workspace.magnifyWindow){magnified=next;magnifierMesh=next.mesh}},{moving->if(moving)fixedEditing.add("floating")else fixedEditing.remove("floating");magnifierMoving=fixedEditing.isNotEmpty()},allowManipulation=workspace.grabToMove,freeManipulation=workspace.freeManipulation,topologyKey="floating",onPointerHover={hands,gaze->if(gaze)pointerControl.noteSystemGaze();if(hands || gaze)magnifierPointerHover["floating"]=hands to gaze else magnifierPointerHover.remove("floating")},onHidden={magnifierReady=false})
+                {next,_->if(workspace.magnifierMode=="floating" && workspace.magnifyWindow){magnified=next;magnifierMesh=next.mesh}},{moving->if(moving)fixedEditing.add("floating")else fixedEditing.remove("floating");magnifierMoving=fixedEditing.isNotEmpty()},allowManipulation=workspace.grabToMove,freeManipulation=workspace.freeManipulation,topologyKey="floating",projectionMode=workspace.sphericalWarp,onPointerHover={hands,gaze->if(gaze)pointerControl.noteSystemGaze();if(hands || gaze)magnifierPointerHover["floating"]=hands to gaze else magnifierPointerHover.remove("floating")},onHidden={magnifierReady=false})
         }
         val fixedDesktop=workspace.monitorAt(0)?.let{desktop->workspace.supportBasis?.let{desktop.copy(pose=it)} ?: desktop}
-        val fixedViewer=magnifierViewer.get()
+        val fixedViewer=if(magnifierViewerReady)magnifierViewer.get() else null
         if(magnifierRoot!=null && fixedDesktop!=null && fixedViewer!=null){
             val enabled=magnifierSurfacesAllowed(workspace.desktopReference,sceneActive,displayControlsOpen)
             val unit=handTracking.unitsPerMeter
@@ -1334,7 +1338,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     if(changed)workspace=workspace.copy(referencePlacement=saveFixedMagnifier("reference",next,fixedDesktop,unit))
                 },{moving->if(moving)fixedEditing.add("reference")else{fixedEditing.remove("reference");store.save(workspace)};magnifierMoving=fixedEditing.isNotEmpty()},
                 topologyKey="reference",onHidden={referenceReady=false},showFrame=false,
-                allowManipulation=workspace.grabToMove,freeManipulation=workspace.freeManipulation,desktopMirror=true,mirrorOverlay=referenceInk::get)
+                allowManipulation=workspace.grabToMove,freeManipulation=workspace.freeManipulation,desktopMirror=true,projectionMode=workspace.sphericalWarp,mirrorOverlay=referenceInk::get)
         }
         val renderedFixed=mutableListOf<Pair<String,MagnifiedWindow>>()
         if(session!=null && magnifierRoot!=null && fixedDesktop!=null && fixedViewer!=null){
@@ -1359,7 +1363,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                         if(editing)fixedEditing.add(record.id)else{fixedEditing.remove(record.id);store.save(workspace)}
                         magnifierMoving=fixedEditing.isNotEmpty()
                     },{hands,gaze->if(gaze)pointerControl.noteSystemGaze();if(hands || gaze)magnifierPointerHover[record.id]=hands to gaze else magnifierPointerHover.remove(record.id)},allowManipulation=workspace.grabToMove,freeManipulation=workspace.freeManipulation,topologyKey=record.id,onHidden={fixedReady[record.id]=false},
-                    onDisplayed={id->fixedDisplayed[record.id]=id;fixedReady[record.id]=true})
+                    projectionMode=workspace.sphericalWarp,onDisplayed={id->fixedDisplayed[record.id]=id;fixedReady[record.id]=true})
             }
         }
         val renderedSystem=mutableListOf<MagnifiedWindow>()
@@ -1392,12 +1396,13 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 // Capture reconnects must not resize a persisted visual element.
                 val contentRecord=record
                 val attachedPanel=if(live.panel)null else renderedSystem.filter{p->systemInfo?.systemWindows?.any{it.id==p.id && it.panel}==true}.minByOrNull{p->
-                    val b=connection.windowCaptures.source(p.id)!!
+                    val b=connection.windowCaptures.source(p.id) ?: shellRows.first{it.id==p.id}
                     val dx=maxOf(b.x-source.x-source.width,source.x-b.x-b.width,0)
                     val dy=maxOf(b.y-source.y-source.height,source.y-b.y-b.height,0)
                     dx.toLong()*dx+dy.toLong()*dy
                 }
-                val placement=if(attachedPanel!=null)stickyMagnifier(attachedPanel,connection.windowCaptures.source(attachedPanel.id)!!,source,fixedViewer)
+                val placement=if(attachedPanel!=null)stickyMagnifier(attachedPanel,connection.windowCaptures.source(attachedPanel.id) ?: shellRows.first{it.id==attachedPanel.id},source,fixedViewer,
+                        viewHalfAngles=viewHalfAngles.get())
                     else fixedMagnifier(contentRecord,fixedDesktop,source,fixedViewer,handTracking.unitsPerMeter,workspace.sphericalWarp && RenderPolicy.CustomMeshes,systemRuntime[live.id],dev.floatdesk.client.workspace.ViewLayers.ShellDistanceM,updateGeometry=false)
                 val pane=placePaneInsideDesktop(placement,fixedViewer,handTracking.desktopSphereRadius)
                 val enabled=row!=null && magnifierSurfacesAllowed(true,sceneActive,displayControlsOpen)
@@ -1415,12 +1420,12 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     },{moving->
                         if(moving)fixedEditing.add("system:${live.id}")else{fixedEditing.remove("system:${live.id}");store.save(workspace)}
                         magnifierMoving=fixedEditing.isNotEmpty()
-                    },allowManipulation=workspace.grabToMove && live.panel,freeManipulation=workspace.freeManipulation && live.panel,topologyKey="shell:${live.id}",onHidden={systemReady[live.id]=false},showFrame=false)
+                    },allowManipulation=workspace.grabToMove && live.panel,freeManipulation=workspace.freeManipulation && live.panel,topologyKey="shell:${live.id}",projectionMode=workspace.sphericalWarp,onHidden={systemReady[live.id]=false},showFrame=false)
             }}
         }
         if(session!=null && magnifierRoot!=null && sceneActive && !displayControlsOpen){
             WindowMagnifierPanel(session,magnifierRoot,dragProxy,connection,false,magnifierViewer,{handTracking.unitsPerMeter},handTracking,
-                {},{message->Log.w("Floatdesk",message)},{_,_->},{_,_->},{},allowManipulation=false,showFrame=false,topologyKey="window-drag-preview",receiveInput=false,projectFrame=false)
+                {},{message->Log.w("Floatdesk",message)},{_,_->},{_,_->},{},allowManipulation=false,showFrame=false,topologyKey="window-drag-preview",receiveInput=false,projectFrame=false,projectionMode=workspace.sphericalWarp)
         }
         val renderedPopups=mutableListOf<MagnifiedWindow>()
         if(session!=null && magnifierRoot!=null && fixedViewer!=null && sceneActive && !displayControlsOpen){
@@ -1441,7 +1446,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     WindowMagnifierPanel(session,magnifierRoot,pane,connection,false,magnifierViewer,{handTracking.unitsPerMeter},handTracking,
                         {popupReady[name]=true},{message->popupReady[name]=false;Log.w("Floatdesk",message)},
                         {side,uv->magnifierHands.update(name,side,if(pane!=null)uv?.let{magnifierContentPoint(pane,it)}else null,pane?.id)},
-                        {_,_->},{},topologyKey="menu:${popup?.id}",onHidden={popupReady[name]=false},captureId=owner.id,regionId=popup?.id,allowManipulation=false,showFrame=false)
+                        {_,_->},{},topologyKey="menu:${popup?.id}",projectionMode=workspace.sphericalWarp,onHidden={popupReady[name]=false},captureId=owner.id,regionId=popup?.id,allowManipulation=false,showFrame=false)
                 }
             }
         }

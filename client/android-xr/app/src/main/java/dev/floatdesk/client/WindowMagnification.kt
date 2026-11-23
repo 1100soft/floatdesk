@@ -55,7 +55,7 @@ internal class NativeSurfaceTap {
     }
 }
 internal val MagnifierDistanceM get()=ViewLayers.MagnifierDistanceM
-internal data class MagnifiedWindow(val id:Long,val pose:Pose,val width:Float,val height:Float,val sourceWidth:Int,val sourceHeight:Int,val spherical:Boolean=false,val mesh:MonitorMesh?=null,val units:Float=1f,val headOffset:FloatArray=floatArrayOf(0f,0f,-1f),val sizeScale:Float=1f,val fixed:Boolean=false,val desktopRotation:FloatArray?=null,val requestedPosition:FloatArray?=null,val headRotation:FloatArray?=null,val layerDistanceM:Float=MagnifierDistanceM,val freePose:Boolean=false)
+internal data class MagnifiedWindow(val id:Long,val pose:Pose,val width:Float,val height:Float,val sourceWidth:Int,val sourceHeight:Int,val spherical:Boolean=false,val mesh:MonitorMesh?=null,val units:Float=1f,val headOffset:FloatArray=floatArrayOf(0f,0f,-1f),val sizeScale:Float=1f,val fixed:Boolean=false,val desktopRotation:FloatArray?=null,val requestedPosition:FloatArray?=null,val headRotation:FloatArray?=null,val layerDistanceM:Float=MagnifierDistanceM,val freePose:Boolean=false,val nominalLayerDistanceM:Float?=null)
 internal fun magnifiedWindow(id:Long,width:Int,height:Int,viewer:Pose,horizontal:Float,vertical:Float,units:Float,spherical:Boolean=false,previous:MagnifiedWindow?=null,layerDistanceM:Float=MagnifierDistanceM):MagnifiedWindow{
     val source=deskLayout(listOf(Triple("Window",width,height)))
     val fitted=fitDesktopInView(source,viewer,horizontal,vertical,units,spherical,centralView=true,distanceM=layerDistanceM).single()
@@ -97,15 +97,40 @@ internal fun angularMagnifierPlacement(window:MagnifiedWindow,viewer:Pose,units:
         else magnifierGeometry(window,viewer,units,position,updateMesh)
 }
 
-/** A flat supporting pane must fit inside the desktop sphere along every overlapping eye ray. */
-internal fun placePaneInsideDesktop(window:MagnifiedWindow,viewer:Pose,desktopRadius:Float?):MagnifiedWindow {
+/** Equality of the actual submitted mesh, independent of capture identity. */
+internal fun samePaneGeometry(previous:MagnifiedWindow,next:MagnifiedWindow):Boolean {
+    if(previous.spherical!=next.spherical || previous.width!=next.width || previous.height!=next.height)return false
+    if(!next.spherical)return true
+    val a=previous.mesh ?: return next.mesh==null
+    val b=next.mesh ?: return false
+    if(a===b)return true
+    return a.positions.size==b.positions.size && a.texCoords.contentEquals(b.texCoords) &&
+        a.positions.indices.none{abs(a.positions[it]-b.positions[it])>.0005f}
+}
+
+/** Keep the supporting surface inside the desktop sphere along every overlapping eye ray. */
+internal fun placePaneInsideDesktop(window:MagnifiedWindow,viewer:Pose,desktopRadius:Float?,previous:MagnifiedWindow?=null):MagnifiedWindow {
     val radius=desktopRadius?.takeIf{it.isFinite() && it>0f} ?: return window
-    if(window.spherical)return window
-    val clearance=window.units*(ViewLayers.DesktopDistanceM-window.layerDistanceM).coerceAtLeast(.015f)
+    val nominal=window.nominalLayerDistanceM ?: window.layerDistanceM
+    val clearance=window.units*(ViewLayers.DesktopDistanceM-nominal).coerceAtLeast(.015f)
     val limit=(radius-clearance).coerceAtLeast(radius*.5f)
     val ray=FloatArray(3){window.pose.position[it]-viewer.position[it]}
     val range=sqrt(ray.sumOf{(it*it).toDouble()}).toFloat()
     if(range<.0001f)return window
+    if(window.spherical){
+        if(range<=limit+.0001f && (window.mesh?.radius ?: range)<=limit+.0001f)return window
+        val scale=minOf(1f,limit/range)
+        val pose=window.pose.copy(position=FloatArray(3){viewer.position[it]+ray[it]*scale})
+        val w=window.width*scale
+        val h=window.height*scale
+        val eye=viewerInMonitor(viewer.position,pose.position,pose.rotation)
+        val focus=window.mesh?.focus?.let{floatArrayOf(it[0]*scale,it[1]*scale)} ?: floatArrayOf(0f,0f)
+        val mesh=previous?.mesh?.takeIf{it.width==w && it.height==h && it.focus?.contentEquals(focus)==true &&
+            eye.indices.all{axis->abs(it.eye[axis]-eye[axis])<.001f}}
+            ?: MonitorMesh(w,h,eye,columns=32,rows=20,focus=focus)
+        return window.copy(pose=pose,width=w,height=h,mesh=mesh,
+            layerDistanceM=minOf(window.layerDistanceM,limit/window.units),nominalLayerDistanceM=nominal)
+    }
     if(window.freePose){
         val eye=viewerInMonitor(viewer.position,window.pose.position,window.pose.rotation)
         val extent=hypot(hypot(abs(eye[0])+window.width*.5f,abs(eye[1])+window.height*.5f),eye[2])
@@ -145,6 +170,12 @@ internal fun magnifierFrame(window:MagnifiedWindow, previous:MagnifiedWindow, vi
     }
     return if(fitted.fixed)fixedMagnifierGeometry(source,viewer,updateMesh=rebuild)
         else magnifierGeometry(source,viewer,units,updateMesh=rebuild)
+}
+
+internal fun projectPaneAtPlacement(window:MagnifiedWindow,previous:MagnifiedWindow,viewer:Pose,updateGeometry:Boolean):MagnifiedWindow {
+    val sameMode=window.spherical==previous.spherical
+    val source=window.copy(mesh=previous.mesh.takeIf{sameMode})
+    return source.copy(mesh=projectMagnifier(source,viewer,source.pose,source.width,source.height,updateGeometry,.003f,.003f))
 }
 
 /** A fixed 1.5 degree tolerance around the actual rendered boundary, independent of window size. */
@@ -382,7 +413,7 @@ private fun projectMagnifier(window:MagnifiedWindow,viewer:Pose,pose:Pose,width:
 }
 
 /** A popup keeps its desktop-pixel offset/scale beside its owner; it never refits the owner. */
-internal fun stickyMagnifier(owner:MagnifiedWindow,source:DesktopWindow,popup:DesktopWindow,viewer:Pose,level:Int=0):MagnifiedWindow {
+internal fun stickyMagnifier(owner:MagnifiedWindow,source:DesktopWindow,popup:DesktopWindow,viewer:Pose,level:Int=0,viewHalfAngles:FloatArray?=null):MagnifiedWindow {
     val distance=ViewLayers.popupDistance(owner.layerDistanceM,level)
     val ratio=distance/owner.layerDistanceM
     val fitX=minOf(1f,(owner.sourceWidth.toFloat()/owner.sourceHeight)/(owner.width/owner.height))
@@ -390,7 +421,13 @@ internal fun stickyMagnifier(owner:MagnifiedWindow,source:DesktopWindow,popup:De
     val sx=owner.width*fitX/source.width;val sy=owner.height*fitY/source.height
     val flat=floatArrayOf((popup.x+popup.width*.5f-source.x-source.width*.5f)*sx,-(popup.y+popup.height*.5f-source.y-source.height*.5f)*sy,0f)
     val position=transformPoint(owner.pose,owner.mesh?.project(flat) ?: flat)
-    val window=MagnifiedWindow(popup.id,Pose(position,owner.pose.rotation),popup.width*sx*ratio,popup.height*sy*ratio,popup.width,popup.height,owner.spherical,
+    val width=popup.width*sx*ratio
+    val height=popup.height*sy*ratio
+    val scale=if(viewHalfAngles==null)1f else {
+        val fit=magnifiedWindow(popup.id,popup.width,popup.height,viewer,viewHalfAngles[0],viewHalfAngles[1],owner.units,owner.spherical,layerDistanceM=distance)
+        minOf(1f,fit.width/width,fit.height/height)
+    }
+    val window=MagnifiedWindow(popup.id,Pose(position,owner.pose.rotation),width*scale,height*scale,popup.width,popup.height,owner.spherical,
         units=owner.units,fixed=true,desktopRotation=owner.pose.rotation,requestedPosition=position,layerDistanceM=distance)
     return magnifierFrame(window,window,viewer,owner.units,true)
 }

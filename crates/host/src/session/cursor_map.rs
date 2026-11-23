@@ -273,6 +273,14 @@ impl Router {
         {
             return None;
         }
+        if delta == [0.0, 0.0] {
+            if let Some(key) = self.owner.as_deref().filter(|key| *key != "desktop") {
+                return surfaces
+                    .iter()
+                    .filter(|s| s.key == key)
+                    .find_map(|s| s.map(point, false));
+            }
+        }
         let travel = [delta[0] * scale[0], delta[1] * scale[1]];
         let intended = [point[0] + travel[0], point[1] + travel[1]];
         let (end, mut reachable) = sweep(surfaces, point, travel, self.owner.as_deref());
@@ -335,6 +343,12 @@ impl Router {
             root,
         ))
     }
+    pub fn observe_root_warp(&mut self) {
+        if self.owner.as_deref() == Some("desktop") {
+            self.reset();
+        }
+    }
+
     pub fn inactive(&mut self, motion: [f64; 2]) {
         // A sleeping viewer does not move the virtual cursor. Real desktop use
         // while XR is inactive deliberately relinquishes the old virtual owner.
@@ -395,6 +409,29 @@ mod tests {
             .advance(&surfaces, [50., 50.], [0., 0.], [1., 1.])
             .unwrap();
         assert_eq!(router.location(&surfaces).unwrap().0, surfaces[1].key);
+    }
+
+    #[test]
+    fn mirrored_root_warp_does_not_take_ownership_from_a_panel() {
+        let mut desktop = pane(0., 2., [0., 0., 100., 100.]);
+        desktop.key = "desktop".into();
+        let panel = pane(0.5, 1., [10., 0., 20., 100.]);
+        let surfaces = [desktop, panel];
+        let mut router = Router::default();
+        router
+            .advance(&surfaces, [25., 50.], [0.5, 0.], [1., 1.])
+            .unwrap();
+        let point = router.virtual_position();
+        router.observe_root_warp();
+        router
+            .advance(&surfaces, [10., 50.], [0., 0.], [1., 1.])
+            .unwrap();
+        assert_eq!(router.location(&surfaces).unwrap().0, surfaces[1].key);
+        assert_eq!(router.virtual_position(), point);
+        router
+            .advance(&surfaces, [10., 50.], [-0.5, 0.], [1., 1.])
+            .unwrap();
+        assert_eq!(router.location(&surfaces).unwrap().0, "desktop");
     }
 
     #[test]

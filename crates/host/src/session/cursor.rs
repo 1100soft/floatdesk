@@ -11,11 +11,12 @@ pub(super) fn cursor_loop(shared: Arc<Shared>, socket: UdpSocket) {
     };
     let mut router = cursor_map::Router::default();
     let mut last_root = None;
+    let mut last_mirror = None;
     let mut client_generation = None;
     let mut owner_sent = Instant::now() - Duration::from_secs(1);
     while !shared.stop.load(Ordering::Relaxed) {
         match cursor.poll() {
-            Ok(mut sample) => {
+            Ok(sample) => {
                 let motion = cursor.take_motion();
                 let generation = shared
                     .client
@@ -25,6 +26,7 @@ pub(super) fn cursor_loop(shared: Arc<Shared>, socket: UdpSocket) {
                     .map(|client| client.generation);
                 if generation != client_generation {
                     router.reset();
+                    last_mirror = None;
                     client_generation = generation;
                 }
                 if let Ok(map) = shared.cursor_map.lock() {
@@ -37,13 +39,13 @@ pub(super) fn cursor_loop(shared: Arc<Shared>, socket: UdpSocket) {
                             .take();
                         let claimed =
                             claim.is_some_and(|(key, point)| router.claim(&map.0, &key, point));
-                        // Absolute X11 motion (including a window-manager warp) invalidates
-                        // stale virtual ownership. Explicit XR claims take precedence.
+                        // Root coordinates can be clamped or moved by the window manager.
+                        // While a pane owns the cursor, those coordinates are only its mirror.
                         if !claimed
                             && motion == [0.0, 0.0]
                             && last_root.is_some_and(|old| old != root)
                         {
-                            router.reset();
+                            router.observe_root_warp();
                         }
                         if motion != [0.0, 0.0] || router.has_point() {
                             if let Some(target) =
@@ -51,12 +53,17 @@ pub(super) fn cursor_loop(shared: Arc<Shared>, socket: UdpSocket) {
                             {
                                 let x = target[0].round() as i32;
                                 let y = target[1].round() as i32;
-                                if (x != sample.root_x || y != sample.root_y)
-                                    && cursor.move_to(x, y).is_ok()
+                                let mirror = (x, y);
+                                let changed = last_mirror != Some(mirror);
+                                if (changed
+                                    || claimed
+                                    || motion != [0.0, 0.0]
+                                    || last_root != Some(root))
+                                    && (x, y) != (sample.root_x, sample.root_y)
                                 {
-                                    sample.root_x = x;
-                                    sample.root_y = y;
+                                    let _ = cursor.move_to(x, y);
                                 }
+                                last_mirror = Some(mirror);
                             }
                         }
                         if owner_sent.elapsed() >= Duration::from_millis(33) {
@@ -80,6 +87,7 @@ pub(super) fn cursor_loop(shared: Arc<Shared>, socket: UdpSocket) {
                             owner_sent = Instant::now();
                         }
                     } else {
+                        last_mirror = None;
                         shared
                             .cursor_claim
                             .lock()

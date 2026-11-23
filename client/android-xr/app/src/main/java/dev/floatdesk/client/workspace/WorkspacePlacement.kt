@@ -85,6 +85,16 @@ internal fun WorkspaceFile.moveLayoutOrigin(target:Pose):WorkspaceFile {
     return copy(layoutOrigin=target,layouts=moved,control=control.copy(pose=transform(control.pose)))
 }
 
+/** Preserve the authored desktop center/orientation and replace its size and view framing. */
+internal fun WorkspaceFile.restoreDefaultDesktopSize(origin:Pose,defaults:List<MonitorPlacement>):WorkspaceFile {
+    val current=layouts[activeLayout]
+    val resized=defaults.mapIndexed{index,fitted->
+        current?.getOrNull(index)?.copy(physicalWidthM=fitted.physicalWidthM,physicalHeightM=fitted.physicalHeightM,
+            viewCenterU=.5f,viewCenterV=.5f) ?: fitted
+    }.toMutableList()
+    return copy(layoutOrigin=origin,layouts=layouts.toMutableMap().also{it[activeLayout]=resized})
+}
+
 /** Dragging the axes changes coordinates while world-space object poses stay put. */
 internal fun WorkspaceFile.rebaseLayoutOrigin(target:Pose,units:Float):WorkspaceFile {
     val origin=layoutOrigin ?: layouts[activeLayout]?.firstOrNull()?.pose ?: return this

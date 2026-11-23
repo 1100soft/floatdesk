@@ -49,6 +49,7 @@ import dev.floatdesk.client.workspace.WorkspaceFile
 import dev.floatdesk.client.workspace.WorkspaceStore
 import dev.floatdesk.client.workspace.fitDesktopInView
 import dev.floatdesk.client.workspace.moveLayoutOrigin
+import dev.floatdesk.client.workspace.restoreDefaultDesktopSize
 import dev.floatdesk.client.workspace.deskLayout
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -67,11 +68,9 @@ internal fun WorkspaceFile.monitorAt(index: Int): MonitorPlacement? {
 internal fun WorkspaceFile.reset(monitors: List<MonitorHello>, store: WorkspaceStore,viewer:Pose,angles:FloatArray,units:Float): WorkspaceFile {
     if (monitors.isEmpty()) return this
     val target=Pose(transformPoint(viewer,floatArrayOf(0f,0f,-farthestDistanceM*units)),viewer.rotation.copyOf())
-    val current=layouts[activeLayout]
-    val next=if(current.isNullOrEmpty()){
-        val fitted=fitDesktopInView(deskLayout(monitors.map{Triple(it.name,it.width,it.height)}),viewer,angles[0],angles[1],units,sphericalWarp,centralView=true)
-        copy(layoutOrigin=target,layouts=layouts.toMutableMap().also{it[activeLayout]=fitted})
-    }else moveLayoutOrigin(target)
+    val fitted=fitDesktopInView(deskLayout(monitors.map{Triple(it.name,it.width,it.height)}),viewer,
+        angles[0],angles[1],units,sphericalWarp,centralView=true,distanceM=farthestDistanceM)
+    val next=moveLayoutOrigin(target).restoreDefaultDesktopSize(target,fitted)
     store.save(next)
     return next
 }

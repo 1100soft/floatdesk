@@ -68,13 +68,17 @@ internal object PalmMenuLayout {
     }
 }
 
-internal fun palmActionEnabled(action: PalmAction, workspace: WorkspaceFile, info: WorkspaceInfo?): Boolean = when (action) {
-    PalmAction.WARP -> RenderPolicy.SphericalDesktop
-    PalmAction.HAND_MOUSE, PalmAction.MODE -> !workspace.grabToMove
-    PalmAction.GAZE_FOCUS -> info?.gazeFocus == true || workspace.gazeToFocus
-    PalmAction.MAGNIFIER -> info?.windowMagnify == true || workspace.magnifyWindow
-    PalmAction.MOUSE_SPACES -> RenderPolicy.CursorTopology
-    else -> true
+private val palmLayoutActions=setOf(PalmAction.MOVE,PalmAction.FREE,PalmAction.RESET,PalmAction.WARP,PalmAction.SPACE,PalmAction.BACK)
+
+internal fun palmActionEnabled(action:PalmAction,workspace:WorkspaceFile,info:WorkspaceInfo?):Boolean {
+    if(workspace.layoutModeActive && action !in palmLayoutActions)return false
+    return when(action){
+        PalmAction.WARP->RenderPolicy.SphericalDesktop
+        PalmAction.GAZE_FOCUS->info?.gazeFocus==true || workspace.gazeToFocus
+        PalmAction.MAGNIFIER->info?.windowMagnify==true || workspace.magnifyWindow
+        PalmAction.MOUSE_SPACES->RenderPolicy.CursorTopology
+        else->true
+    }
 }
 
 /** Toggles are a single state slot, multi-mode buttons have one slot per mode; immediate actions have none. */
@@ -162,8 +166,8 @@ private fun PalmIcon(action: PalmAction, workspace: WorkspaceFile, description: 
     val shape = if (state == null) CircleShape else RoundedCornerShape(22)
     val container = when {
         pressed -> Color(0xFF237E59)
-        state?.toggleOn == true -> Color(0xFF2F7FA6)
-        state != null -> Color(0xFF26323C)
+        state?.toggleOn == true -> Color(0xFF145D77)
+        state != null -> Color(0xFF405369)
         else -> null
     }
     FilledTonalIconButton(onClick = onClick, enabled = enabled, shape = shape,
@@ -171,8 +175,9 @@ private fun PalmIcon(action: PalmAction, workspace: WorkspaceFile, description: 
         modifier = modifier.size(cell).trackMenuHover { onHover(it != null) }.semantics { contentDescription = description }) {
         Canvas(Modifier.fillMaxSize()) {
             val inset = size.minDimension * .25f
-            inset(inset, inset) { drawPalmIcon(action, workspace) }
-            if (state != null) drawStatePips(state, if (enabled) 1f else .38f)
+            inset(inset,inset){drawPalmIcon(action,workspace,if(enabled)Color(0xFFF1FAFF) else Color(0xFF77838C))}
+            if(state?.slots==1)drawToggleTrack(state.toggleOn,enabled)
+            else if(state!=null)drawStatePips(state,if(enabled)1f else .38f)
         }
     }
     if (focused) Canvas(modifier.size(cell)) {
@@ -181,6 +186,18 @@ private fun PalmIcon(action: PalmAction, workspace: WorkspaceFile, description: 
         else drawRoundRect(Color(0xFF8ADFFF), Offset(width / 2, width / 2), Size(size.width - width, size.height - width),
             CornerRadius(size.minDimension * .22f), style = Stroke(width))
     }
+}
+
+private fun DrawScope.drawToggleTrack(on:Boolean,enabled:Boolean) {
+    val h=size.minDimension*.12f
+    val w=h*2.15f
+    val left=(size.width-w)*.5f
+    val top=size.height*.79f
+    val color=if(on)Color(0xFF38D9F3) else Color(0xFF8198AD)
+    val alpha=if(enabled)1f else .27f
+    drawRoundRect(color.copy(alpha=alpha),Offset(left,top),Size(w,h),CornerRadius(h*.5f))
+    val x=left+if(on)w-h*.5f else h*.5f
+    drawCircle(Color.White.copy(alpha=alpha),h*.34f,Offset(x,top+h*.5f))
 }
 
 private fun DrawScope.drawStatePips(state: PalmState, alpha: Float) {
@@ -195,8 +212,7 @@ private fun DrawScope.drawStatePips(state: PalmState, alpha: Float) {
     }
 }
 
-private fun DrawScope.drawPalmIcon(action: PalmAction, workspace: WorkspaceFile) {
-    val ink = Color(0xFFC8E7F5)
+private fun DrawScope.drawPalmIcon(action: PalmAction, workspace: WorkspaceFile,ink:Color) {
     val stroke = size.minDimension * .09f
     val w = size.width; val h = size.height
     fun line(x: Float, y: Float, r: Float, b: Float) = drawLine(ink, Offset(x * w, y * h), Offset(r * w, b * h), stroke)

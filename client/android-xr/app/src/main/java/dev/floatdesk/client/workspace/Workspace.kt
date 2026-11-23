@@ -53,7 +53,7 @@ internal data class WorkspaceFile(
     val sphericalWarp: Boolean = false,
     val handMouse: Boolean = false,
     val grabToMove: Boolean = false,
-    val freeManipulation: Boolean = true,
+    val freeManipulation: Boolean = false,
     val desktopReference: Boolean = false,
     val referencePlacement: FixedMagnifierPlacement? = null,
     val layoutOrigin:Pose?=null,
@@ -84,9 +84,10 @@ internal data class WorkspaceFile(
     /** Loaded from a file laid out for the fixed 0.9–1.5 m layers; not persisted. */
     val legacyDistances:Boolean=false,
 ){
-    val handMouseActive get()=handMouse && !grabToMove
-    val focusMode get()=!grabToMove && !handMouseActive && interactionMode==InteractionMode.FOCUS
-    val windowGrabMode get()=!grabToMove && !handMouseActive && interactionMode==InteractionMode.WINDOW_GRAB
+    val layoutModeActive get()=grabToMove || freeManipulation
+    val handMouseActive get()=handMouse && !layoutModeActive
+    val focusMode get()=!layoutModeActive && !handMouseActive && interactionMode==InteractionMode.FOCUS
+    val windowGrabMode get()=!layoutModeActive && !handMouseActive && interactionMode==InteractionMode.WINDOW_GRAB
 }
 
 internal class WorkspaceStore(private val file: File) {
@@ -255,7 +256,7 @@ private fun decode(json: JSONObject): WorkspaceFile {
         } ?: PinchThresholds.Default,
         handMouse = json.optBoolean("hand_mouse", json.optBoolean("mouse_gestures", false) && json.optString("interaction_mode", "MOUSE")=="MOUSE"),
         grabToMove = json.optBoolean("grab_to_move",false),
-        freeManipulation = !json.optBoolean("grab_to_move",false) && json.optBoolean("free_manipulation",true),
+        freeManipulation = !json.optBoolean("grab_to_move",false) && json.optBoolean("free_manipulation",false),
         desktopReference = json.optBoolean("desktop_reference",false),
         referencePlacement = decodePlacements(json.optJSONArray("reference_placement")).firstOrNull(),
         layoutOrigin = (json.optJSONObject("layout_origin") ?: json.optJSONObject("support_basis"))?.let{Pose(floatArray(it,"position",3),floatArray(it,"rotation",4))},

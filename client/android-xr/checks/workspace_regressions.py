@@ -100,6 +100,9 @@ fun main() {
  check(!angular.handMouseActive && !angular.focusMode && !angular.windowGrabMode)
  check(angular.copy(grabToMove=false).handMouseActive)
  check(angular.copy(grabToMove=false,handMouse=false).focusMode)
+ val free=angular.copy(grabToMove=false,freeManipulation=true)
+ check(free.layoutModeActive && !free.handMouseActive && !free.focusMode && !free.windowGrabMode)
+
  val old=WorkspaceFile(layoutOrigin=original.pose,layouts=mutableMapOf("Desk" to mutableListOf(original)),viewerReference=Pose())
  val turned=Pose(floatArrayOf(10f,2f,5f),floatArrayOf(0f,.70710677f,0f,.70710677f))
  val restoredWorkspace=old.restoreViewer(turned)
@@ -122,6 +125,10 @@ fun main() {
  val offset=viewerInMonitor(movedDesk.pose.position,target.position,target.rotation)
  check(kotlin.math.abs(offset[0]-1f)<.00001f && kotlin.math.abs(offset[2])<.00001f)
  check(movedDesk.physicalWidthM==original.physicalWidthM)
+ val resized=reset.restoreDefaultDesktopSize(target,listOf(original.copy(physicalWidthM=.7f,physicalHeightM=.4f)))
+ val resetDesk=resized.layouts["Desk"]!!.single()
+ check(resetDesk.pose===movedDesk.pose && resetDesk.physicalWidthM==.7f && resetDesk.physicalHeightM==.4f)
+
  check(reset.fixedMagnifiers==placed.fixedMagnifiers && reset.systemPanels==placed.systemPanels && reset.referencePlacement==spread)
  val rebased=placed.rebaseLayoutOrigin(target,1f)
  check(rebased.layoutOrigin===target && rebased.layouts===placed.layouts && rebased.control===placed.control)

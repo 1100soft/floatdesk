@@ -278,7 +278,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                 resources.pending=null
                 val frame=if(projectFrame)magnifierFrame(current,prior,head,units(),updateGeometry)else projectPaneAtPlacement(current,prior,head,updateGeometry)
                 val next=placePaneInsideDesktop(frame,head,tracking.desktopSphereRadius,prior)
-                if(moveMode.value || freeMode.value){
+                if(moveMode.value){
                     resources.corners.update(session,entity,next.width,next.height,units(),next.layerDistanceM,tracking,resources.hovering.isNotEmpty() && !resources.free.engaged){active,factor->
                         if(resources.resizeStart==null){resources.resizeStart=resources.rendered;resources.dragged=true}
                         resources.resizeStart?.let{resources.pending=resizedMagnifier(it,factor)}
@@ -286,6 +286,9 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                         if(!active){finishPlacement();resources.resizeStart=null}
                         movingNow.value(active)
                     }
+                }else{
+                    resources.corners.cancel()
+                    if(resources.resizing){resources.resizing=false;resources.resizeStart=null;movingNow.value(false)}
                 }
 
                 val modeChanged=next.spherical!=prior.spherical

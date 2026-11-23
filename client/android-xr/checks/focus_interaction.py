@@ -17,7 +17,6 @@ topology=topology[:start]+topology[end:]
 workspace=body('workspace/Workspace.kt');workspace=workspace[workspace.index('internal data class Pose'):workspace.index('internal class WorkspaceStore')]
 metadata=body('net/WorkspaceInfo.kt');metadata=metadata[:metadata.index('    companion object')]+'}\n'
 code='import kotlin.math.*\n'+body('MonitorMesh.kt')+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+re.search(r'internal fun deskLayout\(.*?\n}',(root/'workspace/Workspace.kt').read_text(),re.S).group(0)+body('workspace/WorkspacePlacement.kt')+metadata+body('WindowMagnification.kt')+body('LayoutOrigin.kt')+body('LayoutGuideInk.kt')+body('WindowInteraction.kt').replace('dev.floatdesk.client.workspace.MonitorPlacement','MonitorPlacement')+body('WindowToolbarState.kt')+re.search(r'internal object WindowMenuLayout \{.*?\n}',(root/'WindowActionsMenu.kt').read_text(),re.S).group(0)+'\n'+topology+body('VideoGeometry.kt')+body('MagnifierContacts.kt')+body('BoundedHistory.kt')+body('RenderPolicy.kt')+body('net/WindowCaptureRetry.kt')+body('net/WindowCaptureFormat.kt').replace('dev.floatdesk.client.RenderPolicy','RenderPolicy')+''.join(re.search(r'internal fun '+name+r'\(.*?\n}',application_sources(),re.S).group(0) for name in ('transformPoint','rotateVector','quaternionBetween','multiplyQuaternion','normalize3','normalize4'))+re.search(r'internal fun distance\(a: FloatArray.*?\n}',application_sources(),re.S).group(0)+'\n'+re.search(r'internal fun subtract\(a: FloatArray[^\n]*\n[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun dot\(a: FloatArray[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun cross3\(.*',application_sources()).group(0)+'\n'+r'''
-data class VideoAim(val segments:FloatArray=floatArrayOf(),val opacity:Float=.18f,val colors:FloatArray=floatArrayOf())
 fun add(a:FloatArray,b:FloatArray)=FloatArray(3){a[it]+b[it]}
 fun main() {
  val savedOrigin=Pose(floatArrayOf(.4f,.2f,-2f))
@@ -33,11 +32,11 @@ fun main() {
  check(WindowMenuLayout.buttonCenter(0,false,.1f)<WindowMenuLayout.buttonCenter(2,false,.1f))
  check(WindowMenuLayout.buttonCenter(3,true,.1f)-WindowMenuLayout.buttonCenter(2,true,.1f)>1.2f)
 
- val guideDesk=MonitorPlacement("test","desktop",Pose(floatArrayOf(0f,0f,-1.2f)),2f,1.2f,0f,1920,1080,60)
- val guideMesh=MonitorMesh(2f,1.2f,floatArrayOf(0f,0f,1.2f),columns=32,rows=20,focus=floatArrayOf(0f,0f))
- for(ink in listOf(layoutGuideInk(flatOrigin,guideDesk,null),layoutGuideInk(curvedOrigin,guideDesk,guideMesh))){
-    check(ink.segments.isNotEmpty() && ink.segments.all(Float::isFinite))
-    check(ink.segments.size/4==ink.colors.size/3)
+ for(guide in listOf(flatOrigin,curvedOrigin)){
+    val projection=LayoutGuideProjection(guide,1f,1f)
+    check(projection.point(guide.near)!!.first in 0f..1f)
+    check(projection.axis(0,0).filterNotNull().all{it.first.isFinite() && it.second.isFinite()})
+    check(projection.axis(1,1).size==if(guide.spherical)97 else 2)
  }
  val originGrab=LayoutOriginGrab()
  originGrab.begin("LEFT",0L,savedOrigin,Pose(),floatArrayOf(0f,0f,-.4f),1f)

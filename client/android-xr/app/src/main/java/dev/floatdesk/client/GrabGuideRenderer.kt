@@ -49,47 +49,26 @@ internal class GrabGuideRenderer private constructor(
     private val grabBeams=mutableListOf<SurfaceEntity>()
     private val grabPoints=mutableListOf<SurfaceEntity>()
 
-    private var originNodes: List<GltfModelEntity>? = null
+    private var originCollider:SurfaceEntity?=null
+    private val originOverlay=LayoutGuideOverlay(session)
 
-    fun updateLayoutOrigin(parent:Entity,guide:LayoutOriginGuide?,onInput:(androidx.xr.scenecore.InputEvent)->Unit) {
+    fun updateLayoutOrigin(parent:Entity,guide:LayoutOriginGuide?,angles:FloatArray,units:Float,desktopRange:Float?=null,onInput:(androidx.xr.scenecore.InputEvent)->Unit) {
         if(closed)return
-        if(guide==null){
-            originNodes?.forEach{state(it).enabled(false)}
-            return
+        originOverlay.update(parent,guide,angles,units,desktopRange)
+        if(guide==null){originCollider?.let{state(it).enabled(false)};return}
+        val collider=originCollider ?: SurfaceEntity.create(session,
+            shape=SurfaceEntity.Shape.Quad(androidx.xr.runtime.math.FloatSize2d(1f,1f)),parent=null,
+            superSampling=SurfaceEntity.SuperSampling.NONE,mediaBlendingMode=SurfaceEntity.MediaBlendingMode.TRANSPARENT).also{
+            it.addComponent(NativeMonitorInput.create(session,onInput))
+            originCollider=it
         }
-        val nodes=originNodes ?: listOf(7,3,4,5,6,0,0,1,1).map{
-            GltfModelEntity.create(session,models[it],parent=parent)
-        }.also{
-            it.first().addComponent(NativeMonitorInput.create(session,onInput))
-            originNodes=it
-        }
-        nodes.forEach{state(it).parent(parent)}
-        fun sphere(index:Int,center:FloatArray,radius:Float){
-            val entity=state(nodes[index])
-            entity.pose(Pose(vector(center)));entity.scale(Vector3(radius,radius,radius));entity.enabled(true)
-        }
-        sphere(0,guide.near,guide.gripRadius)
-        sphere(1,guide.far,guide.farRange*.022f)
-        beam(nodes[2],guide.near,guide.far,guide.gripRadius*.12f)
-        val q=guide.rotation
-        val rotation=Quaternion(q[0],q[1],q[2],q[3])
-        for(layer in 0..1){
-            val range=if(layer==0)guide.nearRange else guide.farRange
-            val center=if(layer==0)guide.near else guide.far
-            val rings=state(nodes[3+layer])
-            rings.enabled(guide.spherical)
-            if(guide.spherical){
-                rings.pose(Pose(vector(guide.viewer.position),rotation))
-                rings.scale(Vector3(range,range,range))
-            }
-            for(axis in 0..1){
-                val entity=nodes[5+layer*2+axis]
-                if(guide.spherical)state(entity).enabled(false)
-                else{
-                    val direction=rotateVector(q,if(axis==0)range else 0f,if(axis==1)range else 0f,0f)
-                    beam(entity,subtract(center,direction),add(center,direction),range*.002f)
-                }
-            }
+        val hitGuide=guide.foreground(desktopRange,units)
+        state(collider).apply{
+            this.parent(parent)
+            val normal=vector(guide.viewer.position)-vector(hitGuide.near)
+            pose(Pose(vector(hitGuide.near),Quaternion.fromLookTowards(normal,Vector3.Up)))
+            scale(Vector3(hitGuide.gripRadius*2.7f,hitGuide.gripRadius*2.7f,1f))
+            enabled(true)
         }
     }
 
@@ -284,8 +263,9 @@ internal class GrabGuideRenderer private constructor(
     override fun close() {
         if (closed) return
         closed = true
-        originNodes?.forEach{if(!it.isDisposed){it.setEnabled(false);it.parent=null;it.dispose()}}
-        originNodes=null
+        originOverlay.close()
+        originCollider?.let{if(!it.isDisposed){it.setEnabled(false);it.parent=null}}
+        originCollider=null
         nodeStates.clear()
         groups.forEach { group ->
             if(!group.root.isDisposed)group.root.dispose()
@@ -303,7 +283,7 @@ internal class GrabGuideRenderer private constructor(
         suspend fun create(session: Session): GrabGuideRenderer {
             val loaded = mutableListOf<GltfModel>()
             try {
-                for (asset in listOf("cyan-beam", "violet-beam", "cyan-point", "violet-point", "layout-depth", "layout-cyan-rings", "layout-violet-rings", "layout-origin")) {
+                for (asset in listOf("cyan-beam", "violet-beam", "cyan-point", "violet-point")) {
                     loaded.add(GltfModel.create(session, Paths.get("grab-guides/$asset.glb")))
                 }
                 return GrabGuideRenderer(session, loaded)

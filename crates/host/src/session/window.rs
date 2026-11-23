@@ -2,7 +2,9 @@
 use super::*;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use x11rb::protocol::xproto::ConnectionExt as _;
+use x11rb::connection::Connection as _;
+use x11rb::protocol::xproto::{ChangeWindowAttributesAux, ConnectionExt as _, EventMask};
+use x11rb::protocol::Event;
 pub(super) fn start(
     shared: Arc<Shared>,
     address: SocketAddr,
@@ -65,6 +67,7 @@ pub(super) fn start(
                     let mut frame = 0u64;
                     let mut last_sent = None;
                     let mut decoder_priming = 0u8;
+                    let mut watched_preview = 0;
                     let mut last = Instant::now() - Duration::from_secs(1);
                     while !shared.stop.load(Ordering::Relaxed) {
                         let mut size = [0u8; 4];
@@ -141,14 +144,34 @@ pub(super) fn start(
                         };
                         let (source_x, source_y, source_width, source_height) =
                             (owner_x, owner_y, owner_width, owner_height);
-                        // Plasma may remap the same thumbnail XID with a new backing pixmap.
-                        // The visible root rectangle follows the current preview without a stale
-                        // named pixmap, and matches what the desktop stream is showing.
                         let shell_preview = system_windows
                             .iter()
                             .any(|window| window.id == id && !window.panel);
-                        if shell_preview
-                            && position_link
+                        let mut preview_remapped = false;
+                        if shell_preview {
+                            if watched_preview != id {
+                                position_link
+                                    .conn
+                                    .change_window_attributes(
+                                        id,
+                                        &ChangeWindowAttributesAux::new()
+                                            .event_mask(EventMask::STRUCTURE_NOTIFY),
+                                    )
+                                    .map_err(Error::x11)?
+                                    .check()
+                                    .map_err(Error::x11)?;
+                                watched_preview = id;
+                            }
+                            while let Some(event) =
+                                position_link.conn.poll_for_event().map_err(Error::x11)?
+                            {
+                                preview_remapped |= match event {
+                                    Event::MapNotify(event) => event.window == id,
+                                    Event::UnmapNotify(event) => event.window == id,
+                                    _ => false,
+                                };
+                            }
+                            if position_link
                                 .conn
                                 .get_window_attributes(id)
                                 .map_err(Error::x11)?
@@ -156,12 +179,13 @@ pub(super) fn start(
                                 .map_err(Error::x11)?
                                 .map_state
                                 != x11rb::protocol::xproto::MapState::VIEWABLE
-                        {
-                            return Err(Error::Msg("Shell preview closed".into()));
+                            {
+                                return Err(Error::Msg("Shell preview closed".into()));
+                            }
                         }
-                        let root_capture =
-                            shell_preview || request["rootCapture"].as_bool().unwrap_or(false);
+                        let root_capture = request["rootCapture"].as_bool().unwrap_or(false);
                         if !root_capture
+                            && !shell_preview
                             && (current_id != id
                                 || popups_at.elapsed() >= Duration::from_millis(80))
                         {
@@ -170,7 +194,7 @@ pub(super) fn start(
                                     .unwrap_or_default();
                             popups_at = Instant::now();
                         }
-                        if root_capture {
+                        if root_capture || shell_preview {
                             popups.clear();
                         }
                         let (source_x, source_y, source_width, source_height) =
@@ -204,6 +228,7 @@ pub(super) fn start(
                         let w = ((source_width as f64 * scale) as u32 / 2 * 2).max(128) as u16;
                         let h = ((source_height as f64 * scale) as u32 / 2 * 2).max(128) as u16;
                         if capture.is_none()
+                            || preview_remapped
                             || native != (source_width, source_height)
                             || root_mode != root_capture
                             || current_id != id

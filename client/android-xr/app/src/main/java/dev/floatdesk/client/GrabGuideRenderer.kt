@@ -51,12 +51,13 @@ internal class GrabGuideRenderer private constructor(
 
     private var originCollider:SurfaceEntity?=null
     private var originSphere:SurfaceEntity?=null
-    private val originOverlay=LayoutGuideOverlay(session)
+    private val worldAxes=WorldLayoutAxes(session)
 
-    fun updateLayoutOrigin(parent:Entity,guide:LayoutOriginGuide?,angles:FloatArray,units:Float,desktopRange:Float?=null,onInput:(androidx.xr.scenecore.InputEvent)->Unit) {
+    fun updateLayoutOrigin(parent:Entity,guide:LayoutOriginGuide?,units:Float,desktopRange:Float?=null,onInput:(androidx.xr.scenecore.InputEvent)->Unit) {
         if(closed)return
-        originOverlay.update(parent,guide,angles,units,desktopRange)
-        if(guide==null){
+        val hitGuide=guide?.foreground(desktopRange,units)
+        worldAxes.update(parent,hitGuide)
+        if(hitGuide==null || guide==null){
             originCollider?.let{state(it).enabled(false)}
             originSphere?.let{state(it).enabled(false)}
             return
@@ -67,7 +68,6 @@ internal class GrabGuideRenderer private constructor(
             check(it.addComponent(NativeMonitorInput.create(session,onInput)))
             originCollider=it
         }
-        val hitGuide=guide.foreground(desktopRange,units)
         val normal=vector(guide.viewer.position)-vector(hitGuide.near)
         val rotation=Quaternion.fromLookTowards(normal,Vector3.Up)
         state(sphere).apply{
@@ -295,7 +295,7 @@ internal class GrabGuideRenderer private constructor(
     override fun close() {
         if (closed) return
         closed = true
-        originOverlay.close()
+        worldAxes.close()
         originCollider?.let{if(!it.isDisposed){it.setEnabled(false);it.parent=null}}
         originCollider=null
         originSphere?.let{if(!it.isDisposed){it.setEnabled(false);it.parent=null}}

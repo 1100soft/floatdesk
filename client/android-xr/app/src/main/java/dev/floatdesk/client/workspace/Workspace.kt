@@ -58,6 +58,7 @@ internal data class WorkspaceFile(
     val referencePlacement: FixedMagnifierPlacement? = null,
     val layoutOrigin:Pose?=null,
     val desktopHome:Pose?=null,
+    val cursorMapReference:Pose?=null,
     val screenSpacing:Float=0f,
     val viewerReference:Pose?=null,
     val referenceUnitsPerMeter:Float?=null,
@@ -184,6 +185,7 @@ private fun encode(workspace: WorkspaceFile): JSONObject {
         .put("fixed_magnifiers",encodePlacements(workspace.fixedMagnifiers))
         .put("system_panels",encodePlacements(workspace.systemPanels))
         .put("reference_placement",encodePlacements(listOfNotNull(workspace.referencePlacement)))
+        .put("cursor_map_reference",workspace.cursorMapReference?.let{JSONObject().put("position",JSONArray(it.position.toList())).put("rotation",JSONArray(it.rotation.toList()))})
         .put("desktop_home",workspace.desktopHome?.let{JSONObject().put("position",JSONArray(it.position.toList())).put("rotation",JSONArray(it.rotation.toList()))})
         .put("layout_origin",workspace.layoutOrigin?.let{JSONObject().put("position",JSONArray(it.position.toList())).put("rotation",JSONArray(it.rotation.toList()))})
         .put("experimental_viewed_detail",workspace.experimentalViewedDetail)
@@ -259,6 +261,7 @@ private fun decode(json: JSONObject): WorkspaceFile {
         handMouse = json.optBoolean("hand_mouse", json.optBoolean("mouse_gestures", false) && json.optString("interaction_mode", "MOUSE")=="MOUSE"),
         desktopReference = json.optBoolean("desktop_reference",false),
         referencePlacement = decodePlacements(json.optJSONArray("reference_placement")).firstOrNull(),
+        cursorMapReference=json.optJSONObject("cursor_map_reference")?.let{Pose(floatArray(it,"position",3),floatArray(it,"rotation",4))},
         desktopHome=json.optJSONObject("desktop_home")?.let{Pose(floatArray(it,"position",3),floatArray(it,"rotation",4))},
         layoutOrigin = (json.optJSONObject("layout_origin") ?: json.optJSONObject("support_basis"))?.let{Pose(floatArray(it,"position",3),floatArray(it,"rotation",4))},
         referenceUnitsPerMeter=json.optDouble("viewer_units_per_meter",Double.NaN).toFloat().takeIf{it.isFinite() && it>0f},

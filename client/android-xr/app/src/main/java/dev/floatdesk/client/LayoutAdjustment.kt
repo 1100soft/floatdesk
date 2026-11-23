@@ -3,7 +3,6 @@ package dev.floatdesk.client
 import dev.floatdesk.client.workspace.FixedMagnifierPlacement
 import dev.floatdesk.client.workspace.Pose
 import dev.floatdesk.client.workspace.WorkspaceFile
-import dev.floatdesk.client.workspace.ViewLayers
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -79,52 +78,56 @@ private fun axisAlignedRotation(rotation:FloatArray):FloatArray {
 }
 
 /** Auto lays out in the reference axes, then faces each resulting surface toward the viewer. */
-internal fun WorkspaceFile.adjustLayout(action:LayoutAdjustment,viewer:Pose,units:Float,contentSizes:Map<String,Pair<Float,Float>> = emptyMap()):WorkspaceFile{
-    if(action==LayoutAdjustment.AUTO)return adjustLayout(LayoutAdjustment.ALIGN,viewer,units,contentSizes)
-        .adjustLayout(LayoutAdjustment.SNAP,viewer,units,contentSizes).adjustLayout(LayoutAdjustment.FACE,viewer,units,contentSizes)
+internal fun WorkspaceFile.adjustLayout(action:LayoutAdjustment,viewer:Pose,units:Float,contentSizes:Map<String,Pair<Float,Float>> = emptyMap(),visibleRecords:Set<String>?=null):WorkspaceFile{
+    if(action==LayoutAdjustment.AUTO)return adjustLayout(LayoutAdjustment.ALIGN,viewer,units,contentSizes,visibleRecords)
+        .adjustLayout(LayoutAdjustment.SNAP,viewer,units,contentSizes,visibleRecords).adjustLayout(LayoutAdjustment.FACE,viewer,units,contentSizes,visibleRecords)
     val desktop=layouts[activeLayout]?.toList().orEmpty()
     val origin=layoutOrigin ?: desktop.firstOrNull()?.pose ?: return this
     val records=fixedMagnifiers+systemPanels+listOfNotNull(referencePlacement)
     val originQ=origin.rotation
     val inverse=floatArrayOf(-originQ[0],-originQ[1],-originQ[2],originQ[3])
-    val boxes=desktop.map{LayoutBox(viewerInMonitor(it.pose.position,origin.position,originQ),it.physicalWidthM,it.physicalHeightM)}+
-        records.map{record->
+    val world=desktop.map{it.pose.position}+records.map{transformPoint(origin,FloatArray(3){axis->it.pose.position[axis]*units})}
+    val boxes=desktop.mapIndexed{i,item->LayoutBox(viewerInMonitor(world[i],viewer.position,viewer.rotation),item.physicalWidthM,item.physicalHeightM)}+
+        records.mapIndexed{i,record->
             val fitted=contentSizes[record.id]
-            LayoutBox(FloatArray(3){axis->record.pose.position[axis]*units},fitted?.first ?: record.widthM*units,fitted?.second ?: record.heightM*units)
+            LayoutBox(viewerInMonitor(world[desktop.size+i],viewer.position,viewer.rotation),
+                fitted?.first ?: record.widthM*units,fitted?.second ?: record.heightM*units)
         }
-    val mapDepth=ViewLayers.DesktopDistanceM*units
-    val snapped=if(action==LayoutAdjustment.SNAP){
-        val visible=boxes.indices.filter{mapDepth-boxes[it].center[2]>.001f}
+    val snapped=world.toMutableList()
+    if(action==LayoutAdjustment.SNAP){
+        val visible=boxes.indices.filter{i->-boxes[i].center[2]>.001f &&
+            (i<desktop.size || visibleRecords==null || records[i-desktop.size].id in visibleRecords)}
+        // The desktop must be in front of the reference before it can anchor a pack.
+        if(visible.firstOrNull()!=0 || desktop.isEmpty())return this
         val mapped=visible.map{i->
-            val box=boxes[i]
-            val depth=mapDepth-box.center[2]
+            val box=boxes[i];val depth=-box.center[2]
             LayoutBox(floatArrayOf(box.center[0]/depth,box.center[1]/depth,box.center[2]),box.width/depth,box.height/depth)
         }
         val packed=snapLayoutBoxes(mapped)
-        boxes.map{it.center}.toMutableList().also{out->
-            visible.forEachIndexed{i,index->
-                val point=packed[i];val depth=mapDepth-point[2]
-                out[index]=floatArrayOf(point[0]*depth,point[1]*depth,point[2])
-            }
+        visible.forEachIndexed{i,index->
+            val point=packed[i];val depth=-point[2]
+            snapped[index]=transformPoint(viewer,floatArrayOf(point[0]*depth,point[1]*depth,point[2]))
         }
-    }else boxes.map{it.center}
+    }
     fun rotation(p:FloatArray,q:FloatArray)=when(action){
         LayoutAdjustment.ALIGN->axisAlignedRotation(q)
         LayoutAdjustment.FACE,LayoutAdjustment.AUTO->facingMagnifierRotation(p,viewer,originQ)
         LayoutAdjustment.SNAP->q
     }
     val screens=desktop.mapIndexed{i,screen->
-        val p=if(action==LayoutAdjustment.SNAP)transformPoint(origin,snapped[i]) else screen.pose.position
+        val p=snapped[i]
         screen.copy(pose=Pose(p,rotation(p,screen.pose.rotation)),freePose=true)
     }.toMutableList()
     fun adjust(i:Int,record:FixedMagnifierPlacement):FixedMagnifierPlacement{
-        val local=snapped[desktop.size+i]
-        val p=transformPoint(origin,local)
+        if(visibleRecords!=null && record.id !in visibleRecords)return record
+        val p=snapped[desktop.size+i]
+        val local=viewerInMonitor(p,origin.position,originQ)
         val q=rotation(p,multiplyQuaternion(originQ,record.pose.rotation))
         return record.copy(pose=Pose(FloatArray(3){local[it]/units},multiplyQuaternion(inverse,q)),freePose=true)
     }
     val fixed=fixedMagnifiers.mapIndexed(::adjust)
     val panels=systemPanels.mapIndexed{i,record->adjust(fixed.size+i,record)}
-    return copy(layouts=layouts.toMutableMap().also{it[activeLayout]=screens},desktopHome=screens.firstOrNull()?.pose,
+    return copy(cursorMapReference=if(action==LayoutAdjustment.SNAP)viewer else cursorMapReference,
+        layouts=layouts.toMutableMap().also{it[activeLayout]=screens},desktopHome=screens.firstOrNull()?.pose,
         fixedMagnifiers=fixed,systemPanels=panels,referencePlacement=referencePlacement?.let{adjust(fixed.size+panels.size,it)})
 }

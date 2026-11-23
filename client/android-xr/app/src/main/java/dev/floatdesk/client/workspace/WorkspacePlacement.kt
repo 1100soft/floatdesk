@@ -54,7 +54,7 @@ internal fun WorkspaceFile.restoreViewer(viewer:Pose,unitsPerMeter:Float=referen
         val rotated=floatArrayOf(v[0]+q[3]*t[0]+q[1]*t[2]-q[2]*t[1],v[1]+q[3]*t[1]+q[2]*t[0]-q[0]*t[2],v[2]+q[3]*t[2]+q[0]*t[1]-q[1]*t[0])
         return Pose(FloatArray(3){viewer.position[it]+rotated[it]},multiply(q,p.rotation))
     }
-    return copy(viewerReference=viewer,referenceUnitsPerMeter=unitsPerMeter,layoutOrigin=layoutOrigin?.let(::transform),desktopHome=desktopHome?.let(::transform),
+    return copy(viewerReference=viewer,referenceUnitsPerMeter=unitsPerMeter,layoutOrigin=layoutOrigin?.let(::transform),desktopHome=desktopHome?.let(::transform),cursorMapReference=cursorMapReference?.let(::transform),
         layouts=layouts.mapValues {(_,screens)->screens.map {
             it.copy(pose=transform(it.pose),physicalWidthM=it.physicalWidthM*scale,physicalHeightM=it.physicalHeightM*scale)
         }.toMutableList()}.toMutableMap(),control=control.copy(pose=transform(control.pose)))
@@ -82,7 +82,7 @@ internal fun WorkspaceFile.moveLayoutOrigin(target:Pose):WorkspaceFile {
     val origin=layoutOrigin ?: layouts[activeLayout]?.firstOrNull()?.pose ?: return this
     val transform=originTransform(origin,target)
     val moved=layouts.mapValues{(_,screens)->screens.map{it.copy(pose=transform(it.pose))}.toMutableList()}.toMutableMap()
-    return copy(layoutOrigin=target,desktopHome=desktopHome?.let(transform),layouts=moved,control=control.copy(pose=transform(control.pose)))
+    return copy(layoutOrigin=target,desktopHome=desktopHome?.let(transform),cursorMapReference=cursorMapReference?.let(transform),layouts=moved,control=control.copy(pose=transform(control.pose)))
 }
 
 /** Preserve the authored desktop center/orientation and replace its size and view framing. */

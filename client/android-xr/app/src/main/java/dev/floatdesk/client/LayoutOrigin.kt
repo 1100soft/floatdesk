@@ -30,13 +30,13 @@ internal fun layoutOriginGuide(origin: Pose, viewer: Pose, near: Float, far: Flo
     if (dot(ray, ray) < 1e-8f) return null
     val direction = normalize3(ray)
     val forward = rotateVector(viewer.rotation, 0f, 0f, -1f)
-    val normal = if (spherical) direction else forward
+    val normal = if (spherical) direction else rotateVector(origin.rotation,0f,0f,-1f)
     val alignment = dot(direction, normal)
     if (alignment < .05f) return null
     val nearRange = near / alignment
     val farRange = far / alignment
     fun onRay(range: Float) = FloatArray(3) { viewer.position[it] + direction[it] * range }
-    val rotation = if (spherical) facingMagnifierRotation(onRay(nearRange), viewer, origin.rotation) else viewer.rotation
+    val rotation = if (spherical) facingMagnifierRotation(onRay(nearRange), viewer, origin.rotation) else origin.rotation
     return LayoutOriginGuide(viewer, rotation, onRay(nearRange), onRay(farRange), nearRange, farRange, spherical)
 }
 

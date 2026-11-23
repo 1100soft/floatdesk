@@ -445,9 +445,10 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                             PalmAction.FACE_USER->LayoutAdjustment.FACE
                             else->LayoutAdjustment.AUTO
                         }
-                        val contentSizes=(fixedWindows.get().map{it.second}+systemWindows.get()+listOfNotNull(referencePane))
-                            .mapNotNull{it.layoutFootprint}.associate{it.id to (it.width to it.height)}
-                        workspace=workspace.adjustLayout(adjustment,view,handTracking.unitsPerMeter,contentSizes)
+                        val visiblePanes=fixedWindows.get().filter{fixedReady[it.first]==true}.map{it.second}+
+                            systemWindows.get().filter{systemReady[it.id]==true}+listOfNotNull(referencePane.takeIf{workspace.desktopReference && referenceReady})
+                        val contentSizes=visiblePanes.mapNotNull{it.layoutFootprint}.associate{it.id to (it.width to it.height)}
+                        workspace=workspace.adjustLayout(adjustment,view,handTracking.unitsPerMeter,contentSizes,contentSizes.keys)
                         systemPlacements.clear()
                         store.save(workspace)
                     }
@@ -620,7 +621,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     deskSpace.get()?.let { parent ->
                         guideRenderer?.update(parent,emptyList())
                         guideRenderer?.updateRays(parent,emptyMap(),null,1f,true)
-                        guideRenderer?.updateLayoutOrigin(parent,null,viewHalfAngles.get(),handTracking.unitsPerMeter){}
+                        guideRenderer?.updateLayoutOrigin(parent,null,handTracking.unitsPerMeter){}
                         guideRenderer?.updateHighlight(parent,null,floatArrayOf(0f,0f,0f,1f),0f,0f)
                     }
                 }
@@ -932,7 +933,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     }
                 if(!originGrab.active){updateManipulation(false);store.save(workspace)}
             }
-            guideRenderer?.updateLayoutOrigin(root,originGuide,viewHalfAngles.get(),unitsPerMeter,desktopGuideRange){event->
+            guideRenderer?.updateLayoutOrigin(root,originGuide,unitsPerMeter,desktopGuideRange){event->
                 val side=event.pointerType.toString()
                 when(event.action){
                     androidx.xr.scenecore.InputEvent.Action.DOWN->{
@@ -1575,7 +1576,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 val desktop=workspace.monitorAt(0)
                 val info=connection.workspaceInfo.value
                 val patches=mutableListOf<CursorPatch>()
-                val mapViewer=(workspace.layoutOrigin ?: desktop?.pose)?.let{
+                val mapViewer=workspace.cursorMapReference ?: (workspace.layoutOrigin ?: desktop?.pose)?.let{
                     Pose(transformPoint(it,floatArrayOf(0f,0f,ViewLayers.DesktopDistanceM*handTracking.unitsPerMeter)),it.rotation)
                 }
                 if(sceneActive && workspace.cursorRemap && !displayControlsOpen && head!=null && desktop!=null && info!=null){

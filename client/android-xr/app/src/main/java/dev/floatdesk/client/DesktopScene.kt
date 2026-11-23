@@ -137,9 +137,10 @@ internal fun DeskContent(
             shape = androidx.xr.compose.subspace.layout.SpatialRoundedCornerShape(androidx.compose.foundation.shape.CornerSize(0.dp))) {
             PalmControls(panel.page, workspace, connection.workspaceInfo.value, latchedFollow, panelFocused, panelPressed, { hovered = it }, onPalmAction)
         }
-        (hovered ?: panelFocused)?.takeIf { shown -> panel.buttons.any { it.action == shown } }?.let { palmTooltip(it, workspace, latchedFollow) }?.let { label ->
-            val tooltipPose = Pose(transformPoint(panel.pose, floatArrayOf(0f, panel.heightM * unit * .5f + .026f * unit, .006f * unit)), panel.pose.rotation)
-            SpatialPanel(modifier = placedPanel(tooltipPose, panel.widthM * unit, PalmMenuLayout.tooltipHeightM * unit, density, pixelDensity)) {
+        panel.buttons.firstOrNull{it.action==(hovered ?: panelFocused)}?.let{button->
+            val label=palmTooltip(button.action,workspace,latchedFollow)
+            val tip=palmTooltipPlacement(panel,button,label)
+            SpatialPanel(modifier=placedPanel(tip.pose,tip.width,tip.height,density,pixelDensity)) {
                 androidx.compose.foundation.layout.Box(Modifier.fillMaxSize().background(Color(0xFF18232E)), contentAlignment = Alignment.Center) {
                     androidx.compose.foundation.text.BasicText(label, Modifier.padding(horizontal = 6.dp), style = androidx.compose.ui.text.TextStyle(color = Color.White),
                         maxLines = 1, softWrap = false,

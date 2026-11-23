@@ -259,15 +259,6 @@ internal fun saveFixedMagnifier(id:String,window:MagnifiedWindow,desktop:Monitor
     val rotation=multiplyQuaternion(floatArrayOf(-q[0],-q[1],-q[2],q[3]),window.pose.rotation)
     return FixedMagnifierPlacement(id,Pose(FloatArray(3){local[it]/units},rotation),window.width/units,window.height/units,window.freePose)
 }
-/** Change the desktop reference without moving the supporting pane in scene space. */
-internal fun rebaseSupportingPlacement(record:FixedMagnifierPlacement,old:Pose,next:Pose,units:Float):FixedMagnifierPlacement {
-    val world=transformPoint(old,FloatArray(3){record.pose.position[it]*units})
-    val local=viewerInMonitor(world,next.position,next.rotation)
-    val worldRotation=multiplyQuaternion(old.rotation,record.pose.rotation)
-    val q=next.rotation
-    val rotation=multiplyQuaternion(floatArrayOf(-q[0],-q[1],-q[2],q[3]),worldRotation)
-    return record.copy(pose=Pose(FloatArray(3){local[it]/units},rotation))
-}
 internal fun fixedMagnifier(record:FixedMagnifierPlacement,desktop:MonitorPlacement,source:DesktopWindow?,viewer:Pose,units:Float,spherical:Boolean,previous:MagnifiedWindow?=null,layerDistanceM:Float=MagnifierDistanceM,updateGeometry:Boolean=true):MagnifiedWindow{
     val pose=Pose(transformPoint(desktop.pose,FloatArray(3){record.pose.position[it]*units}),multiplyQuaternion(desktop.pose.rotation,record.pose.rotation))
     val window=MagnifiedWindow(source?.id ?: 0,pose,record.widthM*units,record.heightM*units,source?.width ?: 1280,source?.height ?: 800,

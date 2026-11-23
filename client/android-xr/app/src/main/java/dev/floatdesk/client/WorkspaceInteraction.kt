@@ -135,6 +135,26 @@ internal data class PalmPanelState(val side: String, val pose: Pose, val unitsPe
     val buttons get() = PalmMenuLayout.buttons(page)
 }
 
+internal data class PalmTooltipPlacement(val pose:Pose,val width:Float,val height:Float){
+    fun contains(origin:FloatArray,direction:FloatArray):Boolean{
+        val local=viewerInMonitor(origin,pose.position,pose.rotation)
+        val end=viewerInMonitor(add(origin,direction),pose.position,pose.rotation)
+        return monitorRayHit(local,subtract(end,local),width,height,null)!=null
+    }
+}
+
+internal fun palmTooltipPlacement(panel:PalmPanelState,button:PalmButton,label:String):PalmTooltipPlacement {
+    val unit=panel.unitsPerMeter
+    val width=panel.widthM*unit
+    val height=panel.heightM*unit
+    val tipH=PalmMenuLayout.tooltipHeightM*unit*.70f
+    val tipW=minOf(width,maxOf(width*button.w*1.7f,width*label.length*.022f))
+    val x=(button.x+button.w*.5f-.5f)*width
+    val y=(.5f-button.y)*height+tipH*.38f
+    val pose=Pose(transformPoint(panel.pose,floatArrayOf(x,y,.003f*unit)),panel.pose.rotation)
+    return PalmTooltipPlacement(pose,tipW,tipH)
+}
+
 internal fun Vector3.toArray() = floatArrayOf(x, y, z)
 
 internal fun palmControls(state: Hand.State, head: androidx.xr.runtime.math.Pose?, side: String, diagnostics: Boolean = false, allowMiddlePinch: Boolean = false, joints: Map<HandJointType,androidx.xr.runtime.math.Pose> = state.handJoints): PalmPanelState? {

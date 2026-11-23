@@ -12,6 +12,17 @@ internal data class LayoutOriginGuide(
     val spherical: Boolean,
 ) {
     val gripRadius get() = nearRange * .022f
+
+    /** Preserve all view angles while pulling the visible guides inside the desktop layer. */
+    fun foreground(desktopRange:Float?,units:Float):LayoutOriginGuide {
+        if(desktopRange==null)return this
+        val outerRange=farRange*(if(spherical)1.03f else 2.03f)
+        val factor=((desktopRange-.018f*units)/outerRange).coerceIn(.05f,1f)
+        if(factor==1f)return this
+        fun scale(point:FloatArray)=FloatArray(3){viewer.position[it]+(point[it]-viewer.position[it])*factor}
+        return copy(near=scale(near),far=scale(far),nearRange=nearRange*factor,farRange=farRange*factor)
+    }
+
 }
 
 internal fun layoutOriginGuide(origin: Pose, viewer: Pose, near: Float, far: Float, spherical: Boolean): LayoutOriginGuide? {

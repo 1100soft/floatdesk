@@ -65,7 +65,8 @@ import dev.floatdesk.client.workspace.restoreViewer
 import dev.floatdesk.client.workspace.withViewingDistances
 import dev.floatdesk.client.workspace.reconcileMonitors
 import dev.floatdesk.client.workspace.monitorPlaced
-import dev.floatdesk.client.workspace.moveLayoutOrigin
+import dev.floatdesk.client.workspace.rebaseLayoutOrigin
+import dev.floatdesk.client.workspace.rebaseSupportingPlacement
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.awaitCancellation
@@ -540,6 +541,8 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
         var lastPalmSeen = 0L
         var detailSeenAt=0L
         var followLock: FollowLock? = null
+        val cachedLayoutInk=mutableMapOf<Int,dev.floatdesk.client.media.VideoAim>()
+        var layoutInkAt=0L
         var seenGeneration = followGeneration
         var tick = 0
         // Keep platform maintenance outside the gesture coroutine's bytecode body.
@@ -691,7 +694,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             val contentEyeRays=if(hudReading)emptyList() else eyeRays
             val screen=workspace.monitorAt(0)
             val currentEye=handTracking.points["VIEWER"] ?: candidateHead?.translation?.toArray()
-            handTracking.desktopSphereRadius=if(screen!=null && currentEye!=null){
+            val desktopGuideRange=if(screen!=null && currentEye!=null){
                 val localEye=viewerInMonitor(currentEye,screen.pose.position,screen.pose.rotation)
                 val mesh=pointerControl.meshes[0].takeIf{workspace.sphericalWarp}
                 if(mesh!=null)(mesh.innerRadius-distance(localEye,mesh.eye)).takeIf{it>.02f*unitsPerMeter}
@@ -701,6 +704,8 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     distance(localEye,closest).takeIf{it>.02f*unitsPerMeter}
                 }else null
             }else null
+            if(!workspace.grabToMove || handTracking.desktopSphereRadius==null)
+                handTracking.desktopSphereRadius=desktopGuideRange
             val qualityTargets=if(!workspace.experimentalViewedDetail || connection.limitOptionalRendering || screen==null)emptyList() else eyeRays.mapNotNull{(origin,direction)->
                 val local=viewerInMonitor(origin,screen.pose.position,screen.pose.rotation)
                 val endpoint=viewerInMonitor(add(origin,direction),screen.pose.position,screen.pose.rotation)
@@ -876,12 +881,15 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 if(originGuide==null || originViewer==null || palmPanel!=null)originGrab.clear()
                 else originGrab.advance(originViewer,grips,handTracking.pinched,handTracking.nowMs,workspace.freeManipulation)
                     ?.let{origin->
-                        if(workspace.layoutOrigin?.position?.contentEquals(origin.position)!=true)
-                            workspace=workspace.moveLayoutOrigin(origin)
+                        val prior=workspace.layoutOrigin
+                        if(prior!=null && distance(prior.position,origin.position)>.001f*unitsPerMeter){
+                            systemPlacements.replaceAll{_,record->rebaseSupportingPlacement(record,prior,origin,unitsPerMeter)}
+                            workspace=workspace.rebaseLayoutOrigin(origin,unitsPerMeter)
+                        }
                     }
                 if(!originGrab.active){updateManipulation(false);store.save(workspace)}
             }
-            guideRenderer?.updateLayoutOrigin(root,originGuide){event->
+            guideRenderer?.updateLayoutOrigin(root,originGuide?.foreground(desktopGuideRange,unitsPerMeter)){event->
                 val side=event.pointerType.toString()
                 when(event.action){
                     androidx.xr.scenecore.InputEvent.Action.DOWN->{
@@ -931,7 +939,14 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 }
             }
             val panel=palmPanel
-            val panelHits=if(panel==null) emptyList() else contentEyeRays.mapNotNull { (origin,direction) -> palmRayPoint(panel,origin,direction) }
+            val focusedButton=panel?.buttons?.firstOrNull{it.action==panelFocused}
+            val palmTip=if(panel!=null && focusedButton!=null)
+                palmTooltipPlacement(panel,focusedButton,palmTooltip(focusedButton.action,workspace,latchedFollow)) else null
+            val panelHits=if(panel==null)emptyList()else contentEyeRays.mapNotNull{(origin,direction)->
+                if(focusedButton!=null && palmTip?.contains(origin,direction)==true)
+                    floatArrayOf(focusedButton.x+focusedButton.w*.5f,focusedButton.y+focusedButton.h*.5f)
+                else palmRayPoint(panel,origin,direction)
+            }
             val panelGaze=if(panelHits.isEmpty()) null else floatArrayOf(panelHits.map {it[0]}.average().toFloat(),panelHits.map {it[1]}.average().toFloat())
             val activate=panelInput.update(handTracking.nowMs,panel?.side,panelGaze,panel?.let { mouseSamples[it.side]?.middleMetres },
                 panel?.buttons.orEmpty().map { PanelButtonArea(it.action.ordinal,it.x,it.y,it.w,it.h) })
@@ -1179,8 +1194,16 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 else emptyList()
             referenceInk.set(if(focusInfo==null)dev.floatdesk.client.media.VideoAim() else focusOutlines(referenceTargets,focusInfo,workspace.screenSpacing))
             val twoHandDesktop=if(workspace.freeManipulation)handPreviewMonitor(hoverHands)else null
+            val updateLayoutInk=handTracking.nowMs-layoutInkAt>=80
+            if(originGuide==null)cachedLayoutInk.clear()
+            if(updateLayoutInk)layoutInkAt=handTracking.nowMs
             for((index,placement) in workspace.layouts[workspace.activeLayout].orEmpty().withIndex()) {
                 val segments=ArrayList<Float>();val colors=ArrayList<Float>()
+                if(originGuide!=null){
+                    if(updateLayoutInk || index !in cachedLayoutInk)
+                        cachedLayoutInk[index]=layoutGuideInk(originGuide,placement,pointerControl.meshes[index])
+                    cachedLayoutInk[index]?.let{ink->segments.addAll(ink.segments.toList());colors.addAll(ink.colors.toList())}
+                }
                 if(index==0 && twoHandDesktop!=index && !monitorGrab && (workspace.focusMode || workspace.windowGrabMode) && palmPanel==null && !displayControlsOpen && focusInfo!=null) {
                     val targets=windowGrab.source?.let{dragSource->
                         val move=windowGrab.preview ?: WindowMove(dragSource.id,dragSource.x,dragSource.y)
@@ -1557,7 +1580,14 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
         }
         val toolbarWindow=openToolbarWindow
         val toolbarSource=systemInfo?.windows?.firstOrNull{it.id==toolbarWindow}
-        var toolbarTooltip by remember(toolbarTarget){mutableStateOf<String?>(null)}
+        var hoveredToolbarTooltip by remember(toolbarTarget){mutableStateOf<WindowToolbarTooltip?>(null)}
+        var toolbarTooltip by remember(toolbarTarget){mutableStateOf<WindowToolbarTooltip?>(null)}
+        var tooltipPanelHovered by remember(toolbarTarget){mutableStateOf(false)}
+        LaunchedEffect(hoveredToolbarTooltip,tooltipPanelHovered){
+            val label=hoveredToolbarTooltip
+            if(label!=null)toolbarTooltip=label
+            else if(!tooltipPanelHovered){delay(180);toolbarTooltip=null}
+        }
         var snapExpanded by remember(toolbarTarget){mutableStateOf(false)}
         var snapButtonHovered by remember(toolbarTarget){mutableStateOf(false)}
         LaunchedEffect(toolbarTarget){toolbarHovered=false;snapGridHovered=false}
@@ -1581,7 +1611,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             fun closeToolbar(){toolbar.clear();toolbarTarget=null;openToolbarStrip=null;openToolbarWindow=null}
             shownPanels+=toolbarStrip.copy(width=barW)
             Subspace{SpatialPanel(modifier=placedPanel(barPose,barW,barH,density,pixelDensity),shape=square){
-                WindowToolbar(toolbarWindow,magnifierBar,snap,snapExpanded,cell,gap,onHover={toolbarHovered=it},onTooltip={toolbarTooltip=it},
+                WindowToolbar(toolbarWindow,magnifierBar,snap,snapExpanded,cell,gap,onHover={toolbarHovered=it},onTooltip={hoveredToolbarTooltip=it},
                     onSnapHover={snapButtonHovered=it},onSnapToggle={snapExpanded=!snapExpanded},
                     onAction={action->toolbarWindow?.let{connection.windowAction(it,action)};closeToolbar()},
                     onAdd={addFixedMagnifier()},
@@ -1614,12 +1644,14 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     }
                 }}
             }
-            toolbarTooltip?.let{label->
-                val tipW=maxOf(barW,cellW*4);val tipH=cellW*.5f
-                val tipPose=Pose(transformPoint(barPose,floatArrayOf(0f,barH*.5f+gapW+tipH*.5f,0f)),barPose.rotation)
+            toolbarTooltip?.let{tip->
+                val tipW=maxOf(cellW*2.2f,cellW*tip.label.length*.11f);val tipH=cellW*.40f
+                val x=WindowMenuLayout.buttonCenter(tip.index,magnifierBar,gapRatio)*cellW
+                val tipPose=Pose(transformPoint(barPose,floatArrayOf(x,cellW*.5f+tipH*.42f,.003f*unit)),barPose.rotation)
+                shownPanels+=toolbarStrip.copy(pose=tipPose,width=tipW,height=tipH)
                 Subspace{SpatialPanel(modifier=placedPanel(tipPose,tipW,tipH,density,pixelDensity)){
-                    androidx.compose.foundation.layout.Box(Modifier.fillMaxSize().background(Color(0xFF18232E)),contentAlignment=androidx.compose.ui.Alignment.Center){
-                        androidx.compose.foundation.text.BasicText(label,Modifier.padding(horizontal=6.dp),style=androidx.compose.ui.text.TextStyle(color=Color.White),maxLines=1,softWrap=false,
+                    androidx.compose.foundation.layout.Box(Modifier.fillMaxSize().background(Color(0xFF18232E)).trackMenuHover{tooltipPanelHovered=it!=null},contentAlignment=androidx.compose.ui.Alignment.Center){
+                        androidx.compose.foundation.text.BasicText(tip.label,Modifier.padding(horizontal=6.dp),style=androidx.compose.ui.text.TextStyle(color=Color.White),maxLines=1,softWrap=false,
                             autoSize=androidx.compose.foundation.text.TextAutoSize.StepBased(minFontSize=6.sp,maxFontSize=48.sp,stepSize=.5f.sp))
                     }
                 }}

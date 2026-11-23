@@ -29,10 +29,16 @@ internal object WindowMenuLayout {
     fun toolbarButtons(magnifier: Boolean) = if (magnifier) 6 else 3
     /** Sizes in units of one button cell, for a gap of [gap] cells. */
     fun toolbarWidth(magnifier: Boolean, gap: Float) = toolbarButtons(magnifier) + (toolbarButtons(magnifier) + 1) * gap + if (magnifier) 2 * gap else 0f
+    fun buttonCenter(index:Int,magnifier:Boolean,gap:Float):Float {
+        val separator=if(magnifier && index>=3)2*gap else 0f
+        return gap+.5f+index*(1+gap)+separator-toolbarWidth(magnifier,gap)*.5f
+    }
     fun toolbarHeight(gap: Float) = 1 + 2 * gap
     fun gridWidth(gap: Float) = columns + (columns + 1) * gap
     fun gridHeight(gap: Float) = gridRows + (gridRows + 1) * gap
 }
+
+internal data class WindowToolbarTooltip(val label:String,val index:Int)
 
 private val ToolbarSurface = Color(0xFF1B2229)
 private val SelectedCell = Color(0xFF2F7FA6)
@@ -40,22 +46,24 @@ private val SelectedCell = Color(0xFF2F7FA6)
 /** One row above a window or magnifier; snap expands into [SnapGridMenu] below this row. */
 @Composable
 internal fun WindowToolbar(window: Long?, magnifier: Boolean, snap: SnapCell?, snapExpanded: Boolean, cell: Dp, gap: Dp,
-                           onHover: (Boolean) -> Unit, onTooltip: (String?) -> Unit, onSnapHover: (Boolean) -> Unit,
+                           onHover: (Boolean) -> Unit, onTooltip: (WindowToolbarTooltip?) -> Unit, onSnapHover: (Boolean) -> Unit,
                            onSnapToggle: () -> Unit, onAction: (String) -> Unit, onAdd: () -> Unit, onRemove: () -> Unit, pinned:Boolean, onPin: () -> Unit) {
+    fun tooltip(index:Int):(String?)->Unit={label->onTooltip(label?.let{WindowToolbarTooltip(it,index)})}
+    val firstWindowButton=if(magnifier)3 else 0
     MaterialTheme(colorScheme = darkColorScheme()) {
         CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp(0f)) {
             Row(Modifier.background(ToolbarSurface).trackMenuHover { onHover(it != null) }.padding(gap),
                 horizontalArrangement = Arrangement.spacedBy(gap), verticalAlignment = Alignment.CenterVertically) {
                 if (magnifier) {
-                    MenuIcon("add", "Add a magnifier", cell, true, onTooltip, onClick = onAdd)
-                    MenuIcon("pin", if(pinned) "Unpin this window" else "Pin this window",cell,window!=null,onTooltip,active=pinned,onClick=onPin)
-                    MenuIcon("remove", "Remove this magnifier", cell, true, onTooltip, onClick = onRemove)
+                    MenuIcon("add", "Add a magnifier", cell, true, tooltip(0), onClick = onAdd)
+                    MenuIcon("pin", if(pinned) "Unpin this window" else "Pin this window",cell,window!=null,tooltip(1),active=pinned,onClick=onPin)
+                    MenuIcon("remove", "Remove this magnifier", cell, true, tooltip(2), onClick = onRemove)
                     Box(Modifier.width(gap).height(cell * .6f).background(Color(0xFF3A4752)))
                 }
-                MenuIcon("minimize", "Minimize window", cell, window != null, onTooltip) { onAction("minimize") }
+                MenuIcon("minimize", "Minimize window", cell, window != null, tooltip(firstWindowButton)) { onAction("minimize") }
                 MenuIcon("snap", "Snap to grid", cell, window != null,
-                    { onTooltip(it); onSnapHover(it != null) }, snap = snap, active = snapExpanded, onClick = onSnapToggle)
-                MenuIcon("close", "Close window", cell, window != null, onTooltip) { onAction("close") }
+                    { tooltip(firstWindowButton+1)(it); onSnapHover(it != null) }, snap = snap, active = snapExpanded, onClick = onSnapToggle)
+                MenuIcon("close", "Close window", cell, window != null, tooltip(firstWindowButton+2)) { onAction("close") }
             }
         }
     }

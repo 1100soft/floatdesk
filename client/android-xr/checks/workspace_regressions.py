@@ -123,6 +123,12 @@ fun main() {
  check(kotlin.math.abs(offset[0]-1f)<.00001f && kotlin.math.abs(offset[2])<.00001f)
  check(movedDesk.physicalWidthM==original.physicalWidthM)
  check(reset.fixedMagnifiers==placed.fixedMagnifiers && reset.systemPanels==placed.systemPanels && reset.referencePlacement==spread)
+ val rebased=placed.rebaseLayoutOrigin(target,1f)
+ check(rebased.layoutOrigin===target && rebased.layouts===placed.layouts && rebased.control===placed.control)
+ val roundTrip=rebased.rebaseLayoutOrigin(placed.layoutOrigin!!,1f).fixedMagnifiers.single()
+ check((0..2).all{kotlin.math.abs(roundTrip.pose.position[it]-spread.pose.position[it])<.00001f})
+ check(roundTrip.widthM==spread.widthM && roundTrip.heightM==spread.heightM)
+
  val large=MonitorMesh(32f,18f,floatArrayOf(0f,0f,1.2f),columns=32,rows=20,focus=floatArrayOf(0f,0f))
  check(large.innerRadius in 0f..large.radius)
  for(i in large.indices.indices step 3){

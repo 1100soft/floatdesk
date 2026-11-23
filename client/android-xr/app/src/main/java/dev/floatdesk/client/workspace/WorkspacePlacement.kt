@@ -60,25 +60,45 @@ internal fun WorkspaceFile.restoreViewer(viewer:Pose,unitsPerMeter:Float=referen
         }.toMutableList()}.toMutableMap(),control=control.copy(pose=transform(control.pose)))
 }
 
-/** A rigid layout transform. Supporting placements already use origin-local meters. */
+private fun inverseRotation(q:FloatArray)=floatArrayOf(-q[0],-q[1],-q[2],q[3])
+
+private fun composeLayoutRotation(a:FloatArray,b:FloatArray)=floatArrayOf(
+    a[3]*b[0]+a[0]*b[3]+a[1]*b[2]-a[2]*b[1],
+    a[3]*b[1]-a[0]*b[2]+a[1]*b[3]+a[2]*b[0],
+    a[3]*b[2]+a[0]*b[1]-a[1]*b[0]+a[2]*b[3],
+    a[3]*b[3]-a[0]*b[0]-a[1]*b[1]-a[2]*b[2])
+
+private fun originTransform(from:Pose,to:Pose):(Pose)->Pose {
+    val delta=composeLayoutRotation(to.rotation,inverseRotation(from.rotation))
+    val inverseDelta=inverseRotation(delta)
+    return {pose->
+        val rotated=viewerInMonitor(pose.position,from.position,inverseDelta)
+        Pose(FloatArray(3){to.position[it]+rotated[it]},composeLayoutRotation(delta,pose.rotation))
+    }
+}
+
+/** Reset and explicit Follow carry the environment along with its origin. */
 internal fun WorkspaceFile.moveLayoutOrigin(target:Pose):WorkspaceFile {
     val origin=layoutOrigin ?: layouts[activeLayout]?.firstOrNull()?.pose ?: return this
-    val inverse=floatArrayOf(-origin.rotation[0],-origin.rotation[1],-origin.rotation[2],origin.rotation[3])
-    fun multiply(a:FloatArray,b:FloatArray)=floatArrayOf(
-        a[3]*b[0]+a[0]*b[3]+a[1]*b[2]-a[2]*b[1],
-        a[3]*b[1]-a[0]*b[2]+a[1]*b[3]+a[2]*b[0],
-        a[3]*b[2]+a[0]*b[1]-a[1]*b[0]+a[2]*b[3],
-        a[3]*b[3]-a[0]*b[0]-a[1]*b[1]-a[2]*b[2])
-    val delta=multiply(target.rotation,inverse)
-    val inverseDelta=floatArrayOf(-delta[0],-delta[1],-delta[2],delta[3])
-    val zero=FloatArray(3)
-    fun transform(pose:Pose):Pose {
-        val offset=FloatArray(3){pose.position[it]-origin.position[it]}
-        val rotated=viewerInMonitor(offset,zero,inverseDelta)
-        return Pose(FloatArray(3){target.position[it]+rotated[it]},multiply(delta,pose.rotation))
-    }
+    val transform=originTransform(origin,target)
     val moved=layouts.mapValues{(_,screens)->screens.map{it.copy(pose=transform(it.pose))}.toMutableList()}.toMutableMap()
     return copy(layoutOrigin=target,layouts=moved,control=control.copy(pose=transform(control.pose)))
+}
+
+/** Dragging the axes changes coordinates while world-space object poses stay put. */
+internal fun WorkspaceFile.rebaseLayoutOrigin(target:Pose,units:Float):WorkspaceFile {
+    val origin=layoutOrigin ?: layouts[activeLayout]?.firstOrNull()?.pose ?: return this
+    fun rebase(record:FixedMagnifierPlacement)=rebaseSupportingPlacement(record,origin,target,units)
+    return copy(layoutOrigin=target,fixedMagnifiers=fixedMagnifiers.map(::rebase),
+        systemPanels=systemPanels.map(::rebase),referencePlacement=referencePlacement?.let(::rebase))
+}
+
+internal fun rebaseSupportingPlacement(record:FixedMagnifierPlacement,old:Pose,next:Pose,units:Float):FixedMagnifierPlacement {
+    val toWorld=originTransform(Pose(),old)
+    val toLocal=originTransform(next,Pose())
+    val scaled=record.pose.copy(position=FloatArray(3){record.pose.position[it]*units})
+    val local=toLocal(toWorld(scaled))
+    return record.copy(pose=local.copy(position=FloatArray(3){local.position[it]/units}))
 }
 
 /** Fit the complete desktop into a symmetric, inset portion of the current camera view. */

@@ -90,7 +90,7 @@ The palm panel supports eye focus independently of the OS aiming method, subject
 
 In spherical mode, the hidden flat video owner is disabled so its native body cannot compete with the curved interaction mesh. The system move/resize rectangle sits behind the image, aligned with the viewer-facing tangent plane in spherical mode, with corners projected onto the image corners; returning to flat mode restores the original owner and handles.
 
-In **Layout**, one-hand auto layout supports angular dragging and resize corners. Two-hand manual layout supports free transforms. Align, Snap, Face, and Auto adjust act on the arrangement. Window actions, focus, and hand mouse resume on **Done**. Previewing never moves the monitor.
+In **Layout**, one-hand auto layout supports angular dragging and resize corners. Two-hand manual layout supports free transforms. Align, Snap, Face, and Auto adjust act on the arrangement. Snap packs the logical cursor rectangles together at their current depths. Reset origin moves the axes back to the desktop center while the layout objects stay in place. Window actions, focus, and hand mouse resume on **Done**. Previewing never moves the monitor.
 
 **Gesture reliability is incomplete and further tuning is deferred.** Quick pinches, repeated/triple clicks, hand asymmetry and duplicate-hand behavior are recorded in [the deferred gesture issues](docs/gesture-issues.md). Automated replay checks do not establish reliable physical touch detection.
 

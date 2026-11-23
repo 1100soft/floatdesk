@@ -6,7 +6,6 @@ import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PorterDuff
-import android.graphics.RadialGradient
 import android.graphics.Shader
 import androidx.xr.runtime.Session
 import androidx.xr.runtime.math.FloatSize2d
@@ -27,6 +26,7 @@ internal class LayoutGuideOverlay(private val session:Session):AutoCloseable {
     private var node:NativeNodeState?=null
     private var surface:SurfaceEntity?=null
     private var lastGuide:LayoutOriginGuide?=null
+    private var acceptsInput=false
     private var drawnAt=0L
     private var drawnWidth=0f
     private var drawnHeight=0f
@@ -44,10 +44,13 @@ internal class LayoutGuideOverlay(private val session:Session):AutoCloseable {
         val halfHeight=tan(angles[1].coerceIn(.35f,1.05f))
         val owner=surface ?: SurfaceEntity.create(session,shape=SurfaceEntity.Shape.Quad(FloatSize2d(1f,1f)),
             superSampling=SurfaceEntity.SuperSampling.NONE,mediaBlendingMode=SurfaceEntity.MediaBlendingMode.TRANSPARENT).also{
+            it.setEnabled(false)
+            acceptsInput=!SurfaceInput.disableCollider(it)
             it.setSurfacePixelDimensions(IntSize2d(960,720))
             surface=it
             node=NativeNodeState(it)
         }
+        if(acceptsInput)return
         val viewer=guide.viewer
         val position=transformPoint(viewer,floatArrayOf(0f,0f,-depth))
         val q=viewer.rotation
@@ -109,13 +112,12 @@ internal class LayoutGuideOverlay(private val session:Session):AutoCloseable {
                 canvas.drawLine(near.first,near.second,far.first,far.second,paint)
                 paint.shader=null
             }
-            // From the midpoint between the eyes, the depth markers can align. Keep the far
-            // marker legible as the violet outer edge of the cyan grip.
-            paint.style=Paint.Style.FILL
-            paint.shader=RadialGradient(near.first,near.second,radius*1.72f,
-                intArrayOf(Color.WHITE,cyan,violet,Color.TRANSPARENT),floatArrayOf(0f,.49f,.74f,1f),Shader.TileMode.CLAMP)
-            canvas.drawCircle(near.first,near.second,radius*1.72f,paint)
-            paint.shader=null
+            // The cyan marker is a separate 3D sphere. Keep the far marker readable
+            // when its projection coincides with the near marker.
+            paint.style=Paint.Style.STROKE
+            paint.color=violet
+            paint.strokeWidth=2f
+            canvas.drawCircle(far.first,far.second,radius*1.34f,paint)
         }finally{
             surface.unlockCanvasAndPost(canvas)
         }

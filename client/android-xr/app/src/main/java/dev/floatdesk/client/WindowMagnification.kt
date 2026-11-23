@@ -55,7 +55,8 @@ internal class NativeSurfaceTap {
     }
 }
 internal val MagnifierDistanceM get()=ViewLayers.MagnifierDistanceM
-internal data class MagnifiedWindow(val id:Long,val pose:Pose,val width:Float,val height:Float,val sourceWidth:Int,val sourceHeight:Int,val spherical:Boolean=false,val mesh:MonitorMesh?=null,val units:Float=1f,val headOffset:FloatArray=floatArrayOf(0f,0f,-1f),val sizeScale:Float=1f,val fixed:Boolean=false,val desktopRotation:FloatArray?=null,val requestedPosition:FloatArray?=null,val headRotation:FloatArray?=null,val layerDistanceM:Float=MagnifierDistanceM,val freePose:Boolean=false,val nominalLayerDistanceM:Float?=null,val anchoredPlacement:Boolean=false)
+internal data class PaneLayoutFootprint(val id:String,val pose:Pose,val width:Float,val height:Float)
+internal data class MagnifiedWindow(val id:Long,val pose:Pose,val width:Float,val height:Float,val sourceWidth:Int,val sourceHeight:Int,val spherical:Boolean=false,val mesh:MonitorMesh?=null,val units:Float=1f,val headOffset:FloatArray=floatArrayOf(0f,0f,-1f),val sizeScale:Float=1f,val fixed:Boolean=false,val desktopRotation:FloatArray?=null,val requestedPosition:FloatArray?=null,val headRotation:FloatArray?=null,val layerDistanceM:Float=MagnifierDistanceM,val freePose:Boolean=false,val nominalLayerDistanceM:Float?=null,val anchoredPlacement:Boolean=false,val layoutFootprint:PaneLayoutFootprint?=null)
 internal fun magnifiedWindow(id:Long,width:Int,height:Int,viewer:Pose,horizontal:Float,vertical:Float,units:Float,spherical:Boolean=false,previous:MagnifiedWindow?=null,layerDistanceM:Float=MagnifierDistanceM):MagnifiedWindow{
     val source=deskLayout(listOf(Triple("Window",width,height)))
     val fitted=fitDesktopInView(source,viewer,horizontal,vertical,units,spherical,centralView=true,distanceM=layerDistanceM).single()
@@ -250,7 +251,10 @@ internal fun fixedMagnifier(record:FixedMagnifierPlacement,desktop:MonitorPlacem
     val pose=Pose(transformPoint(desktop.pose,FloatArray(3){record.pose.position[it]*units}),multiplyQuaternion(desktop.pose.rotation,record.pose.rotation))
     val window=MagnifiedWindow(source?.id ?: 0,pose,record.widthM*units,record.heightM*units,source?.width ?: 1280,source?.height ?: 800,
         spherical,units=units,fixed=true,desktopRotation=desktop.pose.rotation,requestedPosition=pose.position,layerDistanceM=layerDistanceM,freePose=record.freePose,anchoredPlacement=true)
-    return magnifierFrame(window,previous ?: window,viewer,units,updateGeometry)
+    val aspect=window.sourceWidth.toFloat()/window.sourceHeight.coerceAtLeast(1)
+    val extent=maxOf(window.width,window.height)
+    val footprint=PaneLayoutFootprint(record.id,pose,extent*minOf(1f,aspect),extent*minOf(1f,1f/aspect))
+    return magnifierFrame(window.copy(layoutFootprint=footprint),previous ?: window,viewer,units,updateGeometry)
 }
 
 internal fun fixedMagnifierGeometry(window:MagnifiedWindow,viewer:Pose,proposed:FloatArray?=null,updateMesh:Boolean=true):MagnifiedWindow{

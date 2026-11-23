@@ -29,3 +29,33 @@ internal class LayoutGuideProjection(private val guide:LayoutOriginGuide,private
         }
     }
 }
+
+
+/** Unit-radius sphere with a directional lighting coordinate, independent of video resolution. */
+internal fun layoutOriginSphereGeometry():VideoGeometry {
+    val columns=24
+    val rows=12
+    val stride=columns+1
+    val positions=FloatArray((rows+1)*stride*3)
+    val uv=FloatArray((rows+1)*stride*2)
+    var index=0
+    for(row in 0..rows)for(col in 0..columns){
+        val phi=Math.PI*row/rows
+        val theta=2.0*Math.PI*col/columns
+        val x=(sin(phi)*cos(theta)).toFloat()
+        val y=cos(phi).toFloat()
+        val z=(sin(phi)*sin(theta)).toFloat()
+        positions[index*3]=x;positions[index*3+1]=y;positions[index*3+2]=z
+        uv[index*2]=(.48f+.33f*x+.34f*y+.40f*z).coerceIn(0f,1f)
+        uv[index*2+1]=.5f
+        index++
+    }
+    val triangles=ArrayList<Int>(rows*columns*6)
+    for(row in 0 until rows)for(col in 0 until columns){
+        val a=row*stride+col
+        val b=a+stride
+        if(row>0)triangles.addAll(listOf(a,a+1,b))
+        if(row+1<rows)triangles.addAll(listOf(a+1,b+1,b))
+    }
+    return VideoGeometry(positions,uv,triangles.toIntArray())
+}

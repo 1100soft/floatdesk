@@ -47,6 +47,25 @@ fun main() {
     for(j in 0 until i)check(abs(snapped[i][0]-snapped[j][0])+1e-4f>=(boxes[i].width+boxes[j].width)*.5f ||
         abs(snapped[i][1]-snapped[j][1])+1e-4f>=(boxes[i].height+boxes[j].height)*.5f)
  }
+ val sphereGeometry=layoutOriginSphereGeometry()
+ for(i in sphereGeometry.positions.indices step 3){
+    val r=sphereGeometry.positions.sliceArray(i..i+2)
+    check(abs(dot(r,r)-1f)<.00001f)
+ }
+ for(i in sphereGeometry.indices.indices step 3){
+    fun vertex(n:Int)=sphereGeometry.positions.sliceArray(sphereGeometry.indices[i+n]*3..sphereGeometry.indices[i+n]*3+2)
+    val a=vertex(0);val b=vertex(1);val c=vertex(2)
+    check(dot(cross3(subtract(b,a),subtract(c,a)),a)>0f)
+ }
+ val layoutBase=MonitorPlacement("main","desktop",Pose(floatArrayOf(0f,0f,-1.2f)),1.2f,.8f,0f,1200,800,60)
+ val layoutPane=FixedMagnifierPlacement("pane",Pose(floatArrayOf(3f,.08f,.4f)),.5f,.25f)
+ val packedFile=WorkspaceFile(layoutOrigin=layoutBase.pose,layouts=mutableMapOf("Desk" to mutableListOf(layoutBase)),
+    fixedMagnifiers=listOf(layoutPane)).adjustLayout(LayoutAdjustment.SNAP,Pose(),1f)
+ val packedPane=packedFile.fixedMagnifiers.single()
+ val logicalDepth=ViewLayers.DesktopDistanceM-packedPane.pose.position[2]
+ val gapX=abs(packedPane.pose.position[0])/logicalDepth-(layoutBase.physicalWidthM/ViewLayers.DesktopDistanceM+.5f/logicalDepth)*.5f
+ val gapY=abs(packedPane.pose.position[1])/logicalDepth-(layoutBase.physicalHeightM/ViewLayers.DesktopDistanceM+.25f/logicalDepth)*.5f
+ check((abs(gapX)<.0001f && gapY<0f) || (abs(gapY)<.0001f && gapX<0f))
  val originGrab=LayoutOriginGrab()
  originGrab.begin("LEFT",0L,savedOrigin,Pose(),floatArrayOf(0f,0f,-.4f),1f)
  val movedOrigin=originGrab.advance(Pose(),mapOf("LEFT" to floatArrayOf(.1f,0f,-.4f)),setOf("LEFT"),150L,false)!!

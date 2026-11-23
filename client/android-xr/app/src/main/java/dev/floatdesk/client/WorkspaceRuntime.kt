@@ -424,6 +424,17 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     palmPanel=if(done)null else palmPanel?.copy(page=PalmPage.LAYOUT)
                     store.save(workspace)
                 }
+                PalmAction.RESET_ORIGIN -> {
+                    val desktop=workspace.monitorAt(0)?.pose
+                    val prior=workspace.layoutOrigin
+                    if(desktop!=null && prior!=null){
+                        val origin=prior.copy(position=desktop.position.copyOf())
+                        val units=handTracking.unitsPerMeter
+                        systemPlacements.replaceAll{_,record->rebaseSupportingPlacement(record,prior,origin,units)}
+                        workspace=workspace.rebaseLayoutOrigin(origin,units)
+                        store.save(workspace)
+                    }
+                }
                 PalmAction.ALIGN_AXES,PalmAction.SNAP_OBJECTS,PalmAction.FACE_USER,PalmAction.AUTO_ADJUST -> {
                     val view=magnifierViewer.get() ?: displayHead.get()
                     if(view!=null && !manipulating && !magnifierMoving){
@@ -433,7 +444,9 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                             PalmAction.FACE_USER->LayoutAdjustment.FACE
                             else->LayoutAdjustment.AUTO
                         }
-                        workspace=workspace.adjustLayout(adjustment,view,handTracking.unitsPerMeter)
+                        val contentSizes=(fixedWindows.get().map{it.second}+systemWindows.get()+listOfNotNull(referencePane))
+                            .mapNotNull{it.layoutFootprint}.associate{it.id to (it.width to it.height)}
+                        workspace=workspace.adjustLayout(adjustment,view,handTracking.unitsPerMeter,contentSizes)
                         systemPlacements.clear()
                         store.save(workspace)
                     }
@@ -1576,9 +1589,12 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                         val source=if(key=="reference")info.bounds()?.let{dev.floatdesk.client.net.DesktopWindow(-1,it[0],it[1],it[2],it[3])}
                             else connection.windowCaptures.source(pane.id)
                         if(source==null)continue
-                        val logicalPose=if(pane.freePose)pane.pose else if(pane.fixed)pane.pose.copy(position=pane.requestedPosition ?: pane.pose.position)
+                        val footprint=pane.layoutFootprint
+                        val logicalPose=footprint?.pose ?: if(pane.freePose)pane.pose else if(pane.fixed)pane.pose.copy(position=pane.requestedPosition ?: pane.pose.position)
                             else pane.pose.copy(position=transformPoint(mapViewer!!,FloatArray(3){pane.headOffset[it]*pane.layerDistanceM*pane.units}))
-                        patches+=cursorPatches(key,logicalPose,pane.width,pane.height,pane.mesh,FocusRect(source.x.toFloat(),source.y.toFloat(),(source.x+source.width).toFloat(),(source.y+source.height).toFloat()),mapViewer!!,region=magnifierContentRect(pane),front=true).map{it.copy(depth=pane.layerDistanceM)}
+                        patches+=cursorPatches(key,logicalPose,footprint?.width ?: pane.width,footprint?.height ?: pane.height,pane.mesh,
+                            FocusRect(source.x.toFloat(),source.y.toFloat(),(source.x+source.width).toFloat(),(source.y+source.height).toFloat()),mapViewer!!,
+                            region=if(footprint!=null)FocusRect(0f,0f,1f,1f)else magnifierContentRect(pane),front=true).map{it.copy(depth=pane.layerDistanceM)}
                     }
                 }
                 connection.publishCursorMap(CursorTopology(patches).logicalPixels())

@@ -56,20 +56,34 @@ internal class GrabGuideRenderer private constructor(
         if(closed)return
         originOverlay.update(parent,guide,angles,units,desktopRange)
         if(guide==null){originCollider?.let{state(it).enabled(false)};return}
-        val collider=originCollider ?: SurfaceEntity.create(session,
-            shape=SurfaceEntity.Shape.Quad(androidx.xr.runtime.math.FloatSize2d(1f,1f)),parent=null,
-            superSampling=SurfaceEntity.SuperSampling.NONE,mediaBlendingMode=SurfaceEntity.MediaBlendingMode.TRANSPARENT).also{
-            it.addComponent(NativeMonitorInput.create(session,onInput))
-            originCollider=it
-        }
+        val collider=originCollider ?: createOriginSphere(onInput).also{originCollider=it}
         val hitGuide=guide.foreground(desktopRange,units)
         state(collider).apply{
             this.parent(parent)
             val normal=vector(guide.viewer.position)-vector(hitGuide.near)
             pose(Pose(vector(hitGuide.near),Quaternion.fromLookTowards(normal,Vector3.Up)))
-            scale(Vector3(hitGuide.gripRadius*2.7f,hitGuide.gripRadius*2.7f,1f))
+            scale(hitGuide.gripRadius)
             enabled(true)
         }
+    }
+
+    @OptIn(androidx.xr.scenecore.ExperimentalSurfaceEntityPixelDimensionsApi::class)
+    private fun createOriginSphere(onInput:(androidx.xr.scenecore.InputEvent)->Unit):SurfaceEntity {
+        val entity=SurfaceEntity.create(session,shape=nativeVideoMesh(layoutOriginSphereGeometry()),parent=null,
+            superSampling=SurfaceEntity.SuperSampling.NONE,mediaBlendingMode=SurfaceEntity.MediaBlendingMode.OPAQUE)
+        entity.setEnabled(false)
+        entity.setSurfacePixelDimensions(IntSize2d(128,8))
+        check(entity.addComponent(NativeMonitorInput.create(session,onInput)))
+        val surface=entity.getSurface()
+        val canvas=surface.lockCanvas(null)
+        try{
+            val paint=android.graphics.Paint()
+            paint.shader=android.graphics.LinearGradient(0f,0f,canvas.width.toFloat(),0f,
+                intArrayOf(0xFF145674.toInt(),0xFF55E6FF.toInt(),0xFFE3FBFF.toInt()),
+                floatArrayOf(0f,.64f,1f),android.graphics.Shader.TileMode.CLAMP)
+            canvas.drawPaint(paint)
+        }finally{surface.unlockCanvasAndPost(canvas)}
+        return entity
     }
 
     private fun newGroup(edgeCount: Int): Group {

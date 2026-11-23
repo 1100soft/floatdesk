@@ -1395,14 +1395,34 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 }
                 // Capture reconnects must not resize a persisted visual element.
                 val contentRecord=record
-                val attachedPanel=if(live.panel)null else renderedSystem.filter{p->systemInfo?.systemWindows?.any{it.id==p.id && it.panel}==true}.minByOrNull{p->
-                    val b=connection.windowCaptures.source(p.id) ?: shellRows.first{it.id==p.id}
-                    val dx=maxOf(b.x-source.x-source.width,source.x-b.x-b.width,0)
-                    val dy=maxOf(b.y-source.y-source.height,source.y-b.y-b.height,0)
-                    dx.toLong()*dx+dy.toLong()*dy
+                val panels=renderedSystem.mapNotNull{pane->
+                    shellRows.firstOrNull{it.id==pane.id && it.panel}?.let{pane to (connection.windowCaptures.source(it.id) ?: it)}
                 }
-                val placement=if(attachedPanel!=null)stickyMagnifier(attachedPanel,connection.windowCaptures.source(attachedPanel.id) ?: shellRows.first{it.id==attachedPanel.id},source,fixedViewer,
-                        viewHalfAngles=viewHalfAngles.get())
+                val entry=remember(row?.id,panels.map{it.first.id}){
+                    if(live.panel)null else {
+                        val cursor=androidx.compose.runtime.snapshots.Snapshot.withoutReadObservation{connection.cursors.value[0]?.fragment}
+                        val bounds=systemInfo?.bounds()
+                        val cursorPoint=if(cursor?.visible==true && bounds!=null)
+                            (bounds[0]+cursor.normX*bounds[2]) to (bounds[1]+cursor.normY*bounds[3])
+                        else connection.cursorLocation?.let{it.sourceX to it.sourceY}
+                        val hovered=cursorPoint?.let{(x,y)->panels.firstOrNull{(_,bar)->
+                            x>=bar.x && x<bar.x+bar.width && y>=bar.y && y<bar.y+bar.height
+                        }}
+                        val owner=hovered ?: panels.minByOrNull{(_,bar)->
+                            val dx=maxOf(bar.x-source.x-source.width,source.x-bar.x-bar.width,0)
+                            val dy=maxOf(bar.y-source.y-source.height,source.y-bar.y-bar.height,0)
+                            dx.toLong()*dx+dy.toLong()*dy
+                        }
+                        owner?.let{(pane,bar)->
+                            val anchor=cursorPoint.takeIf{hovered!=null} ?: ((source.x+source.width*.5f).coerceIn(bar.x.toFloat(),(bar.x+bar.width).toFloat()) to
+                                (source.y+source.height*.5f).coerceIn(bar.y.toFloat(),(bar.y+bar.height).toFloat()))
+                            pane.id to anchor
+                        }
+                    }
+                }
+                val attached=entry?.let{(id,_)->panels.firstOrNull{it.first.id==id}}
+                val placement=if(attached!=null)stickyMagnifier(attached.first,attached.second,source,fixedViewer,
+                    viewHalfAngles=viewHalfAngles.get(),panelAnchor=entry.second)
                     else fixedMagnifier(contentRecord,fixedDesktop,source,fixedViewer,handTracking.unitsPerMeter,workspace.sphericalWarp && RenderPolicy.CustomMeshes,systemRuntime[live.id],dev.floatdesk.client.workspace.ViewLayers.ShellDistanceM,updateGeometry=false)
                 val pane=placePaneInsideDesktop(placement,fixedViewer,handTracking.desktopSphereRadius)
                 val enabled=row!=null && magnifierSurfacesAllowed(true,sceneActive,displayControlsOpen)
@@ -1420,7 +1440,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     },{moving->
                         if(moving)fixedEditing.add("system:${live.id}")else{fixedEditing.remove("system:${live.id}");store.save(workspace)}
                         magnifierMoving=fixedEditing.isNotEmpty()
-                    },allowManipulation=workspace.grabToMove && live.panel,freeManipulation=workspace.freeManipulation && live.panel,topologyKey="shell:${live.id}",projectionMode=workspace.sphericalWarp,onHidden={systemReady[live.id]=false},showFrame=false)
+                    },allowManipulation=workspace.grabToMove && live.panel,freeManipulation=workspace.freeManipulation && live.panel,topologyKey="shell:${live.id}",projectionMode=workspace.sphericalWarp,transientSurface=!live.panel,onHidden={systemReady[live.id]=false},showFrame=false)
             }}
         }
         if(session!=null && magnifierRoot!=null && sceneActive && !displayControlsOpen){
@@ -1446,7 +1466,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     WindowMagnifierPanel(session,magnifierRoot,pane,connection,false,magnifierViewer,{handTracking.unitsPerMeter},handTracking,
                         {popupReady[name]=true},{message->popupReady[name]=false;Log.w("Floatdesk",message)},
                         {side,uv->magnifierHands.update(name,side,if(pane!=null)uv?.let{magnifierContentPoint(pane,it)}else null,pane?.id)},
-                        {_,_->},{},topologyKey="menu:${popup?.id}",projectionMode=workspace.sphericalWarp,onHidden={popupReady[name]=false},captureId=owner.id,regionId=popup?.id,allowManipulation=false,showFrame=false)
+                        {_,_->},{},topologyKey="menu:${popup?.id}",projectionMode=workspace.sphericalWarp,onHidden={popupReady[name]=false},captureId=owner.id,regionId=popup?.id,allowManipulation=false,showFrame=false,transientSurface=true)
                 }
             }
         }

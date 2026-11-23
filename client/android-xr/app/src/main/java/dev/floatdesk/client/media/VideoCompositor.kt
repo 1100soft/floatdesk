@@ -23,7 +23,7 @@ internal data class VideoAim @JvmOverloads constructor(
 )
 
 internal data class VideoCrop(val left:Float,val top:Float,val right:Float,val bottom:Float,val aspect:Float)
-internal data class VideoMirror @JvmOverloads constructor(val surface:Surface,val padX:Float=0f,val padY:Float=0f,val pinned:Boolean=false,val aspect:Float=0f,val before:((Long)->Unit)?=null,val presented:(()->Unit)?=null,val crop:(()->VideoCrop?)?=null,val ink:(()->VideoAim)?=null)
+internal data class VideoMirror @JvmOverloads constructor(val surface:Surface,val padX:Float=0f,val padY:Float=0f,val pinned:Boolean=false,val aspect:Float=0f,val before:((Long)->Unit)?=null,val presented:(()->Unit)?=null,val crop:(()->VideoCrop?)?=null,val ink:(()->VideoAim)?=null,val minFrameIntervalNs:(()->Long)?=null)
 
 /** One GPU pass keeps aiming decorations and live video in the same compositor layer. */
 internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
@@ -119,7 +119,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             if(windowEpoch.get()==epoch){windowFrames[pts]=epoch to rect;while(windowFrames.size>64)windowFrames.pollFirstEntry()}
         },{if(windowEpoch.compareAndSet(epoch,epoch+1)){windowRequested=false;handler.post{windowRect=null;windowFrames.clear();requestDraw()}}},{w,h->windowTexture.setDefaultBufferSize(w,h)},{pts,mask->windowMasks[pts]=mask;while(windowMasks.size>64)windowMasks.pollFirstEntry()})
     }
-    private data class Mirror(val value:VideoMirror,val egl:android.opengl.EGLSurface)
+    private data class Mirror(val value:VideoMirror,val egl:android.opengl.EGLSurface,var lastDraw:Long=0L)
     private var mirrors=emptyList<Mirror>()
     private var activeMirror:VideoMirror?=null
     fun mirrors(values:List<VideoMirror>){if(!closed)handler.post{if(!closed)guard{
@@ -382,6 +382,8 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             }
             if(hasFrame)for(mirror in mirrors){
                 if(!mirror.value.surface.isValid || mirror.egl==EGL14.EGL_NO_SURFACE)continue
+                val now=System.nanoTime()
+                if(mirror.lastDraw!=0L && now-mirror.lastDraw<(mirror.value.minFrameIntervalNs?.invoke() ?: 0L))continue
                 window=mirror.egl;target=mirror.value.surface;activeMirror=mirror.value
                 check(EGL14.eglMakeCurrent(display,window,window,context))
                 val pts=texture.timestamp/1000
@@ -389,7 +391,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                 val crop=mirror.value.crop?.invoke()
                 if(crop!=null && (crop.right<=crop.left || crop.bottom<=crop.top))continue
                 EGLExt.eglPresentationTimeANDROID(display,window,pts*1000)
-                if(drawSurface())mirror.value.presented?.invoke()
+                if(drawSurface()){mirror.lastDraw=now;mirror.value.presented?.invoke()}
             }
         }finally{
             window=primaryWindow;target=primaryTarget;activeMirror=null

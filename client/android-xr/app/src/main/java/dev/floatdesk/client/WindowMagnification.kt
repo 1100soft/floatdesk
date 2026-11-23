@@ -413,20 +413,37 @@ private fun projectMagnifier(window:MagnifiedWindow,viewer:Pose,pose:Pose,width:
 }
 
 /** A popup keeps its desktop-pixel offset/scale beside its owner; it never refits the owner. */
-internal fun stickyMagnifier(owner:MagnifiedWindow,source:DesktopWindow,popup:DesktopWindow,viewer:Pose,level:Int=0,viewHalfAngles:FloatArray?=null):MagnifiedWindow {
+internal fun stickyMagnifier(owner:MagnifiedWindow,source:DesktopWindow,popup:DesktopWindow,viewer:Pose,level:Int=0,viewHalfAngles:FloatArray?=null,panelAnchor:Pair<Float,Float>?=null):MagnifiedWindow {
     val distance=ViewLayers.popupDistance(owner.layerDistanceM,level)
     val ratio=distance/owner.layerDistanceM
     val fitX=minOf(1f,(owner.sourceWidth.toFloat()/owner.sourceHeight)/(owner.width/owner.height))
     val fitY=minOf(1f,(owner.width/owner.height)/(owner.sourceWidth.toFloat()/owner.sourceHeight))
     val sx=owner.width*fitX/source.width;val sy=owner.height*fitY/source.height
-    val flat=floatArrayOf((popup.x+popup.width*.5f-source.x-source.width*.5f)*sx,-(popup.y+popup.height*.5f-source.y-source.height*.5f)*sy,0f)
-    val position=transformPoint(owner.pose,owner.mesh?.project(flat) ?: flat)
+    val popupX=popup.x+popup.width*.5f
+    val popupY=popup.y+popup.height*.5f
+    val sourceX=source.x+source.width*.5f
+    val sourceY=source.y+source.height*.5f
+    val dx=(popupX-sourceX)*sx
+    val dy=-(popupY-sourceY)*sy
     val width=popup.width*sx*ratio
     val height=popup.height*sy*ratio
     val scale=if(viewHalfAngles==null)1f else {
         val fit=magnifiedWindow(popup.id,popup.width,popup.height,viewer,viewHalfAngles[0],viewHalfAngles[1],owner.units,owner.spherical,layerDistanceM=distance)
         minOf(1f,fit.width/width,fit.height/height)
     }
+    val flat=floatArrayOf(dx,dy,0f)
+    if(panelAnchor!=null){
+        // Anchor along the bar to the hovered task, independent of the preview's footprint.
+        // Keep the perpendicular edge adjacent after fitting the preview to the view.
+        if(source.width>=source.height){
+            flat[0]=(panelAnchor.first-sourceX)*sx
+            flat[1]=(source.height*sy+height*scale)*.5f*(if(dy>=0f)1f else -1f)
+        }else{
+            flat[0]=(source.width*sx+width*scale)*.5f*(if(dx>=0f)1f else -1f)
+            flat[1]=-(panelAnchor.second-sourceY)*sy
+        }
+    }
+    val position=transformPoint(owner.pose,owner.mesh?.project(flat) ?: flat)
     val window=MagnifiedWindow(popup.id,Pose(position,owner.pose.rotation),width*scale,height*scale,popup.width,popup.height,owner.spherical,
         units=owner.units,fixed=true,desktopRotation=owner.pose.rotation,requestedPosition=position,layerDistanceM=distance)
     return magnifierFrame(window,window,viewer,owner.units,true)

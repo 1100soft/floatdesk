@@ -20,7 +20,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
     pinned:Boolean,viewer:java.util.concurrent.atomic.AtomicReference<dev.floatdesk.client.workspace.Pose?>,
     units:()->Float,tracking:GrabTracking,
     onReady:()->Unit,onError:(String)->Unit,onHover:(String,Pair<Float,Float>?)->Unit,
-    onPlacement:(MagnifiedWindow,Boolean)->Unit,onMoving:(Boolean)->Unit,onPointerHover:(hands:Boolean,gaze:Boolean)->Unit={_,_->},onHidden:()->Unit={},captureId:Long?=null,regionId:Long?=null,allowManipulation:Boolean=true,showFrame:Boolean=true,topologyKey:String?=null,receiveInput:Boolean=true,projectFrame:Boolean=true,freeManipulation:Boolean=false,desktopMirror:Boolean=false,mirrorOverlay:(()->VideoAim)?=null,onDisplayed:((Long)->Unit)?=null,projectionMode:Boolean=window?.spherical==true){
+    onPlacement:(MagnifiedWindow,Boolean)->Unit,onMoving:(Boolean)->Unit,onPointerHover:(hands:Boolean,gaze:Boolean)->Unit={_,_->},onHidden:()->Unit={},captureId:Long?=null,regionId:Long?=null,allowManipulation:Boolean=true,showFrame:Boolean=true,topologyKey:String?=null,receiveInput:Boolean=true,projectFrame:Boolean=true,freeManipulation:Boolean=false,desktopMirror:Boolean=false,mirrorOverlay:(()->VideoAim)?=null,onDisplayed:((Long)->Unit)?=null,projectionMode:Boolean=window?.spherical==true,transientSurface:Boolean=false){
     val readyNow=rememberUpdatedState(onReady);val errorNow=rememberUpdatedState(onError);val hoverNow=rememberUpdatedState(onHover)
     val windowNow=rememberUpdatedState(window);val placementNow=rememberUpdatedState(onPlacement);val movingNow=rememberUpdatedState(onMoving)
     val moveMode=rememberUpdatedState(allowManipulation);val freeMode=rememberUpdatedState(freeManipulation)
@@ -146,7 +146,9 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
             var inkAt=Long.MIN_VALUE
             val mirrorPresented=java.util.concurrent.atomic.AtomicBoolean(false)
             val mirrorInk=java.util.concurrent.atomic.AtomicReference(VideoAim())
-            val mirror=if(desktopMirror)VideoMirror(entity.getSurface(),presented={mirrorPresented.set(true)},ink=mirrorInk::get)else null
+            val mirror=if(desktopMirror)VideoMirror(entity.getSurface(),minFrameIntervalNs={
+                if(connection.limitOptionalRendering)66_666_667L else 33_333_333L
+            },presented={mirrorPresented.set(true)},ink=mirrorInk::get)else null
             while(isActive){
                 withFrameNanos{ }
                 if(entity.isDisposed)return@LaunchedEffect
@@ -244,6 +246,9 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                 val geometryPeriod=if(connection.limitOptionalRendering)200 else 100
                 val updateGeometry=now-geometryAt>=geometryPeriod
                 if(updateGeometry)geometryAt=now
+                // A popup gets its curve on opening. Keep its native mesh/material fixed until it
+                // closes so pointer motion and head tracking cannot race material replacement.
+                if(transientSurface)continue
                 val current=(resources.pending ?: windowNow.value)?.let(::surfaceMode) ?: continue
                 resources.pending=null
                 val frame=if(projectFrame)magnifierFrame(current,prior,head,units(),updateGeometry)else projectPaneAtPlacement(current,prior,head,updateGeometry)

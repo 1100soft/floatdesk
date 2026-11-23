@@ -184,6 +184,14 @@ fun main() {
   check(single.layerDistanceM==wide.layerDistanceM && wide.spherical==curved)
   check(abs(wide.width/wide.height-1800f/240f)<.0001f)
   check(wide.width<stickyMagnifier(pane,source,popup.copy(width=1800),layerViewer).width)
+  val bar=DesktopWindow(3,0,950,1600,50,true)
+  val anchor=640f to 975f
+  val panel=pane.copy(sourceWidth=bar.width,sourceHeight=bar.height,width=1.6f,height=.05f,mesh=null)
+  val one=stickyMagnifier(panel,bar,popup,layerViewer,viewHalfAngles=floatArrayOf(.45f,.35f),panelAnchor=anchor)
+  val group=stickyMagnifier(panel,bar,popup.copy(x=400,width=1800),layerViewer,viewHalfAngles=floatArrayOf(.45f,.35f),panelAnchor=anchor)
+  check(one.layerDistanceM==group.layerDistanceM && one.spherical==group.spherical)
+  check(abs(viewerInMonitor(one.requestedPosition!!,panel.pose.position,panel.pose.rotation)[0]-viewerInMonitor(group.requestedPosition!!,panel.pose.position,panel.pose.rotation)[0])<.0001f)
+
 
   check(pane.sourceWidth==1200 && pane.width<=distance*4 && abs(pane.width/pane.height-1.5f)<.0001f)
   check(magnifierFrame(pane,pane,Pose(floatArrayOf(.02f,0f,0f)),1f,false).mesh===pane.mesh)

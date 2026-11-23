@@ -16,8 +16,21 @@ while end<len(topology):
 topology=topology[:start]+topology[end:]
 workspace=body('workspace/Workspace.kt');workspace=workspace[workspace.index('internal data class Pose'):workspace.index('internal class WorkspaceStore')]
 metadata=body('net/WorkspaceInfo.kt');metadata=metadata[:metadata.index('    companion object')]+'}\n'
-code='import kotlin.math.*\n'+body('MonitorMesh.kt')+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+re.search(r'internal fun deskLayout\(.*?\n}',(root/'workspace/Workspace.kt').read_text(),re.S).group(0)+body('workspace/WorkspacePlacement.kt')+metadata+body('WindowMagnification.kt')+body('WindowInteraction.kt').replace('dev.floatdesk.client.workspace.MonitorPlacement','MonitorPlacement')+body('WindowToolbarState.kt')+re.search(r'internal object WindowMenuLayout \{.*?\n}',(root/'WindowActionsMenu.kt').read_text(),re.S).group(0)+'\n'+topology+body('VideoGeometry.kt')+body('MagnifierContacts.kt')+body('BoundedHistory.kt')+body('RenderPolicy.kt')+body('net/WindowCaptureRetry.kt')+body('net/WindowCaptureFormat.kt').replace('dev.floatdesk.client.RenderPolicy','RenderPolicy')+''.join(re.search(r'internal fun '+name+r'\(.*?\n}',application_sources(),re.S).group(0) for name in ('transformPoint','rotateVector','quaternionBetween','multiplyQuaternion','normalize3','normalize4'))+re.search(r'internal fun dot\(a: FloatArray[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun cross3\(.*',application_sources()).group(0)+'\n'+r'''
+code='import kotlin.math.*\n'+body('MonitorMesh.kt')+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+re.search(r'internal fun deskLayout\(.*?\n}',(root/'workspace/Workspace.kt').read_text(),re.S).group(0)+body('workspace/WorkspacePlacement.kt')+metadata+body('WindowMagnification.kt')+body('LayoutOrigin.kt')+body('WindowInteraction.kt').replace('dev.floatdesk.client.workspace.MonitorPlacement','MonitorPlacement')+body('WindowToolbarState.kt')+re.search(r'internal object WindowMenuLayout \{.*?\n}',(root/'WindowActionsMenu.kt').read_text(),re.S).group(0)+'\n'+topology+body('VideoGeometry.kt')+body('MagnifierContacts.kt')+body('BoundedHistory.kt')+body('RenderPolicy.kt')+body('net/WindowCaptureRetry.kt')+body('net/WindowCaptureFormat.kt').replace('dev.floatdesk.client.RenderPolicy','RenderPolicy')+''.join(re.search(r'internal fun '+name+r'\(.*?\n}',application_sources(),re.S).group(0) for name in ('transformPoint','rotateVector','quaternionBetween','multiplyQuaternion','normalize3','normalize4'))+re.search(r'internal fun distance\(a: FloatArray.*?\n}',application_sources(),re.S).group(0)+'\n'+re.search(r'internal fun subtract\(a: FloatArray[^\n]*\n[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun dot\(a: FloatArray[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun cross3\(.*',application_sources()).group(0)+'\n'+r'''
 fun main() {
+ val savedOrigin=Pose(floatArrayOf(.4f,.2f,-2f))
+ val curvedOrigin=layoutOriginGuide(savedOrigin,Pose(),.9f,1.2f,true)!!
+ val flatOrigin=layoutOriginGuide(savedOrigin,Pose(),.9f,1.2f,false)!!
+ check(abs(distance(curvedOrigin.near,FloatArray(3))-.9f)<.00001f)
+ check(abs(distance(curvedOrigin.far,FloatArray(3))-1.2f)<.00001f)
+ check(abs(flatOrigin.near[2]+.9f)<.00001f && abs(flatOrigin.far[2]+1.2f)<.00001f)
+ check(abs(curvedOrigin.gripRadius/curvedOrigin.nearRange-flatOrigin.gripRadius/flatOrigin.nearRange)<.00001f)
+ val originGrab=LayoutOriginGrab()
+ originGrab.begin("LEFT",0L,savedOrigin,Pose(),floatArrayOf(0f,0f,-.4f),1f)
+ val movedOrigin=originGrab.advance(Pose(),mapOf("LEFT" to floatArrayOf(.1f,0f,-.4f)),setOf("LEFT"),150L,false)!!
+ check(movedOrigin.position[0]>savedOrigin.position[0] && abs(distance(movedOrigin.position,FloatArray(3))-distance(savedOrigin.position,FloatArray(3)))<.00001f)
+ check(originGrab.advance(Pose(),emptyMap(),emptySet(),160L,false)==null && !originGrab.active)
+
  run {
    val local=FixedMagnifierPlacement("pane",Pose(floatArrayOf(.3f,-.1f,.2f)),.45f,.3f,freePose=true)
    val old=Pose(floatArrayOf(0f,0f,-1.2f))
@@ -352,7 +365,7 @@ fun main() {
  val shifted=fixedMagnifier(record,deskAnchor.copy(pose=Pose(floatArrayOf(.7f,.1f,-1.2f))),DesktopWindow(42,0,0,1600,900),Pose(),1f,true)
  check(shifted.pose.position[0]>restored.pose.position[0])
  val radius=sqrt(shifted.pose.position.sumOf{(it*it).toDouble()}).toFloat()
- check(abs(radius-MagnifierDistanceM)<.00001f)
+ check(abs(shifted.pose.position[0]-restored.pose.position[0]-.5f)<.00001f)
  val radial=fixedMagnifierGeometry(shifted,Pose(),FloatArray(3){shifted.pose.position[it]*4f})
  for(axis in 0..2)check(abs(radial.pose.position[axis]-shifted.pose.position[axis])<.00001f)
  val normal=rotateVector(shifted.pose.rotation,0f,0f,1f)

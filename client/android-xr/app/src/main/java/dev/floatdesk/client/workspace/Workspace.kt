@@ -56,7 +56,7 @@ internal data class WorkspaceFile(
     val freeManipulation: Boolean = true,
     val desktopReference: Boolean = false,
     val referencePlacement: FixedMagnifierPlacement? = null,
-    val supportBasis:Pose?=null,
+    val layoutOrigin:Pose?=null,
     val screenSpacing:Float=0f,
     val viewerReference:Pose?=null,
     val referenceUnitsPerMeter:Float?=null,
@@ -182,7 +182,7 @@ private fun encode(workspace: WorkspaceFile): JSONObject {
         .put("fixed_magnifiers",encodePlacements(workspace.fixedMagnifiers))
         .put("system_panels",encodePlacements(workspace.systemPanels))
         .put("reference_placement",encodePlacements(listOfNotNull(workspace.referencePlacement)))
-        .put("support_basis",workspace.supportBasis?.let{JSONObject().put("position",JSONArray(it.position.toList())).put("rotation",JSONArray(it.rotation.toList()))})
+        .put("layout_origin",workspace.layoutOrigin?.let{JSONObject().put("position",JSONArray(it.position.toList())).put("rotation",JSONArray(it.rotation.toList()))})
         .put("experimental_viewed_detail",workspace.experimentalViewedDetail)
         .put("view_detail_debug",workspace.viewDetailDebug)
         .put("encoder_quality",workspace.encoderQuality).put("encoder_mbps",workspace.encoderMbps)
@@ -258,7 +258,7 @@ private fun decode(json: JSONObject): WorkspaceFile {
         freeManipulation = !json.optBoolean("grab_to_move",false) && json.optBoolean("free_manipulation",true),
         desktopReference = json.optBoolean("desktop_reference",false),
         referencePlacement = decodePlacements(json.optJSONArray("reference_placement")).firstOrNull(),
-        supportBasis = json.optJSONObject("support_basis")?.let{Pose(floatArray(it,"position",3),floatArray(it,"rotation",4))},
+        layoutOrigin = (json.optJSONObject("layout_origin") ?: json.optJSONObject("support_basis"))?.let{Pose(floatArray(it,"position",3),floatArray(it,"rotation",4))},
         referenceUnitsPerMeter=json.optDouble("viewer_units_per_meter",Double.NaN).toFloat().takeIf{it.isFinite() && it>0f},
         viewerReference=json.optJSONObject("viewer_reference")?.let {Pose(floatArray(it,"position",3),floatArray(it,"rotation",4))},
         screenSpacing=json.optDouble("screen_spacing",0.0).toFloat().takeIf {it.isFinite()}?.coerceIn(0f,.15f)?.let { kotlin.math.round(it*1000)/1000f } ?: 0f,

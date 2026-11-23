@@ -67,6 +67,17 @@ internal class MonitorMesh(
     val videoTexCoords: FloatArray
         get() = FloatArray(texCoords.size) { if (it % 2 == 1) 1f - texCoords[it] else texCoords[it] }
     val indices = IntArray(columns * rows * 6)
+    /** Conservative distance to the actual triangle chords, which can cut inside the sphere. */
+    val innerRadius:Float by lazy {
+        var longestSquared=0f
+        for(i in indices.indices step 3)for(edge in 0..2){
+            val a=indices[i+edge]*3
+            val b=indices[i+(edge+1)%3]*3
+            val x=positions[a]-positions[b];val y=positions[a+1]-positions[b+1];val z=positions[a+2]-positions[b+2]
+            longestSquared=maxOf(longestSquared,x*x+y*y+z*z)
+        }
+        sqrt((radius*radius-longestSquared/3f).coerceAtLeast(0f))
+    }
     val outline: List<FloatArray>
     init {
         require(width > 0f && height > 0f && width.isFinite() && height.isFinite() &&

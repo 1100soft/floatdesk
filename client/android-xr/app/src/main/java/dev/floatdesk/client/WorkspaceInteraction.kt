@@ -48,7 +48,7 @@ import dev.floatdesk.client.workspace.Pose
 import dev.floatdesk.client.workspace.WorkspaceFile
 import dev.floatdesk.client.workspace.WorkspaceStore
 import dev.floatdesk.client.workspace.fitDesktopInView
-import dev.floatdesk.client.workspace.fitSupportingInView
+import dev.floatdesk.client.workspace.moveLayoutOrigin
 import dev.floatdesk.client.workspace.deskLayout
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -66,9 +66,12 @@ internal fun WorkspaceFile.monitorAt(index: Int): MonitorPlacement? {
 
 internal fun WorkspaceFile.reset(monitors: List<MonitorHello>, store: WorkspaceStore,viewer:Pose,angles:FloatArray,units:Float): WorkspaceFile {
     if (monitors.isEmpty()) return this
-    val nextLayouts = layouts.toMutableMap()
-    nextLayouts[activeLayout] = fitDesktopInView(deskLayout(monitors.map { Triple(it.name, it.width, it.height) }),viewer,angles[0],angles[1],units,sphericalWarp,centralView=true)
-    val next = fitSupportingInView(angles[0],angles[1]).copy(layouts = nextLayouts, control = PanelPlacement(pose=Pose(transformPoint(viewer,floatArrayOf(0f,-.55f*units,-1f*units)),viewer.rotation.copyOf())),viewerReference=viewer,referenceUnitsPerMeter=units)
+    val target=Pose(transformPoint(viewer,floatArrayOf(0f,0f,-farthestDistanceM*units)),viewer.rotation.copyOf())
+    val current=layouts[activeLayout]
+    val next=if(current.isNullOrEmpty()){
+        val fitted=fitDesktopInView(deskLayout(monitors.map{Triple(it.name,it.width,it.height)}),viewer,angles[0],angles[1],units,sphericalWarp,centralView=true)
+        copy(layoutOrigin=target,layouts=layouts.toMutableMap().also{it[activeLayout]=fitted})
+    }else moveLayoutOrigin(target)
     store.save(next)
     return next
 }
@@ -285,9 +288,12 @@ internal fun transformPoint(pose: Pose, local: FloatArray, scale: Float = 1f): F
 internal class FollowLock(
     val head: androidx.xr.runtime.math.Pose,
     val monitors: List<androidx.xr.runtime.math.Pose>,
+    val origin: androidx.xr.runtime.math.Pose?,
+    val wholeLayout:Boolean,
 ) {
     fun advance(headNow: androidx.xr.runtime.math.Pose, file: WorkspaceFile): WorkspaceFile {
         val delta = headNow.compose(head.inverse)
+        if(wholeLayout && origin!=null)return file.moveLayoutOrigin(delta.compose(origin).toWorkspacePose())
         val current = file.layouts[file.activeLayout] ?: return file
         val moved = current.mapIndexed { index, monitor ->
             val source = monitors.getOrNull(index) ?: monitor.pose.toRuntimePose()
@@ -301,9 +307,9 @@ internal class FollowLock(
     }
 
     companion object {
-        fun capture(head: androidx.xr.runtime.math.Pose, file: WorkspaceFile): FollowLock {
+        fun capture(head: androidx.xr.runtime.math.Pose, file: WorkspaceFile, wholeLayout:Boolean=true): FollowLock {
             val monitors = file.layouts[file.activeLayout].orEmpty().map { it.pose.toRuntimePose() }
-            return FollowLock(head, monitors)
+            return FollowLock(head, monitors, file.layoutOrigin?.toRuntimePose(),wholeLayout)
         }
     }
 }

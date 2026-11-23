@@ -55,7 +55,7 @@ internal class NativeSurfaceTap {
     }
 }
 internal val MagnifierDistanceM get()=ViewLayers.MagnifierDistanceM
-internal data class MagnifiedWindow(val id:Long,val pose:Pose,val width:Float,val height:Float,val sourceWidth:Int,val sourceHeight:Int,val spherical:Boolean=false,val mesh:MonitorMesh?=null,val units:Float=1f,val headOffset:FloatArray=floatArrayOf(0f,0f,-1f),val sizeScale:Float=1f,val fixed:Boolean=false,val desktopRotation:FloatArray?=null,val requestedPosition:FloatArray?=null,val headRotation:FloatArray?=null,val layerDistanceM:Float=MagnifierDistanceM,val freePose:Boolean=false,val nominalLayerDistanceM:Float?=null)
+internal data class MagnifiedWindow(val id:Long,val pose:Pose,val width:Float,val height:Float,val sourceWidth:Int,val sourceHeight:Int,val spherical:Boolean=false,val mesh:MonitorMesh?=null,val units:Float=1f,val headOffset:FloatArray=floatArrayOf(0f,0f,-1f),val sizeScale:Float=1f,val fixed:Boolean=false,val desktopRotation:FloatArray?=null,val requestedPosition:FloatArray?=null,val headRotation:FloatArray?=null,val layerDistanceM:Float=MagnifierDistanceM,val freePose:Boolean=false,val nominalLayerDistanceM:Float?=null,val anchoredPlacement:Boolean=false)
 internal fun magnifiedWindow(id:Long,width:Int,height:Int,viewer:Pose,horizontal:Float,vertical:Float,units:Float,spherical:Boolean=false,previous:MagnifiedWindow?=null,layerDistanceM:Float=MagnifierDistanceM):MagnifiedWindow{
     val source=deskLayout(listOf(Triple("Window",width,height)))
     val fitted=fitDesktopInView(source,viewer,horizontal,vertical,units,spherical,centralView=true,distanceM=layerDistanceM).single()
@@ -271,7 +271,7 @@ internal fun rebaseSupportingPlacement(record:FixedMagnifierPlacement,old:Pose,n
 internal fun fixedMagnifier(record:FixedMagnifierPlacement,desktop:MonitorPlacement,source:DesktopWindow?,viewer:Pose,units:Float,spherical:Boolean,previous:MagnifiedWindow?=null,layerDistanceM:Float=MagnifierDistanceM,updateGeometry:Boolean=true):MagnifiedWindow{
     val pose=Pose(transformPoint(desktop.pose,FloatArray(3){record.pose.position[it]*units}),multiplyQuaternion(desktop.pose.rotation,record.pose.rotation))
     val window=MagnifiedWindow(source?.id ?: 0,pose,record.widthM*units,record.heightM*units,source?.width ?: 1280,source?.height ?: 800,
-        spherical,units=units,fixed=true,desktopRotation=desktop.pose.rotation,requestedPosition=pose.position,layerDistanceM=layerDistanceM,freePose=record.freePose)
+        spherical,units=units,fixed=true,desktopRotation=desktop.pose.rotation,requestedPosition=pose.position,layerDistanceM=layerDistanceM,freePose=record.freePose,anchoredPlacement=true)
     return magnifierFrame(window,previous ?: window,viewer,units,updateGeometry)
 }
 
@@ -279,11 +279,13 @@ internal fun fixedMagnifierGeometry(window:MagnifiedWindow,viewer:Pose,proposed:
     val requested=proposed ?: window.requestedPosition ?: window.pose.position
     fun unit(v:FloatArray):FloatArray{val n=sqrt(v.sumOf{(it*it).toDouble()}).toFloat().coerceAtLeast(.00001f);return FloatArray(3){v[it]/n}}
     val normal=unit(FloatArray(3){viewer.position[it]-requested[it]})
-    val center=FloatArray(3){viewer.position[it]-normal[it]*window.layerDistanceM*window.units}
+    val range=if(window.anchoredPlacement)distance(window.pose.position,viewer.position) else window.layerDistanceM*window.units
+    val center=if(window.anchoredPlacement && proposed==null)requested
+        else FloatArray(3){viewer.position[it]-normal[it]*range}
     val rotation=if(window.spherical || proposed!=null)facingMagnifierRotation(center,viewer,window.desktopRotation ?: window.pose.rotation) else window.pose.rotation
     val pose=Pose(center,rotation)
     val mesh=projectMagnifier(window,viewer,pose,window.width,window.height,updateMesh,.003f,.003f)
-    return window.copy(pose=pose,mesh=mesh,requestedPosition=requested)
+    return window.copy(pose=pose,mesh=mesh,requestedPosition=if(window.anchoredPlacement)center else requested)
 }
 internal fun magnifierContentRect(window:MagnifiedWindow):FocusRect {
     val source=window.sourceWidth.toFloat()/window.sourceHeight.coerceAtLeast(1);val pane=window.width/window.height

@@ -49,6 +49,50 @@ internal class GrabGuideRenderer private constructor(
     private val grabBeams=mutableListOf<SurfaceEntity>()
     private val grabPoints=mutableListOf<SurfaceEntity>()
 
+    private var originNodes: List<GltfModelEntity>? = null
+
+    fun updateLayoutOrigin(parent:Entity,guide:LayoutOriginGuide?,onInput:(androidx.xr.scenecore.InputEvent)->Unit) {
+        if(closed)return
+        if(guide==null){
+            originNodes?.forEach{state(it).enabled(false)}
+            return
+        }
+        val nodes=originNodes ?: listOf(7,3,4,5,6,0,0,1,1).map{
+            GltfModelEntity.create(session,models[it],parent=parent)
+        }.also{
+            it.first().addComponent(NativeMonitorInput.create(session,onInput))
+            originNodes=it
+        }
+        nodes.forEach{state(it).parent(parent)}
+        fun sphere(index:Int,center:FloatArray,radius:Float){
+            val entity=state(nodes[index])
+            entity.pose(Pose(vector(center)));entity.scale(Vector3(radius,radius,radius));entity.enabled(true)
+        }
+        sphere(0,guide.near,guide.gripRadius)
+        sphere(1,guide.far,guide.farRange*.022f)
+        beam(nodes[2],guide.near,guide.far,guide.gripRadius*.12f)
+        val q=guide.rotation
+        val rotation=Quaternion(q[0],q[1],q[2],q[3])
+        for(layer in 0..1){
+            val range=if(layer==0)guide.nearRange else guide.farRange
+            val center=if(layer==0)guide.near else guide.far
+            val rings=state(nodes[3+layer])
+            rings.enabled(guide.spherical)
+            if(guide.spherical){
+                rings.pose(Pose(vector(guide.viewer.position),rotation))
+                rings.scale(Vector3(range,range,range))
+            }
+            for(axis in 0..1){
+                val entity=nodes[5+layer*2+axis]
+                if(guide.spherical)state(entity).enabled(false)
+                else{
+                    val direction=rotateVector(q,if(axis==0)range else 0f,if(axis==1)range else 0f,0f)
+                    beam(entity,subtract(center,direction),add(center,direction),range*.002f)
+                }
+            }
+        }
+    }
+
     private fun newGroup(edgeCount: Int): Group {
         val root = Entity.create(session, name = "Floatdesk grab guide")
         // Outline segments, two tethers, then matching contact/pinch spheres.
@@ -224,10 +268,12 @@ internal class GrabGuideRenderer private constructor(
         val b = vector(to)
         val delta = b - a
         if (delta.length < 1e-6f) { entity.setEnabled(false); return }
-        entity.setEnabled(true)
-        entity.setPose(Pose((a + b) * 0.5f, Quaternion.fromRotation(Vector3.Right, delta)))
+        state(entity).enabled(true)
+        state(entity).pose(Pose((a + b) * 0.5f, Quaternion.fromRotation(Vector3.Right, delta)))
         // A glTF node's public localScale supports nonuniform scale without restricted entity APIs.
-        entity.nodes.first().localScale = Vector3(delta.length, width, width)
+        val node=entity.nodes.first()
+        val scale=Vector3(delta.length,width,width)
+        if(node.localScale!=scale)node.localScale=scale
     }
 
     private fun point(entity: GltfModelEntity, position: FloatArray, radius: Float) {
@@ -238,6 +284,8 @@ internal class GrabGuideRenderer private constructor(
     override fun close() {
         if (closed) return
         closed = true
+        originNodes?.forEach{if(!it.isDisposed){it.setEnabled(false);it.parent=null;it.dispose()}}
+        originNodes=null
         nodeStates.clear()
         groups.forEach { group ->
             if(!group.root.isDisposed)group.root.dispose()
@@ -255,7 +303,7 @@ internal class GrabGuideRenderer private constructor(
         suspend fun create(session: Session): GrabGuideRenderer {
             val loaded = mutableListOf<GltfModel>()
             try {
-                for (asset in listOf("cyan-beam", "violet-beam", "cyan-point", "violet-point")) {
+                for (asset in listOf("cyan-beam", "violet-beam", "cyan-point", "violet-point", "layout-depth", "layout-cyan-rings", "layout-violet-rings", "layout-origin")) {
                     loaded.add(GltfModel.create(session, Paths.get("grab-guides/$asset.glb")))
                 }
                 return GrabGuideRenderer(session, loaded)

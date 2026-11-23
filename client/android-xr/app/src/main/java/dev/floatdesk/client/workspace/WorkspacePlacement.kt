@@ -2,6 +2,7 @@ package dev.floatdesk.client.workspace
 
 import dev.floatdesk.client.viewHalfAngles
 import dev.floatdesk.client.focusViewHalfAngles
+import dev.floatdesk.client.viewerInMonitor
 
 /** UI panel compositing plus ordered physical planes; all values are in meters. */
 internal object ViewLayers {
@@ -53,31 +54,31 @@ internal fun WorkspaceFile.restoreViewer(viewer:Pose,unitsPerMeter:Float=referen
         val rotated=floatArrayOf(v[0]+q[3]*t[0]+q[1]*t[2]-q[2]*t[1],v[1]+q[3]*t[1]+q[2]*t[0]-q[0]*t[2],v[2]+q[3]*t[2]+q[0]*t[1]-q[1]*t[0])
         return Pose(FloatArray(3){viewer.position[it]+rotated[it]},multiply(q,p.rotation))
     }
-    return copy(viewerReference=viewer,referenceUnitsPerMeter=unitsPerMeter,supportBasis=supportBasis?.let(::transform),
+    return copy(viewerReference=viewer,referenceUnitsPerMeter=unitsPerMeter,layoutOrigin=layoutOrigin?.let(::transform),
         layouts=layouts.mapValues {(_,screens)->screens.map {
             it.copy(pose=transform(it.pose),physicalWidthM=it.physicalWidthM*scale,physicalHeightM=it.physicalHeightM*scale)
         }.toMutableList()}.toMutableMap(),control=control.copy(pose=transform(control.pose)))
 }
 
-/** Reset uses the whole desktop's fitted view and keeps supporting panes inside that view. */
-internal fun WorkspaceFile.fitSupportingInView(horizontal:Float,vertical:Float):WorkspaceFile {
-    val angles=viewHalfAngles(horizontal,vertical)
-    fun fit(record:FixedMagnifierPlacement,distance:Float):FixedMagnifierPlacement {
-        val xLimit=distance*kotlin.math.tan(angles.first)*.90f
-        val yLimit=distance*kotlin.math.tan(angles.second)*.90f
-        val scale=minOf(1f,2f*xLimit/record.widthM,2f*yLimit/record.heightM)
-        val width=record.widthM*scale
-        val height=record.heightM*scale
-        val position=record.pose.position
-        fun clamp(value:Float,limit:Float)=value.coerceIn(-limit.coerceAtLeast(0f),limit.coerceAtLeast(0f))
-        val desired=floatArrayOf(clamp(position[0],xLimit-width*.5f),clamp(position[1],yLimit-height*.5f),
-            ViewLayers.DesktopDistanceM-distance)
-        return record.copy(pose=record.pose.copy(position=desired),widthM=width,heightM=height)
+/** A rigid layout transform. Supporting placements already use origin-local meters. */
+internal fun WorkspaceFile.moveLayoutOrigin(target:Pose):WorkspaceFile {
+    val origin=layoutOrigin ?: layouts[activeLayout]?.firstOrNull()?.pose ?: return this
+    val inverse=floatArrayOf(-origin.rotation[0],-origin.rotation[1],-origin.rotation[2],origin.rotation[3])
+    fun multiply(a:FloatArray,b:FloatArray)=floatArrayOf(
+        a[3]*b[0]+a[0]*b[3]+a[1]*b[2]-a[2]*b[1],
+        a[3]*b[1]-a[0]*b[2]+a[1]*b[3]+a[2]*b[0],
+        a[3]*b[2]+a[0]*b[1]-a[1]*b[0]+a[2]*b[3],
+        a[3]*b[3]-a[0]*b[0]-a[1]*b[1]-a[2]*b[2])
+    val delta=multiply(target.rotation,inverse)
+    val inverseDelta=floatArrayOf(-delta[0],-delta[1],-delta[2],delta[3])
+    val zero=FloatArray(3)
+    fun transform(pose:Pose):Pose {
+        val offset=FloatArray(3){pose.position[it]-origin.position[it]}
+        val rotated=viewerInMonitor(offset,zero,inverseDelta)
+        return Pose(FloatArray(3){target.position[it]+rotated[it]},multiply(delta,pose.rotation))
     }
-    return copy(supportBasis=null,
-        fixedMagnifiers=fixedMagnifiers.map{fit(it,ViewLayers.MagnifierDistanceM)},
-        systemPanels=systemPanels.map{fit(it,ViewLayers.ShellDistanceM)},
-        referencePlacement=referencePlacement?.let{fit(it,ViewLayers.MagnifierDistanceM)})
+    val moved=layouts.mapValues{(_,screens)->screens.map{it.copy(pose=transform(it.pose))}.toMutableList()}.toMutableMap()
+    return copy(layoutOrigin=target,layouts=moved,control=control.copy(pose=transform(control.pose)))
 }
 
 /** Fit the complete desktop into a symmetric, inset portion of the current camera view. */
@@ -169,7 +170,7 @@ internal fun fixedDesktopDepth(screen:MonitorPlacement,viewer:Pose,unitsPerMeter
 
 /**
  * Move every saved object onto the layers for new viewing distances without changing its direction
- * or apparent size. Magnifier records are desktop-relative, so their offsets follow the desktop's
+ * or apparent size. Magnifier records use the layout origin, so their offsets follow the workspace's
  * scale about the eye and their sizes follow their own layer.
  */
 internal fun WorkspaceFile.withViewingDistances(nearest:Float,farthest:Float,viewer:Pose?,unitsPerMeter:Float):WorkspaceFile {

@@ -60,7 +60,8 @@ internal class MouseGestures(private val thresholds:()->PinchThresholds={PinchTh
             if(side in indexClosed && side in middleClosed) chordClosed.add(side) else chordClosed.remove(side)
         }
         if(!enabled || blocked) {
-            val release=if(dragging) dragTarget else target
+            val release=if(dragging) dragTarget else null
+            lastTarget=null
             hold?.let { diagnostic("mouse gesture cancelled side=${it.side} reason=disabled-or-blocked") }
             hold=null; dragging=false; armed.clear(); lastClick=null
             if(enabled)armOpenContacts(samples.keys)

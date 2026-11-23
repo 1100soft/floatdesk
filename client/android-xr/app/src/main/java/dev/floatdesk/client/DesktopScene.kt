@@ -222,7 +222,7 @@ internal fun DeskContent(
                         } else if(head!=null) {
                             angularDrag.moveHand(head,hand)?.let { position ->
                                 val existing=latest.value.monitorAt(index) ?: return@let
-                                val next=existing.copy(pose=Pose(position,head.rotation.copyOf()),viewCenterU=.5f,viewCenterV=.5f)
+                                val next=existing.copy(pose=Pose(position,facingMagnifierRotation(position,head,head.rotation)),viewCenterU=.5f,viewCenterV=.5f)
                                 onWorkspace(latest.value.monitorPlaced(index,next,store,false))
                             }
                         }

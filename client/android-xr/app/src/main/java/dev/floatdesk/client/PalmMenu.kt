@@ -46,9 +46,16 @@ internal object PalmMenuLayout {
     const val gapM = WindowMenuLayout.gapM
     const val widthM = columns * cellM + (columns + 1) * gapM
     const val tooltipHeightM = .038f
-    private val main = listOf(PalmAction.SPACE, PalmAction.RESET, PalmAction.FOLLOW, PalmAction.WARP, PalmAction.MOVE, PalmAction.HAND_MOUSE, PalmAction.MODE, PalmAction.FREE, PalmAction.MORE)
-    private val more = listOf(PalmAction.DIAGNOSTICS, PalmAction.REFERENCE, PalmAction.SEARCH,
-        PalmAction.GAZE_FOCUS, PalmAction.MAGNIFIER, PalmAction.MOUSE_SPACES, PalmAction.BACK)
+    private val main = listOf(
+        PalmAction.MOVE, PalmAction.FREE, PalmAction.FOLLOW,
+        PalmAction.HAND_MOUSE, PalmAction.MODE, PalmAction.WARP,
+        PalmAction.RESET, PalmAction.SPACE, PalmAction.MORE,
+    )
+    private val more = listOf(
+        PalmAction.GAZE_FOCUS, PalmAction.MAGNIFIER, PalmAction.REFERENCE,
+        PalmAction.MOUSE_SPACES, PalmAction.DIAGNOSTICS, PalmAction.SEARCH,
+        PalmAction.BACK,
+    )
     fun actions(page: PalmPage) = if (page == PalmPage.MAIN) main else more
     fun rows(page: PalmPage) = (actions(page).size + columns - 1) / columns
     fun heightM(page: PalmPage) = rows(page) * cellM + (rows(page) + 1) * gapM

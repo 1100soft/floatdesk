@@ -204,11 +204,11 @@ internal fun rebaseSupportingPlacement(record:FixedMagnifierPlacement,old:Pose,n
     val rotation=multiplyQuaternion(floatArrayOf(-q[0],-q[1],-q[2],q[3]),worldRotation)
     return record.copy(pose=Pose(FloatArray(3){local[it]/units},rotation))
 }
-internal fun fixedMagnifier(record:FixedMagnifierPlacement,desktop:MonitorPlacement,source:DesktopWindow?,viewer:Pose,units:Float,spherical:Boolean,previous:MagnifiedWindow?=null,layerDistanceM:Float=MagnifierDistanceM):MagnifiedWindow{
+internal fun fixedMagnifier(record:FixedMagnifierPlacement,desktop:MonitorPlacement,source:DesktopWindow?,viewer:Pose,units:Float,spherical:Boolean,previous:MagnifiedWindow?=null,layerDistanceM:Float=MagnifierDistanceM,updateGeometry:Boolean=true):MagnifiedWindow{
     val pose=Pose(transformPoint(desktop.pose,FloatArray(3){record.pose.position[it]*units}),multiplyQuaternion(desktop.pose.rotation,record.pose.rotation))
     val window=MagnifiedWindow(source?.id ?: 0,pose,record.widthM*units,record.heightM*units,source?.width ?: 1280,source?.height ?: 800,
         spherical,units=units,fixed=true,desktopRotation=desktop.pose.rotation,requestedPosition=pose.position,layerDistanceM=layerDistanceM,freePose=record.freePose)
-    return magnifierFrame(window,previous ?: window,viewer,units,true)
+    return magnifierFrame(window,previous ?: window,viewer,units,updateGeometry)
 }
 
 internal fun fixedMagnifierGeometry(window:MagnifiedWindow,viewer:Pose,proposed:FloatArray?=null,updateMesh:Boolean=true):MagnifiedWindow{

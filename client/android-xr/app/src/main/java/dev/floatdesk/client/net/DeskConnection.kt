@@ -55,6 +55,24 @@ internal class DeskConnection(
     @Volatile private var nativeAreaPixels=0L
     @Volatile private var detailTargetFps=30
     private var localResources:LocalResources?=null
+    private val cooling=ThermalVideoGate()
+    val thermalPaused=mutableStateOf(false)
+    private val optionalRenderingLimited=mutableStateOf(false)
+    val limitOptionalRendering get()=optionalRenderingLimited.value
+    @Volatile private var heatPaused=false
+    fun isVideoActive()=renderingActive && !heatPaused
+
+    private fun updateThermal(level:Int,now:Long){
+        optionalRenderingLimited.value=level>=android.os.PowerManager.THERMAL_STATUS_SEVERE
+        val paused=cooling.update(level,now)
+        if(paused==heatPaused)return
+        heatPaused=paused
+        thermalPaused.value=paused
+        if(paused)viewedDetail(null,"Paused: headset cooling")
+        Log.i("Floatdesk",if(paused)"Video paused at thermal level $level" else "Video resumed after cooling")
+        applyVideoActivity()
+        if(!paused && renderingActive)askKeyframe()
+    }
     fun configureVideo(quality:Int,mbps:Float,sharpen:Float,fraction:Float,areaPixels:Long=0,targetFps:Int=30){
         val encodingChanged=videoQuality!=quality || videoMbps!=mbps
         nativeAreaPixels=areaPixels;detailTargetFps=targetFps
@@ -84,7 +102,7 @@ internal class DeskConnection(
         val format=currentMonitors.singleOrNull()
         val target=bounds?.let{qualityOutputSize(it[2],it[3],qualityOutputLimit())}
         val fraction=if(rect!=null && target!=null)qualityDenseFraction(denseFraction,rect,target.first,target.second) else denseFraction
-        val request=if(detailDiagnostics.get().enabled && rect!=null && renderingActive && desktopVisible && remote!=null && bounds!=null && format!=null)DetailRequest(remote,detailSession,rect,bounds,center ?: (rect.centerU to rect.centerV),videoQuality,videoMbps,fraction,if(magnifierActive)4096 else nativeAreaPixels,detailTargetFps) else null
+        val request=if(detailDiagnostics.get().enabled && rect!=null && isVideoActive() && desktopVisible && remote!=null && bounds!=null && format!=null)DetailRequest(remote,detailSession,rect,bounds,center ?: (rect.centerU to rect.centerV),videoQuality,videoMbps,fraction,if(magnifierActive)4096 else nativeAreaPixels,detailTargetFps) else null
         val reason=when {
             !detailDiagnostics.get().enabled->"Normal full-desktop streaming"
             rect==null->blockedReason
@@ -182,7 +200,10 @@ internal class DeskConnection(
             acquire()
         }
         running = true
-        localResources=LocalResources(thermalStatus={context.applicationContext.getSystemService(android.os.PowerManager::class.java)?.currentThermalStatus ?: -1}) {message->
+        val power=context.applicationContext.getSystemService(android.os.PowerManager::class.java)
+        localResources=LocalResources(thermalStatus={power?.currentThermalStatus ?: -1},
+            onThermal={level,now->main.post{if(running)updateThermal(level,now)}},
+            diagnosticsVisible={detailDiagnostics.get().let{it.showResources && it.showOverlay}}) {message->
             val value=detailDiagnostics.updateAndGet{it.copy(localResources=message)};decoders[0]?.detailDebug(value);publishResources()
         }
         outgoingThread = HandlerThread("floatdesk-input").also { it.start(); outgoing = Handler(it.looper) }
@@ -239,17 +260,24 @@ internal class DeskConnection(
     fun setDesktopVisible(visible:Boolean) {
         if(desktopVisible==visible)return
         desktopVisible=visible
+        sendRenderingState()
         if(!visible)viewedDetail(null)
-        decoders.values.forEach { it.setRenderingActive(renderingActive && visible) }
+        decoders.values.forEach { it.setRenderingActive(isVideoActive() && visible) }
     }
 
-    private fun sendRenderingState(){send(Protocol.workspace(org.json.JSONObject().put("type","renderState").put("active",renderingActive).toString()))}
+    private fun sendRenderingState(){send(Protocol.workspace(org.json.JSONObject().put("type","renderState").put("active",isVideoActive() && desktopVisible).toString()))}
     @Synchronized
     fun setRenderingActive(active: Boolean) {
         renderingActive=active
-        sendRenderingState()
-        if(windowCapturesLazy.isInitialized())windowCaptures.setActive(active)
         if(!active){viewedDetail(null);cancelGazeFocus();publishCursorMap(dev.floatdesk.client.CursorTopology())}
+        applyVideoActivity()
+    }
+
+    @Synchronized
+    private fun applyVideoActivity(){
+        sendRenderingState()
+        val active=isVideoActive()
+        if(windowCapturesLazy.isInitialized())windowCaptures.setActive(active)
         decoders.values.forEach { it.setRenderingActive(active && desktopVisible) }
     }
 
@@ -334,7 +362,18 @@ internal class DeskConnection(
     private val cursorMapSequence=java.util.concurrent.atomic.AtomicLong()
     @Volatile var cursorMapDebug=floatArrayOf()
     @Volatile var cursorWires=emptyMap<String,FloatArray>()
+    private var lastCursorMap:dev.floatdesk.client.CursorTopology?=null
+    private var lastCursorMapJson=""
+    private var cursorMapSentAt=0L
     fun publishCursorMap(map:dev.floatdesk.client.CursorTopology){
+        val now=android.os.SystemClock.uptimeMillis()
+        if(lastCursorMap==map){
+            if(now-cursorMapSentAt>=800){
+                cursorMapSentAt=now
+                sendCursorMap(lastCursorMapJson)
+            }
+            return
+        }
         var actual=map
         var json=actual.json()
         while(json.toByteArray(Charsets.UTF_8).size>60000){
@@ -356,8 +395,11 @@ internal class DeskConnection(
             }
             rows.flatMap{val a=point(it.a);val b=point(it.b);listOf(a.first,a.second,b.first,b.second)}.toFloatArray()
         }
-        send(Protocol.workspace(org.json.JSONObject(json).put("sequence",cursorMapSequence.incrementAndGet()).toString()))
+        lastCursorMap=map;lastCursorMapJson=json;cursorMapSentAt=now
+        sendCursorMap(json)
     }
+    private fun sendCursorMap(json:String)=send(Protocol.workspace(org.json.JSONObject(json)
+        .put("sequence",cursorMapSequence.incrementAndGet()).toString()))
     private val windowRequests=java.util.concurrent.ConcurrentHashMap<Int,ByteArray>()
     fun windowAction(window:Long,action:String,move:dev.floatdesk.client.WindowMove?=null){
         if (lastAcceptedHello == 0L) return
@@ -656,7 +698,7 @@ internal class DeskConnection(
             decoder.projection(viewProjections[monitor.index])
             activeSurfaces[monitor.index]?.let { decoder.attach(it) }
             decoder.punch(remote)
-            decoder.setRenderingActive(renderingActive && desktopVisible)
+            decoder.setRenderingActive(isVideoActive() && desktopVisible)
             decoder.start()
             decoders[monitor.index] = decoder
         }

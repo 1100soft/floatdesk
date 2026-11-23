@@ -10,6 +10,8 @@ import java.util.Locale
 internal class LocalResources(
     private val thermalStatus: () -> Int = { -1 },
     private val memoryIntervalMs: Long = 5000,
+    private val onThermal: (Int,Long) -> Unit = {_,_->},
+    private val diagnosticsVisible: () -> Boolean = {true},
     private val publish: (String) -> Unit,
 ) : AutoCloseable {
     @Volatile private var running = true
@@ -24,13 +26,15 @@ internal class LocalResources(
             try { Thread.sleep(1000) } catch (_: InterruptedException) { break }
             if (!running) break
             val now = SystemClock.elapsedRealtime()
+            val thermal = runCatching { thermalStatus() }.getOrDefault(-1)
+            onThermal(thermal,now)
             val next = Process.getElapsedCpuTime()
             val percent = (next - cpu) * 100.0 / (now - at).coerceAtLeast(1)
+            if(!diagnosticsVisible()){at=now;cpu=next;continue}
             if (now >= memoryDue) {
                 hasMemory = runCatching { Debug.getMemoryInfo(memory) }.isSuccess
                 memoryDue = now + memoryIntervalMs
             }
-            val thermal = runCatching { thermalStatus() }.getOrDefault(-1)
             val thermalText = when (thermal) {
                 0 -> "normal"
                 1 -> "light"

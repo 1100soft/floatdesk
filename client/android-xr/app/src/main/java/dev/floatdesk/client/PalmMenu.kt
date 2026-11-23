@@ -69,7 +69,7 @@ internal object PalmMenuLayout {
 }
 
 internal fun palmActionEnabled(action: PalmAction, workspace: WorkspaceFile, info: WorkspaceInfo?): Boolean = when (action) {
-    PalmAction.WARP -> RenderPolicy.CustomMeshes
+    PalmAction.WARP -> RenderPolicy.SphericalDesktop
     PalmAction.HAND_MOUSE, PalmAction.MODE -> !workspace.grabToMove
     PalmAction.GAZE_FOCUS -> info?.gazeFocus == true || workspace.gazeToFocus
     PalmAction.MAGNIFIER -> info?.windowMagnify == true || workspace.magnifyWindow
@@ -118,7 +118,7 @@ internal fun palmTooltip(action: PalmAction, workspace: WorkspaceFile, latched: 
     PalmAction.RESET -> "Reset desktop"
     PalmAction.FOLLOW -> if (latched) "Following · tap to stop" else "Follow"
     PalmAction.WARP -> when {
-        !RenderPolicy.CustomMeshes -> "Spherical view is paused in this build (custom meshes off)"
+        !RenderPolicy.SphericalDesktop -> "Spherical view unavailable"
         workspace.sphericalWarp -> "Spherical · tap for flat"
         else -> "Flat · tap for spherical"
     }

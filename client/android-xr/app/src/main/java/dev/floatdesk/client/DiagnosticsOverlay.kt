@@ -28,6 +28,8 @@ internal fun DiagnosticsPanel(connection:dev.floatdesk.client.net.DeskConnection
     viewer:java.util.concurrent.atomic.AtomicReference<dev.floatdesk.client.workspace.Pose?>,
     units:()->Float,angles:()->FloatArray,resources:Boolean,quality:Boolean,qualityDebug:Boolean,spherical:Boolean) {
     if(!qualityDebug)return
+    val thermalPaused by connection.thermalPaused
+    if(thermalPaused)return
     val session=androidx.xr.compose.platform.LocalSession.current ?: return
     val density=androidx.compose.ui.platform.LocalDensity.current
     val pixelDensity=session.scene.virtualPixelDensity
@@ -39,7 +41,7 @@ internal fun DiagnosticsPanel(connection:dev.floatdesk.client.net.DeskConnection
             androidx.compose.runtime.withFrameNanos{
                 head=viewer.get()
                 val now=SystemClock.uptimeMillis()
-                if(now-stamp>=250){snapshot=connection.diagnosticSnapshot();stamp=now}
+                if(now-stamp>=if(connection.limitOptionalRendering)1000 else 500){snapshot=connection.diagnosticSnapshot();stamp=now}
             }
         }
     }
@@ -57,7 +59,12 @@ internal fun DiagnosticsPanel(connection:dev.floatdesk.client.net.DeskConnection
                 androidx.compose.runtime.DisposableEffect(texture){onDispose{texture.close()}}
                 val q=androidx.xr.runtime.math.Quaternion.fromLookTowards(Vector3(patch.normal[0],patch.normal[1],patch.normal[2]),Vector3(patch.up[0],patch.up[1],patch.up[2]))
                 val local=dev.floatdesk.client.workspace.Pose(FloatArray(3){patch.position[it]*unit},floatArrayOf(q.x,q.y,q.z,q.w))
-                val supersample=6f
+                // The text source is 800 × 400. Allocating a larger backing panel adds no detail.
+                val supersample=minOf(
+                    6f,
+                    800f/pixelDensity.convertMetersToPixels(patch.width*unit),
+                    400f/pixelDensity.convertMetersToPixels(patch.height*unit)
+                ).coerceAtLeast(1f)
                 androidx.xr.compose.subspace.SpatialPanel(
                     modifier=placedPanel(local,patch.width*unit*supersample,patch.height*unit*supersample,density,pixelDensity).scale(1f/supersample).pointerHoverIcon(androidx.xr.scenecore.SpatialPointerIcon.NONE),
                     shape=androidx.xr.compose.subspace.layout.SpatialRoundedCornerShape(androidx.compose.foundation.shape.CornerSize(androidx.compose.ui.unit.Dp(0f)))){

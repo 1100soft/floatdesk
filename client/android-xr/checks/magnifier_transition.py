@@ -14,7 +14,7 @@ code = r'''
 internal object RenderPolicy{var CustomMeshes=true}
 class Session
 class Pose
-class MonitorMesh(val id:Int)
+class MonitorMesh(val id:Int,val planar:Boolean=false)
 object NativeMonitorInput{fun create(session:Session,listener:()->Unit)=Input()}
 class Input
 open class Entity {
@@ -56,9 +56,8 @@ suspend fun main(){
  resources.entity=surface
  repeat(50){cycle->
   syncMagnifierInput(session,resources,surface,null,2f,1f)
-  check(surface.components.isEmpty()) // The CustomMesh itself is never the input target.
-  check(resources.curved!!.entity.enabled && resources.curved!!.mesh==null)
-  check(resources.curved!!.width==2f && resources.curved!!.height==1f)
+  check(surface.components.size==1 && resources.flatInput!=null)
+  check(resources.curved?.entity?.enabled!=true && resources.mesh==null)
   val mesh=MonitorMesh(cycle)
   syncMagnifierInput(session,resources,surface,mesh,2f,1f)
   check(surface.components.isEmpty())
@@ -69,11 +68,13 @@ suspend fun main(){
  resources.visible=false
  syncMagnifierInput(session,resources,surface,MonitorMesh(100),2f,1f)
  check(!resources.curved!!.entity.enabled)
- syncMagnifierInput(session,resources,surface,null,3f,2f)
- check(!resources.curved!!.entity.enabled && resources.curved!!.width==3f)
+ syncMagnifierInput(session,resources,surface,MonitorMesh(101,planar=true),3f,2f)
+ check(!resources.curved!!.entity.enabled && surface.components.size==1 && resources.mesh==null)
  resources.visible=true
  syncMagnifierInput(session,resources,surface,null,3f,2f)
- check(resources.curved!!.entity.enabled)
+ check(!resources.curved!!.entity.enabled && surface.components.size==1)
+ syncMagnifierInput(session,resources,surface,MonitorMesh(102),3f,2f)
+ check(resources.curved!!.entity.enabled && resources.curved!!.width==3f && surface.components.isEmpty())
  val late=MagnifierResources();val lateSurface=SurfaceEntity();late.entity=lateSurface
  CurvedMonitorInput.afterCreate={late.generation++}
  try{syncMagnifierInput(session,late,lateSurface,MonitorMesh(101),2f,1f);error("stale completion accepted")}

@@ -39,6 +39,15 @@ internal class MonitorWarp : AutoCloseable {
     val coordinateParent:Entity? get()=input?.parent
     private var live: SurfaceEntity? = null
     private var retainedCurved:SurfaceEntity?=null
+    private var curvedState:NativeNodeState?=null
+
+    private fun syncCurvedPose(original:SurfaceEntity) {
+        curvedState?.let{
+            it.parent(original.parent)
+            it.pose(original.getPose())
+            it.scale(original.getScale())
+        }
+    }
     private var flatWidth = 0f
     private var flatHeight = 0f
     private var appliedShape: SurfaceEntity.Shape? = null
@@ -60,7 +69,7 @@ internal class MonitorWarp : AutoCloseable {
     }
     private fun applyVisibility() {
         input?.setEnabled(shown && ownerEnabled && mesh==null)
-        if(live!==input)live?.setEnabled(shown)
+        if(live!==input)curvedState?.enabled(shown)
         curvedInput?.entity?.setEnabled(shown && mesh!=null)
     }
     private var ownerEnabled=true
@@ -259,14 +268,10 @@ internal class MonitorWarp : AutoCloseable {
     @SuppressLint("RestrictedApi") // CustomMesh is available in the pinned SceneCore 1.0 runtime.
     fun update(session: Session, root: Entity, eye: FloatArray?, placement: MonitorPlacement,
                enabled: Boolean, held: Boolean, forceUpdate: Boolean = false, viewDirection:FloatArray? = null, freezeProjection:Boolean=held,viewFocus:FloatArray?=null,
-               submitShape:((()->Unit)->Boolean)?=null) {
+               submitShape:((()->Unit)->Boolean)?=null,minGeometryIntervalMs:Long=80) {
         val original = input ?: return
         if(enabled==(mesh!=null))live?.let{applyPixels(it,placement)}
-        if (live !== original) live?.let {
-            it.parent = original.parent
-            it.setPose(original.getPose())
-            it.setScale(original.getScale())
-        }
+        if (live !== original) syncCurvedPose(original)
         // A captured shape must remain rigid while either contact is held.
         val modeChanged=enabled != (mesh!=null)
         if (held && !forceUpdate && !modeChanged) return
@@ -281,7 +286,7 @@ internal class MonitorWarp : AutoCloseable {
         if (!usable) {
             if (live !== original) {
                 curvedInput?.entity?.setEnabled(false)
-                live?.let { it.setEnabled(false);it.parent=null }
+                curvedState?.enabled(false);curvedState?.parent(null)
                 live = original
             }
             if (presentationDirty || mesh != null || flatWidth != placement.physicalWidthM || flatHeight != placement.physicalHeightM) {
@@ -298,7 +303,7 @@ internal class MonitorWarp : AutoCloseable {
         val previous = mesh
         val now=android.os.SystemClock.uptimeMillis()
         // Coalesce size/focus updates before allocating another native shape.
-        if(previous!=null && now-geometryUpdatedAt<80 &&
+        if(previous!=null && now-geometryUpdatedAt<minGeometryIntervalMs &&
             (submitShape!=null || !forceUpdate && !presentationDirty && matchesSize(placement) &&
                 (viewDirection!=null || viewFocus!=null)))return
         val center=projectionCenter(placement)
@@ -341,7 +346,7 @@ internal class MonitorWarp : AutoCloseable {
             }
             val shape = videoShape(next.width,next.height,next)
             val target = if (live === original && retainedCurved!=null) retainedCurved!!.also {
-                it.parent=original.parent;it.setPose(original.getPose());it.setScale(original.getScale())
+                syncCurvedPose(original)
                 applyPixels(it,placement)
             } else if(live === original) SurfaceEntity.create(session,
                 shape = shape, pose = original.getPose(), parent = original.parent,
@@ -352,13 +357,13 @@ internal class MonitorWarp : AutoCloseable {
                 val pointer=SpatialPointerComponent.create(session)
                 check(it.addComponent(pointer))
                 pointer.spatialPointerIcon=SpatialPointerIcon.NONE
-                live = it;retainedCurved=it;appliedShape=shape
+                live = it;retainedCurved=it;curvedState=NativeNodeState(it);appliedShape=shape
                 recentShapes.retain(shape)
             } else live!!
             if(submitShape!=null){
                 if(!submitShape{applyShape(target,shape)})return
             }else applyShape(target,shape)
-            live=target;target.setEnabled(shown)
+            live=target;curvedState?.enabled(shown)
             flatWidth = next.width; flatHeight = next.height
             mesh = next;presentationDirty=false;geometryUpdatedAt=android.os.SystemClock.uptimeMillis()
         }
@@ -368,7 +373,7 @@ internal class MonitorWarp : AutoCloseable {
     override fun close() {
         // Restore the Compose-owned surface before releasing our independent curved resources.
         curvedInput?.close(); curvedInput = null
-        retainedCurved?.takeUnless{it.isDisposed}?.let { it.parent = null; it.dispose() };retainedCurved=null
+        retainedCurved?.takeUnless{it.isDisposed}?.let { it.parent = null; it.dispose() };retainedCurved=null;curvedState=null
         input?.takeUnless{it.isDisposed}?.let{it.setEnabled(ownerEnabled);it.primaryAlphaMaskTexture=null;it.mediaBlendingMode=SurfaceEntity.MediaBlendingMode.OPAQUE}
         mask?.close(); mask = null
         inputListener = null

@@ -48,7 +48,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
         val target=if(projectFrame)magnifierFrame(initial,initial,initialViewer,units(),true)else initial
         try{
             fun shape(surface:MagnifiedWindow):SurfaceEntity.Shape{
-                if(!RenderPolicy.CustomMeshes){
+                if(!RenderPolicy.CustomMeshes || !surface.spherical || surface.mesh==null){
                     val border=if(showFrame).01f*surface.units else 0f
                     return SurfaceEntity.Shape.Quad(FloatSize2d(surface.width+border,surface.height+border))
                 }
@@ -63,7 +63,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                 val pointer=SpatialPointerComponent.create(session);entity.addComponent(pointer);pointer.spatialPointerIcon=SpatialPointerIcon.NONE
                 val listener:(InputEvent)->Unit=listener@{event->
                     val active=resources.rendered?.takeIf{resources.visible} ?: return@listener
-                    val expected=if(!RenderPolicy.CustomMeshes)resources.entity else resources.curved?.entity
+                    val expected=if(resources.mesh==null)resources.entity else resources.curved?.entity
                     val hit=event.hitInfoList.firstOrNull{it.inputEntity===expected}
                     val mesh=resources.mesh
                     val local=hit?.hitPosition?.let{eventMatrixHit(floatArrayOf(it.x,it.y,it.z),hit.transform.data,active.width,active.height,mesh,entity.getScale(Space.ACTIVITY),rayDirection=if(mesh!=null)floatArrayOf(event.direction.x,event.direction.y,event.direction.z)else null,rayOrigin=floatArrayOf(event.origin.x,event.origin.y,event.origin.z))}
@@ -120,7 +120,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
             if(!reusedSurface)entity.setSurfacePixelDimensions(IntSize2d(pixelSize.first,pixelSize.second))
 
             val targetPose=Pose(Vector3(p.position[0],p.position[1],p.position[2]),Quaternion(q[0],q[1],q[2],q[3]))
-            resources.mesh=target.mesh
+            resources.mesh=target.mesh?.takeIf{RenderPolicy.CustomMeshes && !it.planar}
             logMagnifierSubmission("start",target,entity)
             if(reusedSurface && resources.rendered?.let{it.width!=target.width || it.height!=target.height || it.mesh!==target.mesh}!=false){val nextShape=shape(target);resources.retain(nextShape);entity.shape=nextShape}
             resources.rendered=target
@@ -129,11 +129,12 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
             val generation=++resources.generation
             var shown=false
             if(!desktopMirror)resources.stream=connection.windowCaptures.attach(captureId ?: target.id,entity.getSurface(),{
-                if(resources.generation==generation && !entity.isDisposed){shown=true;retryPolicy.reset();failureToken=0;resources.visible=true;entity.setEnabled(true);resources.curved?.entity?.setEnabled(true);android.util.Log.i("Floatdesk","pane ready key=$topologyKey id=${target.id}");displayedNow.value?.invoke(target.id);readyNow.value()}
+                if(resources.generation==generation && !entity.isDisposed){shown=true;retryPolicy.reset();failureToken=0;resources.visible=true;entity.setEnabled(true);resources.curved?.entity?.setEnabled(resources.mesh!=null);android.util.Log.i("Floatdesk","pane ready key=$topologyKey id=${target.id}");displayedNow.value?.invoke(target.id);readyNow.value()}
             },{message->if(resources.generation==generation){resources.visible=false;entity.setEnabled(false);resources.curved?.entity?.setEnabled(false);hoverNow.value("LEFT",null);hoverNow.value("RIGHT",null);clearPointerHover();errorNow.value(message);failureToken++}},regionId=regionId)
             resources.stream?.update(if(showFrame).005f*target.units/(target.width+.01f*target.units)else 0f,if(showFrame).005f*target.units/(target.height+.01f*target.units)else 0f,showFrame && pinNow.value,target.width/target.height)
             var prior=target
             var geometryAt=0L
+            var inkAt=Long.MIN_VALUE
             val mirrorPresented=java.util.concurrent.atomic.AtomicBoolean(false)
             val mirrorInk=java.util.concurrent.atomic.AtomicReference(VideoAim())
             val mirror=if(desktopMirror)VideoMirror(entity.getSurface(),presented={mirrorPresented.set(true)},ink=mirrorInk::get)else null
@@ -152,10 +153,12 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                         renderer?.mirrors(listOf(mirror))
                     }
                     if(!shown && mirrorPresented.get()){
-                        shown=true;resources.visible=true;entity.setEnabled(true);resources.curved?.entity?.setEnabled(true);readyNow.value()
+                        shown=true;resources.visible=true;entity.setEnabled(true);resources.curved?.entity?.setEnabled(resources.mesh!=null);readyNow.value()
                     }
                 }
-                if(!shown)continue
+                if(!shown || !connection.isVideoActive()){delay(80);continue}
+                if(inkAt==Long.MIN_VALUE || now-inkAt>=32){
+                inkAt=now
                 val wire=connection.cursorWires[topologyKey]
                 val renderedPane=resources.rendered
                 fun surfaceCoordinates(values:FloatArray):FloatArray {
@@ -178,6 +181,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                     val focus=mirrorOverlayNow.value?.invoke()
                     mirrorInk.set(if(focus==null)overlay else overlay.copy(
                         segments=overlay.segments+focus.segments,colors=overlay.colors+focus.colors))
+                }
                 }
                 val head=viewer.get() ?: continue
                 if(freeMode.value && !resources.resizing) {
@@ -228,7 +232,9 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                         resources.pending=angularMagnifierPlacement(active,head,units(),proposed,updateMesh=false)
                     }}
                 }
-                val updateGeometry=now-geometryAt>=if(windowNow.value?.fixed==true)100 else 50
+                val geometryPeriod=if(connection.limitOptionalRendering)200 else 100
+                val updateGeometry=now-geometryAt>=geometryPeriod
+                if(updateGeometry)geometryAt=now
                 val current=resources.pending ?: windowNow.value ?: continue
                 resources.pending=null
                 val next=if(projectFrame)magnifierFrame(current,prior,head,units(),updateGeometry)else current
@@ -246,23 +252,32 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                 val previous=prior.mesh;val mesh=next.mesh
                 val poseChanged=(0..2).any{kotlin.math.abs(next.pose.position[it]-prior.pose.position[it])>.0005f} ||
                     (0..3).any{kotlin.math.abs(next.pose.rotation[it]-prior.pose.rotation[it])>.0005f}
-                val meshChanged=mesh!==previous && mesh!=null && (previous==null || mesh.positions.indices.any{kotlin.math.abs(mesh.positions[it]-previous.positions[it])>.0005f})
+                val meshChanged=next.spherical && mesh!==previous && mesh!=null && (previous==null || mesh.positions.indices.any{kotlin.math.abs(mesh.positions[it]-previous.positions[it])>.0005f})
                 val sizeChanged=next.width!=prior.width || next.height!=prior.height
                 resources.stream?.update(if(showFrame).005f*next.units/(next.width+.01f*next.units)else 0f,if(showFrame).005f*next.units/(next.height+.01f*next.units)else 0f,showFrame && pinNow.value,next.width/next.height)
                 if(!modeChanged && !poseChanged && !meshChanged && !sizeChanged)continue
-                val pose=next.pose;val rotation=pose.rotation
-                entity.setPose(Pose(Vector3(pose.position[0],pose.position[1],pose.position[2]),Quaternion(rotation[0],rotation[1],rotation[2],rotation[3])))
+                if(modeChanged || meshChanged || sizeChanged){
+                    val submit = {
+                        val nextShape=shape(next)
+                        resources.retain(nextShape)
+                        entity.shape=nextShape
+                    }
+                    val submitted=resources.stream?.tryShapeUpdate(submit)
+                        ?: resources.mirrorRenderer?.tryShapeUpdate(submit)
+                        ?: run {submit();true}
+                    if(!submitted)continue
+                    if(receiveInput)syncMagnifierInput(session,resources,entity,mesh,next.width,next.height)
+                    if(modeChanged)logMagnifierSubmission("mode",next,entity)
+                }
+                if(poseChanged){
+                    val pose=next.pose;val q=pose.rotation
+                    entity.setPose(Pose(Vector3(pose.position[0],pose.position[1],pose.position[2]),Quaternion(q[0],q[1],q[2],q[3])))
+                }
                 if(modeChanged){
                     resources.clearInteraction();movingNow.value(false)
                     hoverNow.value("LEFT",null);hoverNow.value("RIGHT",null);clearPointerHover()
                 }
-                if(modeChanged || meshChanged || sizeChanged){
-                    val nextShape=shape(next);resources.retain(nextShape);entity.shape=nextShape;geometryAt=android.os.SystemClock.uptimeMillis()
-                    if(receiveInput)syncMagnifierInput(session,resources,entity,mesh,next.width,next.height)
-                    if(modeChanged)logMagnifierSubmission("mode",next,entity)
-
-                }
-                resources.mesh=if(RenderPolicy.CustomMeshes)mesh else null;resources.rendered=next;prior=next;placementNow.value(next,resources.dragged || resources.resizing)
+                resources.mesh=mesh?.takeIf{RenderPolicy.CustomMeshes && !it.planar};resources.rendered=next;prior=next;placementNow.value(next,resources.dragged || resources.resizing)
             }
         }catch(e:kotlinx.coroutines.CancellationException){throw e}
         catch(e:Exception){resources.close();errorNow.value(e.message ?: "Window magnifier unavailable")}
@@ -281,8 +296,10 @@ private fun logMagnifierSubmission(reason:String,window:MagnifiedWindow,entity:S
 /** Bind input to the geometry actually rendered, without reopening the capture lease. */
 @android.annotation.SuppressLint("RestrictedApi")
 private suspend fun syncMagnifierInput(session:Session,resources:MagnifierResources,entity:SurfaceEntity,mesh:MonitorMesh?,width:Float,height:Float) {
-    if(!RenderPolicy.CustomMeshes){
-        resources.mesh=null
+    val curvedMesh=mesh?.takeIf{RenderPolicy.CustomMeshes && !it.planar}
+    resources.mesh=curvedMesh
+    if(curvedMesh==null){
+        resources.curved?.entity?.setEnabled(false)
         if(resources.flatInput==null){
             resources.flatInput=NativeMonitorInput.create(session,resources.listener!!)
             check(entity.addComponent(resources.flatInput!!))
@@ -290,15 +307,16 @@ private suspend fun syncMagnifierInput(session:Session,resources:MagnifierResour
         return
     }
 
+    resources.flatInput?.let{entity.removeComponent(it);resources.flatInput=null}
     if(resources.curved==null) {
         val generation=resources.generation
-        val next=CurvedMonitorInput.create(session,entity,mesh,6,4,width,height,resources.listener!!)
+        val next=CurvedMonitorInput.create(session,entity,curvedMesh,6,4,width,height,resources.listener!!)
         if(resources.entity!==entity || resources.generation!=generation) {
             next.close()
             throw kotlinx.coroutines.CancellationException("Magnifier input owner changed")
         }
         resources.curved=next
-    } else resources.curved!!.updateGeometry(mesh,width,height)
+    } else resources.curved!!.updateGeometry(curvedMesh,width,height)
     resources.curved!!.entity.let {
         it.parent=entity;it.setPose(Pose());it.setEnabled(resources.visible)
     }

@@ -15,7 +15,7 @@ internal class WindowCapturePool @JvmOverloads constructor(private val connectio
     private val capture:(Long,VideoCompositor,(String)->Unit,(Long,JSONObject)->Unit)->WindowVideo?={id,video,error,frame->connection.captureWindow(id,video,error,frame)}){
     private val main=Handler(Looper.getMainLooper())
     private val sources=mutableMapOf<Long,Source>()
-    private var active=connection.isRenderingActive()
+    private var active=connection.isVideoActive()
     fun setActive(value:Boolean){active=value;sources.values.forEach{it.stream?.setActive(value)}}
     private val capturedBounds=ConcurrentHashMap<Long,DesktopWindow>()
     private val popupBounds=ConcurrentHashMap<Long,List<DesktopWindow>>()
@@ -85,8 +85,9 @@ internal class WindowCapturePool @JvmOverloads constructor(private val connectio
         },ink={member.ink},crop={member.crop},presented={if(member.shown.compareAndSet(false,true))main.post{if(!retired && member in members.values)member.ready()}})})}
         fun close(){stream?.close();video.close()}
     }
-    internal class Lease(private val updateAction:(Float,Float,Boolean,Float)->Unit,private val closeAction:()->Unit,private val overlayAction:(VideoAim)->Unit):AutoCloseable{
+    internal class Lease(private val shapeAction:((()->Unit)->Boolean),private val updateAction:(Float,Float,Boolean,Float)->Unit,private val closeAction:()->Unit,private val overlayAction:(VideoAim)->Unit):AutoCloseable{
         private var closed=false
+        fun tryShapeUpdate(update:()->Unit)=!closed && shapeAction(update)
         fun overlay(value:VideoAim){if(!closed)overlayAction(value)}
         fun update(padX:Float,padY:Float,pinned:Boolean,aspect:Float){if(!closed)updateAction(padX,padY,pinned,aspect)}
         override fun close(){if(!closed){closed=true;closeAction()}}
@@ -95,7 +96,7 @@ internal class WindowCapturePool @JvmOverloads constructor(private val connectio
         val source=sources.getOrPut(id){Source(id)};val key=Any()
         source.outputSize().let{output?.size?.invoke(it.first,it.second)}
         val member=Member(VideoMirror(surface),onReady,onError,output,regionId);source.members[key]=member;source.update()
-        return Lease({x,y,pin,aspect->if(member.mirror.padX!=x || member.mirror.padY!=y || member.mirror.pinned!=pin || member.mirror.aspect!=aspect){member.mirror=member.mirror.copy(padX=x,padY=y,pinned=pin,aspect=aspect);source.update()}},{
+        return Lease(source.video::tryShapeUpdate,{x,y,pin,aspect->if(member.mirror.padX!=x || member.mirror.padY!=y || member.mirror.pinned!=pin || member.mirror.aspect!=aspect){member.mirror=member.mirror.copy(padX=x,padY=y,pinned=pin,aspect=aspect);source.update()}},{
             source.members.remove(key);output?.clear?.invoke()
             if(source.members.isEmpty())source.retire() else if(!source.retired){source.update();source.video.flushOutputs()}
         },{value->member.ink=value})

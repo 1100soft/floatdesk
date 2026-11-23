@@ -119,13 +119,14 @@ internal fun DeskContent(
                 onWorkspace(next);if(persist)store.save(next)
             })
     }
-    if(reloading && layout.isNotEmpty()) {
+    val thermalPaused by connection.thermalPaused
+    if((reloading || thermalPaused) && layout.isNotEmpty() && !displayControlsOpen) {
         val screen=layout.first()
         val pose=Pose(transformPoint(screen.pose,floatArrayOf(0f,0f,.05f)),screen.pose.rotation)
         SpatialPanel(modifier=placedPanel(pose,.40f,.10f,density,pixelDensity)) {
             androidx.compose.foundation.layout.Row(Modifier.fillMaxSize().background(Color(0xEE1C2430)).padding(12.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
-                androidx.compose.material3.CircularProgressIndicator(Modifier.size(24.dp))
-                Text("Updating screens…",color=Color.White)
+                if(!thermalPaused)androidx.compose.material3.CircularProgressIndicator(Modifier.size(24.dp))
+                Text(if(thermalPaused)"Video paused while headset cools" else "Updating screens…",color=Color.White)
             }
         }
     }
@@ -171,7 +172,7 @@ internal fun DeskContent(
             var grabProjectionAt=0L
             var outputResizePending=false
             while (isActive) {
-                delay(20)
+                delay(if(connection.thermalPaused.value)100 else 20)
                 if(controlsOpenNow.value) {
                     warp.setVisible(false);cornerHandles.cancel()
                     hands.cancel();pointerControl.clearMonitor(index)
@@ -180,7 +181,7 @@ internal fun DeskContent(
                     frozenMonitor?.suspendVisibility()
                     delay(100);continue
                 }
-                if(!connection.isRenderingActive() || !current.lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) { delay(100);continue }
+                if(!connection.isRenderingActive() || connection.thermalPaused.value || !current.lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) { delay(100);continue }
                 warp.setVisible(true)
                 if (videoSurface.get() == null) continue
                 val root = warp.coordinateParent.liveOrNull() ?: continue
@@ -203,7 +204,8 @@ internal fun DeskContent(
                             forceUpdate=(hands.engaged || !hands.busy) && (nativeGeometryPending || !warp.matchesSize(screen)),
                             viewDirection=handTracking.points["VIEW_DIRECTION"],
                             freezeProjection=(hands.busy && !hands.engaged) || nativeMove || nativeResize || handTracking.pointerHeld,
-                            submitShape={update->connection.tryDesktopShapeUpdate(index,update)})
+                            submitShape={update->connection.tryDesktopShapeUpdate(index,update)},
+                            minGeometryIntervalMs=if(connection.limitOptionalRendering)180 else 80)
                         grabProjectionAt=projectionNow
                     }
                     if(outputResizePending){connection.refreshOutput(index);outputResizePending=false}
@@ -297,7 +299,7 @@ internal fun DeskContent(
                 object : InteractionPolicy {
                     override val isEnabled: Boolean = true
                     override fun onInputEvent(event: SpatialInputEvent) {
-                        if(!handInputNow.value || nativeResize || nativeMove) return // The explicit handle owns this sequence.
+                        if(!handInputNow.value || connection.thermalPaused.value || nativeResize || nativeMove) return // The explicit handle owns this sequence.
                         if (event.action == InputEvent.Action.CANCEL && frozenMonitor != null && hands.engaged) return
                         val file = latest.value
                         val existing = file.monitorAt(index) ?: return

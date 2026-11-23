@@ -54,6 +54,14 @@ class MagnifierResources{
 suspend fun main(){
  val session=Session();val surface=SurfaceEntity();val resources=MagnifierResources()
  resources.entity=surface
+ val preview=MagnifierResources()
+ val previewSurface=SurfaceEntity()
+ val previewMesh=MonitorMesh(-1)
+ preview.entity=previewSurface
+ val created=CurvedMonitorInput.creates
+ syncMagnifierInput(session,preview,previewSurface,previewMesh,2f,1f,direct=true)
+ check(preview.mesh===previewMesh && previewSurface.components.size==1)
+ check(preview.curved==null && CurvedMonitorInput.creates==created)
  repeat(50){cycle->
   syncMagnifierInput(session,resources,surface,null,2f,1f)
   check(surface.components.size==1 && resources.flatInput!=null)

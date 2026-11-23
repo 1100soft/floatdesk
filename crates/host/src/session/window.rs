@@ -64,6 +64,7 @@ pub(super) fn start(
                     let mut client_size = (0, 0);
                     let mut frame = 0u64;
                     let mut last_sent = None;
+                    let mut decoder_priming = 0u8;
                     let mut last = Instant::now() - Duration::from_secs(1);
                     while !shared.stop.load(Ordering::Relaxed) {
                         let mut size = [0u8; 4];
@@ -92,6 +93,7 @@ pub(super) fn start(
                             .ok_or_else(|| Error::Msg("Missing window".into()))?;
                         if request["paused"].as_bool() == Some(true) {
                             last_sent = None;
+                            decoder_priming = 3;
                             let header=serde_json::json!({"type":"window-paused-v1","windowId":id,"bytes":0}).to_string();
                             socket.write_all(&(header.len() as u32).to_be_bytes())?;
                             socket.write_all(header.as_bytes())?;
@@ -139,7 +141,26 @@ pub(super) fn start(
                         };
                         let (source_x, source_y, source_width, source_height) =
                             (owner_x, owner_y, owner_width, owner_height);
-                        let root_capture = request["rootCapture"].as_bool().unwrap_or(false);
+                        // Plasma may remap the same thumbnail XID with a new backing pixmap.
+                        // The visible root rectangle follows the current preview without a stale
+                        // named pixmap, and matches what the desktop stream is showing.
+                        let shell_preview = system_windows
+                            .iter()
+                            .any(|window| window.id == id && !window.panel);
+                        if shell_preview
+                            && position_link
+                                .conn
+                                .get_window_attributes(id)
+                                .map_err(Error::x11)?
+                                .reply()
+                                .map_err(Error::x11)?
+                                .map_state
+                                != x11rb::protocol::xproto::MapState::VIEWABLE
+                        {
+                            return Err(Error::Msg("Shell preview closed".into()));
+                        }
+                        let root_capture =
+                            shell_preview || request["rootCapture"].as_bool().unwrap_or(false);
                         if !root_capture
                             && (current_id != id
                                 || popups_at.elapsed() >= Duration::from_millis(80))
@@ -189,6 +210,7 @@ pub(super) fn start(
                             || client_size != (geometry.width, geometry.height)
                         {
                             last_sent = None;
+                            decoder_priming = 3;
                             encoder.take();
                             capture.take();
                             popup_captures.clear();
@@ -373,7 +395,8 @@ pub(super) fn start(
                         let mut header = serde_json::json!({"type":"window-h264-v1","windowId":id,"width":w,"height":h,"occluders":mask,"ownerX":owner_x,"ownerY":owner_y,"ownerWidth":owner_width,"ownerHeight":owner_height,"popups":popups,"sourceX":source_x,"sourceY":source_y,"sourceWidth":source_width,"sourceHeight":source_height});
                         // Compare the exact capture and mapping. A static surface can keep its
                         // last buffer, including at full resolution and with all overlays.
-                        if request["skipIdentical"].as_bool() == Some(true)
+                        if decoder_priming == 0
+                            && request["skipIdentical"].as_bool() == Some(true)
                             && last_sent.as_ref().is_some_and(
                                 |(pixels, metadata): &(Vec<u8>, serde_json::Value)| {
                                     pixels == &image.bgra && metadata == &header
@@ -399,6 +422,7 @@ pub(super) fn start(
                         } else {
                             last_sent = None;
                         }
+                        decoder_priming = decoder_priming.saturating_sub(1);
                         frame += 1;
                         header["frame"] = frame.into();
                         header["bytes"] = encoded.bytes.len().into();

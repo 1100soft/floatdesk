@@ -281,9 +281,26 @@ internal class DeskConnection(
         decoders.values.forEach { it.setRenderingActive(active && desktopVisible) }
     }
 
+    private val rebuildStalledDecoders=java.util.concurrent.atomic.AtomicBoolean()
+    private val outputRecoveryEpoch=java.util.concurrent.atomic.AtomicInteger()
     fun recoverRenderingOutputs(){
-        decoders.values.forEach{it.refreshOutput()}
-        windowCaptureEpoch.intValue++
+        val epoch=outputRecoveryEpoch.incrementAndGet()
+        val started=android.os.SystemClock.elapsedRealtime()
+        fun recover(attempt:Int){
+            if(!running || !isVideoActive() || !desktopVisible || outputRecoveryEpoch.get()!=epoch)return
+            val stalled=decoders.filter{(index,decoder)->outputNeedsRecovery(activeSurfaces[index]?.isValid==true,decoder.lastPresentedAt(),started)}
+            if(attempt==0 || stalled.isNotEmpty()){
+                stalled.values.forEach{it.recoverOutput()}
+                pendingRemote?.let{remote->stalled.values.forEach{it.punch(remote)}}
+                send(Protocol.keyframeRequest(0xff))
+            }
+            if(attempt<3 && (attempt==0 || stalled.isNotEmpty()))main.postDelayed({recover(attempt+1)},1500L)
+            else if(attempt==3 && stalled.isNotEmpty() && dumpFile==null){
+                Log.w("Floatdesk","Rebuilding desktop decoders after wake without a presented frame")
+                rebuildStalledDecoders.set(true)
+            }
+        }
+        main.post{windowCaptureEpoch.intValue++;recover(0)}
     }
 
     fun requestDisplays(action:Int=0,index:Int=0,width:Int=1920,height:Int=1080) {
@@ -569,7 +586,8 @@ internal class DeskConnection(
                         if (pendingRemote == null) {
                             pendingRemote = InetSocketAddress(incoming.address, incoming.port)
                         }
-                        val recovered = lastAcceptedHello == 0L || detailSession != decoded.sessionId
+                        val recovered = lastAcceptedHello == 0L || detailSession != decoded.sessionId ||
+                            android.os.SystemClock.elapsedRealtime()-lastAcceptedHello>3500L
                         lastAcceptedHello=android.os.SystemClock.elapsedRealtime()
                         onHello(decoded, InetSocketAddress(incoming.address, incoming.port), recovered)
                     }
@@ -671,14 +689,13 @@ internal class DeskConnection(
             viewedDetail(null)
             detailSession = hello.sessionId
             decoders.values.forEach { it.punch(remote) }
-            send(Protocol.keyframeRequest(0xff))
+            recoverRenderingOutputs()
             main.post {
-                windowCaptureEpoch.intValue++
                 status.value = "Connected to ${remote.hostString}:${remote.port}, ${hello.monitors.size} monitor(s)"
                 requestDisplays()
             }
         }
-        val healthy=decoders.size==hello.monitors.size && hello.monitors.all{decoders[it.index]?.isHealthy()==true}
+        val healthy=!rebuildStalledDecoders.getAndSet(false) && decoders.size==hello.monitors.size && hello.monitors.all{decoders[it.index]?.isHealthy()==true}
         if (hello.monitors==currentMonitors && healthy) {
             // A dropped one-shot progress notification must not leave an overlay
             // behind after the host has returned to its normal heartbeat.

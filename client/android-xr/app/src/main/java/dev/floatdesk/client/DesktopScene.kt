@@ -1,5 +1,6 @@
 package dev.floatdesk.client
 
+import androidx.xr.scenecore.scene
 import androidx.compose.runtime.key
 import android.util.Log
 import android.view.Surface
@@ -94,14 +95,17 @@ internal fun DeskContent(
     panelFocused: PalmAction?,
     panelPressed: PalmAction?,
     onManipulate: (Boolean) -> Unit,
+    onRestoreLayout:(Int)->Unit,
 ) {
     val session = LocalSession.current
     val latest = rememberUpdatedState(workspace)
     val handInputNow=rememberUpdatedState(handInputAllowed)
     val reloading by connection.reloading
     val layout = workspace.reconcileMonitors(monitors.map { Triple(it.name,it.width,it.height) }).layouts[workspace.activeLayout].orEmpty()
+    var layoutPreviews by remember(store){mutableStateOf(store.layoutPreviews())}
     DiagnosticsPanel(connection,viewer,{handTracking.unitsPerMeter},{viewerAngles.get()},
-        workspace.showResources,workspace.experimentalViewedDetail,workspace.viewDetailDebug,workspace.sphericalWarp,workspace.layoutModeActive)
+        workspace.showResources,workspace.experimentalViewedDetail,workspace.viewDetailDebug,workspace.sphericalWarp,workspace.layoutModeActive,
+        layoutPreviews,{slot->store.saveLayoutSlot(slot,latest.value,connection.layoutMapDebug);layoutPreviews=store.layoutPreviews()},onRestoreLayout)
     var managerPage by remember{mutableStateOf("Screens")}
     val managerHeight=when(managerPage){"Settings"->.40f;"Focus & magnification"->.40f;"Pinches"->.48f;"Viewing distance"->.42f;"Virtual screen setup"->.38f;else->.65f}
     val managerScale=remember(displayControlsPose){settingsPanelScale(handTracking.unitsPerMeter)}
@@ -151,6 +155,16 @@ internal fun DeskContent(
         }
     }
     // Retain native assets across Workspace visits; hide them instead of destroying/re-instancing glTF.
+    // Keep palm and tracking coordinates independent of host video acquisition.
+    if(session!=null)SpatialExternalSurface(
+        stereoMode=StereoMode.Mono,
+        modifier=placedPanel(Pose(floatArrayOf(0f,0f,1f)),.002f,.002f,density,pixelDensity),
+    ){
+        onSurfaceCreated{surface->
+            session.scene.getEntitiesOfType(androidx.xr.scenecore.SurfaceEntity::class.java)
+                .firstOrNull{it.getSurface()===surface}?.parent?.let(onDeskRoot)
+        }
+    }
     val controlsOpenNow=rememberUpdatedState(displayControlsOpen)
     layout.forEachIndexed { index, placement ->
         androidx.compose.runtime.key(placement.hostSourceId,placement.pixelWidth,placement.pixelHeight) {
@@ -207,12 +221,11 @@ internal fun DeskContent(
                             viewDirection=handTracking.points["VIEW_DIRECTION"],
                             freezeProjection=(hands.busy && !hands.engaged) || nativeMove || nativeResize || handTracking.pointerHeld,
                             submitShape={update->connection.tryDesktopShapeUpdate(index,update)},
-                            minGeometryIntervalMs=if(connection.limitOptionalRendering)180 else 80)
+                            minGeometryIntervalMs=if(connection.limitOptionalRendering)180 else 80,
+                            minimumGeometryUnits=handTracking.unitsPerMeter)
                         grabProjectionAt=projectionNow
                     }
-                    if(outputResizePending){connection.refreshOutput(index);outputResizePending=false}
                     frozenMonitor?.update(screen,warp.mesh)
-                    warp.syncCurvedInput(current)
                     // Collider creation suspends: a newer resize event may arrive while awaiting it.
                     // Clear the pending update only after matching the latest canonical size.
                     latest.value.monitorAt(index)?.let { if(warp.matchesSize(it)) nativeGeometryPending=false }
@@ -279,10 +292,12 @@ internal fun DeskContent(
                     warp.outputSurface?.let { display ->
                         if (videoSurface.get() !== display) {
                             warp.coordinateParent?.let(onDeskRoot)
-                videoSurface.set(display)
+                            videoSurface.set(display)
                             connection.attachSurface(index, display)
                         }
                     }
+                    if(outputResizePending){connection.refreshOutput(index);outputResizePending=false}
+                    warp.syncCurvedInput(current)
                 } catch (failure: Exception) {
                     Log.e("Floatdesk", "Could not update spherical monitor", failure)
                     nativeMove=false;nativeResize=false

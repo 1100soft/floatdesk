@@ -262,6 +262,13 @@ internal class MonitorDecoder(
     private val detailDiagnostics=AtomicReference(dev.floatdesk.client.net.DetailDiagnostics())
     fun detailDebug(value:dev.floatdesk.client.net.DetailDiagnostics){detailDiagnostics.set(value);compositor?.detailDebug(value)}
     fun refreshOutput(){compositor?.output(surface.get(),true)}
+    fun lastPresentedAt()=compositor?.lastPresentedAt ?: 0L
+
+    fun recoverOutput() {
+        refreshOutput()
+        recover("output recovery")
+    }
+
     fun diagnosticSnapshot()=compositor?.diagnosticSnapshot()
     fun displayedQualityFocus():Pair<Float,Float>?=compositor?.displayedQualityFocus()
     fun hasViewedDetail():Boolean=compositor?.hasViewedDetail()==true

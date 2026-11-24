@@ -11,6 +11,16 @@ source+='\n'+'\n'.join(line for line in (root/'workspace/WorkspacePlacement.kt')
 code=source+'''
 fun main() {
  check(ViewLayers.DiagnosticsDistanceM<ViewLayers.ControlsDistanceM && ViewLayers.ControlsDistanceM<ViewLayers.DesktopDistanceM)
+ val eye=floatArrayOf(0f,0f,.35f)
+ val enlarged=MonitorMesh(24f,14f,eye,columns=32,rows=20,focus=floatArrayOf(0f,0f),minimumGeometryRadius=1.5f)
+ val originalSphere=MonitorMesh(24f,14f,eye,columns=32,rows=20,focus=floatArrayOf(0f,0f))
+ check(enlarged.innerRadius>=1.5f-.00001f)
+ check(enlarged.texCoords.contentEquals(originalSphere.texCoords))
+ for(i in enlarged.positions.indices step 3){
+    val scale=enlarged.geometryRadius/originalSphere.radius
+    for(axis in 0..2)check(kotlin.math.abs((enlarged.positions[i+axis]-eye[axis])/scale-
+        (originalSphere.positions[i+axis]-eye[axis]))<.00001f)
+ }
  val viewer0=Pose()
  val depthBase=MonitorPlacement("depth","existing-0",Pose(floatArrayOf(.3f,.2f,-2.4f)),2f,1f,0f,5120,2560,60)
  val locked=fixedDesktopDepth(depthBase,viewer0,1f)

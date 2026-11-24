@@ -18,6 +18,9 @@ fun main() {
  check("no network connection" in connectionProblem(15_000,0,9_000,14_000,HeadsetNetwork.NONE)!!)
  check("not on Wi-Fi" in connectionProblem(15_000,0,0,0,HeadsetNetwork.OTHER)!!)
  check(connectionProblem(21_000,20_000,9_000,0,wifi)==null) // A restart resets the clock.
+ check(!outputNeedsRecovery(false, 0, 1000))
+ check(outputNeedsRecovery(true, 999, 1000)) // A frame left over from before sleep is insufficient.
+ check(!outputNeedsRecovery(true, 1000, 1000))
  val cooling=ThermalVideoGate()
  check(!cooling.update(3,0))
  check(cooling.update(4,1000))

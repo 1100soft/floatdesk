@@ -16,3 +16,7 @@ internal fun connectionProblem(nowMs: Long, startedAtMs: Long, lastReplyAtMs: Lo
     }
     return "$what $why"
 }
+
+/** Only a frame presented during this recovery satisfies the output probe. */
+internal fun outputNeedsRecovery(surfaceReady: Boolean, lastPresentedAt: Long, recoveryStartedAt: Long): Boolean =
+    surfaceReady && lastPresentedAt < recoveryStartedAt

@@ -96,7 +96,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
     val context = LocalContext.current
     val deviceInteractive by rememberDeviceInteractive(context)
     val activityResumed by rememberActivityResumed(context)
-    val interactiveNow=rememberUpdatedState(deviceInteractive)
+    val interactiveNow=rememberUpdatedState(deviceInteractive && activityResumed)
     LaunchedEffect(connection) { connection.start(context) }
     DisposableEffect(connection) { onDispose { connection.disconnect() } }
     val session = LocalSession.current
@@ -122,8 +122,8 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             onSession(null)
         }
     }
-    LaunchedEffect(session,deviceInteractive) {
-        sceneActive=deviceInteractive && session?.lifecycleOwner?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.RESUMED)==true
+    LaunchedEffect(session,deviceInteractive,activityResumed) {
+        sceneActive=deviceInteractive && activityResumed && session?.lifecycleOwner?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.RESUMED)==true
         connection.setRenderingActive(sceneActive)
     }
     LaunchedEffect(session,deviceInteractive,activityResumed,sceneActive){
@@ -140,7 +140,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
         val current=session ?: return@LaunchedEffect
         if(sceneActive) {
             if(activatedScene){deskSpace.set(null);deskRootVersion++;sceneEpoch++}else activatedScene=true
-            current.scene.requestFullSpace()
+            runCatching{current.scene.requestFullSpace()}.onFailure{Log.w("Floatdesk","Full-space wake request failed",it)}
             Log.i("Floatdesk","scene recovery generation=$sceneEpoch")
             connection.recoverRenderingOutputs()
             val hands=runCatching { current.configure(Config.Builder(current.config).setHandTracking(HandTrackingMode.BOTH).build()) }
@@ -235,13 +235,10 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
     var manipulating by remember { mutableStateOf(false) }
     var followGeneration by remember { mutableIntStateOf(0) }
     var gestureNote by remember { mutableStateOf("Waiting for hand tracking…") }
-    var focusFollowUntil by remember {mutableStateOf(0L)}
     var pendingFocusMonitor by remember {mutableStateOf<Int?>(null)}
     val focusGestures=remember {FocusGestures {pinchSettings.value}}
-    val following = latchedFollow || focusFollowUntil>SystemClock.uptimeMillis() || (holdingFist && !suppressFist)
-    LaunchedEffect(focusFollowUntil) {
-        if(focusFollowUntil>0) {delay((focusFollowUntil-SystemClock.uptimeMillis()).coerceAtLeast(0));focusFollowUntil=0;followGeneration+=1}
-    }
+    val following = latchedFollow || (holdingFist && !suppressFist)
+
     val grabs = remember { mutableMapOf<Int, TwoHandState>() }
     val originGrab=remember{LayoutOriginGrab()}
     var originDownAt by remember{mutableStateOf<Long?>(null)}
@@ -293,7 +290,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
     fun resetDesk() {
         originGrab.clear()
         magnification.dismiss(SystemClock.uptimeMillis());magnified=null;inPlaceWindow=null;connection.magnifierActive=false
-        pendingFocusMonitor=null;focusFollowUntil=0
+        pendingFocusMonitor=null
         grabs.values.forEach {it.cancel()};pointerControl.clear()
         manipulating=false;holdingFist=false;suppressFist=true
         val head=displayHead.get() ?: store.viewerReference ?: Pose()
@@ -327,7 +324,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
         if(workspace.layoutOrigin==null || workspace.desktopHome==null)
             workspace=workspace.copy(layoutOrigin=workspace.layoutOrigin ?: screen.pose,desktopHome=workspace.desktopHome ?: screen.pose)
         workspace=workspace.monitorPlaced(index,fitted,store,true)
-        gestureNote="";restoreViewerPending=false;suppressFist=true;focusFollowUntil=SystemClock.uptimeMillis()+3000;followGeneration+=1
+        gestureNote="";restoreViewerPending=false;suppressFist=true;followGeneration+=1
         clickView.playSoundEffect(android.view.SoundEffectConstants.CLICK)
     }
     var displayControlsOpen by remember { mutableStateOf(false) }
@@ -417,7 +414,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             panelPressed=action; feedbackAt=now
             clickView.playSoundEffect(android.view.SoundEffectConstants.CLICK)
             when (action) {
-                PalmAction.FOLLOW -> { focusFollowUntil=0;latchedFollow = !latchedFollow; suppressFist = true; followGeneration += 1 }
+                PalmAction.FOLLOW -> { latchedFollow = !latchedFollow; suppressFist = true; followGeneration += 1 }
                 PalmAction.RESET -> resetDesk()
                 PalmAction.MODE -> {
                     pendingFocusMonitor=null;grabs.values.forEach{it.cancel()};pointerControl.clear();manipulating=false
@@ -435,7 +432,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     val done=action==PalmAction.DONE
                     grabs.values.forEach{it.cancel()};originGrab.clear();pointerControl.clear();manipulating=false;pendingFocusMonitor=null
                     toolbar.clear();toolbarTarget=null;openToolbarStrip=null;openToolbarWindow=null
-                    focusFollowUntil=0;latchedFollow=false
+                    latchedFollow=false
                     connection.cancelGazeFocus()
                     workspace=workspace.copy(grabToMove=!done && action!=PalmAction.FREE,freeManipulation=action==PalmAction.FREE)
                     palmPanel=if(done)null else palmPanel?.copy(page=PalmPage.LAYOUT)
@@ -1347,14 +1344,14 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     renderer.close()
                 }
             }
-            val wantFollow = !workspace.layoutModeActive && !manipulating && head != null && (latchedFollow || focusFollowUntil>SystemClock.uptimeMillis() || (holdingFist && !suppressFist))
+            val wantFollow = !workspace.layoutModeActive && !manipulating && head != null && (latchedFollow || (holdingFist && !suppressFist))
             if (!wantFollow) {
                 if (followLock != null) {
                     store.save(workspace)
                     followLock = null
                 }
             } else if (followLock == null) {
-                followLock = FollowLock.capture(head,workspace,wholeLayout=latchedFollow || focusFollowUntil<=SystemClock.uptimeMillis())
+                followLock = FollowLock.capture(head,workspace)
                 gestureNote = if (latchedFollow) {
                     "Following, latched with the button. Use Unlock follow to stop."
                 } else {
@@ -1435,6 +1432,18 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 panelFocused = panelFocused,
                 panelPressed = panelPressed,
                 onManipulate = { updateManipulation(it) },
+                onRestoreLayout={slot->
+                    if(workspace.layoutModeActive && !manipulating && !magnifierMoving){
+                        store.restoreLayoutSlot(slot,workspace)?.let{restored->
+                            workspace=restored
+                            systemPlacements.clear()
+                            pointerControl.clear()
+                            grabs.values.forEach{it.cancel()}
+                            originGrab.clear()
+                            followGeneration++
+                        }
+                    }
+                },
             )
         }
         key(sceneEpoch){Subspace { desk() }}

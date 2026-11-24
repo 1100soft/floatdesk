@@ -285,11 +285,14 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         } finally {GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER,0)}
     }
 
+    @Volatile var lastPresentedAt=0L
+        private set
+
     @JvmOverloads
     fun output(surface: Surface?,force:Boolean=false) {
         if(closed) return
         handler.post {
-            if(closed || target===surface && !force) return@post
+            if(closed || target===surface && !force && (surface==null || window!=EGL14.EGL_NO_SURFACE)) return@post
             guard {
                 check(EGL14.eglMakeCurrent(display,pbuffer,pbuffer,context))
                 if(window!=EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(display,window)
@@ -516,6 +519,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         GLES20.glDisable(GLES20.GL_SCISSOR_TEST)
         drawInk(w[0],h[0])
         check(EGL14.eglSwapBuffers(display,window)) { "video swap failed" }
+        if(activeMirror==null)lastPresentedAt=android.os.SystemClock.elapsedRealtime()
         lastDraw=System.nanoTime();submitNs+=lastDraw-drawStarted;swaps++;outputPresented?.invoke()
         return true
     }

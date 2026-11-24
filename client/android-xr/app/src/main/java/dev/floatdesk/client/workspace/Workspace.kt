@@ -110,6 +110,40 @@ internal class WorkspaceStore(private val file: File) {
     private val layoutKeys = listOf("active_layout", "layouts", "layout_origin", "desktop_home",
         "cursor_map_reference", "fixed_magnifiers", "system_panels", "reference_placement")
 
+    private val savedLayoutsFile = File(file.parentFile, "saved-layouts.json")
+    private val savedLayouts by lazy {
+        runCatching { JSONObject(savedLayoutsFile.readText()) }.getOrElse { JSONObject() }
+    }
+
+    fun layoutPreviews(): List<FloatArray?> = synchronized(lock) {
+        (0 until 3).map { slot ->
+            savedLayouts.optJSONObject(slot.toString())?.optJSONArray("map")?.let { values ->
+                FloatArray(values.length()) { values.optDouble(it).toFloat() }
+            }
+        }
+    }
+
+    fun saveLayoutSlot(slot: Int, workspace: WorkspaceFile, preview: FloatArray) = synchronized(lock) {
+        if (workspace.layouts[workspace.activeLayout].isNullOrEmpty() || preview.isEmpty()) return
+        savedLayouts.put(slot.toString(), JSONObject().put("layout", layoutSnapshot(encode(workspace)))
+            .put("map", JSONArray(preview.toList())))
+        write(savedLayoutsFile, savedLayouts)
+    }
+
+    fun restoreLayoutSlot(slot: Int, workspace: WorkspaceFile): WorkspaceFile? = synchronized(lock) {
+        val saved = savedLayouts.optJSONObject(slot.toString())?.optJSONObject("layout") ?: return null
+        val restored = applyLayout(workspace, saved)
+        recordLayout(restored, "restore saved layout ${slot+1}")
+        restored
+    }
+
+    private fun applyLayout(workspace: WorkspaceFile, snapshot: JSONObject): WorkspaceFile {
+        val saved = decode(snapshot)
+        return workspace.copy(activeLayout = saved.activeLayout, layouts = saved.layouts,
+            layoutOrigin = saved.layoutOrigin, desktopHome = saved.desktopHome, cursorMapReference = saved.cursorMapReference,
+            fixedMagnifiers = saved.fixedMagnifiers, systemPanels = saved.systemPanels, referencePlacement = saved.referencePlacement)
+    }
+
     fun save(workspace: WorkspaceFile) = synchronized(lock) {
         write(file, encode(withViewer(workspace)))
     }
@@ -143,10 +177,7 @@ internal class WorkspaceStore(private val file: File) {
         val entries = history.getJSONArray("entries")
         val index = history.getInt("index") + delta
         val entry = entries.optJSONObject(index) ?: return null
-        val saved = decode(entry.getJSONObject("layout"))
-        val restored = workspace.copy(activeLayout = saved.activeLayout, layouts = saved.layouts,
-            layoutOrigin = saved.layoutOrigin, desktopHome = saved.desktopHome, cursorMapReference = saved.cursorMapReference,
-            fixedMagnifiers = saved.fixedMagnifiers, systemPanels = saved.systemPanels, referencePlacement = saved.referencePlacement)
+        val restored = applyLayout(workspace, entry.getJSONObject("layout"))
         write(file, encode(withViewer(restored)))
         updateHistory(entries, index, if (delta < 0) "undo" else "redo")
         restored
@@ -154,16 +185,21 @@ internal class WorkspaceStore(private val file: File) {
 
     // Apply the same XR tracking-space recovery to every undo/redo entry.
     fun rebaseLayoutHistory(prior: Pose, priorUnits: Float, viewer: Pose, units: Float) = synchronized(lock) {
-        if (!historyFile.exists()) return
-        val entries = history.getJSONArray("entries")
-        for (i in 0 until entries.length()) {
-            val entry = entries.getJSONObject(i)
+        fun rebase(entry: JSONObject) {
             val saved = decode(entry.getJSONObject("layout"))
             val restored = saved.copy(viewerReference = prior, referenceUnitsPerMeter = priorUnits)
                 .restoreViewer(viewer, units)
             entry.put("layout", layoutSnapshot(encode(restored)))
         }
-        write(historyFile, history)
+        if (historyFile.exists()) {
+            val entries = history.getJSONArray("entries")
+            for (i in 0 until entries.length()) rebase(entries.getJSONObject(i))
+            write(historyFile, history)
+        }
+        if (savedLayoutsFile.exists()) {
+            savedLayouts.keys().forEach { rebase(savedLayouts.getJSONObject(it)) }
+            write(savedLayoutsFile, savedLayouts)
+        }
     }
 
     private fun layoutSnapshot(encoded: JSONObject) = JSONObject().also { snapshot ->

@@ -102,14 +102,94 @@ internal class WorkspaceStore(private val file: File) {
         return runCatching { decode(JSONObject(file.readText())) }.getOrElse { WorkspaceFile() }
     }
 
-    fun save(workspace: WorkspaceFile) = synchronized(lock) {
-        file.parentFile?.mkdirs()
-        val temporary=File(file.parentFile,file.name+".tmp")
-        temporary.writeText(encode(workspace.copy(viewerReference=viewerReference ?: workspace.viewerReference,
-            referenceUnitsPerMeter=if(viewerReference!=null)viewerUnitsPerMeter else workspace.referenceUnitsPerMeter)).toString(2))
-        java.nio.file.Files.move(temporary.toPath(),file.toPath(),java.nio.file.StandardCopyOption.REPLACE_EXISTING,java.nio.file.StandardCopyOption.ATOMIC_MOVE)
-
+    private val historyFile = File(file.parentFile, "layout-history.json")
+    private val history by lazy {
+        runCatching { JSONObject(historyFile.readText()) }
+            .getOrElse { JSONObject().put("entries", JSONArray()).put("index", -1) }
     }
+    private val layoutKeys = listOf("active_layout", "layouts", "layout_origin", "desktop_home",
+        "cursor_map_reference", "fixed_magnifiers", "system_panels", "reference_placement")
+
+    fun save(workspace: WorkspaceFile) = synchronized(lock) {
+        write(file, encode(withViewer(workspace)))
+    }
+
+    fun recordLayout(workspace: WorkspaceFile, reason: String) = synchronized(lock) {
+        val encoded = encode(withViewer(workspace))
+        val snapshot = layoutSnapshot(encoded)
+        val entries = history.getJSONArray("entries")
+        val index = history.getInt("index")
+        val current = entries.optJSONObject(index)?.getJSONObject("layout")
+        if (current != null && layoutKeys.all { current.opt(it)?.toString() == snapshot.opt(it)?.toString() }) return
+        val next = JSONArray()
+        for (i in maxOf(0, index - 38)..index) next.put(entries.getJSONObject(i))
+        next.put(JSONObject().put("time_ms", System.currentTimeMillis()).put("action", reason).put("layout", snapshot))
+        updateHistory(next, next.length() - 1, reason)
+        write(file, encoded)
+    }
+
+    fun hasLayoutHistory(): Boolean = synchronized(lock) {
+        history.getJSONArray("entries").length() > 0
+    }
+
+    fun hasPlacementChange(workspace: WorkspaceFile): Boolean = synchronized(lock) {
+        val current = history.getJSONArray("entries").optJSONObject(history.getInt("index"))
+            ?.getJSONObject("layout") ?: return true
+        val encoded = encode(workspace)
+        layoutKeys.any { it != "cursor_map_reference" && current.opt(it)?.toString() != encoded.opt(it)?.toString() }
+    }
+
+    fun stepLayout(workspace: WorkspaceFile, delta: Int): WorkspaceFile? = synchronized(lock) {
+        val entries = history.getJSONArray("entries")
+        val index = history.getInt("index") + delta
+        val entry = entries.optJSONObject(index) ?: return null
+        val saved = decode(entry.getJSONObject("layout"))
+        val restored = workspace.copy(activeLayout = saved.activeLayout, layouts = saved.layouts,
+            layoutOrigin = saved.layoutOrigin, desktopHome = saved.desktopHome, cursorMapReference = saved.cursorMapReference,
+            fixedMagnifiers = saved.fixedMagnifiers, systemPanels = saved.systemPanels, referencePlacement = saved.referencePlacement)
+        write(file, encode(withViewer(restored)))
+        updateHistory(entries, index, if (delta < 0) "undo" else "redo")
+        restored
+    }
+
+    // Apply the same XR tracking-space recovery to every undo/redo entry.
+    fun rebaseLayoutHistory(prior: Pose, priorUnits: Float, viewer: Pose, units: Float) = synchronized(lock) {
+        if (!historyFile.exists()) return
+        val entries = history.getJSONArray("entries")
+        for (i in 0 until entries.length()) {
+            val entry = entries.getJSONObject(i)
+            val saved = decode(entry.getJSONObject("layout"))
+            val restored = saved.copy(viewerReference = prior, referenceUnitsPerMeter = priorUnits)
+                .restoreViewer(viewer, units)
+            entry.put("layout", layoutSnapshot(encode(restored)))
+        }
+        write(historyFile, history)
+    }
+
+    private fun layoutSnapshot(encoded: JSONObject) = JSONObject().also { snapshot ->
+        for (key in layoutKeys + listOf("anchor_uuid")) {
+            encoded.opt(key)?.let { snapshot.put(key, it) }
+        }
+    }
+
+    private fun updateHistory(entries: JSONArray, index: Int, reason: String) {
+        history.put("entries", entries).put("index", index)
+        write(historyFile, history)
+        val snapshot = entries.getJSONObject(index).getJSONObject("layout")
+        android.util.Log.i("Floatdesk", "layout action=$reason step=${index + 1}/${entries.length()} state=$snapshot")
+    }
+
+    private fun withViewer(workspace: WorkspaceFile) = workspace.copy(viewerReference=viewerReference ?: workspace.viewerReference,
+        referenceUnitsPerMeter=if(viewerReference!=null)viewerUnitsPerMeter else workspace.referenceUnitsPerMeter)
+
+    private fun write(destination: File, json: JSONObject) {
+        destination.parentFile?.mkdirs()
+        val temporary = File(destination.parentFile, destination.name + ".tmp")
+        temporary.writeText(json.toString(2))
+        java.nio.file.Files.move(temporary.toPath(), destination.toPath(),
+            java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+    }
+
 }
 
 internal fun deskLayout(monitors: List<Triple<String, Int, Int>>): MutableList<MonitorPlacement> {

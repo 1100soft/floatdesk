@@ -264,6 +264,12 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
     val grips = handTracking.points
     val displayHead=remember { AtomicReference<Pose?>(null) }
     val viewHalfAngles=remember {AtomicReference(floatArrayOf(Math.toRadians(35.0).toFloat(),Math.toRadians(30.0).toFloat()))}
+    fun recordPlacement(reason:String) {
+        if(!store.hasPlacementChange(workspace))return
+        val view=magnifierViewer.get() ?: displayHead.get()
+        if(view!=null)workspace=workspace.copy(cursorMapReference=view)
+        store.recordLayout(workspace,reason)
+    }
     fun addFixedMagnifier(){
         val desktop=workspace.monitorAt(0) ?: return
         val viewer=magnifierViewer.get() ?: displayHead.get() ?: return
@@ -272,7 +278,9 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
         if(lastFixedWindow==null)lastFixedWindow=source?.id
         val window=magnifiedWindow(source?.id ?: 0,source?.width ?: 1280,source?.height ?: 800,viewer,viewHalfAngles.get()[0],viewHalfAngles.get()[1],handTracking.unitsPerMeter,workspace.sphericalWarp && RenderPolicy.CustomMeshes)
         val record=saveFixedMagnifier(id,window,desktop.copy(pose=workspace.layoutOrigin ?: desktop.pose),handTracking.unitsPerMeter)
-        workspace=workspace.copy(magnifyWindow=true,magnifierMode="fixed",fixedMagnifiers=workspace.fixedMagnifiers+record);store.save(workspace)
+        store.recordLayout(workspace,"before adding magnifier")
+        workspace=workspace.copy(magnifyWindow=true,magnifierMode="fixed",fixedMagnifiers=workspace.fixedMagnifiers+record)
+        recordPlacement("add magnifier")
     }
     LaunchedEffect(workspace.magnifierMode,workspace.magnifyWindow){
         if(workspace.magnifierMode=="fixed")lastFixedWindow=magnified?.id ?: inPlaceWindow ?: lastFixedWindow
@@ -291,7 +299,10 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
         val head=displayHead.get() ?: store.viewerReference ?: Pose()
         val viewer=Pose(handTracking.points["VIEWER"]?.copyOf() ?: head.position.copyOf(),head.rotation.copyOf())
         val angles=viewHalfAngles.get()
+        store.recordLayout(workspace,"before reset")
         workspace=workspace.reset(monitors,store,viewer,angles,handTracking.unitsPerMeter)
+        workspace=workspace.copy(cursorMapReference=viewer)
+        store.recordLayout(workspace,"reset")
         systemPlacements.clear()
         restoreViewerPending=false
         followGeneration+=1
@@ -416,6 +427,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 PalmAction.SPACE -> { session?.scene?.requestFullSpace();toggleDisplays() }
                 PalmAction.HAND_MOUSE -> { workspace=workspace.copy(handMouse=!workspace.handMouse);store.save(workspace) }
                 PalmAction.LAYOUT,PalmAction.MOVE,PalmAction.FREE,PalmAction.DONE -> {
+                    if(action==PalmAction.LAYOUT)store.recordLayout(workspace,"enter layout")
                     val done=action==PalmAction.DONE
                     grabs.values.forEach{it.cancel()};originGrab.clear();pointerControl.clear();manipulating=false;pendingFocusMonitor=null
                     toolbar.clear();toolbarTarget=null;openToolbarStrip=null;openToolbarWindow=null
@@ -425,6 +437,16 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     palmPanel=if(done)null else palmPanel?.copy(page=PalmPage.LAYOUT)
                     store.save(workspace)
                 }
+                PalmAction.UNDO,PalmAction.REDO -> {
+                    if(!manipulating && !magnifierMoving){
+                        store.stepLayout(workspace,if(action==PalmAction.UNDO)-1 else 1)?.let{
+                            workspace=it
+                            systemPlacements.clear()
+                            pointerControl.clear()
+                            followGeneration+=1
+                        }
+                    }
+                }
                 PalmAction.RESET_ORIGIN -> {
                     val desktop=workspace.monitorAt(0)?.pose
                     val prior=workspace.layoutOrigin
@@ -433,7 +455,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                         val units=handTracking.unitsPerMeter
                         systemPlacements.replaceAll{_,record->rebaseSupportingPlacement(record,prior,origin,units)}
                         workspace=workspace.rebaseLayoutOrigin(origin,units)
-                        store.save(workspace)
+                        store.recordLayout(workspace,"reset origin")
                     }
                 }
                 PalmAction.ALIGN_AXES,PalmAction.SNAP_OBJECTS,PalmAction.FACE_USER,PalmAction.AUTO_ADJUST -> {
@@ -450,7 +472,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                         val contentSizes=visiblePanes.mapNotNull{it.layoutFootprint}.associate{it.id to (it.width to it.height)}
                         workspace=workspace.adjustLayout(adjustment,view,handTracking.unitsPerMeter,contentSizes,contentSizes.keys)
                         systemPlacements.clear()
-                        store.save(workspace)
+                        store.recordLayout(workspace,adjustment.name.lowercase())
                     }
                 }
                 PalmAction.REFERENCE -> { workspace=workspace.copy(desktopReference=!workspace.desktopReference);store.save(workspace) }
@@ -471,7 +493,11 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
         }
     }
     val palmActionNow = rememberUpdatedState(palmAction)
-    fun updateManipulation(active: Boolean) {
+    fun updateManipulation(active: Boolean,movingOrigin:Boolean=false) {
+        if(!active && manipulating && workspace.layoutModeActive){
+            if(movingOrigin)store.recordLayout(workspace,"origin gesture")
+            else recordPlacement("desktop gesture")
+        }
         manipulating = active
         holdingFist = false
         suppressFist = true
@@ -684,14 +710,25 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 val reference=head.toWorkspacePose()
                 val recovery=trackingRecovery.update(handTracking.nowMs,true,reference.position,reference.rotation,unitsPerMeter)
                 if(recovery!=null && !restoreViewerPending && workspace.anchorUuid==null) {
-                    workspace=workspace.copy(viewerReference=Pose(recovery.first,recovery.second),referenceUnitsPerMeter=store.viewerUnitsPerMeter).restoreViewer(reference,unitsPerMeter)
+                    val prior=Pose(recovery.first,recovery.second)
+                    store.rebaseLayoutHistory(prior,store.viewerUnitsPerMeter,reference,unitsPerMeter)
+                    workspace=workspace.copy(viewerReference=prior,referenceUnitsPerMeter=store.viewerUnitsPerMeter).restoreViewer(reference,unitsPerMeter)
                     grabs.values.forEach { it.cancel() };pointerControl.clear()
                     manipulating=false;suppressFist=true;followLock=null
                     magnification.dismiss(handTracking.nowMs);magnified=null;inPlaceWindow=null;connection.magnifierActive=false
                     Log.w("Floatdesk","Recovered workspace after tracking discontinuity")
                 }
                 if(restoreViewerPending && !workspace.layouts[workspace.activeLayout].isNullOrEmpty()) {
+                    if(workspace.anchorUuid==null)store.rebaseLayoutHistory(workspace.viewerReference ?: Pose(),
+                        workspace.referenceUnitsPerMeter ?: unitsPerMeter,reference,unitsPerMeter)
                     workspace=workspace.restoreViewer(reference,unitsPerMeter)
+                    if(!store.hasLayoutHistory()){
+                        Log.i("Floatdesk","Initializing layout history, previous cursor reference=${workspace.cursorMapReference?.position?.contentToString()}")
+                        workspace=workspace.copy(cursorMapReference=reference)
+                        store.viewerReference=reference
+                        store.viewerUnitsPerMeter=unitsPerMeter
+                        store.recordLayout(workspace,"restore layout")
+                    }
                     restoreViewerPending=false
                 }
                 store.viewerReference=reference
@@ -931,7 +968,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                             workspace=workspace.rebaseLayoutOrigin(origin,unitsPerMeter)
                         }
                     }
-                if(!originGrab.active){updateManipulation(false);store.save(workspace)}
+                if(!originGrab.active){updateManipulation(false,movingOrigin=true);store.save(workspace)}
             }
             guideRenderer?.updateLayoutOrigin(root,originGuide,unitsPerMeter,desktopGuideRange){event->
                 val side=event.pointerType.toString()
@@ -954,7 +991,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                         originDownAt=null
                         if(originGrab.active){
                             if(side=="LEFT" || side=="RIGHT")originGrab.end(side) else originGrab.clear()
-                            if(!originGrab.active){updateManipulation(false);store.save(workspace)}
+                            if(!originGrab.active){updateManipulation(false,movingOrigin=true);store.save(workspace)}
                         }
                     }
                     else->Unit
@@ -1428,7 +1465,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 {side,uv->magnifierHands.update("reference",side,uv,-1)},{next,changed->
                     referencePane=next
                     if(changed)workspace=workspace.copy(referencePlacement=saveFixedMagnifier("reference",next,layoutBasis,unit))
-                },{moving->if(moving)fixedEditing.add("reference")else if(fixedEditing.remove("reference"))store.save(workspace);magnifierMoving=fixedEditing.isNotEmpty()},
+                },{moving->if(moving)fixedEditing.add("reference")else if(fixedEditing.remove("reference"))recordPlacement("reference gesture");magnifierMoving=fixedEditing.isNotEmpty()},
                 topologyKey="reference",onHidden={referenceReady=false},showFrame=false,
                 allowManipulation=workspace.grabToMove,freeManipulation=workspace.freeManipulation,desktopMirror=true,projectionMode=workspace.sphericalWarp,mirrorOverlay=referenceInk::get)
         }
@@ -1454,7 +1491,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                             workspace=workspace.copy(fixedMagnifiers=workspace.fixedMagnifiers.map{if(it.id==record.id)saved else it})
                         }
                     },{editing->
-                        if(editing)fixedEditing.add(record.id)else if(fixedEditing.remove(record.id))store.save(workspace)
+                        if(editing)fixedEditing.add(record.id)else if(fixedEditing.remove(record.id))recordPlacement("magnifier gesture")
                         magnifierMoving=fixedEditing.isNotEmpty()
                     },{hands,gaze->if(gaze)pointerControl.noteSystemGaze();if(hands || gaze)magnifierPointerHover[record.id]=hands to gaze else magnifierPointerHover.remove(record.id)},allowManipulation=workspace.grabToMove,freeManipulation=workspace.freeManipulation,topologyKey=record.id,onHidden={fixedReady[record.id]=false},
                     projectionMode=workspace.sphericalWarp,retainLastFrame=true,onDisplayed={id->fixedDisplayed[record.id]=id;fixedReady[record.id]=true})
@@ -1534,7 +1571,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                             if(live.panel)workspace=workspace.copy(systemPanels=workspace.systemPanels.filter{it.id!=placementKey}+saved)
                         }
                     },{moving->
-                        if(moving)fixedEditing.add("system:${live.id}")else if(fixedEditing.remove("system:${live.id}"))store.save(workspace)
+                        if(moving)fixedEditing.add("system:${live.id}")else if(fixedEditing.remove("system:${live.id}"))recordPlacement("panel gesture")
                         magnifierMoving=fixedEditing.isNotEmpty()
                     },allowManipulation=workspace.grabToMove && live.panel,freeManipulation=workspace.freeManipulation && live.panel,topologyKey="shell:${live.id}",projectionMode=workspace.sphericalWarp,transientSurface=!live.panel,previewBounds=row?.takeUnless{it.panel},onHidden={systemReady[live.id]=false},showFrame=false)
             }}
@@ -1590,20 +1627,19 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     val panes=buildList{
                         if(workspace.magnifierMode=="floating" && magnifierReady)magnified?.let{add("floating" to it)}
                         if(workspace.desktopReference && referenceReady)referencePane?.let{add("reference" to it)}
-                        addAll(fixedWindows.get().filter{fixedReady[it.first]==true && fixedDisplayed[it.first]==it.second.id})
-                        addAll(systemWindows.get().filter{systemReady[it.id]==true}.map{"shell:${it.id}" to it})
+                        addAll(fixedWindows.get().mapNotNull{(key, _)->
+                            fixedRuntime[key]?.takeIf{fixedReady[key]==true && fixedDisplayed[key]==it.id}?.let{key to it}
+                        })
+                        addAll(systemWindows.get().mapNotNull{pane->systemRuntime[pane.id]?.takeIf{systemReady[it.id]==true}?.let{"shell:${it.id}" to it}})
                         addAll(popupWindows.get().map{"menu:${it.id}" to it})
                     }
                     for((key,pane) in panes){
                         val source=if(key=="reference")info.bounds()?.let{dev.floatdesk.client.net.DesktopWindow(-1,it[0],it[1],it[2],it[3])}
                             else connection.windowCaptures.source(pane.id)
                         if(source==null)continue
-                        val footprint=pane.layoutFootprint
-                        val logicalPose=footprint?.pose ?: if(pane.freePose)pane.pose else if(pane.fixed)pane.pose.copy(position=pane.requestedPosition ?: pane.pose.position)
-                            else pane.pose.copy(position=transformPoint(mapViewer!!,FloatArray(3){pane.headOffset[it]*pane.layerDistanceM*pane.units}))
-                        patches+=cursorPatches(key,logicalPose,footprint?.width ?: pane.width,footprint?.height ?: pane.height,pane.mesh,
+                        patches+=cursorPatches(key,pane.pose,pane.width,pane.height,pane.mesh,
                             FocusRect(source.x.toFloat(),source.y.toFloat(),(source.x+source.width).toFloat(),(source.y+source.height).toFloat()),mapViewer!!,
-                            region=if(footprint!=null)FocusRect(0f,0f,1f,1f)else magnifierContentRect(pane),front=true).map{it.copy(depth=pane.layerDistanceM)}
+                            region=magnifierContentRect(pane),front=true).map{it.copy(depth=pane.layerDistanceM)}
                     }
                 }
                 connection.publishCursorMap(CursorTopology(patches).logicalPixels())
@@ -1674,7 +1710,12 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     onRemove={
                         val selected=(toolbarTarget as? ToolbarTarget.Magnifier)?.key
                         if(selected=="floating"){magnification.dismiss(SystemClock.uptimeMillis());magnified=null}
-                        else if(selected!=null){workspace=workspace.copy(fixedMagnifiers=workspace.fixedMagnifiers.filter{it.id!=selected});fixedPins.remove(selected);fixedRuntime.remove(selected);store.save(workspace)}
+                        else if(selected!=null){
+                            store.recordLayout(workspace,"before removing magnifier")
+                            workspace=workspace.copy(fixedMagnifiers=workspace.fixedMagnifiers.filter{it.id!=selected})
+                            fixedPins.remove(selected);fixedRuntime.remove(selected)
+                            recordPlacement("remove magnifier")
+                        }
                         magnifierPointerHover.remove(selected);closeToolbar()
                     })
             }}

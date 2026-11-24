@@ -37,28 +37,33 @@ internal fun snapLayoutBoxes(boxes:List<LayoutBox>):List<FloatArray>{
             val distance=dx*dx+dy*dy
             if(distance<bestDistance){bestDistance=distance;best=floatArrayOf(x,y,origin[2])}
         }
+        // Each earlier box contributes four contact segments. On each segment,
+        // the closest clear point is the orthogonal projection or a blocker endpoint.
         for((j,p) in placed){
-            val dx=(box.width+boxes[j].width)*.5f
-            val dy=(box.height+boxes[j].height)*.5f
-            if(abs(p[1]-origin[1])<dy-epsilon){
-                consider(p[0]-dx,origin[1]);consider(p[0]+dx,origin[1])
-            }
-            if(abs(p[0]-origin[0])<dx-epsilon){
-                consider(origin[0],p[1]-dy);consider(origin[0],p[1]+dy)
-            }
-        }
-        if(best==null){
-            // A diagonally isolated rectangle needs alignment on the other axis first.
-            for((j,p) in placed){
-                val other=boxes[j]
-                val dx=(box.width+other.width)*.5f;val dy=(box.height+other.height)*.5f
-                val overlapX=minOf(box.width,other.width)*.10f
-                val overlapY=minOf(box.height,other.height)*.10f
-                val x=origin[0].coerceIn(p[0]-dx+overlapX,p[0]+dx-overlapX)
-                val y=origin[1].coerceIn(p[1]-dy+overlapY,p[1]+dy-overlapY)
-                consider(p[0]-dx,y);consider(p[0]+dx,y)
-                consider(x,p[1]-dy);consider(x,p[1]+dy)
-                consider(p[0]-dx,p[1]);consider(p[0]+dx,p[1])
+            for(axis in 0..1){
+                val along=1-axis
+                fun halfSpan(index:Int,dimension:Int):Float {
+                    val other=boxes[index]
+                    return if(dimension==0)(box.width+other.width)*.5f else (box.height+other.height)*.5f
+                }
+                val span=halfSpan(j,along)
+                val low=p[along]-span+epsilon
+                val high=p[along]+span-epsilon
+                if(low>high)continue
+                for(side in listOf(-1,1)){
+                    val edge=p[axis]+side*halfSpan(j,axis)
+                    fun candidate(value:Float){
+                        if(axis==0)consider(edge,value.coerceIn(low,high))
+                        else consider(value.coerceIn(low,high),edge)
+                    }
+                    candidate(origin[along])
+                    for((blocker,center) in placed){
+                        if(abs(edge-center[axis])>=halfSpan(blocker,axis)-epsilon)continue
+                        val blocked=halfSpan(blocker,along)
+                        candidate(center[along]-blocked)
+                        candidate(center[along]+blocked)
+                    }
+                }
             }
         }
         if(best==null){
@@ -80,7 +85,7 @@ private fun axisAlignedRotation(rotation:FloatArray):FloatArray {
 /** Auto lays out in the reference axes, then faces each resulting surface toward the viewer. */
 internal fun WorkspaceFile.adjustLayout(action:LayoutAdjustment,viewer:Pose,units:Float,contentSizes:Map<String,Pair<Float,Float>> = emptyMap(),visibleRecords:Set<String>?=null):WorkspaceFile{
     if(action==LayoutAdjustment.AUTO)return adjustLayout(LayoutAdjustment.ALIGN,viewer,units,contentSizes,visibleRecords)
-        .adjustLayout(LayoutAdjustment.SNAP,viewer,units,contentSizes,visibleRecords).adjustLayout(LayoutAdjustment.FACE,viewer,units,contentSizes,visibleRecords)
+        .adjustLayout(LayoutAdjustment.FACE,viewer,units,contentSizes,visibleRecords).adjustLayout(LayoutAdjustment.SNAP,viewer,units,contentSizes,visibleRecords)
     val desktop=layouts[activeLayout]?.toList().orEmpty()
     val origin=layoutOrigin ?: desktop.firstOrNull()?.pose ?: return this
     val records=fixedMagnifiers+systemPanels+listOfNotNull(referencePlacement)

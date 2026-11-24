@@ -35,7 +35,7 @@ import dev.floatdesk.client.workspace.WorkspaceFile
 import kotlin.math.cos
 import kotlin.math.sin
 
-internal enum class PalmAction { FOLLOW, RESET, SEARCH, SPACE, WARP, MOVE, HAND_MOUSE, FREE, REFERENCE, MODE, MORE, BACK, DIAGNOSTICS, GAZE_FOCUS, MAGNIFIER, MOUSE_SPACES, LAYOUT, ALIGN_AXES, SNAP_OBJECTS, FACE_USER, AUTO_ADJUST, RESET_ORIGIN, DONE }
+internal enum class PalmAction { FOLLOW, RESET, SEARCH, SPACE, WARP, MOVE, HAND_MOUSE, FREE, REFERENCE, MODE, MORE, BACK, DIAGNOSTICS, GAZE_FOCUS, MAGNIFIER, MOUSE_SPACES, LAYOUT, ALIGN_AXES, SNAP_OBJECTS, FACE_USER, AUTO_ADJUST, RESET_ORIGIN, UNDO, REDO, DONE }
 internal enum class PalmPage { MAIN, MORE, LAYOUT }
 internal data class PalmButton(val action: PalmAction, val x: Float, val y: Float, val w: Float, val h: Float)
 
@@ -57,7 +57,7 @@ internal object PalmMenuLayout {
         PalmAction.BACK,
     )
     val layout=listOf(PalmAction.MOVE,PalmAction.FREE,PalmAction.ALIGN_AXES,PalmAction.SNAP_OBJECTS,
-        PalmAction.FACE_USER,PalmAction.AUTO_ADJUST,PalmAction.RESET_ORIGIN,PalmAction.DONE)
+        PalmAction.FACE_USER,PalmAction.AUTO_ADJUST,PalmAction.RESET_ORIGIN,PalmAction.RESET,PalmAction.UNDO,PalmAction.REDO,PalmAction.DONE)
     fun actions(page:PalmPage)=when(page){
         PalmPage.MAIN->main
         PalmPage.MORE->more
@@ -76,7 +76,7 @@ internal object PalmMenuLayout {
 
 internal fun palmActionEnabled(action:PalmAction,workspace:WorkspaceFile,info:WorkspaceInfo?):Boolean {
     if(workspace.layoutModeActive)return action in PalmMenuLayout.layout
-    if(action in PalmMenuLayout.layout)return false
+    if(action != PalmAction.RESET && action in PalmMenuLayout.layout)return false
     return when(action){
         PalmAction.WARP->RenderPolicy.SphericalDesktop
         PalmAction.GAZE_FOCUS->info?.gazeFocus==true || workspace.gazeToFocus
@@ -149,6 +149,8 @@ internal fun palmTooltip(action: PalmAction, workspace: WorkspaceFile, latched: 
     PalmAction.FACE_USER -> "Face the user"
     PalmAction.AUTO_ADJUST -> "Auto adjust"
     PalmAction.RESET_ORIGIN -> "Reset origin"
+    PalmAction.UNDO -> "Undo layout change"
+    PalmAction.REDO -> "Redo layout change"
     PalmAction.DONE -> "Done"
 }
 
@@ -279,6 +281,13 @@ private fun DrawScope.drawPalmIcon(action: PalmAction, workspace: WorkspaceFile,
         PalmAction.FACE_USER -> eye(.5f,.5f,.39f)
         PalmAction.AUTO_ADJUST -> { ring(.5f,.5f,.24f);line(.5f,.1f,.5f,.9f);line(.1f,.5f,.9f,.5f) }
         PalmAction.RESET_ORIGIN -> { box(.13f,.22f,.87f,.78f);ring(.5f,.5f,.15f);dot(.5f,.5f,.045f) }
+        PalmAction.UNDO,PalmAction.REDO -> {
+            val left=action==PalmAction.UNDO
+            val tip=if(left).18f else .82f
+            val shoulder=if(left).36f else .64f
+            line(tip,.38f,shoulder,.20f);line(tip,.38f,shoulder,.57f)
+            arc(.18f,.38f,.82f,.99f,180f,180f)
+        }
         PalmAction.DONE -> { line(.12f,.53f,.39f,.77f);line(.39f,.77f,.88f,.24f) }
         PalmAction.MOVE -> { line(.1f,.5f,.9f,.5f); line(.5f,.1f,.5f,.9f); line(.1f,.5f,.27f,.32f); line(.9f,.5f,.73f,.68f) }
         PalmAction.FREE -> { line(.06f,.72f,.42f,.27f); line(.58f,.72f,.94f,.27f); line(.06f,.72f,.3f,.72f); line(.70f,.27f,.94f,.27f) }

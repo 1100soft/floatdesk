@@ -154,6 +154,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                 while(!connection.tryNativeMeshUpdate{resources.retain(nextShape);entity.shape=nextShape;true})withFrameNanos{}
             }
             resources.rendered=target
+            placementNow.value(target,false)
             entity.parent=root;entity.setPose(targetPose)
             logMagnifierSubmission("start",target,entity)
             if(receiveInput)syncMagnifierInput(session,resources,entity,target.mesh,target.width,target.height,direct=transientSurface)

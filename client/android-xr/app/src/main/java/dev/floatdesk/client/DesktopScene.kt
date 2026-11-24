@@ -348,9 +348,7 @@ internal fun DeskContent(
                         // raw perception-space hit; do not localize it again through ActivitySpace.
                         val next = hands.onEvent(event, existing, pixelDensity, handTracking, warp.mesh)
                         if (hands.blocksNative) nativeResize = false
-                        if (wasBusy != hands.busy) onManipulate(hands.busy)
-                        if (next == null) return
-                        onWorkspace(
+                        if (next != null) onWorkspace(
                             file.monitorPlaced(
                                 index,
                                 next,
@@ -358,6 +356,7 @@ internal fun DeskContent(
                                 event.action == InputEvent.Action.UP || event.action == InputEvent.Action.CANCEL,
                             ),
                         )
+                        if (wasBusy != hands.busy) onManipulate(hands.busy)
                     }
                 }
             }

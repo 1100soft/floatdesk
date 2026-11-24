@@ -61,6 +61,10 @@ fun main() {
     LayoutBox(floatArrayOf(0f,0f,0f),8f,2f),
     LayoutBox(floatArrayOf(.4f,.7f,1f),2f,2f)))
  check(vertical[1].contentEquals(floatArrayOf(.4f,2f,1f)))
+ val diagonal=snapLayoutBoxes(listOf(
+    LayoutBox(floatArrayOf(0f,0f,0f),4f,4f),
+    LayoutBox(floatArrayOf(4f,4f,1f),2f,2f)))
+ check(abs(diagonal[1][0]-3f)<.0001f && abs(diagonal[1][1]-3f)<.0001f)
  val sphereGeometry=layoutOriginSphereGeometry()
  for(i in sphereGeometry.positions.indices step 3){
     val r=sphereGeometry.positions.sliceArray(i..i+2)

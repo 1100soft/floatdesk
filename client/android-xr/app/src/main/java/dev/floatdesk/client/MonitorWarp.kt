@@ -40,10 +40,11 @@ internal class MonitorWarp : AutoCloseable {
     private var retainedCurved:SurfaceEntity?=null
     private var curvedState:NativeNodeState?=null
 
+    private var videoOrigin=Vector3.Zero
     private fun syncCurvedPose(original:SurfaceEntity) {
         curvedState?.let{
             it.parent(original.parent)
-            it.pose(original.getPose())
+            it.pose(original.getPose().compose(Pose(videoOrigin*original.getScale())))
             it.scale(original.getScale())
         }
     }
@@ -55,6 +56,7 @@ internal class MonitorWarp : AutoCloseable {
     private var interaction: InteractableComponent? = null
     private val sequences = mutableSetOf<String>()
     private var curvedInput: CurvedMonitorInput? = null
+    private var curvedInputPlacement:NativeNodeState?=null
     private var inputPointer:SpatialPointerComponent?=null
     private var ownsInputPointer=false
     private var pointerRefreshAt=0L
@@ -68,7 +70,7 @@ internal class MonitorWarp : AutoCloseable {
     private fun applyVisibility() {
         input?.setEnabled(shown && mesh==null)
         if(live!==input)curvedState?.enabled(shown)
-        curvedInput?.entity?.setEnabled(shown && mesh!=null)
+        curvedInputPlacement?.enabled(shown && mesh!=null)
     }
     private var ownerEnabled=true
     private var directInteraction = false
@@ -84,12 +86,16 @@ internal class MonitorWarp : AutoCloseable {
         if(!screenRects.contentEquals(rects) || spacing!=inset) {screenRects=rects.copyOf();spacing=inset;presentationDirty=true}
     }
     @SuppressLint("RestrictedApi")
-    private fun videoShape(width:Float,height:Float,sphere:MonitorMesh?):SurfaceEntity.Shape {
+    private fun videoShape(width:Float,height:Float,sphere:MonitorMesh?,origin:Vector3=Vector3.Zero):SurfaceEntity.Shape {
         if(sphere==null && (!RenderPolicy.CustomMeshes || videoCoverageIsFull(screenRects,spacing))) return SurfaceEntity.Shape.Quad(FloatSize2d(width,height))
         val geometry=clippedVideoGeometry(width,height,sphere,screenRects,spacing)
         val valid=geometry.indices.isNotEmpty() && geometry.positions.size%3==0 && geometry.texCoords.size*3==geometry.positions.size*2 && geometry.indices.size%3==0 &&
             geometry.positions.all{it.isFinite()} && geometry.texCoords.all{it.isFinite()} && geometry.indices.all{it>=0 && it<geometry.positions.size/3}
         if(!valid)return appliedShape ?: SurfaceEntity.Shape.Quad(FloatSize2d(.001f,.001f))
+        if(origin!=Vector3.Zero){
+            val offset=floatArrayOf(origin.x,origin.y,origin.z)
+            for(i in geometry.positions.indices)geometry.positions[i]-=offset[i%3]
+        }
         return nativeVideoMesh(geometry)
     }
     private var hoverWindow=0L
@@ -98,7 +104,7 @@ internal class MonitorWarp : AutoCloseable {
     private val hoverLast=mutableMapOf<String,Long>()
     private var hoverGap=0L
     val outputSurface: Surface? get() = live?.getSurface()
-    val displayEntity: SurfaceEntity? get()=live
+    val displayEntity: SurfaceEntity? get()=input
     fun matchesSize(placement: MonitorPlacement)=flatWidth==placement.physicalWidthM && flatHeight==placement.physicalHeightM &&
         (mesh?.center?.contentEquals(projectionCenter(placement)) ?: true)
     private fun projectionCenter(placement:MonitorPlacement)=floatArrayOf((placement.viewCenterU-.5f)*placement.physicalWidthM,(.5f-placement.viewCenterV)*placement.physicalHeightM,0f)
@@ -106,9 +112,9 @@ internal class MonitorWarp : AutoCloseable {
     @SuppressLint("RestrictedApi")
     suspend fun syncCurvedInput(session: Session) {
         val sphere = mesh
-        if(!shown){input?.setEnabled(false);if(live!==input)live?.setEnabled(false);curvedInput?.entity?.setEnabled(false);return}
+        if(!shown){input?.setEnabled(false);if(live!==input)live?.setEnabled(false);curvedInputPlacement?.enabled(false);return}
         if (sphere == null) {
-            curvedInput?.entity?.setEnabled(false)
+            curvedInputPlacement?.enabled(false)
             input?.setEnabled(true)
             if (!directInteraction) interaction?.let { component ->
                 check(input?.addComponent(component) == true)
@@ -121,12 +127,24 @@ internal class MonitorWarp : AutoCloseable {
             interaction?.let { input?.removeComponent(it) }
             directInteraction = false
         }
-        if (curvedInput?.mesh === sphere) { curvedInput?.entity?.parent=live;curvedInput?.entity?.setEnabled(true);input?.setEnabled(false);return }
-        curvedInput?.let { it.update(sphere);it.entity.parent=live;it.entity.setEnabled(true);input?.setEnabled(false);return }
+        val owner = input ?: return
+        val inputParent = owner.parent ?: return
+        fun place(){
+            curvedInputPlacement?.apply{
+                parent(inputParent)
+                pose(owner.getPose())
+                scale(owner.getScale())
+                enabled(shown)
+            }
+        }
+        curvedInput?.let {
+            if(it.mesh!==sphere)it.update(sphere)
+            place()
+            return
+        }
         val target = live ?: return
         val listener = inputListener ?: return
-        val owner = input
-        val next = CurvedMonitorInput.create(session, target, sphere, listener=listener)
+        val next = CurvedMonitorInput.create(session, inputParent, sphere, listener=listener)
         // Loading suspends. A monitor removal/resize can close this owner meanwhile.
         if (input !== owner || live !== target || mesh !== sphere) {
             next.close()
@@ -134,6 +152,8 @@ internal class MonitorWarp : AutoCloseable {
         }
         val old = curvedInput
         curvedInput = next
+        curvedInputPlacement=NativeNodeState(next.entity)
+        place()
         old?.close()
         input?.setEnabled(false)
     }
@@ -275,7 +295,7 @@ internal class MonitorWarp : AutoCloseable {
         val usable = enabled
         if (!usable) {
             if (live !== original) {
-                curvedInput?.entity?.setEnabled(false)
+                curvedInputPlacement?.enabled(false)
                 curvedState?.enabled(false);curvedState?.parent(null)
                 live = original
             }
@@ -335,7 +355,14 @@ internal class MonitorWarp : AutoCloseable {
                 fun sag(point: FloatArray) = (0..2).sumOf { (point[it]*viewer[it]/next.radius).toDouble() }.toFloat()
                 Log.i("Floatdesk","warp geometry map=geodesic viewer=${viewer.contentToString()} sdkViewer=$sdkEye radius=${next.radius} radiusActivity=${next.radius*original.getScale(Space.ACTIVITY)} image=${placement.pixelWidth}x${placement.pixelHeight} extent=${next.width}x${next.height} horizontalSag=${sag(h)} verticalSag=${sag(v)}")
             }
-            val shape = videoShape(next.width,next.height,next)
+            // The native surface's ordering origin must sit at the rendered sphere,
+            // while interaction keeps the desktop's authored coordinate system.
+            val origin=Vector3(
+                next.eye[0]-next.normal[0]*next.geometryRadius,
+                next.eye[1]-next.normal[1]*next.geometryRadius,
+                next.eye[2]-next.normal[2]*next.geometryRadius,
+            )
+            val shape = videoShape(next.width,next.height,next,origin)
             val target = if (live === original && retainedCurved!=null) retainedCurved!!.also {
                 syncCurvedPose(original)
                 applyPixels(it,placement)
@@ -355,7 +382,8 @@ internal class MonitorWarp : AutoCloseable {
             if(submitShape!=null){
                 if(!submitShape{applyShape(target,shape)})return
             }else applyShape(target,shape)
-            live=target;curvedState?.enabled(shown)
+            videoOrigin=origin
+            live=target;syncCurvedPose(original);curvedState?.enabled(shown)
             flatWidth = next.width; flatHeight = next.height
             mesh = next;presentationDirty=false;geometryUpdatedAt=android.os.SystemClock.uptimeMillis()
         }
@@ -364,7 +392,7 @@ internal class MonitorWarp : AutoCloseable {
     @SuppressLint("RestrictedApi")
     override fun close() {
         // Restore the Compose-owned surface before releasing our independent curved resources.
-        curvedInput?.close(); curvedInput = null
+        curvedInput?.close(); curvedInput = null;curvedInputPlacement=null
         retainedCurved?.takeUnless{it.isDisposed}?.let { it.parent = null; it.dispose() };retainedCurved=null;curvedState=null
         input?.takeUnless{it.isDisposed}?.setEnabled(ownerEnabled)
         inputListener = null
@@ -380,5 +408,6 @@ internal class MonitorWarp : AutoCloseable {
         projectionUpdatedAt=0L
         geometryUpdatedAt=0L
         appliedShape = null
+        videoOrigin=Vector3.Zero
     }
 }

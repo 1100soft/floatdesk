@@ -1048,7 +1048,7 @@ mod tests {
     #[test]
     #[ignore = "private Xvfb only"]
     fn aim_hover_delivers_events_without_moving_pointer() {
-        use x11rb::protocol::Event;
+        use x11rb::protocol::xinput::{ConnectionExt as _, EventMask as XiMask, XIEventMask};
         let link = X11Link::open().unwrap();
         let window = link.conn.generate_id().unwrap();
         link.conn
@@ -1063,45 +1063,55 @@ mod tests {
                 0,
                 WindowClass::INPUT_OUTPUT,
                 0,
-                &CreateWindowAux::new().event_mask(
-                    EventMask::ENTER_WINDOW | EventMask::LEAVE_WINDOW | EventMask::POINTER_MOTION,
-                ),
+                &CreateWindowAux::new(),
             )
             .unwrap()
             .check()
             .unwrap();
         link.conn.map_window(window).unwrap().check().unwrap();
+        link.conn
+            .xinput_xi_query_version(2, 0)
+            .unwrap()
+            .reply()
+            .unwrap();
         let pointer = || {
             let p = link.conn.query_pointer(link.root).unwrap().reply().unwrap();
             (p.root_x, p.root_y)
         };
         let before = pointer();
         let mut hover = AimHover::default();
-        hover.update(Some((window, 35, 50))).unwrap();
-        hover.update(None).unwrap();
-        hover
-            .link
-            .as_ref()
+        hover.update(Some((window, 1, 1))).unwrap();
+        let master = hover.pointer.as_ref().unwrap().id;
+        link.conn
+            .xinput_xi_select_events(
+                window,
+                &[XiMask {
+                    deviceid: master,
+                    mask: vec![XIEventMask::ENTER | XIEventMask::MOTION],
+                }],
+            )
             .unwrap()
+            .check()
+            .unwrap();
+        hover.update(Some((window, 35, 50))).unwrap();
+        hover.update(Some((window, 38, 52))).unwrap();
+        let result = link
             .conn
-            .get_input_focus()
+            .xinput_xi_query_pointer(link.root, master)
             .unwrap()
             .reply()
             .unwrap();
+        assert_eq!((result.root_x, result.root_y), (38 << 16, 52 << 16));
         assert_eq!(before, pointer());
-        let mut types = Vec::new();
+        let mut received = false;
         while let Some(event) = link.conn.poll_for_event().unwrap() {
-            match event {
-                Event::EnterNotify(e) if e.event == window => types.push(0),
-                Event::MotionNotify(e) if e.event == window => {
-                    assert_eq!((e.event_x, e.event_y), (15, 25));
-                    types.push(1);
-                }
-                Event::LeaveNotify(e) if e.event == window => types.push(2),
-                _ => {}
+            if matches!(event,x11rb::protocol::Event::XinputMotion(e) if e.event==window && e.deviceid==master)
+            {
+                received = true;
             }
         }
-        assert_eq!(types, [0, 1, 2]);
+        assert!(received, "window did not receive XI2 motion");
+        hover.update(None).unwrap();
     }
 
     #[test]
@@ -1710,96 +1720,178 @@ mod tests {
     }
 }
 
-/// Deliver hover to the input child under a root coordinate without warping the X pointer.
+/// An independently positioned XInput master sends normal device events to XI2 clients.
 #[derive(Default)]
 pub(crate) struct AimHover {
-    link: Option<X11Link>,
-    previous: Option<(u32, i16, i16, i16, i16)>,
+    pointer: Option<HoverPointer>,
+}
+
+struct HoverPointer {
+    link: X11Link,
+    id: u16,
+    parking: u32,
+    position: Option<(i16, i16)>,
+}
+
+impl HoverPointer {
+    fn open() -> Result<Self> {
+        use x11rb::protocol::xinput::{
+            ConnectionExt as _, Device, DeviceType, HierarchyChange, HierarchyChangeData,
+            HierarchyChangeDataAddMaster,
+        };
+        use x11rb::protocol::xproto::{CreateGCAux, CreateWindowAux, Rectangle, WindowClass};
+        let link = X11Link::open()?;
+        let conn = &link.conn;
+        conn.xinput_xi_query_version(2, 0)
+            .map_err(Error::x11)?
+            .reply()
+            .map_err(Error::x11)?;
+        let parking = conn.generate_id().map_err(Error::x11)?;
+        conn.create_window(
+            0,
+            parking,
+            link.root,
+            0,
+            0,
+            1,
+            1,
+            0,
+            WindowClass::INPUT_ONLY,
+            0,
+            &CreateWindowAux::new().override_redirect(1),
+        )
+        .map_err(Error::x11)?
+        .check()
+        .map_err(Error::x11)?;
+        let pixmap = conn.generate_id().map_err(Error::x11)?;
+        let gc = conn.generate_id().map_err(Error::x11)?;
+        let cursor = conn.generate_id().map_err(Error::x11)?;
+        conn.create_pixmap(1, pixmap, link.root, 1, 1)
+            .map_err(Error::x11)?;
+        conn.create_gc(gc, pixmap, &CreateGCAux::new().foreground(0))
+            .map_err(Error::x11)?;
+        conn.poly_fill_rectangle(
+            pixmap,
+            gc,
+            &[Rectangle {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            }],
+        )
+        .map_err(Error::x11)?;
+        conn.create_cursor(cursor, pixmap, pixmap, 0, 0, 0, 0, 0, 0, 0, 0)
+            .map_err(Error::x11)?
+            .check()
+            .map_err(Error::x11)?;
+        conn.free_gc(gc).map_err(Error::x11)?;
+        conn.free_pixmap(pixmap).map_err(Error::x11)?;
+        let name = format!("Floatdesk Hover {}", std::process::id());
+        conn.xinput_xi_change_hierarchy(&[HierarchyChange {
+            len: (2 + name.len().div_ceil(4)) as u16,
+            data: HierarchyChangeData::AddMaster(HierarchyChangeDataAddMaster {
+                send_core: false,
+                enable: true,
+                name: name.as_bytes().to_vec(),
+            }),
+        }])
+        .map_err(Error::x11)?
+        .check()
+        .map_err(Error::x11)?;
+        let expected = format!("{name} pointer");
+        let id = conn
+            .xinput_xi_query_device(Device::ALL_MASTER)
+            .map_err(Error::x11)?
+            .reply()
+            .map_err(Error::x11)?
+            .infos
+            .into_iter()
+            .find(|device| {
+                device.type_ == DeviceType::MASTER_POINTER && device.name == expected.as_bytes()
+            })
+            .ok_or_else(|| Error::Msg("XInput did not create the Floatdesk hover pointer".into()))?
+            .deviceid;
+        let mut pointer = Self {
+            link,
+            id,
+            parking,
+            position: None,
+        };
+        pointer
+            .link
+            .conn
+            .xinput_xi_change_cursor(pointer.link.root, cursor, id)
+            .map_err(Error::x11)?
+            .check()
+            .map_err(Error::x11)?;
+        pointer.update(None)?;
+        Ok(pointer)
+    }
+
+    fn update(&mut self, point: Option<(i16, i16)>) -> Result<()> {
+        use x11rb::protocol::xinput::ConnectionExt as _;
+        let conn = &self.link.conn;
+        if let Some((x, y)) = point {
+            if self.position.is_none() {
+                conn.unmap_window(self.parking).map_err(Error::x11)?;
+            }
+            if self.position != point {
+                conn.xinput_xi_warp_pointer(
+                    0,
+                    self.link.root,
+                    0,
+                    0,
+                    0,
+                    0,
+                    i32::from(x) << 16,
+                    i32::from(y) << 16,
+                    self.id,
+                )
+                .map_err(Error::x11)?;
+            }
+        } else {
+            conn.map_window(self.parking).map_err(Error::x11)?;
+            conn.xinput_xi_warp_pointer(0, self.parking, 0, 0, 0, 0, 0, 0, self.id)
+                .map_err(Error::x11)?;
+        }
+        self.position = point;
+        conn.flush().map_err(Error::x11)
+    }
+}
+
+impl Drop for HoverPointer {
+    fn drop(&mut self) {
+        use x11rb::protocol::xinput::{
+            ChangeMode, ConnectionExt as _, HierarchyChange, HierarchyChangeData,
+            HierarchyChangeDataRemoveMaster,
+        };
+        if let Ok(cookie) = self
+            .link
+            .conn
+            .xinput_xi_change_hierarchy(&[HierarchyChange {
+                len: 3,
+                data: HierarchyChangeData::RemoveMaster(HierarchyChangeDataRemoveMaster {
+                    deviceid: self.id,
+                    return_mode: ChangeMode::FLOAT,
+                    return_pointer: 0,
+                    return_keyboard: 0,
+                }),
+            }])
+        {
+            let _ = cookie.check();
+        }
+    }
 }
 
 impl AimHover {
     pub(crate) fn update(&mut self, target: Option<(u32, i16, i16)>) -> Result<()> {
-        use x11rb::protocol::xproto::{
-            EnterNotifyEvent, Motion, MotionNotifyEvent, NotifyDetail, NotifyMode,
-            ENTER_NOTIFY_EVENT, LEAVE_NOTIFY_EVENT, MOTION_NOTIFY_EVENT,
-        };
-        if target.is_none() && self.previous.is_none() {
-            return Ok(());
+        if self.pointer.is_none() && target.is_some() {
+            self.pointer = Some(HoverPointer::open()?);
         }
-        if self.link.is_none() {
-            self.link = Some(X11Link::open()?);
+        if let Some(pointer) = self.pointer.as_mut() {
+            pointer.update(target.map(|(_, x, y)| (x, y)))?;
         }
-        let link = self.link.as_ref().unwrap();
-        let next = target.and_then(|(mut window, x, y)| {
-            let mut destination = None;
-            for _ in 0..12 {
-                let translated = link
-                    .conn
-                    .translate_coordinates(link.root, window, x, y)
-                    .ok()?
-                    .reply()
-                    .ok()?;
-                destination = Some((window, x, y, translated.dst_x, translated.dst_y));
-                if translated.child == 0 {
-                    break;
-                }
-                window = translated.child;
-            }
-            destination
-        });
-        let crossing = |(window, x, y, local_x, local_y), enter| {
-            let event = EnterNotifyEvent {
-                response_type: if enter {
-                    ENTER_NOTIFY_EVENT
-                } else {
-                    LEAVE_NOTIFY_EVENT
-                },
-                detail: NotifyDetail::NONLINEAR,
-                time: x11rb::CURRENT_TIME,
-                root: link.root,
-                event: window,
-                root_x: x,
-                root_y: y,
-                event_x: local_x,
-                event_y: local_y,
-                mode: NotifyMode::NORMAL,
-                same_screen_focus: 2,
-                ..Default::default()
-            };
-            let mask = if enter {
-                EventMask::ENTER_WINDOW
-            } else {
-                EventMask::LEAVE_WINDOW
-            };
-            let _ = link.conn.send_event(false, window, mask, event);
-        };
-        if self.previous.map(|point| point.0) != next.map(|point| point.0) {
-            if let Some(old) = self.previous {
-                crossing(old, false);
-            }
-            if let Some(new) = next {
-                crossing(new, true);
-            }
-        }
-        if let Some((window, x, y, local_x, local_y)) = next {
-            let event = MotionNotifyEvent {
-                response_type: MOTION_NOTIFY_EVENT,
-                detail: Motion::NORMAL,
-                time: x11rb::CURRENT_TIME,
-                root: link.root,
-                event: window,
-                root_x: x,
-                root_y: y,
-                event_x: local_x,
-                event_y: local_y,
-                same_screen: true,
-                ..Default::default()
-            };
-            link.conn
-                .send_event(true, window, EventMask::POINTER_MOTION, event)
-                .map_err(Error::x11)?;
-        }
-        self.previous = next;
-        link.conn.flush().map_err(Error::x11)
+        Ok(())
     }
 }

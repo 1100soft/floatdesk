@@ -808,7 +808,7 @@ impl MonitorPool {
         let outputs = query().unwrap_or_default();
         let screens:Vec<_>=outputs.iter().filter_map(|o|o.geometry.map(|(x,y,w,h)| {
             let modes: BTreeSet<_>=o.modes.iter().filter(|m|m.3.is_finite() && m.3>0.0).map(|m|(m.1,m.2)).collect();
-            serde_json::json!({"name":o.name,"x":x,"y":y,"width":w,"height":h,"refreshHz":o.current_rate,"managed":self.owned.contains(&o.name),"primary":o.primary,"role":output_role(&o.name),"modes":modes})
+            serde_json::json!({"name":o.name,"x":x,"y":y,"width":w,"height":h,"refreshHz":o.current_rate,"managed":virtual_name(&o.name),"primary":o.primary,"role":output_role(&o.name),"modes":modes})
         })).collect();
         let available = outputs
             .iter()
@@ -839,11 +839,7 @@ impl MonitorPool {
     }
     pub fn owned_mask(&self, sources: &[(String, MonitorRect)]) -> u8 {
         sources.iter().take(6).fold(0, |mask, (name, r)| {
-            mask | if self.owned.contains(name) {
-                1 << r.index
-            } else {
-                0
-            }
+            mask | if virtual_name(name) { 1 << r.index } else { 0 }
         })
     }
     /// Arrangement editing changes position only, including explicitly dragged physical screens.
@@ -982,9 +978,9 @@ impl MonitorPool {
                 .get(index)
                 .ok_or_else(|| Error::Msg("Unknown screen".into()))?
                 .0;
-            if !self.owned.contains(name) {
+            if !virtual_name(name) {
                 return Err(Error::Msg(
-                    "Only displays added by Floatdesk can be changed or removed".into(),
+                    "Only virtual displays can be changed or removed here".into(),
                 ));
             }
             outputs

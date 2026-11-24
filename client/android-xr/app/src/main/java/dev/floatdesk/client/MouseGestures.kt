@@ -25,7 +25,10 @@ internal class MouseGestures(private val thresholds:()->PinchThresholds={PinchTh
     val engaged:Boolean get() = hold!=null || dragging || scrolling
     private var scrolling=false
     private var scrollOrigin: FloatArray?=null
-    private var scrollPrevious: FloatArray?=null
+    private val scrollFiltered=FloatArray(2)
+    private val scrollEmitted=FloatArray(2)
+    private var scrollAt=0L
+    private var scrollPrevious:FloatArray?=null
     private var scrollRight=floatArrayOf(1f,0f,0f)
     private var scrollUp=floatArrayOf(0f,1f,0f)
     private var dragging=false
@@ -37,7 +40,7 @@ internal class MouseGestures(private val thresholds:()->PinchThresholds={PinchTh
 
     private fun endScroll(): TouchpadFrame? {
         val end=if(scrolling) TouchpadFrame(0,.5f,.5f) else null
-        scrolling=false; scrollOrigin=null; scrollPrevious=null
+        scrolling=false; scrollOrigin=null; scrollFiltered.fill(0f);scrollEmitted.fill(0f);scrollAt=0;scrollPrevious=null
         return end
     }
 
@@ -93,12 +96,11 @@ internal class MouseGestures(private val thresholds:()->PinchThresholds={PinchTh
                         scrolling=true
                         diagnostic("mouse gesture scroll started side=${current.side} palmMovementMm=${hypot(dx,dy)*1000}")
                     }
-                    if(!scrolling) scrollPrevious=sample.position.copyOf()
                 }
                 if(scrolling) {
                     val position=sample.position
                     val before=scrollPrevious
-                    if(position==null || before==null || kotlin.math.sqrt((0..2).sumOf { val d=position[it]-before[it]; (d*d).toDouble() })>.15) {
+                    if(position==null || before==null || scrollOrigin==null || kotlin.math.sqrt((0..2).sumOf { val d=position[it]-before[it]; (d*d).toDouble() })>.15) {
                         hold=null; armed.remove(current.side)
                         return MouseGestureOutput(current.target,scroll=endScroll())
                     }
@@ -106,7 +108,17 @@ internal class MouseGestures(private val thresholds:()->PinchThresholds={PinchTh
                     val delta=FloatArray(3) { position[it]-scrollOrigin!![it] }
                     val dx=(0..2).sumOf { (delta[it]*scrollRight[it]).toDouble() }.toFloat()
                     val dy=(0..2).sumOf { (delta[it]*scrollUp[it]).toDouble() }.toFloat()
-                    return MouseGestureOutput(current.target,scroll=TouchpadFrame(2,(.5f+dx/.25f).coerceIn(.15f,.85f),(.5f-dy/.15f).coerceIn(.1f,.9f)))
+                    val elapsed=(nowMs-scrollAt).coerceIn(1L,50L)
+                    val alpha=elapsed/(elapsed+32f)
+                    val input=floatArrayOf(dx,dy)
+                    for(axis in input.indices){
+                        scrollFiltered[axis]+=alpha*(input[axis]-scrollFiltered[axis])
+                        val movement=scrollFiltered[axis]-scrollEmitted[axis]
+                        val deadband=.0015f
+                        scrollEmitted[axis]+=kotlin.math.sign(movement)*(kotlin.math.abs(movement)-deadband).coerceAtLeast(0f)
+                    }
+                    scrollAt=nowMs
+                    return MouseGestureOutput(current.target,scroll=TouchpadFrame(2,(.5f+scrollEmitted[0]/.25f).coerceIn(.15f,.85f),(.5f-scrollEmitted[1]/.15f).coerceIn(.1f,.9f)))
                 }
                 if(current.button==1 && !dragging && nowMs-current.began>=350) {
                     dragging=true
@@ -145,7 +157,7 @@ internal class MouseGestures(private val thresholds:()->PinchThresholds={PinchTh
             hold=Hold(side,button,nowMs,startTarget)
             if(button==3) {
                 val sample=samples.getValue(side)
-                scrollOrigin=sample.position?.copyOf(); scrollPrevious=sample.position?.copyOf()
+                scrollOrigin=sample.position?.copyOf();scrollPrevious=scrollOrigin;scrollAt=nowMs
                 scrollRight=sample.right.copyOf(); scrollUp=sample.up.copyOf()
             }
             return MouseGestureOutput(startTarget)

@@ -109,6 +109,14 @@ internal fun samePaneGeometry(previous:MagnifiedWindow,next:MagnifiedWindow):Boo
         a.positions.indices.none{abs(a.positions[it]-b.positions[it])>.0005f}
 }
 
+/** An enclosing eye-centered radius for the actual submitted pane. */
+internal fun foregroundRadius(window:MagnifiedWindow,eye:FloatArray):Float {
+    val local=viewerInMonitor(eye,window.pose.position,window.pose.rotation)
+    val mesh=window.mesh
+    return if(mesh!=null && !mesh.planar)distance(local,mesh.eye)+mesh.geometryRadius
+    else hypot(hypot(abs(local[0])+window.width*.5f,abs(local[1])+window.height*.5f),local[2])
+}
+
 /** Keep the supporting surface inside the desktop sphere along every overlapping eye ray. */
 internal fun placePaneInsideDesktop(window:MagnifiedWindow,viewer:Pose,desktopRadius:Float?,previous:MagnifiedWindow?=null):MagnifiedWindow {
     val radius=desktopRadius?.takeIf{it.isFinite() && it>0f} ?: return window

@@ -676,6 +676,15 @@ fun main() {
  check(mouse.update(2,true,false,mapOf("LEFT" to FingerPinch(.05f,.05f)),target).click==null)
  mouse.update(3,true,false,mapOf("LEFT" to FingerPinch(.003f,.05f)),target)
  check(mouse.update(4,true,false,mapOf("LEFT" to FingerPinch(.005f,.05f)),target).click?.button==1)
+ val scrollMouse=MouseGestures(thresholds={profile})
+ fun scroll(at:Long,y:Float,closed:Boolean=true)=scrollMouse.update(at,true,false,
+    mapOf("LEFT" to FingerPinch(.05f,if(closed).002f else .05f,floatArrayOf(0f,y,0f))),target)
+ scroll(1000,0f,false);scroll(1010,0f)
+ check(scroll(1020,.02f).scroll?.fingers==2)
+ for(n in 1..35)scroll(1020L+n*10,.02f)
+ val heldScrollY=scroll(1380,.02f).scroll!!.y
+ for(n in 1..8)check(abs(scroll(1380L+n*10,.02f+if(n%2==0).00025f else -.00025f).scroll!!.y-heldScrollY)<.002f)
+ check(scroll(1500,.02f,false).scroll?.fingers==0)
  val info=WorkspaceInfo(listOf(DesktopOutput("screen",1920,1080,0,0,false,true,3,emptyList()),DesktopOutput("virtual",1920,1080,1920,0,true,false,1,emptyList())),0,emptyList(),0,8,8000000,60,"",false,windowFocus=true,
   windows=listOf(DesktopWindow(42,100,100,400,400),DesktopWindow(43,0,0,1000,1000)))
  check(info.hover(.05f,.2f)!!.window!!.windowId==42L) // Topmost window wins.

@@ -85,6 +85,10 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
             listOf("Focus & magnification","Viewing distance","Streaming","Pinches","Virtual screen setup").forEach{label->Button(onClick={section=label},modifier=Modifier.fillMaxWidth()){Text(label)}}
         }
         if(section=="Focus & magnification") {
+            Row(verticalAlignment=Alignment.CenterVertically){
+                androidx.compose.material3.Switch(checked=quality.aimToHover,onCheckedChange={onQuality(quality.copy(aimToHover=it))})
+                Text("Aim to hover",color=Color.White)
+            }
             Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)){
                 androidx.compose.material3.Switch(checked=quality.gazeToFocus,enabled=info?.gazeFocus==true || quality.gazeToFocus,onCheckedChange={onQuality(quality.copy(gazeToFocus=it))})
                 Text("Gaze to focus",color=Color.White)
@@ -123,7 +127,13 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
             StreamingSettings(quality,onQuality)
         }
         if(section=="Viewing distance")ViewingDistanceSettings(quality,onViewingDistances)
-        if(section=="Pinches")PinchSettings(pinches,onPinches)
+        if(section=="Pinches"){
+            Row(verticalAlignment=Alignment.CenterVertically){
+                androidx.compose.material3.Switch(checked=quality.reverseHandScroll,onCheckedChange={onQuality(quality.copy(reverseHandScroll=it))})
+                Text("Reverse hand scrolling",color=Color.White)
+            }
+            PinchSettings(pinches,onPinches)
+        }
         if(section=="Virtual screen setup") {
             Text("Virtual screen setup",color=Color.White,fontSize=18.sp)
             Text("On the computer, run: python3 scripts/virtual-display-setup.py --check\nIf no pool is available, use --write-bundle to prepare installation files. A compatible VKMS configfs kernel, administrator setup and a graphical-session restart are required. Existing pools are reused; Floatdesk never rebuilds kernel topology during use.",color=Color(0xFFB8D9EA),fontSize=13.sp)

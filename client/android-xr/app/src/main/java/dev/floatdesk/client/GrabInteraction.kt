@@ -15,6 +15,7 @@ internal class GrabTracking {
     val pinched = mutableSetOf<String>()
     val paneGuides = mutableMapOf<String, GrabGuide>()
     var desktopSphereRadius:Float?=null
+    var desktopForegroundRadius=0f
     var pointerHeld=false
     var unitsPerMeter = 1f
     var nowMs = 0L

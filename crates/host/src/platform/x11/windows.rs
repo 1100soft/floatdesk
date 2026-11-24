@@ -1046,6 +1046,65 @@ mod tests {
     use x11rb::protocol::xproto::{CreateWindowAux, PropMode, WindowClass};
     use x11rb::wrapper::ConnectionExt as _;
     #[test]
+    #[ignore = "private Xvfb only"]
+    fn aim_hover_delivers_events_without_moving_pointer() {
+        use x11rb::protocol::Event;
+        let link = X11Link::open().unwrap();
+        let window = link.conn.generate_id().unwrap();
+        link.conn
+            .create_window(
+                x11rb::COPY_DEPTH_FROM_PARENT,
+                window,
+                link.root,
+                20,
+                25,
+                120,
+                100,
+                0,
+                WindowClass::INPUT_OUTPUT,
+                0,
+                &CreateWindowAux::new().event_mask(
+                    EventMask::ENTER_WINDOW | EventMask::LEAVE_WINDOW | EventMask::POINTER_MOTION,
+                ),
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+        link.conn.map_window(window).unwrap().check().unwrap();
+        let pointer = || {
+            let p = link.conn.query_pointer(link.root).unwrap().reply().unwrap();
+            (p.root_x, p.root_y)
+        };
+        let before = pointer();
+        let mut hover = AimHover::default();
+        hover.update(Some((window, 35, 50))).unwrap();
+        hover.update(None).unwrap();
+        hover
+            .link
+            .as_ref()
+            .unwrap()
+            .conn
+            .get_input_focus()
+            .unwrap()
+            .reply()
+            .unwrap();
+        assert_eq!(before, pointer());
+        let mut types = Vec::new();
+        while let Some(event) = link.conn.poll_for_event().unwrap() {
+            match event {
+                Event::EnterNotify(e) if e.event == window => types.push(0),
+                Event::MotionNotify(e) if e.event == window => {
+                    assert_eq!((e.event_x, e.event_y), (15, 25));
+                    types.push(1);
+                }
+                Event::LeaveNotify(e) if e.event == window => types.push(2),
+                _ => {}
+            }
+        }
+        assert_eq!(types, [0, 1, 2]);
+    }
+
+    #[test]
     #[ignore = "private Xvfb/KWin only"]
     fn taskbar_preview_private_kwin() {
         assert_eq!(
@@ -1648,5 +1707,99 @@ mod tests {
         for id in ids {
             let _ = link.conn.destroy_window(id).unwrap().check();
         }
+    }
+}
+
+/// Deliver hover to the input child under a root coordinate without warping the X pointer.
+#[derive(Default)]
+pub(crate) struct AimHover {
+    link: Option<X11Link>,
+    previous: Option<(u32, i16, i16, i16, i16)>,
+}
+
+impl AimHover {
+    pub(crate) fn update(&mut self, target: Option<(u32, i16, i16)>) -> Result<()> {
+        use x11rb::protocol::xproto::{
+            EnterNotifyEvent, Motion, MotionNotifyEvent, NotifyDetail, NotifyMode,
+            ENTER_NOTIFY_EVENT, LEAVE_NOTIFY_EVENT, MOTION_NOTIFY_EVENT,
+        };
+        if target.is_none() && self.previous.is_none() {
+            return Ok(());
+        }
+        if self.link.is_none() {
+            self.link = Some(X11Link::open()?);
+        }
+        let link = self.link.as_ref().unwrap();
+        let next = target.and_then(|(mut window, x, y)| {
+            let mut destination = None;
+            for _ in 0..12 {
+                let translated = link
+                    .conn
+                    .translate_coordinates(link.root, window, x, y)
+                    .ok()?
+                    .reply()
+                    .ok()?;
+                destination = Some((window, x, y, translated.dst_x, translated.dst_y));
+                if translated.child == 0 {
+                    break;
+                }
+                window = translated.child;
+            }
+            destination
+        });
+        let crossing = |(window, x, y, local_x, local_y), enter| {
+            let event = EnterNotifyEvent {
+                response_type: if enter {
+                    ENTER_NOTIFY_EVENT
+                } else {
+                    LEAVE_NOTIFY_EVENT
+                },
+                detail: NotifyDetail::NONLINEAR,
+                time: x11rb::CURRENT_TIME,
+                root: link.root,
+                event: window,
+                root_x: x,
+                root_y: y,
+                event_x: local_x,
+                event_y: local_y,
+                mode: NotifyMode::NORMAL,
+                same_screen_focus: 2,
+                ..Default::default()
+            };
+            let mask = if enter {
+                EventMask::ENTER_WINDOW
+            } else {
+                EventMask::LEAVE_WINDOW
+            };
+            let _ = link.conn.send_event(false, window, mask, event);
+        };
+        if self.previous.map(|point| point.0) != next.map(|point| point.0) {
+            if let Some(old) = self.previous {
+                crossing(old, false);
+            }
+            if let Some(new) = next {
+                crossing(new, true);
+            }
+        }
+        if let Some((window, x, y, local_x, local_y)) = next {
+            let event = MotionNotifyEvent {
+                response_type: MOTION_NOTIFY_EVENT,
+                detail: Motion::NORMAL,
+                time: x11rb::CURRENT_TIME,
+                root: link.root,
+                event: window,
+                root_x: x,
+                root_y: y,
+                event_x: local_x,
+                event_y: local_y,
+                same_screen: true,
+                ..Default::default()
+            };
+            link.conn
+                .send_event(true, window, EventMask::POINTER_MOTION, event)
+                .map_err(Error::x11)?;
+        }
+        self.previous = next;
+        link.conn.flush().map_err(Error::x11)
     }
 }

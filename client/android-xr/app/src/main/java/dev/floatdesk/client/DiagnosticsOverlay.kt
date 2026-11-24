@@ -1,19 +1,7 @@
 package dev.floatdesk.client
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.material3.Text
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color as UiColor
-import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.foundation.layout.fillMaxSize
@@ -40,8 +28,7 @@ import dev.floatdesk.client.workspace.ViewLayers
 @androidx.compose.runtime.Composable
 internal fun DiagnosticsPanel(connection:dev.floatdesk.client.net.DeskConnection,
     viewer:java.util.concurrent.atomic.AtomicReference<dev.floatdesk.client.workspace.Pose?>,
-    units:()->Float,angles:()->FloatArray,resources:Boolean,quality:Boolean,qualityDebug:Boolean,spherical:Boolean,layoutMap:Boolean,
-    previews:List<FloatArray?>,saveSlot:(Int)->Unit,restoreSlot:(Int)->Unit) {
+    units:()->Float,angles:()->FloatArray,resources:Boolean,quality:Boolean,qualityDebug:Boolean,spherical:Boolean,layoutMap:Boolean) {
     if(!qualityDebug && !layoutMap)return
     val thermalPaused by connection.thermalPaused
     if(thermalPaused)return
@@ -94,41 +81,11 @@ internal fun DiagnosticsPanel(connection:dev.floatdesk.client.net.DeskConnection
                             c.restoreToCount(saved)
                         }
                     }
-                    if(layoutMap && index==3){
-                        Row(Modifier.fillMaxWidth().fillMaxHeight(.44f).background(UiColor(0xEB10202D)),
-                            horizontalArrangement=Arrangement.SpaceEvenly){
-                            previews.forEachIndexed{slot,preview->
-                                Column(Modifier.weight(1f).fillMaxHeight(),horizontalAlignment=Alignment.CenterHorizontally){
-                                    Box(Modifier.fillMaxWidth(.88f).weight(1f)
-                                        .background(UiColor(0xFF203747))
-                                        .clickable(enabled=preview!=null,onClick={restoreSlot(slot)}),contentAlignment=Alignment.Center){
-                                        if(preview==null)Text("${slot+1}",color=UiColor.White,fontSize=13.sp)
-                                        else LayoutThumbnail(preview)
-                                    }
-                                    Text(if(preview==null)"Save" else "Replace",Modifier.clickable{saveSlot(slot)},
-                                        color=UiColor(0xFFAEEFFF),fontSize=12.sp)
-                                }
-                            }
-                        }
-                    }
+
                     }
                 }
             }
         }
-    }
-}
-
-@androidx.compose.runtime.Composable
-private fun LayoutThumbnail(lines:FloatArray){
-    androidx.compose.foundation.Canvas(Modifier.fillMaxSize()){
-        if(lines.isEmpty())return@Canvas
-        val xs=lines.indices.filter{it%5==0 || it%5==2}.map{lines[it]}
-        val ys=lines.indices.filter{it%5==1 || it%5==3}.map{lines[it]}
-        val l=xs.min();val r=xs.max();val t=ys.min();val b=ys.max()
-        val scale=.86f*minOf(size.width/(r-l).coerceAtLeast(.001f),size.height/(b-t).coerceAtLeast(.001f))
-        fun point(x:Float,y:Float)=Offset(size.width*.5f+(x-(l+r)*.5f)*scale,size.height*.5f+(y-(t+b)*.5f)*scale)
-        for(i in lines.indices step 5)drawLine(if(lines[i+4]>0f)UiColor(0xFFBE87FF) else UiColor(0xFF64DCF0),
-            point(lines[i],lines[i+1]),point(lines[i+2],lines[i+3]),strokeWidth=2f)
     }
 }
 

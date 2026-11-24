@@ -508,6 +508,8 @@ fn run(
     let mut window_action_sequence = std::collections::HashMap::<(SocketAddr, u32), u32>::new();
     let mut last_cursor_claim: Option<(SocketAddr, u64)> = None;
     let mut last_cursor_map: Option<(SocketAddr, u64)> = None;
+    let mut aim_hover = crate::platform::x11::windows::AimHover::default();
+    let mut last_aim_hover: Option<Instant> = None;
     let mut last_gaze_focus: Option<(SocketAddr, u32)> = None;
     let mut replies: std::collections::VecDeque<(SocketAddr, u32, Vec<u8>)> =
         std::collections::VecDeque::new();
@@ -520,6 +522,10 @@ fn run(
     let mut pending_display: Option<DisplayWorker> = None;
     let mut scratch = [0u8; 65535];
     while !shared.stop.load(Ordering::Relaxed) {
+        if last_aim_hover.is_some_and(|at| at.elapsed() > Duration::from_millis(500)) {
+            let _ = aim_hover.update(None);
+            last_aim_hover = None;
+        }
         if opts
             .duration
             .is_some_and(|limit| started.elapsed() >= limit)
@@ -610,6 +616,26 @@ fn run(
                                             last_cursor_map = Some((from, sequence));
                                         }
                                     }
+                                }
+                                continue;
+                            }
+                            if value["type"] == "aimHover" {
+                                let allowed = shared
+                                    .client
+                                    .read()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .as_ref()
+                                    .is_some_and(|client| client.control == from);
+                                if allowed {
+                                    let target = (|| {
+                                        Some((
+                                            u32::try_from(value["window"].as_u64()?).ok()?.max(1),
+                                            i16::try_from(value["x"].as_i64()?).ok()?,
+                                            i16::try_from(value["y"].as_i64()?).ok()?,
+                                        ))
+                                    })();
+                                    let _ = aim_hover.update(target);
+                                    last_aim_hover = target.map(|_| Instant::now());
                                 }
                                 continue;
                             }

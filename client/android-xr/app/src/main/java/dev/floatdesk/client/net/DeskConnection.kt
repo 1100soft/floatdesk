@@ -383,6 +383,11 @@ internal class DeskConnection(
     private var lastCursorMap:dev.floatdesk.client.CursorTopology?=null
     private var lastCursorMapJson=""
     private var cursorMapSentAt=0L
+    fun aimHover(window:Long?,x:Int=0,y:Int=0){
+        if(lastAcceptedHello!=0L)send(Protocol.workspace(org.json.JSONObject()
+            .put("type","aimHover").put("window",window).put("x",x).put("y",y).toString()))
+    }
+
     fun publishCursorMap(map:dev.floatdesk.client.CursorTopology){
         val now=android.os.SystemClock.uptimeMillis()
         if(lastCursorMap==map){

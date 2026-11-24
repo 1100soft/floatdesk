@@ -35,8 +35,8 @@ import dev.floatdesk.client.workspace.WorkspaceFile
 import kotlin.math.cos
 import kotlin.math.sin
 
-internal enum class PalmAction { FOLLOW, RESET, SEARCH, SPACE, WARP, MOVE, HAND_MOUSE, FREE, REFERENCE, MODE, MORE, BACK, DIAGNOSTICS, GAZE_FOCUS, MAGNIFIER, MOUSE_SPACES, LAYOUT, ALIGN_AXES, SNAP_OBJECTS, FACE_USER, AUTO_ADJUST, RESET_ORIGIN, UNDO, REDO, DONE }
-internal enum class PalmPage { MAIN, MORE, LAYOUT }
+internal enum class PalmAction { FOLLOW, RESET, SEARCH, SPACE, WARP, MOVE, HAND_MOUSE, FREE, REFERENCE, MODE, MORE, BACK, DIAGNOSTICS, GAZE_FOCUS, MAGNIFIER, MOUSE_SPACES, LAYOUT, ALIGN_AXES, SNAP_OBJECTS, FACE_USER, AUTO_ADJUST, RESET_ORIGIN, UNDO, REDO, ADJUST, SAVED_LAYOUTS, LOAD_1, LOAD_2, LOAD_3, SAVE_1, SAVE_2, SAVE_3, DONE }
+internal enum class PalmPage { MAIN, MORE, LAYOUT, LAYOUT_ADJUST, LAYOUT_SLOTS; val isLayout get()=this!=MAIN && this!=MORE }
 internal data class PalmButton(val action: PalmAction, val x: Float, val y: Float, val w: Float, val h: Float)
 
 /** Same cell metrics as [WindowMenuLayout]; button rectangles are normalized to the panel. */
@@ -56,12 +56,20 @@ internal object PalmMenuLayout {
         PalmAction.MOUSE_SPACES, PalmAction.DIAGNOSTICS, PalmAction.SEARCH,
         PalmAction.BACK,
     )
-    val layout=listOf(PalmAction.MOVE,PalmAction.FREE,PalmAction.ALIGN_AXES,PalmAction.SNAP_OBJECTS,
-        PalmAction.FACE_USER,PalmAction.AUTO_ADJUST,PalmAction.RESET_ORIGIN,PalmAction.RESET,PalmAction.UNDO,PalmAction.REDO,PalmAction.DONE)
+    val layout=listOf(PalmAction.MOVE,PalmAction.FREE,PalmAction.ADJUST,
+        PalmAction.UNDO,PalmAction.REDO,PalmAction.RESET,
+        PalmAction.SAVED_LAYOUTS,PalmAction.DONE)
+    private val adjust=listOf(PalmAction.ALIGN_AXES,PalmAction.FACE_USER,PalmAction.SNAP_OBJECTS,
+        PalmAction.AUTO_ADJUST,PalmAction.RESET_ORIGIN,PalmAction.BACK)
+    private val slots=listOf(PalmAction.LOAD_1,PalmAction.LOAD_2,PalmAction.LOAD_3,
+        PalmAction.SAVE_1,PalmAction.SAVE_2,PalmAction.SAVE_3,PalmAction.BACK)
+    val layoutActions=layout+adjust+slots
     fun actions(page:PalmPage)=when(page){
         PalmPage.MAIN->main
         PalmPage.MORE->more
         PalmPage.LAYOUT->layout
+        PalmPage.LAYOUT_ADJUST->adjust
+        PalmPage.LAYOUT_SLOTS->slots
     }
     fun rows(page: PalmPage) = (actions(page).size + columns - 1) / columns
     fun heightM(page: PalmPage) = rows(page) * cellM + (rows(page) + 1) * gapM
@@ -75,8 +83,8 @@ internal object PalmMenuLayout {
 }
 
 internal fun palmActionEnabled(action:PalmAction,workspace:WorkspaceFile,info:WorkspaceInfo?):Boolean {
-    if(workspace.layoutModeActive)return action in PalmMenuLayout.layout
-    if(action != PalmAction.RESET && action in PalmMenuLayout.layout)return false
+    if(workspace.layoutModeActive)return action in PalmMenuLayout.layoutActions
+    if(action != PalmAction.RESET && action != PalmAction.BACK && action in PalmMenuLayout.layoutActions)return false
     return when(action){
         PalmAction.WARP->RenderPolicy.SphericalDesktop
         PalmAction.GAZE_FOCUS->info?.gazeFocus==true || workspace.gazeToFocus
@@ -149,6 +157,10 @@ internal fun palmTooltip(action: PalmAction, workspace: WorkspaceFile, latched: 
     PalmAction.FACE_USER -> "Face the user"
     PalmAction.AUTO_ADJUST -> "Auto adjust"
     PalmAction.RESET_ORIGIN -> "Reset origin"
+    PalmAction.ADJUST -> "Adjust arrangement"
+    PalmAction.SAVED_LAYOUTS -> "Saved layouts"
+    PalmAction.LOAD_1,PalmAction.LOAD_2,PalmAction.LOAD_3 -> "Load layout ${action.ordinal-PalmAction.LOAD_1.ordinal+1}"
+    PalmAction.SAVE_1,PalmAction.SAVE_2,PalmAction.SAVE_3 -> "Save layout ${action.ordinal-PalmAction.SAVE_1.ordinal+1}"
     PalmAction.UNDO -> "Undo layout change"
     PalmAction.REDO -> "Redo layout change"
     PalmAction.DONE -> "Done"
@@ -156,16 +168,19 @@ internal fun palmTooltip(action: PalmAction, workspace: WorkspaceFile, latched: 
 
 @Composable
 internal fun PalmControls(page: PalmPage, workspace: WorkspaceFile, info: WorkspaceInfo?, latched: Boolean, focused: PalmAction?, pressed: PalmAction?,
-                          onHover: (PalmAction?) -> Unit, onAction: (PalmAction) -> Unit) {
+                          onHover: (PalmAction?) -> Unit, onAction: (PalmAction) -> Unit, previews:List<FloatArray?> = emptyList()) {
     MaterialTheme(colorScheme = darkColorScheme()) {
         CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp(0f)) {
-            BoxWithConstraints(Modifier.fillMaxSize().background(if(page==PalmPage.LAYOUT)Color(0xFF28344F) else MaterialTheme.colorScheme.surface)) {
+            BoxWithConstraints(Modifier.fillMaxSize().background(if(page.isLayout)Color(0xFF28344F) else MaterialTheme.colorScheme.surface)) {
                 for (button in PalmMenuLayout.buttons(page)) {
                     val action = button.action
+                    val slot=action.ordinal-PalmAction.LOAD_1.ordinal
+                    val loadSlot=slot in 0..2
+                    val preview=if(loadSlot)previews.getOrNull(slot) else null
                     PalmIcon(action, workspace, palmTooltip(action, workspace, latched), maxWidth * button.w,
-                        palmActionEnabled(action, workspace, info), palmState(action, workspace, latched),
+                        palmActionEnabled(action, workspace, info) && (!loadSlot || preview!=null), palmState(action, workspace, latched),
                         action == focused, action == pressed, { hovering -> onHover(action.takeIf { hovering }) },
-                        Modifier.offset(maxWidth * button.x, maxHeight * button.y)) { onAction(action) }
+                        Modifier.offset(maxWidth * button.x, maxHeight * button.y),preview) { onAction(action) }
                 }
             }
         }
@@ -176,7 +191,7 @@ internal fun PalmControls(page: PalmPage, workspace: WorkspaceFile, info: Worksp
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PalmIcon(action: PalmAction, workspace: WorkspaceFile, description: String, cell: Dp, enabled: Boolean, state: PalmState?,
-                     focused: Boolean, pressed: Boolean, onHover: (Boolean) -> Unit, modifier: Modifier, onClick: () -> Unit) {
+                     focused: Boolean, pressed: Boolean, onHover: (Boolean) -> Unit, modifier: Modifier, preview:FloatArray?, onClick: () -> Unit) {
     val done=action==PalmAction.DONE
     val shape = if(done)RoundedCornerShape(28) else if(state==null)CircleShape else RoundedCornerShape(22)
     val container = when {
@@ -191,7 +206,10 @@ private fun PalmIcon(action: PalmAction, workspace: WorkspaceFile, description: 
         modifier = modifier.size(cell).trackMenuHover { onHover(it != null) }.semantics { contentDescription = description }) {
         Canvas(Modifier.fillMaxSize()) {
             val inset = size.minDimension * .25f
-            inset(inset,inset){drawPalmIcon(action,workspace,if(enabled)Color(0xFFF1FAFF) else Color(0xFF77838C))}
+            inset(inset,inset){
+                if(preview!=null && preview.isNotEmpty())drawLayoutPreview(preview)
+                else drawPalmIcon(action,workspace,if(enabled)Color(0xFFF1FAFF) else Color(0xFF77838C))
+            }
             if(state?.slots==1)drawToggleTrack(state.toggleOn,enabled)
             else if(state!=null)drawStatePips(state,if(enabled)1f else .38f)
         }
@@ -202,6 +220,16 @@ private fun PalmIcon(action: PalmAction, workspace: WorkspaceFile, description: 
         else drawRoundRect(Color(0xFF8ADFFF), Offset(width / 2, width / 2), Size(size.width - width, size.height - width),
             CornerRadius(size.minDimension * .22f), style = Stroke(width))
     }
+}
+
+private fun DrawScope.drawLayoutPreview(lines:FloatArray){
+    val xs=lines.indices.filter{it%5==0 || it%5==2}.map{lines[it]}
+    val ys=lines.indices.filter{it%5==1 || it%5==3}.map{lines[it]}
+    val l=xs.min();val r=xs.max();val t=ys.min();val b=ys.max()
+    val scale=minOf(size.width/(r-l).coerceAtLeast(.001f),size.height/(b-t).coerceAtLeast(.001f))
+    fun point(x:Float,y:Float)=Offset(size.width*.5f+(x-(l+r)*.5f)*scale,size.height*.5f+(y-(t+b)*.5f)*scale)
+    for(i in lines.indices step 5)drawLine(if(lines[i+4]>0f)Color(0xFFBE87FF) else Color(0xFF64DCF0),
+        point(lines[i],lines[i+1]),point(lines[i+2],lines[i+3]),strokeWidth=size.minDimension*.075f)
 }
 
 private fun DrawScope.drawToggleTrack(on:Boolean,enabled:Boolean) {
@@ -287,6 +315,17 @@ private fun DrawScope.drawPalmIcon(action: PalmAction, workspace: WorkspaceFile,
             val shoulder=if(left).36f else .64f
             line(tip,.38f,shoulder,.20f);line(tip,.38f,shoulder,.57f)
             arc(.18f,.38f,.82f,.99f,180f,180f)
+        }
+        PalmAction.ADJUST -> { line(.18f,.28f,.82f,.28f);line(.18f,.70f,.82f,.70f);ring(.38f,.28f,.12f);ring(.65f,.70f,.12f) }
+        PalmAction.SAVED_LAYOUTS -> { box(.13f,.22f,.82f,.77f);line(.2f,.12f,.9f,.12f);line(.9f,.12f,.9f,.65f) }
+        PalmAction.LOAD_1,PalmAction.LOAD_2,PalmAction.LOAD_3,PalmAction.SAVE_1,PalmAction.SAVE_2,PalmAction.SAVE_3 -> {
+            val loading=action.ordinal in PalmAction.LOAD_1.ordinal..PalmAction.LOAD_3.ordinal
+            val slot=action.ordinal-(if(loading)PalmAction.LOAD_1 else PalmAction.SAVE_1).ordinal
+            box(.14f,.14f,.86f,.86f)
+            for(i in 0..slot) dot(.32f+i*.18f,.34f,.047f)
+            val tip=if(loading).49f else .75f
+            val tail=if(loading).75f else .49f
+            line(.5f,tail,.5f,tip);line(.5f,tip,.35f,(tip+tail)*.5f);line(.5f,tip,.65f,(tip+tail)*.5f)
         }
         PalmAction.DONE -> { line(.12f,.53f,.39f,.77f);line(.39f,.77f,.88f,.24f) }
         PalmAction.MOVE -> { line(.1f,.5f,.9f,.5f); line(.5f,.1f,.5f,.9f); line(.1f,.5f,.27f,.32f); line(.9f,.5f,.73f,.68f) }

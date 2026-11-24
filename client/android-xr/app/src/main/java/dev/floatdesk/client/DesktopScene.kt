@@ -95,17 +95,15 @@ internal fun DeskContent(
     panelFocused: PalmAction?,
     panelPressed: PalmAction?,
     onManipulate: (Boolean) -> Unit,
-    onRestoreLayout:(Int)->Unit,
+    savedLayoutPreviews:List<FloatArray?>,
 ) {
     val session = LocalSession.current
     val latest = rememberUpdatedState(workspace)
     val handInputNow=rememberUpdatedState(handInputAllowed)
     val reloading by connection.reloading
     val layout = workspace.reconcileMonitors(monitors.map { Triple(it.name,it.width,it.height) }).layouts[workspace.activeLayout].orEmpty()
-    var layoutPreviews by remember(store){mutableStateOf(store.layoutPreviews())}
     DiagnosticsPanel(connection,viewer,{handTracking.unitsPerMeter},{viewerAngles.get()},
-        workspace.showResources,workspace.experimentalViewedDetail,workspace.viewDetailDebug,workspace.sphericalWarp,workspace.layoutModeActive,
-        layoutPreviews,{slot->store.saveLayoutSlot(slot,latest.value,connection.layoutMapDebug);layoutPreviews=store.layoutPreviews()},onRestoreLayout)
+        workspace.showResources,workspace.experimentalViewedDetail,workspace.viewDetailDebug,workspace.sphericalWarp,workspace.layoutModeActive)
     var managerPage by remember{mutableStateOf("Screens")}
     val managerHeight=when(managerPage){"Settings"->.40f;"Focus & magnification"->.40f;"Pinches"->.48f;"Viewing distance"->.42f;"Virtual screen setup"->.38f;else->.65f}
     val managerScale=remember(displayControlsPose){settingsPanelScale(handTracking.unitsPerMeter)}
@@ -139,7 +137,7 @@ internal fun DeskContent(
         var hovered by remember(panel.page) { mutableStateOf<PalmAction?>(null) }
         SpatialPanel(modifier = placedPanel(panel.pose, panel.widthM * unit, panel.heightM * unit, density, pixelDensity),
             shape = androidx.xr.compose.subspace.layout.SpatialRoundedCornerShape(androidx.compose.foundation.shape.CornerSize(0.dp))) {
-            PalmControls(panel.page, workspace, connection.workspaceInfo.value, latchedFollow, panelFocused, panelPressed, { hovered = it }, onPalmAction)
+            PalmControls(panel.page, workspace, connection.workspaceInfo.value, latchedFollow, panelFocused, panelPressed, { hovered = it }, onPalmAction,savedLayoutPreviews)
         }
         panel.buttons.firstOrNull{it.action==(hovered ?: panelFocused)}?.let{button->
             val label=palmTooltip(button.action,workspace,latchedFollow)
@@ -222,7 +220,8 @@ internal fun DeskContent(
                             freezeProjection=(hands.busy && !hands.engaged) || nativeMove || nativeResize || handTracking.pointerHeld,
                             submitShape={update->connection.tryDesktopShapeUpdate(index,update)},
                             minGeometryIntervalMs=if(connection.limitOptionalRendering)180 else 80,
-                            minimumGeometryUnits=handTracking.unitsPerMeter)
+                            minimumGeometryRadius=maxOf(handTracking.desktopForegroundRadius,
+                                dev.floatdesk.client.workspace.ViewLayers.DesktopDistanceM*handTracking.unitsPerMeter))
                         grabProjectionAt=projectionNow
                     }
                     frozenMonitor?.update(screen,warp.mesh)

@@ -101,7 +101,7 @@ internal fun DeskContent(
     val reloading by connection.reloading
     val layout = workspace.reconcileMonitors(monitors.map { Triple(it.name,it.width,it.height) }).layouts[workspace.activeLayout].orEmpty()
     DiagnosticsPanel(connection,viewer,{handTracking.unitsPerMeter},{viewerAngles.get()},
-        workspace.showResources,workspace.experimentalViewedDetail,workspace.viewDetailDebug,workspace.sphericalWarp)
+        workspace.showResources,workspace.experimentalViewedDetail,workspace.viewDetailDebug,workspace.sphericalWarp,workspace.layoutModeActive)
     var managerPage by remember{mutableStateOf("Screens")}
     val managerHeight=when(managerPage){"Settings"->.40f;"Focus & magnification"->.40f;"Pinches"->.48f;"Viewing distance"->.42f;"Virtual screen setup"->.38f;else->.65f}
     val managerScale=remember(displayControlsPose){settingsPanelScale(handTracking.unitsPerMeter)}

@@ -18,10 +18,27 @@ internal data class CursorTopology(val patches:List<CursorPatch> = emptyList(),v
 }
 /** Logical content rectangles. Orientation/curvature never skew a cursor space. */
 internal fun cursorPatches(key:String,pose:Pose,width:Float,height:Float,mesh:MonitorMesh?,source:FocusRect,viewer:Pose,
-    region:FocusRect=FocusRect(0f,0f,1f,1f),front:Boolean=false,divisions:Int=4):List<CursorPatch>{
+    region:FocusRect=FocusRect(0f,0f,1f,1f),front:Boolean=false,divisions:Int=4,projectBounds:Boolean=false):List<CursorPatch>{
     val center=viewerInMonitor(pose.position,viewer.position,viewer.rotation)
     val depth=-center[2]
     if(depth<=.001f || center.any{!it.isFinite()} || width<=0 || height<=0)return emptyList()
+    if(projectBounds){
+        val points=buildList {
+            for(edge in 0..3)for(step in 0..8){
+                val t=step/8f
+                val u=if(edge<2)region.left+t*(region.right-region.left) else if(edge==2)region.left else region.right
+                val v=if(edge>=2)region.top+t*(region.bottom-region.top) else if(edge==0)region.top else region.bottom
+                val flat=floatArrayOf((u-.5f)*width,(.5f-v)*height,0f)
+                val world=transformPoint(pose,mesh?.project(flat,onTriangles=true) ?: flat)
+                val local=viewerInMonitor(world,viewer.position,viewer.rotation)
+                if(local[2]<-.001f)add(local[0]/-local[2] to local[1]/local[2])
+            }
+        }
+        if(points.isEmpty())return emptyList()
+        val left=points.minOf{it.first};val right=points.maxOf{it.first}
+        val top=points.minOf{it.second};val bottom=points.maxOf{it.second}
+        return listOf(CursorPatch(key,listOf(left to top,right to top,right to bottom,left to bottom),source,depth,front))
+    }
     val left=(center[0]+(region.left-.5f)*width)/depth
     val right=(center[0]+(region.right-.5f)*width)/depth
     val top=(-center[1]+(region.top-.5f)*height)/depth

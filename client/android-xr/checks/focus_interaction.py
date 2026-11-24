@@ -245,6 +245,10 @@ fun main() {
    val angled=cursorPatches("a",pose,1f,2f,null,rect,Pose()).single()
    val straight=cursorPatches("a",pose.copy(rotation=floatArrayOf(0f,0f,0f,1f)),1f,2f,null,rect,Pose()).single()
    check(angled.points==straight.points)
+   val yaw=Pose(floatArrayOf(0f,0f,-2f),floatArrayOf(0f,.38268343f,0f,.92387953f))
+   val panel=cursorPatches("shell:1",yaw,1f,2f,null,rect,Pose(),projectBounds=true).single().viewBounds
+   check(abs(panel.left - (-.3535534f/1.6464466f))<.00001f)
+   check(abs(panel.right - (.3535534f/2.3535534f))<.00001f)
  }
 
  // Curved panes keep a constant radius; flat panes stay exactly coplanar.

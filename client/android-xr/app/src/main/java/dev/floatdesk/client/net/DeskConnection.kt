@@ -358,6 +358,7 @@ internal class DeskConnection(
         main.postDelayed({if(gazeFocusPending.compareAndSet(id,0))gazeFocusError.value="Gaze focus request timed out"},2000)
     }
     @Volatile var cursorLocation:dev.floatdesk.client.CursorLocation?=null
+    @Volatile var layoutMapDebug=floatArrayOf()
     @Volatile var cursorTopology=dev.floatdesk.client.CursorTopology()
     private val cursorMapSequence=java.util.concurrent.atomic.AtomicLong()
     @Volatile var cursorMapDebug=floatArrayOf()

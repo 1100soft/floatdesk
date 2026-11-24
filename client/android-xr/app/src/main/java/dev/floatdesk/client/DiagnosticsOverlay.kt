@@ -26,8 +26,8 @@ import dev.floatdesk.client.workspace.ViewLayers
 @androidx.compose.runtime.Composable
 internal fun DiagnosticsPanel(connection:dev.floatdesk.client.net.DeskConnection,
     viewer:java.util.concurrent.atomic.AtomicReference<dev.floatdesk.client.workspace.Pose?>,
-    units:()->Float,angles:()->FloatArray,resources:Boolean,quality:Boolean,qualityDebug:Boolean,spherical:Boolean) {
-    if(!qualityDebug)return
+    units:()->Float,angles:()->FloatArray,resources:Boolean,quality:Boolean,qualityDebug:Boolean,spherical:Boolean,layoutMap:Boolean) {
+    if(!qualityDebug && !layoutMap)return
     val thermalPaused by connection.thermalPaused
     if(thermalPaused)return
     val session=androidx.xr.compose.platform.LocalSession.current ?: return
@@ -53,7 +53,7 @@ internal fun DiagnosticsPanel(connection:dev.floatdesk.client.net.DeskConnection
     // Only this parent follows the head. Text refreshes never update individual block poses.
     androidx.xr.compose.subspace.SpatialBox(modifier=placedPanel(pose,unit,unit,density,pixelDensity)){
         for((index,patch) in patches.withIndex()){
-            if(index<2 && !resources || index>=2 && !qualityDebug)continue
+            if(!qualityDebug && index!=3 || qualityDebug && index<2 && !resources)continue
             androidx.compose.runtime.key(index){
                 val texture=androidx.compose.runtime.remember{HudGlyphTexture()}
                 androidx.compose.runtime.DisposableEffect(texture){onDispose{texture.close()}}
@@ -73,8 +73,8 @@ internal fun DiagnosticsPanel(connection:dev.floatdesk.client.net.DeskConnection
                     }){
                         drawIntoCanvas{target->
                             val c=target.nativeCanvas;val saved=c.save();c.scale(size.width/800f,size.height/400f)
-                            texture.topology=connection.cursorMapDebug
-                            texture.draw(c,state,connection.presentation().rects,stamp,index,patch.columns,patch.rows,patch.vertices)
+                            texture.topology=if(layoutMap)connection.layoutMapDebug else connection.cursorMapDebug
+                            texture.draw(c,state,connection.presentation().rects,stamp,index,patch.columns,patch.rows,patch.vertices,!qualityDebug)
                             c.restoreToCount(saved)
                         }
                     }
@@ -89,14 +89,18 @@ internal class HudGlyphTexture:AutoCloseable{
     val paint=Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private var stamp=Long.MIN_VALUE;private var state:DiagnosticSnapshot?=null
     var topology=floatArrayOf()
+    private var mapOnly=false
     private var closed=false
-    private fun update(value:DiagnosticSnapshot,screens:FloatArray,now:Long,index:Int){
-        if(stamp==now && state===value)return
-        DiagnosticsCanvas.drawCluster(Canvas(bitmap),value,screens,now,index);if(index==3 && topology.isNotEmpty())drawTopology(Canvas(bitmap),topology);stamp=now;state=value
+    private fun update(value:DiagnosticSnapshot,screens:FloatArray,now:Long,index:Int,mapOnly:Boolean){
+        if(stamp==now && state===value && this.mapOnly==mapOnly)return
+        this.mapOnly=mapOnly
+        if(mapOnly)bitmap.eraseColor(Color.TRANSPARENT) else DiagnosticsCanvas.drawCluster(Canvas(bitmap),value,screens,now,index)
+        if(index==3 && topology.isNotEmpty())drawTopology(Canvas(bitmap),topology);stamp=now;state=value
     }
-    fun draw(canvas:Canvas,value:DiagnosticSnapshot,screens:FloatArray,now:Long,index:Int,columns:Int,rows:Int,vertices:FloatArray){
+    @JvmOverloads
+    fun draw(canvas:Canvas,value:DiagnosticSnapshot,screens:FloatArray,now:Long,index:Int,columns:Int,rows:Int,vertices:FloatArray,mapOnly:Boolean=false){
         if(closed)return
-        update(value,screens,now,index)
+        update(value,screens,now,index,mapOnly)
         canvas.drawBitmapMesh(bitmap,columns,rows,vertices,0,null,0,paint)
     }
     private fun drawTopology(canvas:Canvas,lines:FloatArray){

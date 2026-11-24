@@ -378,7 +378,7 @@ internal class MagnifierRayDrag{
 }
 
 /** Placement changes independently; expensive geometry is shared, cached and budgeted by callers. */
-private fun projectMagnifier(window:MagnifiedWindow,viewer:Pose,pose:Pose,width:Float,height:Float,update:Boolean,eyeTolerance:Float,focusTolerance:Float):MonitorMesh?{
+internal fun projectMagnifier(window:MagnifiedWindow,viewer:Pose,pose:Pose,width:Float,height:Float,update:Boolean,eyeTolerance:Float,focusTolerance:Float):MonitorMesh?{
     val eye=viewerInMonitor(viewer.position,pose.position,pose.rotation)
     val old=window.mesh
     if(!update && old!=null && old.planar==!window.spherical && old.width==width && old.height==height)return old

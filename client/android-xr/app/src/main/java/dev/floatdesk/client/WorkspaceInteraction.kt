@@ -68,11 +68,17 @@ internal fun WorkspaceFile.monitorAt(index: Int): MonitorPlacement? {
 internal fun WorkspaceFile.reset(monitors: List<MonitorHello>, store: WorkspaceStore,viewer:Pose,angles:FloatArray,units:Float): WorkspaceFile {
     if (monitors.isEmpty()) return this
     val target=Pose(transformPoint(viewer,floatArrayOf(0f,0f,-farthestDistanceM*units)),viewer.rotation.copyOf())
-    val fitted=fitDesktopInView(deskLayout(monitors.map{Triple(it.name,it.width,it.height)}),viewer,
-        angles[0],angles[1],units,sphericalWarp,centralView=true,distanceM=farthestDistanceM)
-    val next=moveLayoutOrigin(target).restoreDefaultDesktopSize(target,fitted)
+    val next=moveLayoutOrigin(target).restoreDesktopFraming(monitors,viewer,angles,units)
     store.save(next)
     return next
+}
+
+internal fun WorkspaceFile.restoreDesktopFraming(monitors:List<MonitorHello>,viewer:Pose,angles:FloatArray,units:Float):WorkspaceFile {
+    val origin=layoutOrigin ?: monitorAt(0)?.pose ?: return this
+    if(monitors.isEmpty())return this
+    val fitted=fitDesktopInView(deskLayout(monitors.map{Triple(it.name,it.width,it.height)}),viewer,
+        angles[0],angles[1],units,sphericalWarp,centralView=true,distanceM=farthestDistanceM)
+    return restoreDefaultDesktopSize(origin,fitted)
 }
 
 internal fun SpatialMoveEvent.workspacePose(pixelDensity: PixelDensity): Pose {

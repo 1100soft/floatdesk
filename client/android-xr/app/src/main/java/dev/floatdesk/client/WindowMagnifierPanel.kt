@@ -20,8 +20,9 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
     pinned:Boolean,viewer:java.util.concurrent.atomic.AtomicReference<dev.floatdesk.client.workspace.Pose?>,
     units:()->Float,tracking:GrabTracking,
     onReady:()->Unit,onError:(String)->Unit,onHover:(String,Pair<Float,Float>?)->Unit,
-    onPlacement:(MagnifiedWindow,Boolean)->Unit,onMoving:(Boolean)->Unit,onPointerHover:(hands:Boolean,gaze:Boolean)->Unit={_,_->},onHidden:()->Unit={},captureId:Long?=null,regionId:Long?=null,allowManipulation:Boolean=true,showFrame:Boolean=true,topologyKey:String?=null,receiveInput:Boolean=true,projectFrame:Boolean=true,freeManipulation:Boolean=false,desktopMirror:Boolean=false,mirrorOverlay:(()->VideoAim)?=null,onDisplayed:((Long)->Unit)?=null,projectionMode:Boolean=window?.spherical==true,transientSurface:Boolean=false,retainLastFrame:Boolean=false,previewBounds:dev.floatdesk.client.net.DesktopWindow?=null){
+    onPlacement:(MagnifiedWindow,Boolean)->Unit,onMoving:(Boolean)->Unit,onPointerHover:(hands:Boolean,gaze:Boolean)->Unit={_,_->},onHidden:()->Unit={},captureId:Long?=null,regionId:Long?=null,allowManipulation:Boolean=true,showFrame:Boolean=true,topologyKey:String?=null,receiveInput:Boolean=true,projectFrame:Boolean=true,freeManipulation:Boolean=false,desktopMirror:Boolean=false,mirrorOverlay:(()->VideoAim)?=null,onDisplayed:((Long)->Unit)?=null,projectionMode:Boolean=window?.spherical==true,transientSurface:Boolean=false,retainLastFrame:Boolean=false,previewBounds:dev.floatdesk.client.net.DesktopWindow?=null,placementViewer:dev.floatdesk.client.workspace.Pose?=null){
     val readyNow=rememberUpdatedState(onReady);val errorNow=rememberUpdatedState(onError);val hoverNow=rememberUpdatedState(onHover)
+    val placementViewerNow=rememberUpdatedState(placementViewer)
     val windowNow=rememberUpdatedState(window);val placementNow=rememberUpdatedState(onPlacement);val movingNow=rememberUpdatedState(onMoving)
     val moveMode=rememberUpdatedState(allowManipulation);val freeMode=rememberUpdatedState(freeManipulation)
     val displayedNow=rememberUpdatedState(onDisplayed)
@@ -61,8 +62,9 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
         while(connection.thermalPaused.value)delay(100)
         var initialViewer=viewer.get()
         while(initialViewer==null){withFrameNanos{};initialViewer=viewer.get()}
-        val initialFrame=if(projectFrame)magnifierFrame(initial,initial,initialViewer,units(),true)else projectPaneAtPlacement(initial,initial,initialViewer,true)
-        val target=placePaneInsideDesktop(initialFrame,initialViewer,tracking.desktopSphereRadius)
+        val projectionEye=placementViewerNow.value ?: initialViewer
+        val initialFrame=if(projectFrame)magnifierFrame(initial,initial,projectionEye,units(),true)else projectPaneAtPlacement(initial,initial,projectionEye,true)
+        val target=placePaneInsideDesktop(initialFrame,projectionEye,tracking.desktopSphereRadius)
         try{
             fun shape(surface:MagnifiedWindow):SurfaceEntity.Shape{
                 if(!RenderPolicy.CustomMeshes || !surface.spherical || surface.mesh==null){
@@ -277,8 +279,9 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                 if(transientSurface)continue
                 val current=(resources.pending ?: windowNow.value)?.let(::surfaceMode) ?: continue
                 resources.pending=null
-                val frame=if(projectFrame)magnifierFrame(current,prior,head,units(),updateGeometry)else projectPaneAtPlacement(current,prior,head,updateGeometry)
-                val next=placePaneInsideDesktop(frame,head,tracking.desktopSphereRadius,prior)
+                val projectionEye=if(resources.moving || resources.resizing || resources.free.engaged)head else placementViewerNow.value ?: head
+                val frame=if(projectFrame)magnifierFrame(current,prior,projectionEye,units(),updateGeometry)else projectPaneAtPlacement(current,prior,projectionEye,updateGeometry)
+                val next=placePaneInsideDesktop(frame,projectionEye,tracking.desktopSphereRadius,prior)
                 if(moveMode.value){
                     resources.corners.update(session,entity,next.width,next.height,units(),next.layerDistanceM,tracking,resources.hovering.isNotEmpty() && !resources.free.engaged){active,factor->
                         if(resources.resizeStart==null){resources.resizeStart=resources.rendered;resources.dragged=true}

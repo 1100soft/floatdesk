@@ -323,7 +323,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
         val angles=viewHalfAngles.get()
         val bounds=floatArrayOf(pieces.minOf{it.left},pieces.minOf{it.top},pieces.maxOf{it.right},pieces.maxOf{it.bottom})
         grabs.values.forEach{it.cancel()};pointerControl.clear();manipulating=false
-        val fitted=focusDesktopRegion(screen,bounds,viewer,angles[0],angles[1],handTracking.unitsPerMeter,workspace.sphericalWarp)
+        val fitted=focusDesktopRegion(screen,bounds,viewer,angles[0],angles[1],handTracking.unitsPerMeter,workspace.sphericalWarp,workspace.desktopHome ?: screen.pose)
         if(workspace.layoutOrigin==null || workspace.desktopHome==null)
             workspace=workspace.copy(layoutOrigin=workspace.layoutOrigin ?: screen.pose,desktopHome=workspace.desktopHome ?: screen.pose)
         workspace=workspace.monitorPlaced(index,fitted,store,true)
@@ -427,7 +427,11 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 PalmAction.SPACE -> { session?.scene?.requestFullSpace();toggleDisplays() }
                 PalmAction.HAND_MOUSE -> { workspace=workspace.copy(handMouse=!workspace.handMouse);store.save(workspace) }
                 PalmAction.LAYOUT,PalmAction.MOVE,PalmAction.FREE,PalmAction.DONE -> {
-                    if(action==PalmAction.LAYOUT)store.recordLayout(workspace,"enter layout")
+                    if(action==PalmAction.LAYOUT){
+                        val view=magnifierViewer.get() ?: displayHead.get()
+                        if(view!=null)workspace=workspace.restoreDesktopFraming(monitors,view,viewHalfAngles.get(),handTracking.unitsPerMeter)
+                        store.recordLayout(workspace,"enter layout")
+                    }
                     val done=action==PalmAction.DONE
                     grabs.values.forEach{it.cancel()};originGrab.clear();pointerControl.clear();manipulating=false;pendingFocusMonitor=null
                     toolbar.clear();toolbarTarget=null;openToolbarStrip=null;openToolbarWindow=null
@@ -1568,7 +1572,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     },{moving->
                         if(moving)fixedEditing.add("system:${live.id}")else if(fixedEditing.remove("system:${live.id}"))recordPlacement("panel gesture")
                         magnifierMoving=fixedEditing.isNotEmpty()
-                    },allowManipulation=workspace.grabToMove && live.panel,freeManipulation=workspace.freeManipulation && live.panel,topologyKey="shell:${live.id}",projectionMode=workspace.sphericalWarp,transientSurface=!live.panel,previewBounds=row?.takeUnless{it.panel},onHidden={systemReady[live.id]=false},showFrame=false)
+                    },allowManipulation=workspace.grabToMove && live.panel,freeManipulation=workspace.freeManipulation && live.panel,topologyKey="shell:${live.id}",projectionMode=workspace.sphericalWarp,transientSurface=!live.panel,previewBounds=row?.takeUnless{it.panel},placementViewer=workspace.cursorMapReference.takeIf{live.panel},onHidden={systemReady[live.id]=false},showFrame=false)
             }}
         }
         if(session!=null && magnifierRoot!=null && sceneActive && !displayControlsOpen){

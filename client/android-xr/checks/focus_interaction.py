@@ -97,6 +97,19 @@ fun main() {
  check(abs(desktopPatch.right-panePatch.left)<.0001f || abs(desktopPatch.left-panePatch.right)<.0001f ||
        abs(desktopPatch.bottom-panePatch.top)<.0001f || abs(desktopPatch.top-panePatch.bottom)<.0001f)
 
+ val verticalPanel=FixedMagnifierPlacement("vertical",Pose(floatArrayOf(.83f,0f,.4f),
+    floatArrayOf(0f,.38268343f,0f,.92387953f)),.05f,1.05f)
+ for(curved in listOf(false,true)){
+    val result=visibleLayout.copy(sphericalWarp=curved,fixedMagnifiers=emptyList(),systemPanels=listOf(verticalPanel))
+        .adjustLayout(LayoutAdjustment.AUTO,Pose(),1f)
+    val desktop=result.layouts.getValue("Desk").first()
+    val pane=fixedMagnifier(result.systemPanels.single(),desktop.copy(pose=layoutBase.pose),DesktopWindow(1,0,0,50,1050),Pose(),1f,curved)
+    val unitRect=FocusRect(0f,0f,1f,1f)
+    val d=cursorPatches("desktop",desktop.pose,desktop.physicalWidthM,desktop.physicalHeightM,null,unitRect,Pose()).single().viewBounds
+    val v=cursorPatches("shell:1",pane.pose,pane.width,pane.height,pane.mesh,unitRect,Pose(),projectBounds=true).single().viewBounds
+    val separation=maxOf(v.left-d.right,d.left-v.right,v.top-d.bottom,d.top-v.bottom)
+    check(abs(separation)<.002f){"panel separation=$separation curved=$curved"}
+ }
  val originGrab=LayoutOriginGrab()
  originGrab.begin("LEFT",0L,savedOrigin,Pose(),floatArrayOf(0f,0f,-.4f),1f)
  val movedOrigin=originGrab.advance(Pose(),mapOf("LEFT" to floatArrayOf(.1f,0f,-.4f)),setOf("LEFT"),150L,false)!!
@@ -691,6 +704,11 @@ fun main() {
   }
   check(fitted.pixelWidth==original.pixelWidth && fitted.pixelHeight==original.pixelHeight)
  }
+ val home=Pose(floatArrayOf(1.1f,.4f,-1.6f))
+ val atHome=focusDesktopRegion(original,floatArrayOf(.7f,.2f,.9f,.6f),Pose(),.65f,.5f,1f,false,home)
+ val point=transformPoint(atHome.pose,floatArrayOf((atHome.viewCenterU-.5f)*atHome.physicalWidthM,
+    (.5f-atHome.viewCenterV)*atHome.physicalHeightM,0f))
+ check(distance(point,home.position)<.0001f && atHome.freePose)
  println("PASS shared pinch edges, window/screen selection, disabled/blocked behavior, topmost window, fallback, spacing and selected-region fitting in flat/spherical modes")
 }
 '''

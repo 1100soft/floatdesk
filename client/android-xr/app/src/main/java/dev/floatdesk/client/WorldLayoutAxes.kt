@@ -19,7 +19,8 @@ import androidx.xr.scenecore.SurfaceEntity
 @OptIn(ExperimentalSurfaceEntityPixelDimensionsApi::class)
 internal class WorldLayoutAxes(private val session:Session):AutoCloseable{
     private data class Surface(val entity:SurfaceEntity,val state:NativeNodeState,val inputTransparent:Boolean)
-    private val planes=mutableMapOf<Boolean,List<Surface>>()
+    private val planes=mutableMapOf<Boolean,MutableList<Surface>>()
+    private var nextAllocation=0L
     private var connector:Surface?=null
     private val cyan=Color.rgb(88,241,255)
     private val violet=Color.rgb(200,125,255)
@@ -48,9 +49,11 @@ internal class WorldLayoutAxes(private val session:Session):AutoCloseable{
     fun update(parent:Entity,guide:LayoutOriginGuide?){
         planes.forEach{(mode,items)->if(mode!=guide?.spherical)items.forEach{it.state.enabled(false)}}
         if(guide==null){connector?.state?.enabled(false);return}
-        val axes=planes.getOrPut(guide.spherical){
-            val geometry=worldAxisGeometry(guide.spherical)
-            listOf(surface(geometry,cyan),surface(geometry,violet))
+        val now=android.os.SystemClock.uptimeMillis()
+        val axes=planes.getOrPut(guide.spherical){mutableListOf()}
+        if(axes.size<2 && now>=nextAllocation){
+            axes.add(surface(worldAxisGeometry(guide.spherical),if(axes.isEmpty())cyan else violet))
+            nextAllocation=now+90L
         }
         val q=guide.rotation
         val rotation=Quaternion(q[0],q[1],q[2],q[3])
@@ -70,6 +73,7 @@ internal class WorldLayoutAxes(private val session:Session):AutoCloseable{
         val delta=b-a
         val length=delta.length
         if(length<=guide.gripRadius*2f){connector?.state?.enabled(false);return}
+        if(connector==null && (axes.size<2 || now<nextAllocation))return
         val beam=connector ?: surface(VideoGeometry(
             floatArrayOf(0f,-.5f,0f,0f,.5f,0f,1f,-.5f,0f,1f,.5f,0f),
             floatArrayOf(0f,0f,0f,1f,1f,0f,1f,1f),

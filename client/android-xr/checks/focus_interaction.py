@@ -32,11 +32,15 @@ fun main() {
  check(WindowMenuLayout.buttonCenter(0,false,.1f)<WindowMenuLayout.buttonCenter(2,false,.1f))
  check(WindowMenuLayout.buttonCenter(3,true,.1f)-WindowMenuLayout.buttonCenter(2,true,.1f)>1.2f)
 
- for(guide in listOf(flatOrigin,curvedOrigin)){
-    val projection=LayoutGuideProjection(guide,1f,1f)
-    check(projection.point(guide.near)!!.first in 0f..1f)
-    check(projection.axis(0,0).filterNotNull().all{it.first.isFinite() && it.second.isFinite()})
-    check(projection.axis(1,1).size==if(guide.spherical)97 else 2)
+ for(curved in listOf(false,true)){
+    val axes=worldAxisGeometry(curved)
+    check(axes.positions.all(Float::isFinite) && axes.indices.isNotEmpty())
+    for(v in axes.positions.indices step 3){
+        val point=axes.positions.sliceArray(v..v+2)
+        if(curved)check(abs(dot(point,point)-1f)<.0001f) else check(point[2]==0f)
+        val center=if(curved)floatArrayOf(0f,0f,-1f)else FloatArray(3)
+        check(distance(point,center)>.022f)
+    }
  }
  val boxes=listOf(LayoutBox(floatArrayOf(0f,0f,0f),4f,2f),
     LayoutBox(floatArrayOf(0f,0f,1f),1f,1f),LayoutBox(floatArrayOf(8f,.1f,2f),2f,1f))
@@ -76,6 +80,19 @@ fun main() {
  val gapX=abs(packedPane.pose.position[0])/logicalDepth-(layoutBase.physicalWidthM/ViewLayers.DesktopDistanceM+.5f/logicalDepth)*.5f
  val gapY=abs(packedPane.pose.position[1])/logicalDepth-(layoutBase.physicalHeightM/ViewLayers.DesktopDistanceM+.25f/logicalDepth)*.5f
  check((abs(gapX)<.0001f && gapY<0f) || (abs(gapY)<.0001f && gapX<0f))
+ val hidden=FixedMagnifierPlacement("disconnected-panel",Pose(floatArrayOf(.7f,0f,.3f)),4f,2f)
+ val offCenter=Pose(floatArrayOf(.45f,.2f,.3f))
+ val visibleLayout=WorkspaceFile(layoutOrigin=layoutBase.pose,layouts=mutableMapOf("Desk" to mutableListOf(layoutBase)),
+    fixedMagnifiers=listOf(layoutPane),systemPanels=listOf(hidden))
+ val adjusted=visibleLayout.adjustLayout(LayoutAdjustment.AUTO,offCenter,1f,visibleRecords=setOf("pane"))
+ check(adjusted.systemPanels.single()===hidden && adjusted.cursorMapReference===offCenter)
+ val placedPane=adjusted.fixedMagnifiers.single()
+ val desktopPatch=cursorPatches("desktop",layoutBase.pose,1.2f,.8f,null,FocusRect(0f,0f,1200f,800f),offCenter).single().viewBounds
+ val paneWorld=Pose(transformPoint(layoutBase.pose,placedPane.pose.position))
+ val panePatch=cursorPatches("pane",paneWorld,.5f,.25f,null,FocusRect(0f,0f,500f,250f),offCenter).single().viewBounds
+ check(abs(desktopPatch.right-panePatch.left)<.0001f || abs(desktopPatch.left-panePatch.right)<.0001f ||
+       abs(desktopPatch.bottom-panePatch.top)<.0001f || abs(desktopPatch.top-panePatch.bottom)<.0001f)
+
  val originGrab=LayoutOriginGrab()
  originGrab.begin("LEFT",0L,savedOrigin,Pose(),floatArrayOf(0f,0f,-.4f),1f)
  val movedOrigin=originGrab.advance(Pose(),mapOf("LEFT" to floatArrayOf(.1f,0f,-.4f)),setOf("LEFT"),150L,false)!!

@@ -52,10 +52,10 @@ internal class GrabGuideRenderer private constructor(
     private val nodeStates=java.util.IdentityHashMap<Entity,NativeNodeState>()
     private fun state(entity:Entity)=nodeStates.getOrPut(entity){NativeNodeState(entity)}
     private var pointerPoint: GltfModelEntity? = null
-    private var highlight:SurfaceEntity?=null
-    private val aimBeams=mutableListOf<SurfaceEntity>()
-    private val grabBeams=mutableListOf<SurfaceEntity>()
-    private val grabContacts=mutableListOf<SurfaceEntity>()
+    private var highlight:GltfModelEntity?=null
+    private val aimBeams=mutableListOf<GltfModelEntity>()
+    private val grabBeams=mutableListOf<GltfModelEntity>()
+    private val grabContacts=mutableListOf<GltfModelEntity>()
 
     private var originCollider:SurfaceEntity?=null
     private var originSphere:SurfaceEntity?=null
@@ -114,8 +114,8 @@ internal class GrabGuideRenderer private constructor(
 
     private fun newGroup(edgeCount: Int): Group {
         val root = Entity.create(session, name = "Floatdesk grab guide")
-        // Outline segments, two tethers, then matching contact/pinch spheres.
-        val indices = List(edgeCount) { 0 } + listOf(0, 1, 2, 3, 2, 3)
+        // The outline and pinch markers share the same retained model pool.
+        val indices = List(edgeCount) { 0 } + listOf(2,3)
         val parts = indices.map { GltfModelEntity.create(session, models[it], parent = root) }
         return Group(root, parts)
     }
@@ -143,18 +143,16 @@ internal class GrabGuideRenderer private constructor(
             for (hand in 0..1) {
                 val contact=foregroundGuidePoint(visibleGrabContact(guide.contacts[hand],guide.eye,unit),guide.eye,unit,desktopRange)
                 val pinch=foregroundGuidePoint(guide.pinches[hand],guide.eye,unit,desktopRange)
-                state(group.parts[edgeCount+hand]).enabled(false)
-                state(group.parts[edgeCount+2+hand]).enabled(false)
                 tethers+=contact to pinch
                 contacts+=contact
-                point(group.parts[edgeCount+4+hand],pinch,.004f*unit)
+                point(group.parts[edgeCount+hand],pinch,.004f*unit)
             }
         }
         for (index in guides.size until groups.size) groups[index].root.setEnabled(false)
         val unit=guides.firstOrNull()?.unitsPerMeter ?: 1f
         updateGuideBeams(parent,tethers,grabBeams,.0022f*unit,1f)
         for(index in contacts.indices){
-            if(index>=grabContacts.size)grabContacts+=guidePrimitive(layoutOriginSphereGeometry(),guideColor(index))
+            if(index>=grabContacts.size)grabContacts+=GltfModelEntity.create(session,models[2+index%2])
             state(grabContacts[index]).apply{
                 this.parent(parent);pose(Pose(vector(contacts[index])));scale(.006f*unit);enabled(true)
             }
@@ -172,29 +170,15 @@ internal class GrabGuideRenderer private constructor(
         point(entity,visibleGrabContact(position,eye,unitsPerMeter),.003f*unitsPerMeter)
     }
 
-    private fun guideColor(index:Int)=if(index%2==0)0xFF6CF9FF.toInt() else 0xFFC180FF.toInt()
-
-    @OptIn(androidx.xr.scenecore.ExperimentalSurfaceEntityPixelDimensionsApi::class)
-    private fun guidePrimitive(geometry:VideoGeometry,color:Int):SurfaceEntity {
-        val entity=SurfaceEntity.create(session,shape=nativeVideoMesh(geometry),parent=null,
-            superSampling=SurfaceEntity.SuperSampling.NONE,mediaBlendingMode=SurfaceEntity.MediaBlendingMode.OPAQUE)
-        state(entity).enabled(false)
-        SurfaceInput.disableCollider(entity)
-        entity.setSurfacePixelDimensions(IntSize2d(8,8))
-        val surface=entity.getSurface()
-        val canvas=surface.lockCanvas(null)
-        try{canvas.drawColor(color)}finally{surface.unlockCanvasAndPost(canvas)}
-        return entity
-    }
-
     fun updateHighlight(parent:Entity,position:FloatArray?,rotation:FloatArray,diameter:Float,pulse:Float){
         if(closed)return
         if(position==null || diameter<=0f){highlight?.let{state(it).enabled(false)};return}
-        val marker=highlight ?: guidePrimitive(layoutOriginSphereGeometry(),0xFFC1F4FF.toInt()).also{highlight=it}
+        val marker=highlight ?: GltfModelEntity.create(session,models[4]).also{highlight=it}
         state(marker).apply{
             this.parent(parent)
             pose(Pose(vector(position),Quaternion(rotation[0],rotation[1],rotation[2],rotation[3])))
-            scale(diameter*(.19f+.04f*pulse))
+            scale(diameter*(.37f+.04f*pulse))
+            alpha(.65f+.2f*pulse)
             enabled(true)
         }
     }
@@ -208,16 +192,16 @@ internal class GrabGuideRenderer private constructor(
     }
 
     private fun updateGuideBeams(parent:Entity,rays:List<Pair<FloatArray,FloatArray>?>,
-                                 entities:MutableList<SurfaceEntity>,width:Float,alpha:Float){
+                                 entities:MutableList<GltfModelEntity>,width:Float,alpha:Float){
         for((index,ray) in rays.withIndex()){
             if(ray==null){entities.getOrNull(index)?.let{state(it).enabled(false)};continue}
             val from=vector(ray.first);val to=vector(ray.second);val delta=to-from
             if(delta.length<.00001f){entities.getOrNull(index)?.let{state(it).enabled(false)};continue}
-            while(entities.size<=index)entities+=guidePrimitive(GuidePrism,guideColor(entities.size))
-            state(entities[index]).apply{
-                this.parent(parent);pose(Pose((from+to)*.5f,Quaternion.fromRotation(Vector3.Right,delta)))
-                scale(Vector3(delta.length,width,width));alpha(alpha);enabled(true)
-            }
+            while(entities.size<=index)entities+=GltfModelEntity.create(session,models[entities.size%2])
+            val entity=entities[index]
+            state(entity).parent(parent)
+            state(entity).alpha(alpha)
+            beam(entity,ray.first,ray.second,width)
         }
         for(i in rays.size until entities.size)state(entities[i]).enabled(false)
     }
@@ -263,17 +247,10 @@ internal class GrabGuideRenderer private constructor(
     }
 
     companion object {
-        private val GuidePrism=VideoGeometry(
-            floatArrayOf(-.5f,-.5f,-.5f,-.5f,.5f,-.5f,.5f,.5f,-.5f,.5f,-.5f,-.5f,
-                -.5f,-.5f,.5f,-.5f,.5f,.5f,.5f,.5f,.5f,.5f,-.5f,.5f),
-            FloatArray(16){.5f},
-            intArrayOf(0,1,2,0,2,3, 4,6,5,4,7,6, 0,4,5,0,5,1,
-                3,2,6,3,6,7, 1,5,6,1,6,2, 0,3,7,0,7,4))
-
         suspend fun create(session: Session): GrabGuideRenderer {
             val loaded = mutableListOf<GltfModel>()
             try {
-                for (asset in listOf("cyan-beam", "violet-beam", "cyan-point", "violet-point")) {
+                for (asset in listOf("cyan-beam", "violet-beam", "cyan-point", "violet-point", "menu-glow")) {
                     loaded.add(GltfModel.create(session, Paths.get("grab-guides/$asset.glb")))
                 }
                 return GrabGuideRenderer(session, loaded)

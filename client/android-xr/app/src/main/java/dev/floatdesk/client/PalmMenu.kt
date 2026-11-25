@@ -48,8 +48,9 @@ internal object PalmMenuLayout {
     private val center = listOf(PalmAction.RESET,PalmAction.LAYOUT,PalmAction.SETTINGS)
     private val modes = listOf(PalmAction.HAND_MOUSE,PalmAction.TAP_TO_FOCUS,PalmAction.DRAG_TO_MOVE,PalmAction.HANDS_OFF)
     private data class Cluster(val y:Float,val actions:List<PalmAction>,val pitch:Float=.047f)
-    private val view=Cluster(.075f,listOf(PalmAction.FOLLOW,PalmAction.WARP,PalmAction.DIAGNOSTICS))
-    private val content=Cluster(.222f,listOf(PalmAction.MAGNIFIER,PalmAction.REFERENCE,PalmAction.GAZE_FOCUS))
+    private val view=Cluster(.061f,listOf(PalmAction.FOLLOW,PalmAction.WARP,PalmAction.DIAGNOSTICS))
+    private val content=Cluster(.204f,listOf(PalmAction.MAGNIFIER,PalmAction.REFERENCE,PalmAction.GAZE_FOCUS))
+    private val connection=Cluster(.252f,listOf(PalmAction.MOUSE_SPACES,PalmAction.SEARCH))
     private val layout = listOf(
         Cluster(.048f,listOf(PalmAction.ALIGN_AXES,PalmAction.FACE_USER,PalmAction.SNAP_OBJECTS)),
         Cluster(.096f,listOf(PalmAction.MOVE,PalmAction.FREE,PalmAction.RESET_ORIGIN)),
@@ -74,10 +75,9 @@ internal object PalmMenuLayout {
         if(page.isLayout)layout.forEach(::cluster)
         else{
             cluster(view)
-            cluster(Cluster(.148f,center))
+            cluster(Cluster(.133f,center))
             cluster(content)
-            button(PalmAction.MOUSE_SPACES,.052f,.148f)
-            button(PalmAction.SEARCH,.246f,.148f)
+            cluster(connection)
         }
         if(!page.isLayout)modes.forEachIndexed{i,action->button(action,circleM*.5f+(i-1.5f)*.047f,circleM+modesHeight*.5f)}
     }
@@ -179,9 +179,9 @@ internal fun PalmControls(page: PalmPage, workspace: WorkspaceFile, info: Worksp
                         Size(size.width*.68f,size.height),CornerRadius(size.height*.22f))
                     else{
                         drawCircle(if(page.isLayout)Color(0xFF28344F) else Color(0xFF202D3B),size.height/2)
-                        val rows=if(page.isLayout)listOf(.048f,.096f,.147f,.204f,.252f) else listOf(.075f,.148f,.222f)
+                        val rows=if(page.isLayout)listOf(.048f,.096f,.147f,.204f,.252f) else listOf(.061f,.133f,.204f,.252f)
                         for(y in rows){
-                            val width=size.width*(if(page.isLayout && y==.147f).83f else .49f)
+                            val width=size.width*(if(page.isLayout && y==.147f).83f else if(!page.isLayout && y==.252f).34f else .49f)
                             val height=size.height*.143f
                             drawRoundRect(Color(0xFF34465D),Offset((size.width-width)/2,size.height*y/PalmMenuLayout.circleM-height/2),
                                 Size(width,height),CornerRadius(height*.48f))

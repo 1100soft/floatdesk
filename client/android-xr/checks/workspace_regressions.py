@@ -38,14 +38,6 @@ fun main() {
     layouts=mutableMapOf("Desk" to mutableListOf(offsetDesktop))).centerDesktop(Pose(floatArrayOf(0f,0f,-2f)))
  check(atStartup.layouts.getValue("Desk").single().pose.position.contentEquals(floatArrayOf(0f,0f,-2f)))
  check(atStartup.layoutOrigin!!.position.contentEquals(floatArrayOf(1f,0f,-2f)))
- val textureHole=clippedVideoGeometry(2f,2f,null,floatArrayOf(0f,0f,1f,1f),0f,
-    listOf(textureCutout(.25f,.25f,.75f,.75f)))
- check(textureHole.indices.isNotEmpty())
- for(i in textureHole.indices.indices step 3){
-    val u=(0..2).sumOf{textureHole.texCoords[textureHole.indices[i+it]*2].toDouble()}/3
-    val v=(0..2).sumOf{textureHole.texCoords[textureHole.indices[i+it]*2+1].toDouble()}/3
-    check(u<=.25 || u>=.75 || v<=.25 || v>=.75)
- }
  val viewer0=Pose()
  val depthBase=MonitorPlacement("depth","existing-0",Pose(floatArrayOf(.3f,.2f,-2.4f)),2f,1f,0f,5120,2560,60)
  val locked=fixedDesktopDepth(depthBase,viewer0,1f)

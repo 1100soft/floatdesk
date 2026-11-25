@@ -26,6 +26,7 @@ private data class MonitorPlacement(val pose: Pose, val physicalWidthM: Float = 
 private data class WorkspaceFile(val activeLayout: String="Desk",val layouts: Map<String,List<MonitorPlacement>> = emptyMap())
 private data class Vector3(val x: Float, val y: Float, val z: Float)
 private data class VideoCutout(val planes: List<List<Float>>)
+private class MagnifiedWindow
 private class PixelDensity { fun convertPixelsToMeters(x: Float) = x / 1000f }
 private class InputEvent { enum class Action { DOWN, MOVE, UP, CANCEL }; enum class Source { HANDS, GAZE_AND_GESTURE } }
 private data class SpatialInputEvent(val pointerType: String, val action: InputEvent.Action, val hitPosition: Vector3?, val source: InputEvent.Source = InputEvent.Source.HANDS)

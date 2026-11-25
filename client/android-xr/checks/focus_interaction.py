@@ -34,6 +34,16 @@ fun main() {
  repeat(100){centered=centered.centerDesktop(scaledQuaternion)}
  val repairedRotation=centered.layouts.getValue("Desk").first().pose.rotation
  check(abs(repairedRotation.sumOf{it.toDouble()*it}-1.0)<.00001)
+ val overlapEye=floatArrayOf(0f,0f,0f)
+ val overlapDesktop=Pose(floatArrayOf(0f,0f,-2f))
+ val overlapSphere=MonitorMesh(16f,9f,floatArrayOf(0f,0f,2f),focus=floatArrayOf(0f,0f))
+ val frontPane=MagnifiedWindow(42L,Pose(floatArrayOf(0f,0f,-1f)),.4f,.3f,800,600)
+ check(desktopForegroundCutouts(overlapDesktop,overlapEye,emptyList(),overlapSphere).isEmpty())
+ val frontMasks=desktopForegroundCutouts(overlapDesktop,overlapEye,listOf(frontPane),overlapSphere)
+ check(frontMasks.size==1)
+ check(desktopForegroundCutouts(overlapDesktop,overlapEye,listOf(frontPane.copy(pose=Pose(floatArrayOf(0f,0f,-4f)))),overlapSphere).isEmpty())
+ val desktopInk=clippedVideoGeometry(16f,9f,overlapSphere,floatArrayOf(0f,0f,1f,1f),0f,frontMasks)
+ check(desktopInk.indices.isNotEmpty())
  val gridInk=SnapGridPresence(500)
  gridInk.update(100L,false)
  check(!gridInk.expired(599L))

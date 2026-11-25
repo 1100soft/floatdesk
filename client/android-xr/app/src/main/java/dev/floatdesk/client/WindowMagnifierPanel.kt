@@ -152,10 +152,11 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
             logMagnifierSubmission("start",target,entity)
             if(receiveInput)syncMagnifierInput(session,resources,entity,target.mesh,target.width,target.height,direct=transientSurface)
             val generation=++resources.generation
-            var shown=false
+            fun publishForeground(){if(topologyKey!=null && resources.visible)resources.rendered?.let{tracking.displayedPanes[resources]=it}}
+        var shown=false
             if(!desktopMirror)resources.stream=connection.windowCaptures.attach(captureId ?: target.id,entity.getSurface(),{
-                if(resources.generation==generation && !entity.isDisposed){shown=true;retryPolicy.reset();failureToken=0;resources.visible=true;resources.hasFrame=true;entity.setEnabled(true);resources.curved?.entity?.setEnabled(resources.mesh!=null);android.util.Log.i("Floatdesk","pane ready key=$topologyKey id=${target.id}");displayedNow.value?.invoke(target.id);readyNow.value()}
-            },{message->if(resources.generation==generation){resources.visible=false;if(!retainLastFrame || !resources.hasFrame)entity.setEnabled(false);resources.curved?.entity?.setEnabled(false);hoverNow.value("LEFT",null);hoverNow.value("RIGHT",null);clearPointerHover();errorNow.value(message);failureToken++}},regionId=regionId,previewBounds=previewBounds)
+                if(resources.generation==generation && !entity.isDisposed){shown=true;retryPolicy.reset();failureToken=0;resources.visible=true;resources.hasFrame=true;entity.setEnabled(true);publishForeground();resources.curved?.entity?.setEnabled(resources.mesh!=null);android.util.Log.i("Floatdesk","pane ready key=$topologyKey id=${target.id}");displayedNow.value?.invoke(target.id);readyNow.value()}
+            },{message->if(resources.generation==generation){resources.visible=false;tracking.displayedPanes.remove(resources);if(!retainLastFrame || !resources.hasFrame)entity.setEnabled(false);resources.curved?.entity?.setEnabled(false);hoverNow.value("LEFT",null);hoverNow.value("RIGHT",null);clearPointerHover();errorNow.value(message);failureToken++}},regionId=regionId,previewBounds=previewBounds)
             resources.stream?.update(if(showFrame).005f*target.units/(target.width+.01f*target.units)else 0f,if(showFrame).005f*target.units/(target.height+.01f*target.units)else 0f,showFrame && pinNow.value,target.width/target.height)
             var prior=target
             var geometryAt=0L
@@ -175,12 +176,12 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                     if(renderer!==resources.mirrorRenderer){
                         resources.detachMirror()
                         mirrorPresented.set(false)
-                        shown=false;resources.visible=false;entity.setEnabled(false);resources.curved?.entity?.setEnabled(false);hiddenNow.value()
+                        shown=false;resources.visible=false;tracking.displayedPanes.remove(resources);entity.setEnabled(false);resources.curved?.entity?.setEnabled(false);hiddenNow.value()
                         resources.mirrorRenderer=renderer
                         renderer?.mirrors(listOf(mirror))
                     }
                     if(!shown && mirrorPresented.get()){
-                        shown=true;resources.visible=true;entity.setEnabled(true);resources.curved?.entity?.setEnabled(resources.mesh!=null);readyNow.value()
+                        shown=true;resources.visible=true;entity.setEnabled(true);publishForeground();resources.curved?.entity?.setEnabled(resources.mesh!=null);readyNow.value()
                     }
                 }
                 if(!shown || !connection.isVideoActive()){delay(80);continue}
@@ -316,11 +317,11 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                     resources.clearInteraction();movingNow.value(false)
                     hoverNow.value("LEFT",null);hoverNow.value("RIGHT",null);clearPointerHover()
                 }
-                resources.mesh=mesh?.takeIf{RenderPolicy.CustomMeshes && !it.planar};resources.rendered=next;prior=next;placementNow.value(next,resources.dragged || resources.resizing)
+                resources.mesh=mesh?.takeIf{RenderPolicy.CustomMeshes && !it.planar};resources.rendered=next;publishForeground();prior=next;placementNow.value(next,resources.dragged || resources.resizing)
             }
         }catch(e:kotlinx.coroutines.CancellationException){throw e}
         catch(e:Exception){resources.close(detachOnly=transientSurface);errorNow.value(e.message ?: "Window magnifier unavailable");failureToken++}
-        finally{topologyKey?.let{tracking.paneGuides.remove(it)};resources.detachMirror();hiddenNow.value();resources.clearInteraction();movingNow.value(false);resources.visible=false;resources.generation++;resources.stream?.close();resources.stream=null;if(!retainLastFrame || !resources.hasFrame)resources.entity?.setEnabled(false);resources.curved?.entity?.setEnabled(false);hoverNow.value("LEFT",null);hoverNow.value("RIGHT",null);clearPointerHover()}
+        finally{tracking.displayedPanes.remove(resources);topologyKey?.let{tracking.paneGuides.remove(it)};resources.detachMirror();hiddenNow.value();resources.clearInteraction();movingNow.value(false);resources.visible=false;resources.generation++;resources.stream?.close();resources.stream=null;if(!retainLastFrame || !resources.hasFrame)resources.entity?.setEnabled(false);resources.curved?.entity?.setEnabled(false);hoverNow.value("LEFT",null);hoverNow.value("RIGHT",null);clearPointerHover()}
     }
 
 }

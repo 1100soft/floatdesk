@@ -88,7 +88,9 @@ internal class MonitorWarp : AutoCloseable {
     @SuppressLint("RestrictedApi")
     private fun videoShape(width:Float,height:Float,sphere:MonitorMesh?,origin:Vector3=Vector3.Zero,cutouts:List<VideoCutout> = emptyList()):SurfaceEntity.Shape {
         if(sphere==null && cutouts.isEmpty() && (!RenderPolicy.CustomMeshes || videoCoverageIsFull(screenRects,spacing))) return SurfaceEntity.Shape.Quad(FloatSize2d(width,height))
-        val geometry=clippedVideoGeometry(width,height,sphere,screenRects,spacing,cutouts)
+        val masked=clippedVideoGeometry(width,height,sphere,screenRects,spacing,cutouts)
+        val geometry=if(masked.indices.isEmpty() && cutouts.isNotEmpty())
+            clippedVideoGeometry(width,height,sphere,screenRects,spacing) else masked
         val valid=geometry.indices.isNotEmpty() && geometry.positions.size%3==0 && geometry.texCoords.size*3==geometry.positions.size*2 && geometry.indices.size%3==0 &&
             geometry.positions.all{it.isFinite()} && geometry.texCoords.all{it.isFinite()} && geometry.indices.all{it>=0 && it<geometry.positions.size/3}
         if(!valid)return SurfaceEntity.Shape.Quad(FloatSize2d(.00001f,.00001f))

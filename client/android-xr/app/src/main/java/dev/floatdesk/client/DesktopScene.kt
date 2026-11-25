@@ -208,6 +208,10 @@ internal fun DeskContent(
             val current = session ?: return@LaunchedEffect
             var grabProjectionAt=0L
             var outputResizePending=false
+            var cutoutsAt=Long.MIN_VALUE
+            var maskPose:Pose?=null
+            var maskPanes=emptyList<MagnifiedWindow>()
+            var masks=emptyList<VideoCutout>()
             while (isActive) {
                 delay(if(connection.thermalPaused.value)100 else 20)
                 if(controlsOpenNow.value) {
@@ -235,6 +239,16 @@ internal fun DeskContent(
                     val sourceSize=connection.workspaceInfo.value?.bounds()
                     if(warp.qualityResolution(if((file.experimentalViewedDetail && connection.hasViewedDetail() || connection.hasWindowDetail()) && sourceSize!=null)qualityOutputSize(sourceSize[2],sourceSize[3],connection.qualityOutputLimit()) else null))outputResizePending=true
                     val projectionNow=SystemClock.uptimeMillis()
+                    val eye=handTracking.points["VIEWER"] ?: handTracking.points["HEAD"]
+                    val panes=handTracking.displayedPanes.values.toList()
+                    val samePose=maskPose?.let{it.position.contentEquals(screen.pose.position) &&
+                        it.rotation.contentEquals(screen.pose.rotation)}==true
+                    if(index!=0 || !file.sphericalWarp || eye==null || panes.isEmpty()){
+                        masks=emptyList();maskPose=null;maskPanes=emptyList()
+                    }else if(!samePose || maskPanes!=panes || cutoutsAt==Long.MIN_VALUE || projectionNow-cutoutsAt>=120){
+                        masks=desktopForegroundCutouts(screen.pose,eye,panes,warp.mesh)
+                        maskPose=screen.pose;maskPanes=panes;cutoutsAt=projectionNow
+                    }
                     if(!hands.engaged || projectionNow-grabProjectionAt>=100) {
                         warp.update(current, root, handTracking.points["VIEWER"] ?: handTracking.points["HEAD"], screen, file.sphericalWarp,
                             (hands.busy && !hands.engaged) || nativeMove || nativeResize || handTracking.pointerHeld,
@@ -243,7 +257,8 @@ internal fun DeskContent(
                             freezeProjection=(hands.busy && !hands.engaged) || nativeMove || nativeResize || handTracking.pointerHeld,
                             submitShape={update->connection.tryDesktopShapeUpdate(index,update)},
                             minGeometryIntervalMs=if(connection.limitOptionalRendering)180 else 80,
-                            minimumGeometryRadius=dev.floatdesk.client.workspace.ViewLayers.DesktopDistanceM*handTracking.unitsPerMeter)
+                            minimumGeometryRadius=dev.floatdesk.client.workspace.ViewLayers.DesktopDistanceM*handTracking.unitsPerMeter,
+                            cutouts=masks)
                         grabProjectionAt=projectionNow
                     }
                     frozenMonitor?.update(screen,warp.mesh)

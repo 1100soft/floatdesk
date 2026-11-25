@@ -432,3 +432,29 @@ internal fun stickyMagnifier(owner:MagnifiedWindow,source:DesktopWindow,popup:De
         units=owner.units,fixed=true,desktopRotation=owner.pose.rotation,requestedPosition=position,layerDistanceM=distance)
     return magnifierFrame(window,window,viewer,owner.units,true)
 }
+
+/** Restore compositor ordering only under a pane that has submitted an opaque frame. */
+internal fun desktopForegroundCutouts(
+    desktop:Pose,eye:FloatArray,panes:List<MagnifiedWindow>,desktopMesh:MonitorMesh?,
+):List<VideoCutout>{
+    if(desktopMesh==null)return emptyList()
+    val localEye=viewerInMonitor(eye,desktop.position,desktop.rotation)
+    return panes.mapNotNull{pane->
+        val x=pane.width*.48f
+        val y=pane.height*.48f
+        // Inscribe the mask. Leave the desktop underneath the outer pixels and stereo edges.
+        val outline=listOf(floatArrayOf(-x,y,0f),floatArrayOf(x,y,0f),floatArrayOf(x,-y,0f),floatArrayOf(-x,-y,0f))
+        val boundary=outline.map{point->
+            val geometry=pane.mesh?.takeUnless{it.planar}?.project(point,onTriangles=true) ?: point
+            viewerInMonitor(transformPoint(pane.pose,geometry),desktop.position,desktop.rotation)
+        }
+        val center=viewerInMonitor(pane.pose.position,desktop.position,desktop.rotation)
+        // Test the corners as well as the center for partially overlapping panes.
+        val gaps=(boundary+listOf(center)).mapNotNull{point->
+            monitorRayHit(localEye,subtract(point,localEye),desktopMesh.width,desktopMesh.height,desktopMesh)
+                ?.let{distance(it,localEye)-distance(point,localEye)}
+        }
+        if(gaps.isEmpty() || gaps.any{it<=.004f*pane.units})return@mapNotNull null
+        foregroundCutout(localEye,boundary)
+    }
+}

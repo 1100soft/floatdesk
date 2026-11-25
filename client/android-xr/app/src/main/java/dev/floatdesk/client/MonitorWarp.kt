@@ -60,7 +60,6 @@ internal class MonitorWarp : AutoCloseable {
     private var curvedInputPlacement:NativeNodeState?=null
     private var inputPointer:SpatialPointerComponent?=null
     private var ownsInputPointer=false
-    private var pointerRefreshAt=0L
     private var inputListener: ((InputEvent) -> Unit)? = null
     private var shown=true
     fun setVisible(visible:Boolean) {
@@ -191,16 +190,7 @@ internal class MonitorWarp : AutoCloseable {
                 // Keep the native monitor hit and its matrix together instead of using the front hit.
                 val info = event.hitInfoList.firstOrNull { it.inputEntity === expected } ?: event.hitInfoList.firstOrNull()
                 val gazeSource=event.source==InputEvent.Source.GAZE_AND_GESTURE
-                // Native gaze can recreate its icon after shape/aiming-mode changes. Reapply
-                // the desktop-only policy to the entity actually receiving this hover.
-                if(gazeSource && info?.inputEntity===expected && expected!=null &&
-                    event.action!=InputEvent.Action.HOVER_EXIT && event.action!=InputEvent.Action.CANCEL){
-                    val now=android.os.SystemClock.uptimeMillis()
-                    if(event.action==InputEvent.Action.HOVER_ENTER || now-pointerRefreshAt>=1000){
-                        expected.getComponentsOfType(SpatialPointerComponent::class.java).forEach{it.spatialPointerIcon=SpatialPointerIcon.NONE}
-                        pointerRefreshAt=now
-                    }
-                }
+                if(info?.inputEntity===expected)updateSurfaceAimingIcon(expected,gazeSource)
                 val side = if(gazeSource)"GAZE" else event.pointerType.toString()
                 if(gazeSource && event.action==InputEvent.Action.CANCEL){
                     onHover?.invoke(side,null,null,flatWidth,flatHeight);sequences.remove(side);return@listener
@@ -241,9 +231,12 @@ internal class MonitorWarp : AutoCloseable {
                 val hit = info?.hitPosition
                 val inputScale = target.getScale(Space.ACTIVITY)
                 // Hit position includes the activity root's scale; HitInfo.transform does not.
-                val local = if (info != null && hit != null)
+                val local = (if (info != null && hit != null)
                     eventMatrixHit(floatArrayOf(hit.x,hit.y,hit.z),info.transform.data,
-                        flatWidth,flatHeight,mesh,inputScale,rayDirection=if(mesh!=null) floatArrayOf(event.direction.x,event.direction.y,event.direction.z) else null,rayOrigin=floatArrayOf(event.origin.x,event.origin.y,event.origin.z)) else null
+                        flatWidth,flatHeight,mesh,inputScale,rayDirection=if(mesh!=null) floatArrayOf(event.direction.x,event.direction.y,event.direction.z) else null,rayOrigin=floatArrayOf(event.origin.x,event.origin.y,event.origin.z)) else null)
+                    ?: if(event.action==InputEvent.Action.MOVE || event.action==InputEvent.Action.UP)target.parent?.let{parent->
+                        surfaceInputHit(surfaceInputRay(session,parent,event),target.getPose().toWorkspacePose(),flatWidth,flatHeight,mesh)
+                    }else null
                 if (event.action == InputEvent.Action.DOWN) {
                     Log.i("Floatdesk","native event contact=${local?.contentToString()} inputScale=$inputScale hit=$hit matrix=${info?.transform?.data?.contentToString()}")
                 }

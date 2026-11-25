@@ -276,6 +276,9 @@ fun main() {
     near(normalize3(subtract(visible,eye)),normalize3(subtract(contact,eye)))
     check(distance(visible,eye) < distance(contact,eye))
     near(visibleGrabContact(contact,null,1f),contact)
+    val foreground=foregroundGuidePoint(contact,eye,1f,1f)
+    check(distance(foreground,eye)<1f)
+    near(normalize3(subtract(foreground,eye)),normalize3(subtract(contact,eye)))
     // Every sampled point is on a viewer-centered sphere; image pixels remain invertible.
     for (eye in listOf(floatArrayOf(0f,0f,1.2f), floatArrayOf(.4f,-.3f,.8f), floatArrayOf(-.7f,.2f,2.4f))) {
         val mesh = MonitorMesh(1.8f,1.1f,eye)

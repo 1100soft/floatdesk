@@ -10,13 +10,15 @@ panel = (root / 'WindowMagnifierPanel.kt').read_text()
 assert 'entity.shape=' not in panel.replace(' ', '')
 assert 'resources.curvedInput?.entity ?: resources.entity' in panel
 assert 'curvedInput?.detach()' in panel
-assert '.updateGeometry(' not in panel
+assert panel.count('.updateGeometry(') == 1
+assert 'forSphericalAperture' in panel
+assert 'transparentFit=sphericalFit' in panel
 assert 'transientSurface && regionId==null' in panel
 assert 'resources.authoredSize==authoredSize' in panel
 assert 'val authoredSize=savedPaneSize' in panel
 source = (root / 'WindowMagnification.kt').read_text()
 start = source.index('internal fun sameNativePaneExtent(')
-end = source.index('/** Lower bound', start)
+end = source.index('/** Translate the retained sphere', start)
 code = 'import kotlin.math.abs\n' + '''
 internal data class MagnifiedWindow(val width:Float,val height:Float,val spherical:Boolean)
 ''' + source[start:end] + '''

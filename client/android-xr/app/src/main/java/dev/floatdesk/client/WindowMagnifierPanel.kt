@@ -73,7 +73,23 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
         val keepGeometry=resources.entity!=null && (if(savedPaneSize!=null)
             resources.authoredSize==authoredSize else sameNativePaneExtent(old,requested))
         if(!keepGeometry)resources.detachSurface()
-        val target=if(keepGeometry && savedPaneSize!=null)
+        val sphericalFit=savedPaneSize!=null && requested.spherical && requested.mesh!=null && RenderPolicy.CustomMeshes
+        val baseCanvas=if(sphericalFit){
+            resources.baseGeometry ?: run {
+                val extent=maxOf(requested.width,requested.height)+.01f*requested.units
+                val eye=viewerInMonitor(projectionEye.position,requested.pose.position,requested.pose.rotation)
+                requested.copy(width=extent,height=extent,mesh=MonitorMesh(extent,extent,eye,columns=32,rows=20))
+            }
+        }else null
+        val target=if(baseCanvas!=null){
+            val extent=baseCanvas.width-.01f*baseCanvas.units
+            val aspect=requested.sourceWidth.toFloat()/requested.sourceHeight.coerceAtLeast(1)
+            val width=extent*minOf(1f,aspect)
+            val height=extent*minOf(1f,1f/aspect)
+            val sphere=requireNotNull(baseCanvas.mesh)
+            requested.copy(pose=centerPaneSphere(requested.pose,sphere,projectionEye),width=width,height=height,
+                mesh=sphere.forSphericalAperture(width,height))
+        }else if(keepGeometry && savedPaneSize!=null)
             requested.copy(mesh=resources.baseGeometry?.mesh?.forPaneExtent(requested.width,requested.height))
         else if(keepGeometry && old!=null)requested.copy(width=old.width,height=old.height,mesh=old.mesh)
         else requested
@@ -88,10 +104,14 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
             val reusedSurface=resources.entity!=null
             if(resources.entity==null){
                 delay(32) // Let the existing desktop's pending mesh commands flush before allocating a surface.
-                val initialShape=shape(target);resources.retain(initialShape)
+                val initialShape=if(baseCanvas!=null){
+                    val mesh=requireNotNull(baseCanvas.mesh)
+                    nativeVideoMesh(VideoGeometry(mesh.positions,mesh.videoTexCoords,mesh.indices))
+                }else shape(target)
+                resources.retain(initialShape)
                 val entity=SurfaceEntity.create(session,shape=initialShape,parent=null,superSampling=SurfaceEntity.SuperSampling.NONE,
-                    mediaBlendingMode=SurfaceEntity.MediaBlendingMode.OPAQUE)
-                resources.entity=entity;resources.baseGeometry=target;entity.setEnabled(false)
+                    mediaBlendingMode=if(sphericalFit)SurfaceEntity.MediaBlendingMode.TRANSPARENT else SurfaceEntity.MediaBlendingMode.OPAQUE)
+                resources.entity=entity;resources.baseGeometry=baseCanvas ?: target;entity.setEnabled(false)
                 if(!receiveInput || !transientSurface && target.mesh?.planar==false)SurfaceInput.disableCollider(entity)
                 val pointer=SpatialPointerComponent.create(session);entity.addComponent(pointer);pointer.spatialPointerIcon=SpatialPointerIcon.NONE
                 val listener:(InputEvent)->Unit=listener@{event->
@@ -154,7 +174,9 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
 
             }
             val entity=resources.entity!!;val p=target.pose;val q=p.rotation
-            val pixelSize=dev.floatdesk.client.net.WindowCaptureFormat.canvasSize(target.sourceWidth,target.sourceHeight)
+            val pixelSize=if(sphericalFit)dev.floatdesk.client.net.WindowCaptureFormat.size(
+                RenderPolicy.WindowDimension,RenderPolicy.WindowDimension)
+            else dev.floatdesk.client.net.WindowCaptureFormat.canvasSize(target.sourceWidth,target.sourceHeight)
             // Replacing an in-use native canvas texture can race its borrowed model material.
             // Keep the allocation stable as retained menu slots change their source bounds.
             if(!reusedSurface)entity.setSurfacePixelDimensions(IntSize2d(pixelSize.first,pixelSize.second))
@@ -166,15 +188,19 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
             placementNow.value(target,false)
             val base=resources.baseGeometry ?: target
             entity.parent=root;entity.setPose(targetPose)
-            if(savedPaneSize!=null)entity.setScale(Vector3(target.width/base.width,target.height/base.height,1f))
+            if(savedPaneSize!=null && !sphericalFit)entity.setScale(Vector3(target.width/base.width,target.height/base.height,1f))
             logMagnifierSubmission(if(reusedSurface)"reuse" else "start",target,entity)
             if(receiveInput){
                 val mesh=resources.mesh
                 if(mesh!=null && !transientSurface){
                     if(resources.curvedInput==null){
-                        val collider=CurvedMonitorInput.create(session,entity,base.mesh ?: mesh,6,4,base.width,base.height,resources.listener!!)
+                        val collider=CurvedMonitorInput.create(session,entity,
+                            if(sphericalFit)mesh else base.mesh ?: mesh,6,4,
+                            if(sphericalFit)target.width else base.width,if(sphericalFit)target.height else base.height,resources.listener!!)
                         resources.curvedInput=collider
                         collider.entity.setEnabled(false)
+                    }else if(sphericalFit){
+                        resources.curvedInput?.updateGeometry(mesh,target.width,target.height)
                     }
                 }else if(resources.flatInput==null){
                     val component=NativeMonitorInput.create(session,resources.listener!!)
@@ -187,8 +213,15 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
             var shown=false
             if(!desktopMirror)resources.stream=connection.windowCaptures.attach(captureId ?: target.id,entity.getSurface(),{
                 if(resources.generation==generation && !entity.isDisposed){shown=true;retryPolicy.reset();failureToken=0;resources.visible=true;resources.hasFrame=true;entity.setEnabled(true);resources.curvedInput?.entity?.setEnabled(true);publishForeground();android.util.Log.i("Floatdesk","pane ready key=$topologyKey id=${target.id}");displayedNow.value?.invoke(target.id);readyNow.value()}
-            },{message->if(resources.generation==generation){resources.visible=false;tracking.displayedPanes.remove(resources);if(!retainLastFrame || !resources.hasFrame)entity.setEnabled(false);hoverNow.value("LEFT",null);hoverNow.value("RIGHT",null);clearPointerHover();errorNow.value(message);failureToken++}},regionId=regionId,previewBounds=previewBounds)
-            resources.stream?.update(if(showFrame).005f*target.units/(target.width+.01f*target.units)else 0f,if(showFrame).005f*target.units/(target.height+.01f*target.units)else 0f,showFrame && pinNow.value,target.width/target.height)
+            },{message->if(resources.generation==generation){resources.visible=false;tracking.displayedPanes.remove(resources);if(!retainLastFrame || !resources.hasFrame)entity.setEnabled(false);hoverNow.value("LEFT",null);hoverNow.value("RIGHT",null);clearPointerHover();errorNow.value(message);failureToken++}},regionId=regionId,previewBounds=previewBounds,transparentFit=sphericalFit)
+            fun updateStreamFrame(pane:MagnifiedWindow){
+                val canvasWidth=baseCanvas?.width ?: (pane.width+.01f*pane.units)
+                val canvasHeight=baseCanvas?.height ?: (pane.height+.01f*pane.units)
+                resources.stream?.update(if(showFrame).005f*pane.units/canvasWidth else 0f,
+                    if(showFrame).005f*pane.units/canvasHeight else 0f,showFrame && pinNow.value,
+                    if(sphericalFit)1f else pane.width/pane.height)
+            }
+            updateStreamFrame(target)
             var prior=target
             var inkAt=Long.MIN_VALUE
             val mirrorPresented=java.util.concurrent.atomic.AtomicBoolean(false)
@@ -301,7 +334,8 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                 val projectionEye=if(resources.moving || resources.resizing || resources.free.engaged)head else placementViewerNow.value ?: head
                 val frame=if(projectFrame)magnifierFrame(current,prior,projectionEye,units(),false)else projectPaneAtPlacement(current,prior,projectionEye,false)
                 val presented=placePaneInsideDesktop(frame,projectionEye,tracking.desktopSphereRadius,prior)
-                val next=presented.copy(width=prior.width,height=prior.height,mesh=prior.mesh)
+                val actualPose=baseCanvas?.mesh?.let{centerPaneSphere(presented.pose,it,projectionEye)} ?: presented.pose
+                val next=presented.copy(pose=actualPose,width=prior.width,height=prior.height,mesh=prior.mesh)
                 if(moveMode.value){
                     resources.corners.update(session,entity,next.width,next.height,units(),next.layerDistanceM,tracking,resources.hovering.isNotEmpty() && !resources.free.engaged){active,factor->
                         if(resources.resizeStart==null){resources.resizeStart=resources.rendered;resources.dragged=true}
@@ -317,7 +351,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
 
                 val poseChanged=(0..2).any{kotlin.math.abs(next.pose.position[it]-prior.pose.position[it])>.0005f} ||
                     (0..3).any{kotlin.math.abs(next.pose.rotation[it]-prior.pose.rotation[it])>.0005f}
-                resources.stream?.update(if(showFrame).005f*next.units/(next.width+.01f*next.units)else 0f,if(showFrame).005f*next.units/(next.height+.01f*next.units)else 0f,showFrame && pinNow.value,next.width/next.height)
+                updateStreamFrame(next)
                 if(!poseChanged)continue
                 if(poseChanged){
                     val pose=next.pose;val q=pose.rotation

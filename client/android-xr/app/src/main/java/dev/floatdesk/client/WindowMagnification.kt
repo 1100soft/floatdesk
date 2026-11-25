@@ -114,6 +114,12 @@ internal fun sameNativePaneExtent(current:MagnifiedWindow?,requested:MagnifiedWi
     current!=null && current.spherical==requested.spherical &&
         abs(current.width-requested.width)<.003f && abs(current.height-requested.height)<.003f
 
+/** Translate the retained sphere so its local eye stays at the viewer. */
+internal fun centerPaneSphere(pose:Pose,mesh:MonitorMesh,viewer:Pose):Pose {
+    val offset=rotateVector(pose.rotation,mesh.eye[0],mesh.eye[1],mesh.eye[2])
+    return pose.copy(position=subtract(viewer.position,offset))
+}
+
 /** Lower bound for every point of the actual pane, including curved triangle chords. */
 internal fun paneFrontRadius(pane:MagnifiedWindow,viewer:Pose):Float{
     val localEye=viewerInMonitor(viewer.position,pane.pose.position,pane.pose.rotation)

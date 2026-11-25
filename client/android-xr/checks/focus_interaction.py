@@ -30,6 +30,18 @@ fun main() {
  check(distance(fittedTall.unproject(curvedHit)!!,picked)<.0001f)
  check(distance(meshRayHit(fittedTall,fittedTall.eye,subtract(curvedHit,fittedTall.eye))!!,curvedHit)<.0001f)
  check(fittedTall.forPaneExtent(1.6f,.8f)===nativeWide)
+ val squareSphere=MonitorMesh(1.6f,1.6f,floatArrayOf(0f,0f,2f),columns=32,rows=20)
+ val tallAperture=squareSphere.forSphericalAperture(.6f,1.5f)
+ check(tallAperture.eye.contentEquals(squareSphere.eye))
+ check(tallAperture.geometryRadius==squareSphere.geometryRadius)
+ for(sample in listOf(floatArrayOf(.2f,.65f,0f),floatArrayOf(-.25f,-.7f,0f))){
+    val spherePoint=tallAperture.project(sample,onTriangles=true)
+    check(abs(distance(spherePoint,tallAperture.eye)-squareSphere.radius)<.002f)
+    check(distance(tallAperture.unproject(spherePoint)!!,sample)<.0001f)
+ }
+ val movedEye=Pose(floatArrayOf(.4f,.2f,.1f))
+ val recentered=centerPaneSphere(Pose(),tallAperture,movedEye)
+ check(distance(transformPoint(recentered,tallAperture.eye),movedEye.position)<.0001f)
  val popupEye=Pose()
  for(curved in listOf(false,true)){
     val popupOwner=MagnifiedWindow(70,Pose(floatArrayOf(.5f,.15f,-1.2f)),1.8f,1.2f,1200,800,

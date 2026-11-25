@@ -32,6 +32,7 @@ internal class MonitorMesh(
     val planar:Boolean=false,
     minimumGeometryRadius:Float=0f,
     private val nativeBase:MonitorMesh?=null,
+    private val sphericalAperture:Boolean=false,
 ) {
     val radius = sqrt((0..2).sumOf { val d=eye[it]-center[it];(d*d).toDouble() }).toFloat()
     val normal = FloatArray(3) { (eye[it]-center[it]) / radius }
@@ -76,7 +77,7 @@ internal class MonitorMesh(
     /** Conservative distance to the actual triangle chords, which can cut inside the sphere. */
     val innerRadius:Float by lazy { chordInnerRadius() }
     private fun chordInnerRadius():Float {
-        nativeBase?.let{return it.innerRadius*minOf(nativeScaleX,nativeScaleY,1f)}
+        nativeBase?.takeUnless{sphericalAperture}?.let{return it.innerRadius*minOf(nativeScaleX,nativeScaleY,1f)}
 
         var longestSquared=0f
         for(i in indices.indices step 3)for(edge in 0..2){
@@ -197,9 +198,17 @@ internal class MonitorMesh(
             }
         }
         nativeBase?.let{base->
-            for(i in positions.indices)positions[i]=base.positions[i]*when(i%3){0->nativeScaleX;1->nativeScaleY;else->1f}
-            base.texCoords.copyInto(texCoords)
-            geometryRadius=base.geometryRadius*maxOf(nativeScaleX,nativeScaleY,1f)
+            if(sphericalAperture){
+                for(i in 0 until positions.size/3){
+                    val point=base.project(floatArrayOf((texCoords[i*2]-.5f)*width,(.5f-texCoords[i*2+1])*height,0f),onTriangles=true)
+                    point.copyInto(positions,i*3)
+                }
+                geometryRadius=base.geometryRadius
+            }else{
+                for(i in positions.indices)positions[i]=base.positions[i]*when(i%3){0->nativeScaleX;1->nativeScaleY;else->1f}
+                base.texCoords.copyInto(texCoords)
+                geometryRadius=base.geometryRadius*maxOf(nativeScaleX,nativeScaleY,1f)
+            }
         }
         outline=buildList {
             for(col in 0 until columns step 4) add(vertex(0,col))
@@ -216,9 +225,15 @@ internal class MonitorMesh(
             base.columns,base.rows,planar=base.planar,nativeBase=base)
     }
 
+    /** Logical hit geometry for a centered crop of a retained spherical video surface. */
+    fun forSphericalAperture(width:Float,height:Float):MonitorMesh {
+        if(this.width==width && this.height==height)return this
+        return MonitorMesh(width,height,eye,columns,rows,nativeBase=this,sphericalAperture=true)
+    }
+
     /** Interpolate texture pixels on the same triangles used by video, then normalize to the sphere. */
     fun project(flat: FloatArray, applyProjection:Boolean=true, onTriangles:Boolean=false): FloatArray {
-        nativeBase?.let{base->
+        nativeBase?.takeUnless{sphericalAperture}?.let{base->
             val p=base.project(floatArrayOf(flat[0]/nativeScaleX,flat[1]/nativeScaleY,0f),applyProjection,onTriangles)
             return floatArrayOf(p[0]*nativeScaleX,p[1]*nativeScaleY,p[2])
         }

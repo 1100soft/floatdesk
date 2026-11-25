@@ -16,6 +16,7 @@ internal class GrabTracking {
     val paneGuides = mutableMapOf<String, GrabGuide>()
     var desktopSphereRadius:Float?=null
     var desktopCutouts:List<VideoCutout> = emptyList()
+    var directPatchCutout:VideoCutout?=null
     var pointerHeld=false
     var unitsPerMeter = 1f
     var nowMs = 0L

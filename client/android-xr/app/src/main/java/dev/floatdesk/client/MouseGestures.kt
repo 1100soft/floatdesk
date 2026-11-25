@@ -32,6 +32,8 @@ internal class MouseGestures(private val thresholds:()->PinchThresholds={PinchTh
     private var scrollRight=floatArrayOf(1f,0f,0f)
     private var scrollUp=floatArrayOf(0f,1f,0f)
     private var dragging=false
+    private var lastDragSampleAt=0L
+    private var lastDragAim:PointerTarget?=null
     private var dragTarget: PointerTarget? = null
     private var lastTarget: PointerTarget? = null
     private var lastTargetAt=0L
@@ -125,15 +127,25 @@ internal class MouseGestures(private val thresholds:()->PinchThresholds={PinchTh
                 if(current.button==1 && !dragging && (moved || nowMs-current.began>=350)) {
                     dragging=true
                     dragTarget=current.target
+                    lastDragSampleAt=nowMs
+                    lastDragAim=if(moved)target else current.target
                     return MouseGestureOutput(current.target,true)
                 }
-                if(dragging && target != null) dragTarget=target
-                return MouseGestureOutput(if(dragging) target ?: lastTarget else current.target,dragging)
+                if(dragging && target!=null){
+                    val prior=lastDragAim ?: current.target
+                    if(target.spaceKey==prior.spaceKey && target.monitor==prior.monitor &&
+                        hypot(target.u-prior.u,target.v-prior.v)<=(nowMs-lastDragSampleAt).coerceIn(10L,36L)*.004f){
+                        dragTarget=target
+                        lastDragAim=target
+                        lastDragSampleAt=nowMs
+                    }
+                }
+                return MouseGestureOutput(if(dragging)dragTarget else current.target,dragging)
             }
             diagnostic("mouse gesture released side=${current.side} button=${current.button} heldMs=${nowMs-current.began} scrolling=$scrolling dragging=$dragging")
             hold=null
             if(scrolling) return MouseGestureOutput(current.target,scroll=endScroll())
-            if(dragging) { dragging=false; return MouseGestureOutput(target ?: lastTarget) }
+            if(dragging) { dragging=false; return MouseGestureOutput(dragTarget ?: current.target) }
             // A sampled contact followed by release is a click, even within one frame.
             var clicked=current.target
             val previous=lastClick

@@ -47,13 +47,17 @@ internal object PalmMenuLayout {
     const val tooltipHeightM = .038f
     private val center = listOf(PalmAction.RESET,PalmAction.LAYOUT,PalmAction.SETTINGS)
     private val modes = listOf(PalmAction.HAND_MOUSE,PalmAction.TAP_TO_FOCUS,PalmAction.DRAG_TO_MOVE,PalmAction.HANDS_OFF)
-    private val main = listOf(PalmAction.FOLLOW,PalmAction.WARP,PalmAction.DIAGNOSTICS,PalmAction.SEARCH,
-        PalmAction.MOUSE_SPACES,PalmAction.MAGNIFIER,PalmAction.REFERENCE,PalmAction.GAZE_FOCUS)
-    private val layout = listOf(PalmAction.MOVE,PalmAction.ALIGN_AXES,PalmAction.FACE_USER,PalmAction.SNAP_OBJECTS,
-        PalmAction.LOAD_1,PalmAction.LOAD_2,PalmAction.LOAD_3,PalmAction.SAVE_3,PalmAction.SAVE_2,PalmAction.SAVE_1,
-        PalmAction.UNDO,PalmAction.REDO,PalmAction.RESET_ORIGIN,PalmAction.FREE)
-    private val layoutCenter=listOf(PalmAction.RESET,PalmAction.AUTO_ADJUST,PalmAction.DONE)
-    val layoutActions=layout+layoutCenter
+    private data class Cluster(val y:Float,val actions:List<PalmAction>,val pitch:Float=.047f)
+    private val view=Cluster(.075f,listOf(PalmAction.FOLLOW,PalmAction.WARP,PalmAction.DIAGNOSTICS))
+    private val content=Cluster(.222f,listOf(PalmAction.MAGNIFIER,PalmAction.REFERENCE,PalmAction.GAZE_FOCUS))
+    private val layout = listOf(
+        Cluster(.048f,listOf(PalmAction.ALIGN_AXES,PalmAction.FACE_USER,PalmAction.SNAP_OBJECTS)),
+        Cluster(.096f,listOf(PalmAction.MOVE,PalmAction.FREE,PalmAction.RESET_ORIGIN)),
+        Cluster(.147f,listOf(PalmAction.UNDO,PalmAction.RESET,PalmAction.AUTO_ADJUST,PalmAction.DONE,PalmAction.REDO)),
+        Cluster(.204f,listOf(PalmAction.LOAD_1,PalmAction.LOAD_2,PalmAction.LOAD_3),.052f),
+        Cluster(.252f,listOf(PalmAction.SAVE_1,PalmAction.SAVE_2,PalmAction.SAVE_3),.052f),
+    )
+    val layoutActions=layout.flatMap{it.actions}
 
     fun heightM(page:PalmPage)=circleM+(if(page.isLayout)0f else modesHeight)
     fun circleFraction(page:PalmPage)=circleM/heightM(page)
@@ -62,13 +66,18 @@ internal object PalmMenuLayout {
         fun button(action:PalmAction,x:Float,y:Float){
             add(PalmButton(action,(x-cellM*.5f)/widthM,(y-cellM*.5f)/height,cellM/widthM,cellM/height))
         }
-        val ring=if(page.isLayout)layout else main
-        for((i,action) in ring.withIndex()){
-            val angle=2*Math.PI*i/ring.size-Math.PI/2
-            button(action,circleM*.5f+.121f*kotlin.math.cos(angle).toFloat(),circleM*.5f+.121f*kotlin.math.sin(angle).toFloat())
+        fun cluster(group:Cluster){
+            group.actions.forEachIndexed{i,action->
+                button(action,circleM*.5f+(i-(group.actions.size-1)*.5f)*group.pitch,group.y)
+            }
         }
-        (if(page.isLayout)layoutCenter else center).forEachIndexed{i,action->
-            button(action,circleM*.5f+(i-1)*.047f,circleM*.5f)
+        if(page.isLayout)layout.forEach(::cluster)
+        else{
+            cluster(view)
+            cluster(Cluster(.148f,center))
+            cluster(content)
+            button(PalmAction.MOUSE_SPACES,.052f,.148f)
+            button(PalmAction.SEARCH,.246f,.148f)
         }
         if(!page.isLayout)modes.forEachIndexed{i,action->button(action,circleM*.5f+(i-1.5f)*.047f,circleM+modesHeight*.5f)}
     }
@@ -168,7 +177,16 @@ internal fun PalmControls(page: PalmPage, workspace: WorkspaceFile, info: Worksp
                 Canvas(Modifier.fillMaxSize()){
                     if(modePanel)drawRoundRect(Color(0xFF293F52),Offset(size.width*.16f,0f),
                         Size(size.width*.68f,size.height),CornerRadius(size.height*.22f))
-                    else drawCircle(if(page.isLayout)Color(0xFF28344F) else Color(0xFF202D3B),size.height/2)
+                    else{
+                        drawCircle(if(page.isLayout)Color(0xFF28344F) else Color(0xFF202D3B),size.height/2)
+                        val rows=if(page.isLayout)listOf(.048f,.096f,.147f,.204f,.252f) else listOf(.075f,.148f,.222f)
+                        for(y in rows){
+                            val width=size.width*(if(page.isLayout && y==.147f).83f else .49f)
+                            val height=size.height*.143f
+                            drawRoundRect(Color(0xFF34465D),Offset((size.width-width)/2,size.height*y/PalmMenuLayout.circleM-height/2),
+                                Size(width,height),CornerRadius(height*.48f))
+                        }
+                    }
                 }
                 for (button in PalmMenuLayout.buttons(page)) {
                     if((button.y>=fraction)!=modePanel)continue

@@ -87,7 +87,7 @@ internal class MonitorWarp : AutoCloseable {
     }
     @SuppressLint("RestrictedApi")
     private fun videoShape(width:Float,height:Float,sphere:MonitorMesh?,origin:Vector3=Vector3.Zero,cutouts:List<VideoCutout> = emptyList()):SurfaceEntity.Shape {
-        if(sphere==null && (!RenderPolicy.CustomMeshes || videoCoverageIsFull(screenRects,spacing))) return SurfaceEntity.Shape.Quad(FloatSize2d(width,height))
+        if(sphere==null && cutouts.isEmpty() && (!RenderPolicy.CustomMeshes || videoCoverageIsFull(screenRects,spacing))) return SurfaceEntity.Shape.Quad(FloatSize2d(width,height))
         val geometry=clippedVideoGeometry(width,height,sphere,screenRects,spacing,cutouts)
         val valid=geometry.indices.isNotEmpty() && geometry.positions.size%3==0 && geometry.texCoords.size*3==geometry.positions.size*2 && geometry.indices.size%3==0 &&
             geometry.positions.all{it.isFinite()} && geometry.texCoords.all{it.isFinite()} && geometry.indices.all{it>=0 && it<geometry.positions.size/3}
@@ -294,9 +294,11 @@ internal class MonitorWarp : AutoCloseable {
                 curvedState?.enabled(false);curvedState?.parent(null)
                 live = original
             }
-            if (presentationDirty || mesh != null || flatWidth != placement.physicalWidthM || flatHeight != placement.physicalHeightM) {
-                val shape = videoShape(placement.physicalWidthM,placement.physicalHeightM,null)
-                applyShape(original, shape)
+            if (presentationDirty || mesh != null || flatWidth != placement.physicalWidthM || flatHeight != placement.physicalHeightM || cutouts!=appliedCutouts) {
+                val shape = videoShape(placement.physicalWidthM,placement.physicalHeightM,null,cutouts=cutouts)
+                if(submitShape!=null && !submitShape{applyShape(original,shape)})return
+                if(submitShape==null)applyShape(original,shape)
+                appliedCutouts=cutouts
                 flatWidth = placement.physicalWidthM; flatHeight = placement.physicalHeightM
                 mesh = null;focus=null;presentationDirty=false
             }

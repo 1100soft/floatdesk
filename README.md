@@ -62,7 +62,7 @@ Use **Enable spherical / Disable spherical** on the palm panel for a viewer-cent
 
 When Android reports severe thermal throttling, Floatdesk slows geometry updates and suspends optional desktop detail passes. At critical status or hotter it pauses video while keeping the controls available, then resumes after two seconds at moderate status or cooler. A return to severe restarts that wait.
 
-The circular palm menu puts Reset, Layout, and Settings at the center. A separate strip below it holds **Hand mouse**, **Tap to focus**, **Drag to move**, and **Hands off**. Hands off temporarily suspends all three hand interactions and retains their settings.
+The circular palm menu puts Reset, Layout, and Settings at the center. View controls are grouped above them and content controls below. Layout groups adjustment tools, history, and matched load/save rows. A separate strip below it holds **Hand mouse**, **Tap to focus**, **Drag to move**, and **Hands off**. Hands off temporarily suspends all three hand interactions and retains their settings.
 
 Tap to focus and Drag to move operate on the desktop reference. Both are enabled by default and can be used together. A stationary pinch selects and a moving pinch drags. Hand mouse operates on the main desktop and supporting video panes other than the desktop reference. In the window menu, **Focus on this window** explicitly activates and frames the window. In the snap grid, drag across cells and release to apply the selected rectangle.
 

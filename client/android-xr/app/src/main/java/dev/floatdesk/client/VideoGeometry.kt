@@ -14,7 +14,12 @@ internal fun videoCoverageIsFull(rects:FloatArray,spacing:Float):Boolean {
     return true
 }
 /** A convex silhouette extruded from the viewing eye. Points are in desktop local space. */
-internal data class VideoCutout(val planes:List<List<Float>>)
+internal data class VideoCutout(val planes:List<List<Float>>,val textureSpace:Boolean=false)
+
+internal fun textureCutout(left:Float,top:Float,right:Float,bottom:Float)=VideoCutout(
+    listOf(listOf(1f,0f,0f,-left),listOf(0f,1f,0f,-top),
+        listOf(-1f,0f,0f,right),listOf(0f,-1f,0f,bottom)),textureSpace=true)
+
 
 internal fun foregroundCutout(eye:FloatArray,outline:List<FloatArray>):VideoCutout? {
     if(outline.size<3)return null
@@ -84,12 +89,12 @@ internal fun clippedVideoGeometry(width:Float,height:Float,mesh:MonitorMesh?,rec
                 }
                 polygon=next
             }
-            fun distance(v:Vertex,plane:List<Float>)=plane[0]*v.x+plane[1]*v.y+plane[2]*v.z+plane[3]
-            fun split(vertices:List<Vertex>,plane:List<Float>):Pair<List<Vertex>,List<Vertex>> {
+            fun distance(v:Vertex,plane:List<Float>,texture:Boolean)=if(texture)plane[0]*v.u+plane[1]*v.v+plane[3] else plane[0]*v.x+plane[1]*v.y+plane[2]*v.z+plane[3]
+            fun split(vertices:List<Vertex>,plane:List<Float>,texture:Boolean):Pair<List<Vertex>,List<Vertex>> {
                 val inside=mutableListOf<Vertex>();val outside=mutableListOf<Vertex>()
-                var a=vertices.last();var da=distance(a,plane)
+                var a=vertices.last();var da=distance(a,plane,texture)
                 for(b in vertices){
-                    val db=distance(b,plane)
+                    val db=distance(b,plane,texture)
                     if((da>=0f)!=(db>=0f)){
                         val f=da/(da-db)
                         val edge=Vertex(a.x+(b.x-a.x)*f,a.y+(b.y-a.y)*f,a.z+(b.z-a.z)*f,a.u+(b.u-a.u)*f,a.v+(b.v-a.v)*f)
@@ -103,14 +108,14 @@ internal fun clippedVideoGeometry(width:Float,height:Float,mesh:MonitorMesh?,rec
             var pieces=listOf(polygon).filter{it.size>=3}
             for(mask in cutouts){
                 pieces=pieces.flatMap{piece->
-                    if(mask.planes.any{plane->piece.all{distance(it,plane)<0f}})return@flatMap listOf(piece)
-                    if(mask.planes.all{plane->piece.all{distance(it,plane)>=0f}})return@flatMap emptyList()
+                    if(mask.planes.any{plane->piece.all{distance(it,plane,mask.textureSpace)<0f}})return@flatMap listOf(piece)
+                    if(mask.planes.all{plane->piece.all{distance(it,plane,mask.textureSpace)>=0f}})return@flatMap emptyList()
                     var inside=piece
                     val outside=mutableListOf<List<Vertex>>()
                     // If a plane rejects the whole polygon, the original needs no splits.
                     for(plane in mask.planes){
                         if(inside.size<3)break
-                        val (next,rest)=split(inside,plane)
+                        val (next,rest)=split(inside,plane,mask.textureSpace)
                         if(rest.size>=3)outside+=rest
                         inside=next
                     }

@@ -395,8 +395,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
         val viewer=magnifierViewer.get() ?: return null
         fun foreground(point:FloatArray,right:FloatArray,magnifier:Boolean):ToolbarStrip {
             val range=distance(viewer.position,point)
-            val near=foregroundGuidePoint(point,viewer.position,unit,handTracking.desktopSphereRadius?.times(.88f))
-            val lifted=visibleGrabContact(near,viewer.position,unit)
+            val lifted=foregroundGlowPoint(point,viewer.position,unit,handTracking.desktopSphereRadius)
             val normal=subtract(viewer.position,lifted)
             val projectedUp=cross3(normal,right)
             val up=projectedUp.takeIf{distance(it,FloatArray(3))>.0001f} ?: rotateVector(viewer.rotation,0f,1f,0f)
@@ -1483,7 +1482,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                         }
                     }
                     val pointerViewer=magnifierViewer.get()
-                    renderer.updatePointer(root,pointer,pointerViewer?.position,handTracking.unitsPerMeter)
+                    renderer.updatePointer(root,pointer,pointerViewer?.position,handTracking.unitsPerMeter,handTracking.desktopSphereRadius)
                     val pulse=.5f+.5f*kotlin.math.sin(SystemClock.uptimeMillis()%2400L/2400f*2f*Math.PI.toFloat())
                     renderer.updateHighlight(root,highlightStrip?.pose?.position,highlightStrip?.pose?.rotation ?: floatArrayOf(0f,0f,0f,1f),highlightStrip?.cell ?: 0f,pulse)
                     val draw: ()->Unit = {

@@ -39,6 +39,10 @@ internal fun foregroundGuidePoint(point:FloatArray,eye:FloatArray?,units:Float,d
     return FloatArray(3){eye[it]+(point[it]-eye[it])*limit/distance}
 }
 
+/** Keep foreground glow centers on the original sightline, with clearance from video. */
+internal fun foregroundGlowPoint(point:FloatArray,eye:FloatArray,units:Float,desktopRange:Float?):FloatArray =
+    visibleGrabContact(foregroundGuidePoint(point,eye,units,desktopRange?.times(.88f)),eye,units)
+
 /** Native meshes without Interactable/Movable components: guides must not capture hand input. */
 @Suppress("DEPRECATION")
 @android.annotation.SuppressLint("RestrictedApi")
@@ -162,44 +166,36 @@ internal class GrabGuideRenderer private constructor(
 
     }
 
-    fun updatePointer(parent:Entity,position:FloatArray?,eye:FloatArray?,unitsPerMeter:Float){
+    fun updatePointer(parent:Entity,position:FloatArray?,eye:FloatArray?,unitsPerMeter:Float,desktopRange:Float?){
         if(closed)return
         if(position==null || eye==null){pointerPoint?.let{state(it).enabled(false)};return}
-        val entity=pointerPoint ?: ink({SurfaceEntity.Shape.Quad(androidx.xr.runtime.math.FloatSize2d(2f,2f))},0,painter=::paintCursorGlow)?.also{pointerPoint=it} ?: return
-        val range=distance(position,eye)
-        if(range<.0001f){state(entity).enabled(false);return}
-        val lift=minOf(.014f*unitsPerMeter,range*.012f)
-        val front=FloatArray(3){position[it]+(eye[it]-position[it])*lift/range}
-        state(entity).apply{
-            this.parent(parent)
-            pose(Pose(vector(front),Quaternion.fromLookTowards(vector(eye)-vector(front),Vector3.Up)))
-            scale(range*.007f)
-            enabled(true)
-        }
+        // Match the toolbar glow's foreground ordering, keeping the same view ray.
+        val front=foregroundGlowPoint(position,eye,unitsPerMeter,desktopRange)
+        val range=distance(front,eye)
+        if(!range.isFinite() || range<.0001f){pointerPoint?.let{state(it).enabled(false)};return}
+        val marker=pointerPoint ?: newGlow()?.also{pointerPoint=it} ?: return
+        placeGlow(marker,parent,front,Quaternion.fromLookTowards(vector(eye)-vector(front),Vector3.Up),
+            range*.018f,.46f)
     }
 
     fun updateHighlight(parent:Entity,position:FloatArray?,rotation:FloatArray,diameter:Float,pulse:Float){
         if(closed)return
         if(position==null || diameter<=0f){highlight?.let{state(it).enabled(false)};return}
-        val marker=highlight ?: ink(glowingSphere,0,painter=::paintSphereGlow)?.also{highlight=it} ?: return
-        state(marker).apply{
-            this.parent(parent)
-            pose(Pose(vector(position),Quaternion(rotation[0],rotation[1],rotation[2],rotation[3])))
-            scale(diameter*(.37f+.04f*pulse))
-            alpha(.65f+.2f*pulse)
-            enabled(true)
-        }
+        val marker=highlight ?: newGlow()?.also{highlight=it} ?: return
+        placeGlow(marker,parent,position,Quaternion(rotation[0],rotation[1],rotation[2],rotation[3]),
+            diameter*(.37f+.04f*pulse),.65f+.2f*pulse)
     }
 
-    private fun paintCursorGlow(canvas:android.graphics.Canvas){
-        val center=canvas.width*.5f
-        val paint=android.graphics.Paint().apply{
-            shader=android.graphics.RadialGradient(center,center,center,
-                intArrayOf(0xB0FFFFFF.toInt(),0x62FFFFFF,0x1FFFFFFF,0x00FFFFFF),
-                floatArrayOf(0f,.24f,.65f,1f),android.graphics.Shader.TileMode.CLAMP)
+    private fun newGlow()=ink(glowingSphere,0,painter=::paintSphereGlow)
+
+    private fun placeGlow(marker:SurfaceEntity,parent:Entity,position:FloatArray,rotation:Quaternion,radius:Float,opacity:Float){
+        state(marker).apply{
+            this.parent(parent)
+            pose(Pose(vector(position),rotation))
+            scale(radius)
+            alpha(opacity)
+            enabled(true)
         }
-        canvas.drawColor(android.graphics.Color.TRANSPARENT,android.graphics.PorterDuff.Mode.CLEAR)
-        canvas.drawPaint(paint)
     }
 
     private fun paintSphereGlow(canvas:android.graphics.Canvas){

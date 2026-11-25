@@ -20,6 +20,11 @@ fun main() {
    check(kotlin.math.abs(.5f-pixel[1]/mesh.height-v)<.00001f)
    val visible=visibleGrabContact(current,eye,1f)
    check(distance(visible,eye)<mesh.radius-.001f)
+   val glow=foregroundGlowPoint(current,eye,1f,mesh.innerRadius)
+   val glowRange=distance(glow,eye)
+   check(glowRange*1.018f<mesh.innerRadius) // Even the back of the cursor sphere clears the video.
+   val ratio=glowRange/distance(current,eye)
+   for(axis in 0..2) check(kotlin.math.abs(glow[axis]-eye[axis]-(current[axis]-eye[axis])*ratio)<.00001f)
    val hand=floatArrayOf(.12f,-.15f,1.1f)
    for(i in 0..30) {
     val point=FloatArray(3){hand[it]+(visible[it]-hand[it])*i/30f}

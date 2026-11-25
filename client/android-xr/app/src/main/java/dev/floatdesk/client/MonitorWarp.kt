@@ -368,25 +368,32 @@ internal class MonitorWarp : AutoCloseable {
                 next.eye[2]-next.normal[2]*next.geometryRadius,
             )
             val shape = videoShape(next.width,next.height,next,origin,cutouts)
-            val target = if (live === original && retainedCurved!=null) retainedCurved!!.also {
-                syncCurvedPose(original)
-                applyPixels(it,placement)
-            } else if(live === original) SurfaceEntity.create(session,
-                shape = shape, pose = original.getPose(), parent = null,
-                superSampling = SurfaceEntity.SuperSampling.NONE,mediaBlendingMode=SurfaceEntity.MediaBlendingMode.OPAQUE).also {
-                it.setEnabled(false)
-                it.setScale(original.getScale())
-                applyPixels(it,placement)
-                val pointer=SpatialPointerComponent.create(session)
-                check(it.addComponent(pointer))
-                pointer.spatialPointerIcon=SpatialPointerIcon.NONE
-                retainedCurved=it;curvedState=NativeNodeState(it)
-                recentShapes.retain(shape)
-                syncCurvedPose(original)
-            } else live!!
-            if(submitShape!=null){
-                if(!submitShape{applyShape(target,shape)})return
-            }else applyShape(target,shape)
+            val submit: () -> Unit = {
+                val existing = retainedCurved
+                if (existing != null) {
+                    applyShape(existing, shape)
+                } else {
+                    // Creation already submits the initial mesh. Do not immediately replace it.
+                    recentShapes.retain(shape)
+                    val created = SurfaceEntity.create(session,
+                        shape = shape, pose = original.getPose(), parent = null,
+                        superSampling = SurfaceEntity.SuperSampling.NONE,
+                        mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE)
+                    created.setEnabled(false)
+                    created.setScale(original.getScale())
+                    val pointer = SpatialPointerComponent.create(session)
+                    check(created.addComponent(pointer))
+                    pointer.spatialPointerIcon = SpatialPointerIcon.NONE
+                    retainedCurved = created
+                    curvedState = NativeNodeState(created)
+                    appliedShape = shape
+                }
+            }
+            if (submitShape != null) {
+                if (!submitShape(submit)) return
+            } else submit()
+            val target = checkNotNull(retainedCurved)
+            applyPixels(target, placement)
             appliedCutouts=cutouts
             videoOrigin=origin
             live=target;syncCurvedPose(original);curvedState?.enabled(shown)

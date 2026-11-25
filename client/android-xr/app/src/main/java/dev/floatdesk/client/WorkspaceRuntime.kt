@@ -1204,6 +1204,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 val local=pointerSurfacePoint(target.copy(u=uv.first,v=uv.second),surface.width,surface.height,surface.mesh)
                 return MouseAimAnchor(target,hand.copyOf(),eye.copyOf(),transformPoint(surface.pose,local))
             }
+            var mouseBeamContact:FloatArray?=null
             val mouseAim=if(workspace.handMouseActive){
                 if(!mouseGestures.engaged){
                     if(handTracking.nowMs-lastMouseAimAt>180L)mouseAimAnchors.clear()
@@ -1225,9 +1226,12 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     val eventAt=if(native?.spaceKey=="desktop")pointerControl.contactTime(side) else magnifierHands.contactTime(side)
                     if(native!=null && eventAt!=null && handTracking.nowMs-eventAt<=85L &&
                         movedMouseContact(anchor?.target,native)){
-                        if(side!=null && eventAt>lastMouseAimAt)captureMouseAnchor(side,native)?.let{
-                            mouseAimAnchors[side]=it
-                            lastMouseAimAt=eventAt
+                        if(side!=null)captureMouseAnchor(side,native)?.let{
+                            mouseBeamContact=it.contact
+                            if(eventAt>lastMouseAimAt){
+                                mouseAimAnchors[side]=it
+                                lastMouseAimAt=eventAt
+                            }
                         }
                         native
                     }else{
@@ -1239,6 +1243,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                                 ?: return@let null
                             val flat=if(surface.mesh==null)point else surface.mesh.unproject(point) ?: return@let null
                             val u=flat[0]/surface.width+.5f;val v=.5f-flat[1]/surface.height
+                            mouseBeamContact=transformPoint(surface.pose,point)
                             val target=anchor.target
                             val window=surface.window
                             if(window==null)target.copy(u=u,v=v,local=point)
@@ -1481,7 +1486,8 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                         val show=(!workspace.freeManipulation || handPreviewMonitor(contactsNow)==null && handTracking.paneGuides.isEmpty()) &&
                             (palmPanel==null || workspace.layoutModeActive) && !monitorGrab && !nativeManipulation
                         val inToolbar=toolbarHovered || snapGridHovered
-                        val aimingHands=if(show)(contactsNow.keys+magnifierHands.keys) else emptySet()
+                        val heldAimSide=lastMouseAimSide.takeIf{workspace.handMouseActive && mouseGestures.engaged}
+                        val aimingHands=if(show)(contactsNow.keys+magnifierHands.keys+listOfNotNull(heldAimSide)) else emptySet()
                         val rays=aimingHands.mapNotNull{side->
                             val origin=grips[side] ?: return@mapNotNull null
                             val owner=magnifierHands.owner(side)
@@ -1493,7 +1499,9 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                             }
                             val pane=visibleMagnifiers.firstOrNull{it.first==key}?.second
                             val uv=magnifierHands[side]
-                            val contact=if(pane!=null && uv!=null){
+                            val contact=if(side==heldAimSide){
+                                mouseBeamContact ?: return@mapNotNull null
+                            }else if(pane!=null && uv!=null){
                                 val flat=floatArrayOf((uv.first-.5f)*pane.width,(.5f-uv.second)*pane.height,0f)
                                 transformPoint(pane.pose,pane.mesh?.project(flat,onTriangles=true) ?: flat)
                             }else{

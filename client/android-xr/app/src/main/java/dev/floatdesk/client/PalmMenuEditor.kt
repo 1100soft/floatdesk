@@ -18,7 +18,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.text.TextAutoSize
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.text.TextStyle
@@ -223,7 +222,7 @@ internal fun EditablePalmControls(
                         .widthIn(max=width-x).height(rowHeight).clipToBounds(),contentAlignment=Alignment.CenterStart){
                         if(editing && selectedLabel==point){
                             LaunchedEffect(keyboardRequest){focus.requestFocus();keyboard?.show()}
-                            val labelSize=with(density){(rowHeight*.65f).toSp()}
+                            val labelSize=11.sp
                             BasicTextField(labelText,{labelText=it.take(32)},
                                 Modifier.focusRequester(focus).background(Color(0xFF21475D)).fillMaxWidth(),
                                 textStyle=TextStyle(color=Color.White,fontSize=labelSize,lineHeight=labelSize),
@@ -235,7 +234,7 @@ internal fun EditablePalmControls(
                                 }))
                         }else if(label!=null){
                             Text(label.text,color=Color(0xFFD3E3F4),maxLines=1,softWrap=false,
-                                autoSize=TextAutoSize.StepBased(minFontSize=4.sp,maxFontSize=11.sp,stepSize=.5f.sp))
+                                fontSize=11.sp,lineHeight=11.sp)
                         }
                     }
                 }

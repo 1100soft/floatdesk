@@ -36,7 +36,7 @@ import dev.floatdesk.client.workspace.WorkspaceFile
 import kotlin.math.cos
 import kotlin.math.sin
 
-internal enum class PalmAction { FOLLOW, RESET, SEARCH, SETTINGS, WARP, MOVE, HAND_MOUSE, FREE, REFERENCE, TAP_TO_FOCUS, DRAG_TO_MOVE, HANDS_OFF, DIAGNOSTICS, GAZE_FOCUS, MAGNIFIER, MOUSE_SPACES, LAYOUT, ALIGN_AXES, SNAP_OBJECTS, FACE_USER, AUTO_ADJUST, RESET_ORIGIN, UNDO, REDO, LOAD_1, LOAD_2, LOAD_3, SAVE_1, SAVE_2, SAVE_3, DONE }
+internal enum class PalmAction { FOLLOW, RESET, SEARCH, SETTINGS, WARP, MOVE, HAND_MOUSE, FREE, REFERENCE, TAP_TO_FOCUS, DRAG_TO_MOVE, HANDS_OFF, DIAGNOSTICS, GAZE_FOCUS, MAGNIFIER, MOUSE_SPACES, LAYOUT, ALIGN_AXES, SNAP_OBJECTS, FACE_USER, AUTO_ADJUST, RESET_ORIGIN, UNDO, REDO, LOAD_1, LOAD_2, LOAD_3, SAVE_1, SAVE_2, SAVE_3, DONE, EDIT }
 internal enum class PalmPage { MAIN, LAYOUT; val isLayout get()=this==LAYOUT }
 internal data class PalmButton(val action: PalmAction, val x: Float, val y: Float, val w: Float, val h: Float)
 
@@ -82,11 +82,13 @@ internal object PalmMenuLayout {
             add(PalmButton(action,(x-cellM*.5f)/widthM,(y-cellM*.5f)/height,cellM/widthM,cellM/height))
         }
         for(group in clusters(page))for(item in group.items)button(item.action,item.x*circleM,item.y*circleM)
+        button(PalmAction.EDIT,circleM*.50f,circleM*if(page.isLayout).47f else .51f)
         if(!page.isLayout)modes.forEachIndexed{i,action->button(action,circleM*.5f+(i-1.5f)*.047f,circleM+modesHeight*.5f)}
     }
 }
 
 internal fun palmActionEnabled(action:PalmAction,workspace:WorkspaceFile,info:WorkspaceInfo?):Boolean {
+    if(action==PalmAction.EDIT)return true
     if(workspace.layoutModeActive)return action in PalmMenuLayout.layoutActions
     if(action != PalmAction.RESET && action in PalmMenuLayout.layoutActions)return false
     return when(action){
@@ -99,11 +101,11 @@ internal fun palmActionEnabled(action:PalmAction,workspace:WorkspaceFile,info:Wo
 }
 
 /** Toggles are a single state slot, multi-mode buttons have one slot per mode; immediate actions have none. */
-private data class PalmState(val slots: Int, val current: Int) {
+internal data class PalmState(val slots: Int, val current: Int) {
     val toggleOn get() = slots == 1 && current == 0
 }
 
-private fun palmState(action: PalmAction, workspace: WorkspaceFile, latched: Boolean): PalmState? {
+internal fun palmState(action: PalmAction, workspace: WorkspaceFile, latched: Boolean): PalmState? {
     fun toggle(on: Boolean) = PalmState(1, if (on) 0 else -1)
     return when (action) {
         PalmAction.FOLLOW -> toggle(latched)
@@ -167,6 +169,7 @@ internal fun palmTooltip(action: PalmAction, workspace: WorkspaceFile, latched: 
     PalmAction.SAVE_1,PalmAction.SAVE_2,PalmAction.SAVE_3 -> "Save layout ${action.ordinal-PalmAction.SAVE_1.ordinal+1}"
     PalmAction.UNDO -> "Undo layout change"
     PalmAction.REDO -> "Redo layout change"
+    PalmAction.EDIT -> "Edit palm menu"
     PalmAction.DONE -> "Done"
 }
 
@@ -213,7 +216,7 @@ internal fun PalmControls(page: PalmPage, workspace: WorkspaceFile, info: Worksp
 /** Immediate actions keep the round window-menu button; state buttons are rounded squares with state pips. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PalmIcon(action: PalmAction, workspace: WorkspaceFile, description: String, cell: Dp, enabled: Boolean, state: PalmState?,
+internal fun PalmIcon(action: PalmAction, workspace: WorkspaceFile, description: String, cell: Dp, enabled: Boolean, state: PalmState?,
                      focused: Boolean, pressed: Boolean, onHover: (Boolean) -> Unit, modifier: Modifier, preview:FloatArray?, onClick: () -> Unit) {
     val done=action==PalmAction.DONE
     val shape = if(done)RoundedCornerShape(28) else if(state==null)CircleShape else RoundedCornerShape(22)
@@ -347,6 +350,7 @@ private fun DrawScope.drawPalmIcon(action: PalmAction, workspace: WorkspaceFile,
             val tail=if(loading).75f else .49f
             line(.5f,tail,.5f,tip);line(.5f,tip,.35f,(tip+tail)*.5f);line(.5f,tip,.65f,(tip+tail)*.5f)
         }
+        PalmAction.EDIT -> { line(.22f,.78f,.77f,.23f);line(.60f,.20f,.81f,.41f);line(.20f,.60f,.20f,.81f);line(.20f,.81f,.41f,.81f) }
         PalmAction.DONE -> { line(.12f,.53f,.39f,.77f);line(.39f,.77f,.88f,.24f) }
         PalmAction.MOVE -> { line(.1f,.5f,.9f,.5f); line(.5f,.1f,.5f,.9f); line(.1f,.5f,.27f,.32f); line(.9f,.5f,.73f,.68f) }
         PalmAction.FREE -> { line(.06f,.72f,.42f,.27f); line(.58f,.72f,.94f,.27f); line(.06f,.72f,.3f,.72f); line(.70f,.27f,.94f,.27f) }

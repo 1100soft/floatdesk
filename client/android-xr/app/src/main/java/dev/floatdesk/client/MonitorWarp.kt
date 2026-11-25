@@ -289,11 +289,6 @@ internal class MonitorWarp : AutoCloseable {
         if (enabled && viewer == null) return
         val usable = enabled
         if (!usable) {
-            if (live !== original) {
-                curvedInputPlacement?.enabled(false)
-                curvedState?.enabled(false);curvedState?.parent(null)
-                live = original
-            }
             if (presentationDirty || mesh != null || flatWidth != placement.physicalWidthM || flatHeight != placement.physicalHeightM || cutouts!=appliedCutouts) {
                 val shape = videoShape(placement.physicalWidthM,placement.physicalHeightM,null,cutouts=cutouts)
                 if(submitShape!=null && !submitShape{applyShape(original,shape)})return
@@ -302,6 +297,12 @@ internal class MonitorWarp : AutoCloseable {
                 flatWidth = placement.physicalWidthM; flatHeight = placement.physicalHeightM
                 mesh = null;focus=null;presentationDirty=false
             }
+            if (live !== original) {
+                curvedInputPlacement?.enabled(false)
+                curvedState?.enabled(false);curvedState?.parent(null)
+                live = original
+            }
+            applyVisibility()
             applyPixels(original,placement)
             return
         }

@@ -53,6 +53,7 @@ import dev.floatdesk.client.net.CursorView
 import dev.floatdesk.client.net.DeskConnection
 import dev.floatdesk.client.net.MonitorHello
 import androidx.xr.compose.subspace.draw.scale
+import dev.floatdesk.client.workspace.hasUsableGeometry
 import dev.floatdesk.client.workspace.MonitorPlacement
 import dev.floatdesk.client.workspace.ViewLayers
 import dev.floatdesk.client.workspace.withViewingDistances
@@ -96,7 +97,8 @@ internal fun DeskContent(
     panelPressed: PalmAction?,
     onManipulate: (Boolean) -> Unit,
     savedLayoutPreviews:List<FloatArray?>,
-    placementReady:Boolean,
+    palmEditing:Boolean,
+    onPalmEdited:(PalmPage,PalmCustomLayout?)->Unit,
 ) {
     val session = LocalSession.current
     val latest = rememberUpdatedState(workspace)
@@ -140,6 +142,15 @@ internal fun DeskContent(
         val circlePose=if(circle)panel.pose else panel.pose.copy(position=transformPoint(panel.pose,
             floatArrayOf(0f,PalmMenuLayout.modesHeight*unit/2,0f)))
         val palmShape=androidx.xr.compose.subspace.layout.SpatialRoundedCornerShape(androidx.compose.foundation.shape.CornerSize(0.dp))
+        if(palmEditing || panel.customLayout!=null){
+            val editHeight=if(palmEditing)PalmEditorControlsHeightM else 0f
+            val pose=panel.pose.copy(position=transformPoint(panel.pose,floatArrayOf(0f,-editHeight*unit/2,0f)))
+            SpatialPanel(modifier=placedPanel(pose,panel.widthM*unit,(panel.heightM+editHeight)*unit,density,pixelDensity),shape=palmShape){
+                EditablePalmControls(panel.page,panel.customLayout,workspace,connection.workspaceInfo.value,latchedFollow,
+                    palmEditing,panelFocused,panelPressed,savedLayoutPreviews,panel.heightM/(panel.heightM+editHeight),
+                    {hovered=it},onPalmAction){layout->onPalmEdited(panel.page,layout)}
+            }
+        }else{
         SpatialPanel(modifier=placedPanel(circlePose,panel.widthM*unit,PalmMenuLayout.circleM*unit,density,pixelDensity),shape=palmShape){
             PalmControls(panel.page,workspace,connection.workspaceInfo.value,latchedFollow,panelFocused,panelPressed,{hovered=it},onPalmAction,savedLayoutPreviews)
         }
@@ -149,7 +160,8 @@ internal fun DeskContent(
                 PalmControls(panel.page,workspace,connection.workspaceInfo.value,latchedFollow,panelFocused,panelPressed,{hovered=it},onPalmAction,modePanel=true)
             }
         }
-        panel.buttons.firstOrNull{it.action==(hovered ?: panelFocused)}?.let{button->
+        }
+        if(!palmEditing)panel.buttons.firstOrNull{it.action==(hovered ?: panelFocused)}?.let{button->
             val label=palmTooltip(button.action,workspace,latchedFollow)
             val tip=palmTooltipPlacement(panel,button,label)
             SpatialPanel(modifier=placedPanel(tip.pose,tip.width,tip.height,density,pixelDensity)) {
@@ -173,8 +185,9 @@ internal fun DeskContent(
                 .firstOrNull{it.getSurface()===surface}?.parent?.let(onDeskRoot)
         }
     }
-    val controlsOpenNow=rememberUpdatedState(displayControlsOpen || !placementReady)
+    val controlsOpenNow=rememberUpdatedState(displayControlsOpen)
     layout.forEachIndexed { index, placement ->
+        if(!placement.hasUsableGeometry(workspace.viewerReference ?: Pose(),workspace.referenceUnitsPerMeter ?: handTracking.unitsPerMeter))return@forEachIndexed
         androidx.compose.runtime.key(placement.hostSourceId,placement.pixelWidth,placement.pixelHeight) {
         val hands = remember(index) { grabs.getOrPut(index) { TwoHandState() } }
         var nativeResize by remember(index) { mutableStateOf(false) }

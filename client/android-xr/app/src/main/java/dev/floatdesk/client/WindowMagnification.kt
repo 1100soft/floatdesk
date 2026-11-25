@@ -432,33 +432,3 @@ internal fun stickyMagnifier(owner:MagnifiedWindow,source:DesktopWindow,popup:De
         units=owner.units,fixed=true,desktopRotation=owner.pose.rotation,requestedPosition=position,layerDistanceM=distance)
     return magnifierFrame(window,window,viewer,owner.units,true)
 }
-
-/** A passive copy of the gazed window. Only lift complete, unobstructed windows. */
-internal fun desktopGazeOverlay(
-    info:WorkspaceInfo?,id:Long?,desktop:MonitorPlacement?,mesh:MonitorMesh?,
-    viewer:Pose?,spacing:Float,units:Float,
-):MagnifiedWindow? {
-    if(info==null || id==null || desktop==null || viewer==null)return null
-    val bounds=info.bounds() ?: return null
-    val window=info.windows.firstOrNull{it.id==id} ?: return null
-    fun rect(w:DesktopWindow)=FocusRect((w.x-bounds[0]).toFloat()/bounds[2],(w.y-bounds[1]).toFloat()/bounds[3],
-        (w.x+w.width-bounds[0]).toFloat()/bounds[2],(w.y+w.height-bounds[1]).toFloat()/bounds[3])
-    val source=rect(window)
-    if(info.windows.takeWhile{it.id!=id}.any{rect(it).intersect(source)!=null} ||
-        info.systemWindows.any{rect(it).intersect(source)!=null})return null
-    val full=info.visibleRects(source,0f).singleOrNull() ?: return null
-    if(full!=source)return null
-    val visible=info.visibleRects(source,spacing).singleOrNull() ?: return null
-    fun point(u:Float,v:Float)=transformPoint(desktop.pose,
-        pointerSurfacePoint(PointerTarget(0,u,v,FloatArray(3)),desktop.physicalWidthM,desktop.physicalHeightM,mesh))
-    val center=point(visible.centerU,visible.centerV)
-    val clearance=.965f
-    val pose=desktop.pose.copy(position=FloatArray(3){viewer.position[it]+(center[it]-viewer.position[it])*clearance})
-    val width=distance(point(visible.left,visible.centerV),point(visible.right,visible.centerV))*clearance
-    val height=distance(point(visible.centerU,visible.top),point(visible.centerU,visible.bottom))*clearance
-    if(width<=.001f || height<=.001f)return null
-    val rotation=if(mesh==null)pose.rotation else facingMagnifierRotation(pose.position,viewer,pose.rotation)
-    return MagnifiedWindow(id,pose.copy(rotation=rotation),width,height,window.width,window.height,
-        spherical=mesh!=null,units=units,freePose=true,anchoredPlacement=true,
-        layerDistanceM=distance(pose.position,viewer.position)/units)
-}

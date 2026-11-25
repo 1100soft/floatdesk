@@ -43,6 +43,8 @@ window_menu=(Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client/W
 palm_menu=(Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client/PalmMenu.kt').read_text()
 code += window_menu[window_menu.index('internal object WindowMenuLayout'):window_menu.index('private val ToolbarSurface')]
 code += palm_menu[palm_menu.index('internal enum class PalmAction'):palm_menu.index('internal fun palmActionEnabled')]
+palm_editor=(Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client/PalmMenuEditor.kt').read_text()
+code += palm_editor[palm_editor.index('private const val PalmGridM'):palm_editor.index('    fun encode():String')].replace('abs(', 'kotlin.math.abs(')+ '}\n'
 code += section('internal data class PalmPanelState', 'internal fun Vector3.toArray()')
 code += section('private fun palmRayPoint(', '/** Direct fingertip contact')
 code += section('private class PalmPoke', '/** Find the parent')
@@ -57,6 +59,16 @@ code += '''
 private fun near(a: FloatArray, b: FloatArray) { check(distance(a,b) < 0.0001f) { "${a.contentToString()} != ${b.contentToString()}" } }
 private fun point(m: MonitorPlacement, local: FloatArray, scale: Float = 1f) = transformPoint(m.pose, local, scale)
 fun main() {
+    val custom=PalmCustomLayout(emptyMap(),emptyList())
+    val movedButton=custom.move(PalmPage.MAIN,PalmAction.RESET,PalmGridPoint(1,7))
+    check(movedButton.positions[PalmAction.RESET]==PalmGridPoint(1,7))
+    check(movedButton.move(PalmPage.MAIN,PalmAction.SETTINGS,PalmGridPoint(1,7))===movedButton)
+    val customized= movedButton.label(PalmGridPoint(2,3),"Navigation")
+    check(customized.labels.single().point==PalmGridPoint(2,3))
+    check(customized.label(PalmGridPoint(2,3),"").labels.isEmpty())
+    val edited=PalmPanelState("LEFT",Pose(floatArrayOf(0f,0f,-1f)),customLayout=customized)
+    val reset=edited.buttons.first{it.action==PalmAction.RESET}
+    check(kotlin.math.abs((reset.x+reset.w/2)*edited.widthM-PalmMenuLayout.cellM/2)<.00001f)
     val l = floatArrayOf(-0.21f,0.06f,0f); val r = floatArrayOf(0.19f,-0.04f,0f)
     val initial = MonitorPlacement(Pose(floatArrayOf(0.4f,0.2f,-1.3f), normalize4(floatArrayOf(0.2f,0.3f,0.1f,0.9f))))
     fun event(side: String, action: InputEvent.Action, hit: FloatArray? = null) = SpatialInputEvent(side,action,hit?.let{Vector3(it[0]*1000,it[1]*1000,0f)})

@@ -31,6 +31,7 @@ internal class MonitorMesh(
     val center:FloatArray=floatArrayOf(0f,0f,0f),
     val planar:Boolean=false,
     minimumGeometryRadius:Float=0f,
+    private val nativeBase:MonitorMesh?=null,
 ) {
     val radius = sqrt((0..2).sumOf { val d=eye[it]-center[it];(d*d).toDouble() }).toFloat()
     val normal = FloatArray(3) { (eye[it]-center[it]) / radius }
@@ -68,11 +69,15 @@ internal class MonitorMesh(
     val videoTexCoords: FloatArray
         get() = FloatArray(texCoords.size) { if (it % 2 == 1) 1f - texCoords[it] else texCoords[it] }
     val indices = IntArray(columns * rows * 6)
+    private val nativeScaleX=nativeBase?.let{width/it.width} ?: 1f
+    private val nativeScaleY=nativeBase?.let{height/it.height} ?: 1f
     var geometryRadius=radius
         private set
     /** Conservative distance to the actual triangle chords, which can cut inside the sphere. */
     val innerRadius:Float by lazy { chordInnerRadius() }
     private fun chordInnerRadius():Float {
+        nativeBase?.let{return it.innerRadius*minOf(nativeScaleX,nativeScaleY,1f)}
+
         var longestSquared=0f
         for(i in indices.indices step 3)for(edge in 0..2){
             val a=indices[i+edge]*3
@@ -191,6 +196,11 @@ internal class MonitorMesh(
                 }
             }
         }
+        nativeBase?.let{base->
+            for(i in positions.indices)positions[i]=base.positions[i]*when(i%3){0->nativeScaleX;1->nativeScaleY;else->1f}
+            base.texCoords.copyInto(texCoords)
+            geometryRadius=base.geometryRadius*maxOf(nativeScaleX,nativeScaleY,1f)
+        }
         outline=buildList {
             for(col in 0 until columns step 4) add(vertex(0,col))
             for(row in 0 until rows step 4) add(vertex(row,columns))
@@ -199,8 +209,19 @@ internal class MonitorMesh(
         }
     }
 
+    fun forPaneExtent(width:Float,height:Float):MonitorMesh{
+        val base=nativeBase ?: this
+        if(base.width==width && base.height==height)return base
+        return MonitorMesh(width,height,floatArrayOf(base.eye[0]*width/base.width,base.eye[1]*height/base.height,base.eye[2]),
+            base.columns,base.rows,planar=base.planar,nativeBase=base)
+    }
+
     /** Interpolate texture pixels on the same triangles used by video, then normalize to the sphere. */
     fun project(flat: FloatArray, applyProjection:Boolean=true, onTriangles:Boolean=false): FloatArray {
+        nativeBase?.let{base->
+            val p=base.project(floatArrayOf(flat[0]/nativeScaleX,flat[1]/nativeScaleY,0f),applyProjection,onTriangles)
+            return floatArrayOf(p[0]*nativeScaleX,p[1]*nativeScaleY,p[2])
+        }
         if(applyProjection && projection!=null) {
             val uv=projection!!.inverse(flat[0]/width+.5f,.5f-flat[1]/height)
             return project(floatArrayOf((uv[0]-.5f)*width,(.5f-uv[1])*height,0f),false,onTriangles)

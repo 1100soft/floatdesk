@@ -73,7 +73,10 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
         val keepGeometry=resources.entity!=null && (if(savedPaneSize!=null)
             resources.authoredSize==authoredSize else sameNativePaneExtent(old,requested))
         if(!keepGeometry)resources.detachSurface()
-        val target=if(keepGeometry && old!=null)requested.copy(width=old.width,height=old.height,mesh=old.mesh)else requested
+        val target=if(keepGeometry && savedPaneSize!=null)
+            requested.copy(mesh=resources.baseGeometry?.mesh?.forPaneExtent(requested.width,requested.height))
+        else if(keepGeometry && old!=null)requested.copy(width=old.width,height=old.height,mesh=old.mesh)
+        else requested
         try{
             fun shape(surface:MagnifiedWindow):SurfaceEntity.Shape{
                 if(!RenderPolicy.CustomMeshes || !surface.spherical || surface.mesh==null){
@@ -88,7 +91,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                 val initialShape=shape(target);resources.retain(initialShape)
                 val entity=SurfaceEntity.create(session,shape=initialShape,parent=null,superSampling=SurfaceEntity.SuperSampling.NONE,
                     mediaBlendingMode=SurfaceEntity.MediaBlendingMode.OPAQUE)
-                resources.entity=entity;entity.setEnabled(false)
+                resources.entity=entity;resources.baseGeometry=target;entity.setEnabled(false)
                 if(!receiveInput || !transientSurface && target.mesh?.planar==false)SurfaceInput.disableCollider(entity)
                 val pointer=SpatialPointerComponent.create(session);entity.addComponent(pointer);pointer.spatialPointerIcon=SpatialPointerIcon.NONE
                 val listener:(InputEvent)->Unit=listener@{event->
@@ -98,9 +101,9 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                     val mesh=resources.mesh
                     val capturedMove=event.action==InputEvent.Action.MOVE || event.action==InputEvent.Action.UP
                     val ray=lazy{surfaceInputRay(session,root,event)}
-                    val local=if(mesh!=null && hit!=null)
-                        surfaceInputHit(ray.value,active.pose,active.width,active.height,mesh)
-                    else hit?.hitPosition?.let{eventMatrixHit(floatArrayOf(it.x,it.y,it.z),hit.transform.data,active.width,active.height,mesh,entity.getScale(Space.ACTIVITY),rayDirection=if(mesh!=null)floatArrayOf(event.direction.x,event.direction.y,event.direction.z)else null,rayOrigin=floatArrayOf(event.origin.x,event.origin.y,event.origin.z))}
+                    val local=(if(hit!=null)
+                        surfaceInputHit(ray.value,active.pose,active.width,active.height,mesh) else null)
+                        ?: hit?.hitPosition?.let{eventMatrixHit(floatArrayOf(it.x,it.y,it.z),hit.transform.data,active.width,active.height,mesh,entity.getScale(Space.ACTIVITY),rayDirection=if(mesh!=null)floatArrayOf(event.direction.x,event.direction.y,event.direction.z)else null,rayOrigin=floatArrayOf(event.origin.x,event.origin.y,event.origin.z))}
                         ?: if(capturedMove)surfaceInputHit(ray.value,active.pose,active.width,active.height,mesh) else null
                     val flat=local?.let{mesh?.unproject(it) ?: it}
                     val uv=flat?.let{it[0]/active.width+.5f to (.5f-it[1]/active.height)}
@@ -161,13 +164,15 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
             resources.rendered=target
             resources.authoredSize=authoredSize
             placementNow.value(target,false)
+            val base=resources.baseGeometry ?: target
             entity.parent=root;entity.setPose(targetPose)
+            if(savedPaneSize!=null)entity.setScale(Vector3(target.width/base.width,target.height/base.height,1f))
             logMagnifierSubmission(if(reusedSurface)"reuse" else "start",target,entity)
             if(receiveInput){
                 val mesh=resources.mesh
                 if(mesh!=null && !transientSurface){
                     if(resources.curvedInput==null){
-                        val collider=CurvedMonitorInput.create(session,entity,mesh,6,4,target.width,target.height,resources.listener!!)
+                        val collider=CurvedMonitorInput.create(session,entity,base.mesh ?: mesh,6,4,base.width,base.height,resources.listener!!)
                         resources.curvedInput=collider
                         collider.entity.setEnabled(false)
                     }
@@ -348,6 +353,7 @@ private class MagnifierResources:AutoCloseable{
     var curvedInput:CurvedMonitorInput?=null
     var mesh:MonitorMesh?=null;var listener:((InputEvent)->Unit)?=null
     var authoredSize:Pair<Int,Int>?=null
+    var baseGeometry:MagnifiedWindow?=null
     var rendered:MagnifiedWindow?=null;var pending:MagnifiedWindow?=null
     val free=TwoHandState();val freeContacts=mutableMapOf<String,FloatArray>()
     val corners=PaneCornerResize();var resizing=false;var resizeStart:MagnifiedWindow?=null
@@ -375,6 +381,7 @@ private class MagnifierResources:AutoCloseable{
         }
         flatInput=null
         rendered=null
+        baseGeometry=null
         mesh=null
         hasFrame=false
     }

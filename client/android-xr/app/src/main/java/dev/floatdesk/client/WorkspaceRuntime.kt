@@ -698,7 +698,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     handInputAllowed=false
                     val release=mouseGestures.update(SystemClock.uptimeMillis(),false,true,emptyMap(),null)
                     release.target?.let {target->
-                        connection.desktopPoint(target.monitor,target.u,target.v)?.let{(u,v)->
+                        target.hostPoint(connection::desktopPoint)?.let{(u,v)->
                             connection.movePointer(target.monitor,u,v,false,target.spaceKey)
                         }
                     }
@@ -1125,7 +1125,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 val sourceU=(win.x-bounds[0]+uv.first*win.width)/bounds[2]
                 val sourceV=(win.y-bounds[1]+uv.second*win.height)/bounds[3]
                 val mapped=connection.presentation().extendedDisplayPoint(sourceU,sourceV) ?: return null
-                return PointerTarget(0,mapped.first,mapped.second,floatArrayOf(0f,0f,0f))
+                return PointerTarget(0,mapped.first,mapped.second,floatArrayOf(0f,0f,0f),sourcePoint=sourceU.coerceIn(0f,1f) to sourceV.coerceIn(0f,1f))
             }
             val desktopHands=hoverHands.filterKeys{it !in magnifierHands}
             val panelHands=magnifierHands.mapNotNull { (side,uv) ->
@@ -1202,8 +1202,11 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             val mouseAim=if(workspace.handMouseActive){
                 if(!mouseGestures.engaged){
                     if(handTracking.nowMs-lastMouseAimAt>180L)mouseAimAnchors.clear()
-                    val native=choice.target?.takeIf{choice.mode==PointerMode.HAND}
-                    val side=contextHands.entries.firstOrNull{it.value===native}?.key
+                    val selected=contextHands.entries.takeIf{choice.mode==PointerMode.HAND}?.maxByOrNull{(side,contact)->
+                        if(contact.spaceKey=="desktop")pointerControl.contactTime(side) ?: 0L else magnifierHands.contactTime(side) ?: 0L
+                    }
+                    val native=selected?.value
+                    val side=selected?.key
                     if(side!=null && native!=null){
                         captureMouseAnchor(side,native)?.let{anchor->
                             mouseAimAnchors.clear()
@@ -1404,8 +1407,10 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 if(selected?.resetDesktop==true)resetDesk()
                 else if(selected!=null)requestFocus(selected)
                 val mouseEngaged=mouseGestures.engaged
+                val supportAim=mouseAim?.sourcePoint!=null
+                val mouseBlocked=if(supportAim)hardInputBlock || paneGrabPreview || toolbarHovered || snapGridDragging else gestureBlocked
                 val mouse=mouseGestures.update(frame.at,workspace.handMouseActive,
-                    hardInputBlock || !mouseEngaged && (gestureBlocked || uncertain || referenceFocus.isNotEmpty() && mouseAim==null),
+                    hardInputBlock || !mouseEngaged && (mouseBlocked || uncertain || referenceFocus.isNotEmpty() && mouseAim==null),
                     if(mouseEngaged)samples else samples.filterKeys{it !in referenceFocus},mouseAim)
                 mouse.scroll?.let {
                     if(it.fingers==0) Log.i("Floatdesk","mouse scroll released at=${frame.at}")
@@ -1415,13 +1420,13 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     Log.i("Floatdesk","mouse drag=${mouse.dragging}")
                     lastMouseDragging=mouse.dragging
                 }
-                mouse.target?.let {target->connection.desktopPoint(target.monitor,target.u,target.v)?.let {(u,v)->
+                mouse.target?.let {target->target.hostPoint(connection::desktopPoint)?.let {(u,v)->
                     connection.movePointer(target.monitor,u,v,mouse.dragging,target.spaceKey)
                 }}
                 mouse.click?.let {
                     if(it.button==3) clickView.playSoundEffect(android.view.SoundEffectConstants.CLICK)
                     Log.i("Floatdesk","mouse click button=${it.button}")
-                    connection.desktopPoint(it.target.monitor,it.target.u,it.target.v)?.let {(u,v)->connection.clickPointer(it.target.monitor,u,v,it.button)}
+                    it.target.hostPoint(connection::desktopPoint)?.let {(u,v)->connection.clickPointer(it.target.monitor,u,v,it.button)}
                 }
             }
             handTracking.pointerHeld=mouseGestures.engaged || windowGrab.engaged

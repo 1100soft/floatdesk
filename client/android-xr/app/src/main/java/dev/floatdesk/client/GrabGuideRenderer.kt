@@ -51,7 +51,7 @@ internal class GrabGuideRenderer private constructor(
     private var closed = false
     private val nodeStates=java.util.IdentityHashMap<Entity,NativeNodeState>()
     private fun state(entity:Entity)=nodeStates.getOrPut(entity){NativeNodeState(entity)}
-    private var pointerPoint: GltfModelEntity? = null
+    private var pointerPoint: SurfaceEntity? = null
     private var highlight:SurfaceEntity?=null
     private var nextInkAllocation=0L
     private val aimBeams=mutableMapOf<Int,SurfaceEntity>()
@@ -162,13 +162,18 @@ internal class GrabGuideRenderer private constructor(
 
     }
 
-    fun updatePointer(parent: Entity, position: FloatArray?, eye: FloatArray?, unitsPerMeter: Float) {
-        if (closed) return
-        if (position == null) { pointerPoint?.setEnabled(false); return }
-        val entity = pointerPoint ?: GltfModelEntity.create(session,models[2]).also { pointerPoint=it; it.setAlpha(.2f) }
-        entity.parent=parent
-        entity.setEnabled(true)
-        point(entity,visibleGrabContact(position,eye,unitsPerMeter),.003f*unitsPerMeter)
+    fun updatePointer(parent:Entity,position:FloatArray?,eye:FloatArray?,unitsPerMeter:Float){
+        if(closed)return
+        if(position==null || eye==null){pointerPoint?.let{state(it).enabled(false)};return}
+        val entity=pointerPoint ?: ink(layoutOriginSphereGeometry(),0xA03BEAFF.toInt())
+            ?.also{pointerPoint=it} ?: return
+        val radius=(distance(position,eye)*.0035f).coerceAtLeast(.0015f*unitsPerMeter)
+        state(entity).apply{
+            this.parent(parent)
+            pose(Pose(vector(visibleGrabContact(position,eye,unitsPerMeter))))
+            scale(radius)
+            enabled(true)
+        }
     }
 
     fun updateHighlight(parent:Entity,position:FloatArray?,rotation:FloatArray,diameter:Float,pulse:Float){
@@ -264,7 +269,7 @@ internal class GrabGuideRenderer private constructor(
         }
         (aimBeams.values+grabBeams.values+grabContacts).forEach { if(!it.isDisposed){it.parent=null; it.dispose()} }
         aimBeams.clear();grabBeams.clear();grabContacts.clear()
-        pointerPoint?.dispose(); pointerPoint = null
+        pointerPoint?.let { if(!it.isDisposed){it.setEnabled(false);it.parent=null} }; pointerPoint = null
         highlight?.let { if(!it.isDisposed){it.parent=null; it.dispose()} }; highlight = null
         groups.clear()
         if(session.lifecycleOwner.lifecycle.currentState!=androidx.lifecycle.Lifecycle.State.DESTROYED)models.forEach { it.close() }

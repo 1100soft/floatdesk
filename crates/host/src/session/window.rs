@@ -67,6 +67,7 @@ pub(super) fn start(
                     let mut frame = 0u64;
                     let mut last_sent = None;
                     let mut decoder_priming = 0u8;
+                    let mut pending_tail = false;
                     let mut watched_preview = 0;
                     let mut last = Instant::now() - Duration::from_secs(1);
                     while !shared.stop.load(Ordering::Relaxed) {
@@ -399,18 +400,45 @@ pub(super) fn start(
                             base.atlas_layers(&layers, 0)?
                         };
                         if let Ok(cursor) = shared.cursor.lock() {
-                            paint_cursor_scaled_at(
-                                &mut image,
-                                MonitorRect {
-                                    index: 0,
-                                    x: source_x,
-                                    y: source_y,
-                                    width: source_width,
-                                    height: source_height,
-                                },
-                                &cursor,
-                                (0, 0, w.into(), h.into()),
-                            )
+                            let contains = |x: i32, y: i32, width: u32, height: u32| {
+                                cursor.root_x >= x
+                                    && cursor.root_y >= y
+                                    && i64::from(cursor.root_x - x) < i64::from(width)
+                                    && i64::from(cursor.root_y - y) < i64::from(height)
+                            };
+                            let region = if root_capture {
+                                Some((source_x, source_y, source_width, source_height))
+                            } else {
+                                popups
+                                    .iter()
+                                    .rev()
+                                    .find(|p| contains(p.x, p.y, p.width, p.height))
+                                    .map(|p| (p.x, p.y, p.width, p.height))
+                                    .or_else(|| {
+                                        contains(owner_x, owner_y, owner_width, owner_height)
+                                            .then_some((
+                                                owner_x,
+                                                owner_y,
+                                                owner_width,
+                                                owner_height,
+                                            ))
+                                    })
+                            };
+                            if let Some((x, y, width, height)) = region {
+                                let (px, py, pw, ph) = pixel_rect(x, y, width, height);
+                                paint_cursor_scaled_at(
+                                    &mut image,
+                                    MonitorRect {
+                                        index: 0,
+                                        x,
+                                        y,
+                                        width,
+                                        height,
+                                    },
+                                    &cursor,
+                                    (px.into(), py.into(), pw.into(), ph.into()),
+                                );
+                            }
                         }
                         if mask_at.elapsed() >= Duration::from_millis(100) {
                             mask = crate::platform::x11::windows::occluders(&position_link, id)
@@ -420,13 +448,15 @@ pub(super) fn start(
                         let mut header = serde_json::json!({"type":"window-h264-v1","windowId":id,"width":w,"height":h,"occluders":mask,"ownerX":owner_x,"ownerY":owner_y,"ownerWidth":owner_width,"ownerHeight":owner_height,"popups":popups,"sourceX":source_x,"sourceY":source_y,"sourceWidth":source_width,"sourceHeight":source_height});
                         // Compare the exact capture and mapping. A static surface can keep its
                         // last buffer, including at full resolution and with all overlays.
+                        let identical = last_sent.as_ref().is_some_and(
+                            |(pixels, metadata): &(Vec<u8>, serde_json::Value)| {
+                                pixels == &image.bgra && metadata == &header
+                            },
+                        );
                         if decoder_priming == 0
                             && request["skipIdentical"].as_bool() == Some(true)
-                            && last_sent.as_ref().is_some_and(
-                                |(pixels, metadata): &(Vec<u8>, serde_json::Value)| {
-                                    pixels == &image.bgra && metadata == &header
-                                },
-                            )
+                            && identical
+                            && !pending_tail
                         {
                             let response=serde_json::json!({"type":"window-unchanged-v1","windowId":id,"bytes":0}).to_string();
                             socket.write_all(&(response.len() as u32).to_be_bytes())?;
@@ -443,6 +473,9 @@ pub(super) fn start(
                             return Err(Error::Msg("Window frame too large".into()));
                         }
                         if request["skipIdentical"].as_bool() == Some(true) {
+                            // A single changed frame can remain queued in the receiver's decoder.
+                            // Follow it once even if the image has already gone static.
+                            pending_tail = !identical;
                             last_sent = Some((image.bgra, header.clone()));
                         } else {
                             last_sent = None;

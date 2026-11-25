@@ -42,6 +42,12 @@ fun main() {
  val movedEye=Pose(floatArrayOf(.4f,.2f,.1f))
  val recentered=centerPaneSphere(Pose(),tallAperture,movedEye)
  check(distance(transformPoint(recentered,tallAperture.eye),movedEye.position)<.0001f)
+ val cursorPose=Pose(floatArrayOf(.2f,0f,-1.6f))
+ val cursorPane=MagnifiedWindow(987,cursorPose,.6f,1.5f,400,1000,spherical=true,mesh=tallAperture)
+ val markerUv=cursorSourceUv(CursorLocation("pane",.5f,.5f,0f,0f,430f,510f),30f,10f,500f,1000f)!!
+ check(markerUv==(.8f to .5f))
+ val markerPoint=magnifierCursorPoint(cursorPane,markerUv.first,markerUv.second)
+ check(distance(markerPoint,transformPoint(cursorPose,tallAperture.project(floatArrayOf(.18f,0f,0f),onTriangles=true)))<.0001f)
  val popupEye=Pose()
  for(curved in listOf(false,true)){
     val popupOwner=MagnifiedWindow(70,Pose(floatArrayOf(.5f,.15f,-1.2f)),1.8f,1.2f,1200,800,

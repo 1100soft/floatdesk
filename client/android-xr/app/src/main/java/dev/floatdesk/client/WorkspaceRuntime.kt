@@ -1457,21 +1457,32 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     }
                 }
                 if(index==0)connection.cursorWires["desktop"]?.let{wires->segments.addAll(wires.toList());repeat(wires.size/4){colors.addAll(listOf(.6f,.85f,1f))}}
-                if(index==0)connection.cursorLocation?.takeIf{it.key=="desktop"}?.let{location->
-                    val b=focusInfo?.bounds()
-                    if(b!=null)connection.presentation().extendedDisplayPoint((location.sourceX-b[0])/b[2],(location.sourceY-b[1])/b[3])?.let{(u,v)->
-                        val glow=cursorGlow(u,v,placement.physicalWidthM,placement.physicalHeightM,dev.floatdesk.client.workspace.ViewLayers.DesktopDistanceM*handTracking.unitsPerMeter)
-                        segments.addAll(glow.toList());repeat(glow.size/4){colors.addAll(listOf(0f,1f,1f))}
-                    }
-                }
                 connection.aimOverlay(index,dev.floatdesk.client.media.VideoAim(segments.toFloatArray(),floatArrayOf(),maxOf(2f,placement.pixelWidth*.001f),.85f,colors.toFloatArray()))
             }
             guideRenderer?.let { renderer ->
                 runCatching {
                     val guides=grabs.mapNotNull { (index,grab) -> workspace.monitorAt(index)?.let {grab.displayGuide(it,pointerControl.meshes[index])} ?: previews[index] } + handTracking.paneGuides.values
                     renderer.update(root,guides,handTracking.desktopSphereRadius)
-                    // The desktop cursor is the target marker; avoid a second dot over it.
-                    renderer.updatePointer(root,null,handTracking.points["HEAD"],handTracking.unitsPerMeter)
+                    val pointer=connection.cursorLocation?.let{location->
+                        val source=if(location.key=="desktop" || location.key=="reference")
+                            focusInfo?.bounds()?.let{dev.floatdesk.client.net.DesktopWindow(0,it[0],it[1],it[2],it[3])}
+                        else visibleMagnifiers.firstOrNull{it.first==location.key}?.second?.let{connection.windowCaptures.source(it.id)}
+                        val uv=source?.let{cursorSourceUv(location,it.x.toFloat(),it.y.toFloat(),it.width.toFloat(),it.height.toFloat())}
+                        if(uv==null)null
+                        else if(location.key=="desktop"){
+                            workspace.monitorAt(0)?.let{pane->
+                                val point=connection.presentation().extendedDisplayPoint(uv.first,uv.second) ?: return@let null
+                                transformPoint(pane.pose,pointerSurfacePoint(PointerTarget(0,point.first,point.second,FloatArray(3)),
+                                    pane.physicalWidthM,pane.physicalHeightM,pointerControl.meshes[0]))
+                            }
+                        }else visibleMagnifiers.firstOrNull{it.first==location.key}?.second?.let{pane->
+                            val point=if(location.key=="reference")
+                                connection.presentation().extendedDisplayPoint(uv.first,uv.second) ?: return@let null
+                            else uv
+                            magnifierCursorPoint(pane,point.first,point.second)
+                        }
+                    }
+                    renderer.updatePointer(root,pointer,handTracking.points["VIEWER"] ?: handTracking.points["HEAD"],handTracking.unitsPerMeter)
                     val pulse=.5f+.5f*kotlin.math.sin(SystemClock.uptimeMillis()%2400L/2400f*2f*Math.PI.toFloat())
                     renderer.updateHighlight(root,highlightStrip?.pose?.position,highlightStrip?.pose?.rotation ?: floatArrayOf(0f,0f,0f,1f),highlightStrip?.cell ?: 0f,pulse)
                     val draw: ()->Unit = {
@@ -1826,9 +1837,12 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                         val source=if(key=="reference")info.bounds()?.let{dev.floatdesk.client.net.DesktopWindow(-1,it[0],it[1],it[2],it[3])}
                             else connection.windowCaptures.source(pane.id)
                         if(source==null)continue
-                        patches+=cursorPatches(key,pane.pose,pane.width,pane.height,pane.mesh,
+                        val authored=pane.layoutFootprint
+                        patches+=cursorPatches(key,authored?.pose ?: pane.pose,authored?.width ?: pane.width,
+                            authored?.height ?: pane.height,pane.mesh,
                             FocusRect(source.x.toFloat(),source.y.toFloat(),(source.x+source.width).toFloat(),(source.y+source.height).toFloat()),mapViewer!!,
-                            region=magnifierContentRect(pane),front=true,projectBounds=key.startsWith("shell:")).map{it.copy(depth=pane.layerDistanceM)}
+                            region=if(authored!=null)FocusRect(0f,0f,1f,1f) else magnifierContentRect(pane),
+                            front=true,projectBounds=authored==null && key.startsWith("shell:")).map{it.copy(depth=pane.layerDistanceM)}
                     }
                 }
                 val topology=CursorTopology(patches).logicalPixels()

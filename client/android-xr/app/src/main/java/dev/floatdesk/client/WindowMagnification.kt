@@ -302,6 +302,14 @@ internal fun magnifierContentPoint(window:MagnifiedWindow,point:Pair<Float,Float
         ((point.second-rect.top)/(rect.bottom-rect.top)).coerceIn(0f,1f)
 }
 
+internal fun magnifierCursorPoint(window:MagnifiedWindow,u:Float,v:Float):FloatArray{
+    val content=magnifierContentRect(window)
+    val x=content.left+u*(content.right-content.left)
+    val y=content.top+v*(content.bottom-content.top)
+    val point=floatArrayOf((x-.5f)*window.width,(.5f-y)*window.height,0f)
+    return transformPoint(window.pose,window.mesh?.project(point,onTriangles=true) ?: point)
+}
+
 internal fun surfaceRayDistance(pose:Pose,width:Float,height:Float,mesh:MonitorMesh?,origin:FloatArray,direction:FloatArray):Float?{
     val o=viewerInMonitor(origin,pose.position,pose.rotation)
     val end=viewerInMonitor(FloatArray(3){origin[it]+direction[it]},pose.position,pose.rotation)

@@ -21,6 +21,21 @@ metadata=body('net/WorkspaceInfo.kt');metadata=metadata[:metadata.index('    com
 code='import kotlin.math.*\n'+body('MonitorMesh.kt')+surface_hit+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+re.search(r'internal fun deskLayout\(.*?\n}',(root/'workspace/Workspace.kt').read_text(),re.S).group(0)+body('workspace/WorkspacePlacement.kt')+metadata+body('WindowMagnification.kt')+body('LayoutOrigin.kt')+body('LayoutAdjustment.kt')+body('LayoutGuideInk.kt')+body('WindowInteraction.kt').replace('dev.floatdesk.client.workspace.MonitorPlacement','MonitorPlacement')+body('WindowToolbarState.kt')+re.search(r'internal object WindowMenuLayout \{.*?\n}',(root/'WindowActionsMenu.kt').read_text(),re.S).group(0)+'\n'+topology+body('VideoGeometry.kt')+body('MagnifierContacts.kt')+body('BoundedHistory.kt')+body('RenderPolicy.kt')+body('net/WindowCaptureRetry.kt')+body('net/WindowCaptureFormat.kt').replace('dev.floatdesk.client.RenderPolicy','RenderPolicy')+''.join(re.search(r'internal fun '+name+r'\(.*?\n}',application_sources(),re.S).group(0) for name in ('transformPoint','rotateVector','quaternionBetween','multiplyQuaternion','normalize3','normalize4'))+re.search(r'internal fun distance\(a: FloatArray.*?\n}',application_sources(),re.S).group(0)+'\n'+re.search(r'internal fun subtract\(a: FloatArray[^\n]*\n[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun dot\(a: FloatArray[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun cross3\(.*',application_sources()).group(0)+'\n'+r'''
 fun add(a:FloatArray,b:FloatArray)=FloatArray(3){a[it]+b[it]}
 fun main() {
+ val popupEye=Pose()
+ for(curved in listOf(false,true)){
+    val popupOwner=MagnifiedWindow(70,Pose(floatArrayOf(.5f,.15f,-1.2f)),1.8f,1.2f,1200,800,
+        spherical=curved,mesh=if(curved)MonitorMesh(1.8f,1.2f,floatArrayOf(-.5f,-.15f,1.2f)) else null)
+    val largePopup=MagnifiedWindow(71,Pose(floatArrayOf(.7f,.3f,-1.1f)),1.4f,1.3f,400,350,
+        spherical=curved,mesh=if(curved)MonitorMesh(1.4f,1.3f,floatArrayOf(-.7f,-.3f,1.1f)) else null)
+    val foreground=foregroundMagnifierPopup(popupOwner,largePopup,popupEye,2f)
+    val ownerNear=paneFrontRadius(popupOwner,popupEye)
+    val outline=foreground.mesh?.outline ?: listOf(
+        floatArrayOf(-foreground.width/2,foreground.height/2,0f),floatArrayOf(foreground.width/2,foreground.height/2,0f),
+        floatArrayOf(-foreground.width/2,-foreground.height/2,0f),floatArrayOf(foreground.width/2,-foreground.height/2,0f))
+    check(outline.all{distance(transformPoint(foreground.pose,it),popupEye.position)<ownerNear})
+    check(distance(normalize3(foreground.pose.position),normalize3(largePopup.pose.position))<1e-5f)
+ }
+
  val parent=DesktopWindow(1,0,0,800,600)
  val companion=DesktopWindow(2,850,50,400,300,transientFor=1)
  val independent=DesktopWindow(3,0,600,800,600)

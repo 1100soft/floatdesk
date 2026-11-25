@@ -109,6 +109,16 @@ internal fun samePaneGeometry(previous:MagnifiedWindow,next:MagnifiedWindow):Boo
         a.positions.indices.none{abs(a.positions[it]-b.positions[it])>.0005f}
 }
 
+/** Lower bound for every point of the actual pane, including curved triangle chords. */
+internal fun paneFrontRadius(pane:MagnifiedWindow,viewer:Pose):Float{
+    val localEye=viewerInMonitor(viewer.position,pane.pose.position,pane.pose.rotation)
+    val mesh=pane.mesh?.takeUnless{it.planar}
+    if(mesh!=null)return (mesh.innerRadius-distance(localEye,mesh.eye)).coerceAtLeast(0f)
+    val nearest=floatArrayOf(localEye[0].coerceIn(-pane.width*.5f,pane.width*.5f),
+        localEye[1].coerceIn(-pane.height*.5f,pane.height*.5f),0f)
+    return distance(nearest,localEye)
+}
+
 /** Keep the supporting surface inside the desktop sphere along every overlapping eye ray. */
 internal fun placePaneInsideDesktop(window:MagnifiedWindow,viewer:Pose,desktopRadius:Float?,previous:MagnifiedWindow?=null):MagnifiedWindow {
     val radius=desktopRadius?.takeIf{it.isFinite() && it>0f} ?: return window
@@ -120,7 +130,7 @@ internal fun placePaneInsideDesktop(window:MagnifiedWindow,viewer:Pose,desktopRa
     if(range<.0001f)return window
     if(window.spherical){
         val localEye=viewerInMonitor(viewer.position,window.pose.position,window.pose.rotation)
-        val extent=maxOf(range,window.mesh?.let{it.radius+distance(localEye,it.eye)} ?: range)
+        val extent=maxOf(range,window.mesh?.let{it.geometryRadius+distance(localEye,it.eye)} ?: range)
         if(extent<=limit+.0001f)return window
         val scale=limit/extent
         val pose=window.pose.copy(position=FloatArray(3){viewer.position[it]+ray[it]*scale})
@@ -431,6 +441,15 @@ internal fun stickyMagnifier(owner:MagnifiedWindow,source:DesktopWindow,popup:De
     val window=MagnifiedWindow(popup.id,Pose(position,owner.pose.rotation),width*scale,height*scale,popup.width,popup.height,owner.spherical,
         units=owner.units,fixed=true,desktopRotation=owner.pose.rotation,requestedPosition=position,layerDistanceM=distance)
     return magnifierFrame(window,window,viewer,owner.units,true)
+}
+
+/** Fit the entire popup in front of both the owner and the desktop. */
+internal fun foregroundMagnifierPopup(
+    owner:MagnifiedWindow,popup:MagnifiedWindow,viewer:Pose,desktopRadius:Float?,
+):MagnifiedWindow{
+    val ownerRadius=paneFrontRadius(owner,viewer).takeIf{it>.02f*owner.units}
+    val radius=listOfNotNull(ownerRadius,desktopRadius?.takeIf{it.isFinite() && it>0f}).minOrNull()
+    return placePaneInsideDesktop(popup,viewer,radius)
 }
 
 /** Restore compositor ordering only under a pane that has submitted an opaque frame. */

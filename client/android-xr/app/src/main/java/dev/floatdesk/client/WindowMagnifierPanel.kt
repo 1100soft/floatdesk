@@ -58,7 +58,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
         hoverNow.value("LEFT",null);hoverNow.value("RIGHT",null);clearPointerHover()
         fun surfaceMode(value:MagnifiedWindow)=if(value.spherical==projectionMode)value else value.copy(spherical=projectionMode,mesh=null)
         val initial=window?.takeIf{(desktopMirror || it.id>0L) && it.sourceWidth>0 && it.sourceHeight>0}?.let(::surfaceMode) ?: return@LaunchedEffect
-        if(transientSurface)delay(80) // Let a reused shell window settle on its new size.
+        if(transientSurface)delay(80) // Let a captured region settle before allocating its native mesh.
         while(connection.thermalPaused.value)delay(100)
         var initialViewer=viewer.get()
         while(initialViewer==null){withFrameNanos{};initialViewer=viewer.get()}
@@ -273,7 +273,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                 val geometryPeriod=if(connection.limitOptionalRendering)200 else 100
                 val updateGeometry=now-geometryAt>=geometryPeriod
                 if(updateGeometry)geometryAt=now
-                // A popup gets its curve on opening. Keep its native mesh/material fixed until it
+                // Popup and companion atlas regions get their curve on opening. Keep their native mesh/material fixed until the region
                 // closes so pointer motion and head tracking cannot race material replacement.
                 if(transientSurface)continue
                 val current=(resources.pending ?: windowNow.value)?.let(::surfaceMode) ?: continue

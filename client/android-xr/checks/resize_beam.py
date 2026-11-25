@@ -6,8 +6,8 @@ root=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
 source=(root/'MonitorMesh.kt').read_text().split('\n',1)[1]+'\n'+(root/'PointerControl.kt').read_text().split('\n',1)[1]
 guide=(root/'GrabGuideRenderer.kt').read_text();source+='\n'+guide[guide.index('internal fun visibleGrabContact'):guide.index('/** Native meshes')]
 code=source+'''
+fun distance(a:FloatArray,b:FloatArray)=kotlin.math.sqrt((0..2).sumOf {val d=a[it]-b[it];(d*d).toDouble()}).toFloat()
 fun main() {
- fun distance(a:FloatArray,b:FloatArray)=kotlin.math.sqrt((0..2).sumOf {val d=a[it]-b[it];(d*d).toDouble()}).toFloat()
  val eye=floatArrayOf(0f,0f,1.4f)
  for(width in listOf(.8f,2.4f,3.328259f,6.656518f,16f)) for(f in listOf(-.5f,0f,.5f)) {
   val mesh=MonitorMesh(width,width*.625f,eye,focus=floatArrayOf(f*width,0f))

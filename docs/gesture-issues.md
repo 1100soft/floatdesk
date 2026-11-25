@@ -1,6 +1,6 @@
 # Deferred gesture issues
 
-Status: **deferred at the user’s request on 10 November 2026**. Stop further gesture tuning until the user resumes this work. This checkpoint is not a claim that quick pinches are reliable.
+Quick-pinch threshold tuning was deferred on 10 November 2026. The later Hand Mouse drag and beam fixes are recorded below. Quick-pinch reliability still needs headset verification.
 
 ## Current user-observed failures
 
@@ -15,16 +15,16 @@ Status: **deferred at the user’s request on 10 November 2026**. Stop further g
 | Duplicated hand | Rarely two displaced hands appear, mostly on the right; they can wiggle and provoke unintended palm UI. User also observed it outside Floatdesk after closing it. | Floatdesk renders no hand meshes. At a matching reported time, SDK LEFT/RIGHT skeletons overlapped and identities switched. The guard preserves a clearly established owner and rejects a new duplicate; user confirmed right middle input can continue during duplication. OS visual remains unresolved; app causation is not established. |
 | System-wide lag | Cursor and beams were choppy; user also found XR Home laggy. A headset restart cleared lag. | Before restart, native hover was about 15–16 updates/sec; a later smooth baseline measured about 60–72/sec. UI queue delays were much smaller. Restart recovery does not establish whether an app, accumulated load or the OS triggered the problem. |
 | Ray availability / latency | Mixed OS eye/hand aiming faded hand rays; stationary aiming also faded. Custom beams initially clipped at video edges and later lagged/skipped. | User confirmed OS hand-only aiming helps. App retains a stationary tracked contact and renders continuous native surfaces. Current cyan/violet beams and streamed cursor retain a small user-accepted lag in the smooth baseline. Do not add another timeout or speculative extrapolation. |
-| Gaze mouse | Continuous gaze remains too jittery for small desktop targets despite filtering. | Desktop Eyes toggle is independent of hand mouse aiming. Palm gaze focus is separate and was confirmed useful. Tracking accuracy and eye permission are still required. |
+| Gaze mouse | Continuous gaze remains too jittery for small desktop targets despite filtering. | Desktop eye mouse was removed. Palm gaze focus is separate and was confirmed useful. Tracking accuracy and eye permission are still required. |
 | Palm panel | Earlier gaze acquisition was intermittent; duplicate hands sometimes opened or operated the panel unexpectedly. | Warm fine-eye lifecycle, sticky focus, tracking rejection and callback epochs mitigate these cases. Same-hand middle pinch was user-confirmed usable. Preserve its separate tuning; do not change palm presentation to address OS duplication. |
 
 ## Frozen behavior at this checkpoint
 
 - Mouse index contact/release: left **15.5 mm**, right **12.5 mm**. Middle: left **15 mm**, right **14 mm**. One threshold per finger defines closed versus open; there is no extra release distance or release dwell. Invalid/untracked data still cancels input.
-- Index release clicks; repeated releases support double/triple-click commands. Index contact held for **350 ms** starts a drag. That intentional drag timer is not a click-recognition requirement.
+- Index release clicks; repeated releases support double/triple-click commands. Index movement can start a drag immediately. A stationary hold of **350 ms** also starts it. That intentional drag timer is not a click-recognition requirement.
 - Middle release right-clicks unless scrolling began. Palm translation of **8 mm** starts scrolling immediately; release ends scrolling without a click. Combined index+middle contact maps to middle-click (often primary-selection paste on Linux).
 - Index, middle and combined gestures rearm independently. A combined pinch opens when either participating contact opens. Chord acquisition can combine two finger contacts within 150 ms; it does not defer a completed click.
-- Mouse gestures can be disabled. Hand aiming remains available independently of desktop Eyes. One ray aims; two rays reserve input for grab preview; an active monitor grab, palm UI, invalid tracking or an ambiguous duplicate can suppress mouse gestures. These mode gates remain separate from contact thresholds.
+- Hand Mouse can be disabled independently of gaze focus. One ray aims; two rays reserve input for grab preview; an active monitor grab, palm UI, invalid tracking or an ambiguous duplicate can suppress mouse gestures. These mode gates remain separate from contact thresholds.
 - Palm-button activation is separate: 26 mm middle contact, reopening above 35 mm, 60 ms confirmation, sticky gaze focus. The user clarified that the reported short-hold issue concerns desktop right-clicks, not these buttons.
 - Sampling subscribes to published SDK hand states and copies scalar joint positions immediately. Polling remains a fallback for runtimes that mutate buffers without flow emissions. A bounded event queue preserves short reported pulses, and discards stale batches after 120 ms. This cannot establish touches never reported by the SDK.
 - Diagnostics include local right-click sound, gesture start/release/cancel reasons, source/preview changes, tracking rejection/owner, SDK-versus-fallback frame counts, outgoing click sequence/queue delay and host processing time. A host click is currently ignored if a left drag is still held; a warning records that case. No evidence yet ties it to the remaining misses.
@@ -38,6 +38,12 @@ The previous Impress crash involved replacing ray meshes every input update. Bea
 Hidden video now releases its decoder/output window and requests a new keyframe on return; inactive input/geometry loops idle, and connection disposal closes sockets/threads. Offscreen device checks exercise pause and fresh-frame resume. These resource fixes do not prove the origin of the rare OS hand visual.
 
 A separate host queue/pacing bug was fixed: capture start pacing improved a read-only 2560×1600 benchmark from ~40 to ~58 fps, obsolete raw encoder frames are bounded/replaced before encoding, and dead X connections reach the reconnect loop. These were host issues, not a measure of headset resource use.
+
+## 25 November drag and beam regression
+
+Headset logs showed recognized index contacts and drag-down transitions while the visual beam or pointer stayed near the pinch start. The client now keeps the original aim owner and surface, accepts changing native contact positions, and transforms wrist fallback positions into desktop space. The beam takes the live drag contact and hides during a contact gap. The client and host also exchange the position, button state and cursor space together so cursor topology cannot overwrite the hand-driven position between those updates.
+
+The Android build and JVM input replay passed. Physical dragging across flat and curved desktops, magnifiers and panels, keyboard-driven label editing, and the large-desktop foreground composition still need in-headset acceptance.
 
 ## Resume investigation only when requested
 

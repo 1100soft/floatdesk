@@ -141,6 +141,22 @@ fun main() {
             check(runCatching {receiver.receive(packet)}.exceptionOrNull() is java.net.SocketTimeoutException)
         } finally { sender.running=false; sender.control.close(); sender.outgoing.pool.shutdownNow() }
     }
+    java.net.DatagramSocket(0).use { receiver ->
+        receiver.soTimeout=3000
+        val sender=Sender(receiver.localPort)
+        try {
+            sender.movePointer(0,.2f,.3f,true,"shell:panel")
+            sender.movePointer(0,.8f,.7f,false,"shell:panel")
+            sender.outgoing.gate.countDown()
+            for((index,down) in listOf(true,false).withIndex()){
+                val packet=java.net.DatagramPacket(ByteArray(256),256)
+                receiver.receive(packet)
+                check(packet.data[5].toInt()==15)
+                val json=packet.data.decodeToString(16,packet.length)
+                check(json=="""{"type":"handPointer","monitor":0,"u":${if(index==0)0.2f else 0.8f},"v":${if(index==0)0.3f else 0.7f},"sequence":${index+1},"dragging":$down,"key":"shell:panel"}""")
+            }
+        } finally { sender.running=false; sender.control.close(); sender.outgoing.pool.shutdownNow() }
+    }
     println("Passed: real UDP pointer/keyframe dispatch off UI thread, bounded coalescing, latest target delivery, uncoalesced drag edges, atomic click retries, old input discarded on reconnect")
 }
 '''
@@ -149,6 +165,19 @@ stdlib = next(lib.glob('kotlin-stdlib-*.jar'))
 with tempfile.TemporaryDirectory(prefix='floatdesk-dispatch-') as temp:
     source = Path(temp)/'PointerDispatchCheck.kt'
     source.write_text('import java.net.DatagramPacket\n'+protocol+stub+methods+checks)
+    # Android supplies JSONObject at runtime. Substitute the scalar values used by this check.
+    json_stub = Path(temp)/'JSONObject.kt'
+    json_stub.write_text(r"""
+package org.json
+class JSONObject {
+    private val fields = linkedMapOf<String,Any>()
+    fun put(key:String,value:Any):JSONObject { fields[key]=value;return this }
+    override fun toString():String = fields.entries.joinToString(",", "{", "}") { (key,value) ->
+        val encoded = if(value is String) "\"$value\"" else value.toString()
+        "\"$key\":$encoded"
+    }
+}
+""")
     subprocess.run(['java','-cp',str(lib/'*'),'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler',
-                    '-no-stdlib','-no-reflect','-classpath',str(stdlib),'-d',temp,str(source)],check=True)
+                    '-no-stdlib','-no-reflect','-classpath',str(stdlib),'-d',temp,str(source),str(json_stub)],check=True)
     subprocess.run(['java','-cp',temp+':'+str(stdlib),'PointerDispatchCheckKt'],check=True)

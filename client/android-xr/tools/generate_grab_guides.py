@@ -7,7 +7,7 @@ import struct
 
 out = Path(__file__).parents[1] / 'app/src/main/assets/grab-guides'
 out.mkdir(parents=True, exist_ok=True)
-def write(name, vertices, normals, indices, color, vertex_colors=None):
+def write(name, vertices, normals, indices, color):
     position_bytes = struct.pack('<%sf' % (len(vertices)*3), *(x for v in vertices for x in v))
     normal_bytes = struct.pack('<%sf' % (len(normals)*3), *(x for v in normals for x in v))
     index_bytes = struct.pack('<%sH' % len(indices), *indices)
@@ -22,15 +22,6 @@ def write(name, vertices, normals, indices, color, vertex_colors=None):
         'bufferViews':[{'buffer':0,'byteOffset':0,'byteLength':len(position_bytes),'target':34962}, {'buffer':0,'byteOffset':len(position_bytes),'byteLength':len(normal_bytes),'target':34962}, {'buffer':0,'byteOffset':len(position_bytes)+len(normal_bytes),'byteLength':len(index_bytes),'target':34963}],
         'accessors':[{'bufferView':0,'componentType':5126,'count':len(vertices),'type':'VEC3','min':[min(v[i] for v in vertices) for i in range(3)],'max':[max(v[i] for v in vertices) for i in range(3)]}, {'bufferView':1,'componentType':5126,'count':len(normals),'type':'VEC3'}, {'bufferView':2,'componentType':5123,'count':len(indices),'type':'SCALAR'}],
     }
-    if vertex_colors is not None:
-        padding = b'\0' * (-len(data) % 4)
-        blob = struct.pack('<%sf' % (len(vertex_colors)*4), *(x for c in vertex_colors for x in c))
-        doc['bufferViews'].append({'buffer':0,'byteOffset':len(data)+len(padding),'byteLength':len(blob),'target':34962})
-        doc['accessors'].append({'bufferView':3,'componentType':5126,'count':len(vertex_colors),'type':'VEC4'})
-        doc['meshes'][0]['primitives'][0]['attributes']['COLOR_0'] = 3
-        doc['materials'][0]['alphaMode'] = 'BLEND'
-        data += padding + blob
-        doc['buffers'][0]['byteLength'] = len(data)
     encoded = json.dumps(doc,separators=(',',':')).encode()
     encoded += b' ' * (-len(encoded)%4)
     data += b'\0' * (-len(data)%4)
@@ -57,18 +48,3 @@ for name,color in [('cyan',[.15,.95,1,1]),('violet',[.68,.34,1,1])]:
         for col in range(16):
             a=row*17+col; b=a+17; tri.extend([a,b,a+1,a+1,b,b+1])
     write(name+'-point.glb',sphere,sphere,tri,color)
-
-# A retained emissive disc with a transparent radial falloff.
-glow=[(0,0,0)]; colors=[(.65,.95,1,.34)]; tris=[]
-for ring,opacity in enumerate((.23,.08,0),1):
-    for i in range(24):
-        angle=math.tau*i/24
-        glow.append((math.cos(angle)*ring/3,math.sin(angle)*ring/3,0))
-        colors.append((.55,.9,1,opacity))
-for i in range(24):
-    j=(i+1)%24
-    tris.extend((0,1+i,1+j))
-    for ring in range(2):
-        a=1+ring*24
-        tris.extend((a+i,a+24+i,a+j,a+j,a+24+i,a+24+j))
-write('menu-glow.glb',glow,[(0,0,1)]*len(glow),tris,[1,1,1,1],colors)

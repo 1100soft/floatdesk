@@ -8,6 +8,12 @@ import tempfile
 folder = Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client'
 mesh = (folder/'MonitorMesh.kt').read_text().split('\n', 1)[1]+'\n'+(folder/'VideoGeometry.kt').read_text().split('\n',1)[1]
 mesh+='\n'+''.join('\n'.join(l for l in (folder/n).read_text().splitlines() if not l.startswith(('package ','import ','@android.annotation.SuppressLint')))+'\n' for n in ('BoundedHistory.kt','NativeSurfaceResources.kt','NativeNodeState.kt'))
+surface_input = (folder/'SurfaceInput.kt').read_text()
+surface_input = surface_input[surface_input.index('/** SceneCore may omit HitInfo'):]
+for namespace in ('androidx.xr.runtime.math.', 'androidx.xr.runtime.', 'androidx.xr.scenecore.'):
+    surface_input = surface_input.replace(namespace, '')
+surface_input = surface_input.replace('dev.floatdesk.client.workspace.Pose', 'WorkspacePose')
+mesh += '\n' + surface_input
 warp = (folder/'MonitorWarp.kt').read_text()
 warp = warp[warp.index('internal class MonitorWarp'):].replace('@SuppressLint("RestrictedApi")', '').replace('androidx.xr.runtime.math.IntSize2d','IntSize2d').replace('android.os.SystemClock','SystemClock')
 stubs = '''
@@ -26,6 +32,7 @@ internal object NativeMonitorInput {
 }
 internal data class Vector3(val x: Float, val y: Float, val z: Float) {
     val length get() = kotlin.math.sqrt(x*x+y*y+z*z)
+    operator fun plus(other:Vector3) = Vector3(x+other.x,y+other.y,z+other.z)
     operator fun times(scale: Float) = Vector3(x * scale, y * scale, z * scale)
     companion object { val Zero = Vector3(0f,0f,0f) }
 }
@@ -36,6 +43,10 @@ internal object Log { fun i(tag: String,message: String) {} }
 internal data class IntSize2d(val width: Int,val height: Int)
 internal data class FloatSize2d(val width: Float, val height: Float)
 internal data class WorkspacePose(val position: FloatArray=floatArrayOf(.1f,0f,-1f),val rotation: FloatArray=floatArrayOf(0f,0f,0f,1f))
+internal fun Pose.toWorkspacePose()=WorkspacePose(floatArrayOf(translation.x,translation.y,translation.z),
+    floatArrayOf(rotation.x,rotation.y,rotation.z,rotation.w))
+internal fun add(a:FloatArray,b:FloatArray)=FloatArray(3){a[it]+b[it]}
+internal fun subtract(a:FloatArray,b:FloatArray)=FloatArray(3){a[it]-b[it]}
 internal data class MonitorPlacement(val physicalWidthM: Float, val physicalHeightM: Float,val pose: WorkspacePose=WorkspacePose(),val pixelWidth: Int=2560,val pixelHeight: Int=1600,val viewCenterU:Float=.5f,val viewCenterV:Float=.5f)
 internal class NativeHit(val hitPosition: Vector3,val distance: Float)
 internal open class Entity {

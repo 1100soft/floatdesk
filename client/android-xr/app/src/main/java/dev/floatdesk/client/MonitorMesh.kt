@@ -30,6 +30,7 @@ internal class MonitorMesh(
     focus:FloatArray?=null,
     val center:FloatArray=floatArrayOf(0f,0f,0f),
     val planar:Boolean=false,
+    minimumGeometryRadius:Float=0f,
 ) {
     val radius = sqrt((0..2).sumOf { val d=eye[it]-center[it];(d*d).toDouble() }).toFloat()
     val normal = FloatArray(3) { (eye[it]-center[it]) / radius }
@@ -67,6 +68,20 @@ internal class MonitorMesh(
     val videoTexCoords: FloatArray
         get() = FloatArray(texCoords.size) { if (it % 2 == 1) 1f - texCoords[it] else texCoords[it] }
     val indices = IntArray(columns * rows * 6)
+    var geometryRadius=radius
+        private set
+    /** Conservative distance to the actual triangle chords, which can cut inside the sphere. */
+    val innerRadius:Float by lazy { chordInnerRadius() }
+    private fun chordInnerRadius():Float {
+        var longestSquared=0f
+        for(i in indices.indices step 3)for(edge in 0..2){
+            val a=indices[i+edge]*3
+            val b=indices[i+(edge+1)%3]*3
+            val x=positions[a]-positions[b];val y=positions[a+1]-positions[b+1];val z=positions[a+2]-positions[b+2]
+            longestSquared=maxOf(longestSquared,x*x+y*y+z*z)
+        }
+        return sqrt((geometryRadius*geometryRadius-longestSquared/3f).coerceAtLeast(0f))
+    }
     val outline: List<FloatArray>
     init {
         require(width > 0f && height > 0f && width.isFinite() && height.isFinite() &&
@@ -165,6 +180,17 @@ internal class MonitorMesh(
             for (index in intArrayOf(a,a+columns+1,a+1,a+1,a+columns+1,a+columns+2)) indices[offset++]=index
         }
         fun vertex(row: Int,col: Int)=positions.copyOfRange((row*(columns+1)+col)*3,(row*(columns+1)+col)*3+3)
+        if(!planar && minimumGeometryRadius.isFinite() && minimumGeometryRadius>0f){
+            val inner=chordInnerRadius()
+            if(inner in 0f..<minimumGeometryRadius && inner>0f){
+                val scale=minimumGeometryRadius/inner
+                geometryRadius=radius*scale
+                for(i in positions.indices){
+                    val origin=eye[i%3]
+                    positions[i]=origin+(positions[i]-origin)*scale
+                }
+            }
+        }
         outline=buildList {
             for(col in 0 until columns step 4) add(vertex(0,col))
             for(row in 0 until rows step 4) add(vertex(row,columns))
@@ -193,7 +219,7 @@ internal class MonitorMesh(
         val direction=FloatArray(3) { axis -> (0..2).sumOf { (positions[verts[it]*3+axis]*weights[it]).toDouble() }.toFloat()-eye[axis] }
         if(onTriangles || planar) return FloatArray(3){eye[it]+direction[it]}
         val length=sqrt(direction.sumOf { (it*it).toDouble() }).toFloat()
-        return FloatArray(3) { eye[it]+direction[it]*radius/length }
+        return FloatArray(3) { eye[it]+direction[it]*geometryRadius/length }
     }
 
     /** Invert the actual texture triangles, so curved ray contacts retain their exact image pixels. */
@@ -284,7 +310,7 @@ internal fun eventMatrixHit(hit: FloatArray, matrix: FloatArray,
         return FloatArray(3) { (m[it]*unscaled[0]+m[4+it]*unscaled[1]+m[8+it]*unscaled[2]+m[12+it])/w }
     }
     fun error(p: FloatArray): Float = if (mesh == null) kotlin.math.abs(p[2]) else
-        kotlin.math.abs(kotlin.math.sqrt((0..2).sumOf { val d=p[it]-mesh.eye[it]; (d*d).toDouble() }).toFloat()-mesh.radius)
+        kotlin.math.abs(kotlin.math.sqrt((0..2).sumOf { val d=p[it]-mesh.eye[it]; (d*d).toDouble() }).toFloat()-mesh.geometryRadius)
     var transformed=transform(matrix)
     if(rayDirection!=null && mesh!=null) {
         val ray=FloatArray(3){axis->matrix[axis]*rayDirection[0]+matrix[4+axis]*rayDirection[1]+matrix[8+axis]*rayDirection[2]}
@@ -297,7 +323,7 @@ internal fun eventMatrixHit(hit: FloatArray, matrix: FloatArray,
             FloatArray(3){(matrix[it]*v[0]+matrix[4+it]*v[1]+matrix[8+it]*v[2]+matrix[12+it])/w}
         } ?: run {
             // Compatibility for callers without a native origin: start before the whole sphere.
-            FloatArray(3){transformed[it]-ray[it]*(2f*mesh.radius+.03f)}
+            FloatArray(3){transformed[it]-ray[it]*(2f*mesh.geometryRadius+.03f)}
         }
         return monitorRayHit(origin,ray,width,height,mesh)
 
@@ -351,7 +377,7 @@ internal class ViewProjection(val columns:Int,val rows:Int,val sourceUV:FloatArr
     companion object {
         fun create(mesh:MonitorMesh,focus:FloatArray,rects:FloatArray,spacing:Float):ViewProjection {
             val anchor=mesh.project(floatArrayOf(focus[0],focus[1],0f),false)
-            val normal=FloatArray(3){(mesh.eye[it]-anchor[it])/mesh.radius}
+            val normal=FloatArray(3){(mesh.eye[it]-anchor[it])/mesh.geometryRadius}
             fun cross(a:FloatArray,b:FloatArray)=floatArrayOf(a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0])
             fun dot(a:FloatArray,b:FloatArray)=(0..2).sumOf {(a[it]*b[it]).toDouble()}.toFloat()
             val turn=cross(mesh.normal,normal);val cosine=dot(mesh.normal,normal)
@@ -362,7 +388,7 @@ internal class ViewProjection(val columns:Int,val rows:Int,val sourceUV:FloatArr
                 // The optional lookup map remains uniform even when sphere triangles adapt to focus.
                 val u=(i%(mesh.columns+1)).toFloat()/mesh.columns;val v=(i/(mesh.columns+1)).toFloat()/mesh.rows
                 val point=mesh.project(floatArrayOf((u-.5f)*mesh.width,(.5f-v)*mesh.height,0f),false)
-                val ray=FloatArray(3){(point[it]-mesh.eye[it])/mesh.radius}
+                val ray=FloatArray(3){(point[it]-mesh.eye[it])/mesh.geometryRadius}
                 val denominator=-dot(ray,normal)
                 var dx=0f;var dy=0f
                 if(denominator>.3f) {

@@ -8,6 +8,7 @@ stubs='''
 internal data class Vector3(val x:Float,val y:Float,val z:Float)
 internal data class Pose(val x:Float=0f)
 internal class Entity{
+ var isDisposed=false
  var parentWrites=0;var poseWrites=0;var scaleWrites=0;var alphaWrites=0;var enabledWrites=0
  var parent:Entity?=null;set(v){field=v;parentWrites++}
  fun setPose(p:Pose){poseWrites++}
@@ -20,6 +21,7 @@ internal class Entity{
 main='''
 fun main(){
  val e=Entity();val parent=Entity();val s=NativeNodeState(e)
+ check(e.liveOrNull()===e);parent.isDisposed=true;check(parent.liveOrNull()==null);parent.isDisposed=false
  repeat(1000){s.parent(parent);s.pose(Pose());s.scale(1f);s.alpha(.5f);s.enabled(true)}
  check(e.parentWrites==1 && e.poseWrites==1 && e.scaleWrites==1 && e.alphaWrites==1 && e.enabledWrites==1)
  s.pose(Pose(1f));s.scale(Vector3(1f,2f,1f));s.enabled(false)

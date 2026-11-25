@@ -1,5 +1,6 @@
 package dev.floatdesk.client
 
+import androidx.xr.scenecore.scene
 import androidx.compose.runtime.key
 import android.util.Log
 import android.view.Surface
@@ -94,6 +95,8 @@ internal fun DeskContent(
     panelFocused: PalmAction?,
     panelPressed: PalmAction?,
     onManipulate: (Boolean) -> Unit,
+    savedLayoutPreviews:List<FloatArray?>,
+    placementReady:Boolean,
 ) {
     val session = LocalSession.current
     val latest = rememberUpdatedState(workspace)
@@ -101,7 +104,7 @@ internal fun DeskContent(
     val reloading by connection.reloading
     val layout = workspace.reconcileMonitors(monitors.map { Triple(it.name,it.width,it.height) }).layouts[workspace.activeLayout].orEmpty()
     DiagnosticsPanel(connection,viewer,{handTracking.unitsPerMeter},{viewerAngles.get()},
-        workspace.showResources,workspace.experimentalViewedDetail,workspace.viewDetailDebug,workspace.sphericalWarp)
+        workspace.showResources,workspace.experimentalViewedDetail,workspace.viewDetailDebug,workspace.sphericalWarp,workspace.layoutModeActive)
     var managerPage by remember{mutableStateOf("Screens")}
     val managerHeight=when(managerPage){"Settings"->.40f;"Focus & magnification"->.40f;"Pinches"->.48f;"Viewing distance"->.42f;"Virtual screen setup"->.38f;else->.65f}
     val managerScale=remember(displayControlsPose){settingsPanelScale(handTracking.unitsPerMeter)}
@@ -112,20 +115,21 @@ internal fun DeskContent(
             val next=latest.value.copy(experimentalViewedDetail=enabled);onWorkspace(next);store.save(next)
         },workspace.viewDetailDebug,{enabled->
             val next=latest.value.copy(viewDetailDebug=enabled);onWorkspace(next);store.save(next)
-        },workspace,{next->onWorkspace(next);store.save(next)},onPage={managerPage=it},onAddFixed=onAddFixed,
+        },workspace,{next->store.save(next);onWorkspace(next)},onPage={managerPage=it},onAddFixed=onAddFixed,
             onViewingDistances={nearest,farthest,persist->
                 val next=latest.value.withViewingDistances(nearest,farthest,store.viewerReference,store.viewerUnitsPerMeter)
                 ViewLayers.configure(next.nearestDistanceM,next.farthestDistanceM)
                 onWorkspace(next);if(persist)store.save(next)
             })
     }
-    if(reloading && layout.isNotEmpty()) {
+    val thermalPaused by connection.thermalPaused
+    if((reloading || thermalPaused) && layout.isNotEmpty() && !displayControlsOpen) {
         val screen=layout.first()
         val pose=Pose(transformPoint(screen.pose,floatArrayOf(0f,0f,.05f)),screen.pose.rotation)
         SpatialPanel(modifier=placedPanel(pose,.40f,.10f,density,pixelDensity)) {
             androidx.compose.foundation.layout.Row(Modifier.fillMaxSize().background(Color(0xEE1C2430)).padding(12.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
-                androidx.compose.material3.CircularProgressIndicator(Modifier.size(24.dp))
-                Text("Updating screens…",color=Color.White)
+                if(!thermalPaused)androidx.compose.material3.CircularProgressIndicator(Modifier.size(24.dp))
+                Text(if(thermalPaused)"Video paused while headset cools" else "Updating screens…",color=Color.White)
             }
         }
     }
@@ -134,11 +138,12 @@ internal fun DeskContent(
         var hovered by remember(panel.page) { mutableStateOf<PalmAction?>(null) }
         SpatialPanel(modifier = placedPanel(panel.pose, panel.widthM * unit, panel.heightM * unit, density, pixelDensity),
             shape = androidx.xr.compose.subspace.layout.SpatialRoundedCornerShape(androidx.compose.foundation.shape.CornerSize(0.dp))) {
-            PalmControls(panel.page, workspace, connection.workspaceInfo.value, latchedFollow, panelFocused, panelPressed, { hovered = it }, onPalmAction)
+            PalmControls(panel.page, workspace, connection.workspaceInfo.value, latchedFollow, panelFocused, panelPressed, { hovered = it }, onPalmAction,savedLayoutPreviews)
         }
-        (hovered ?: panelFocused)?.takeIf { shown -> panel.buttons.any { it.action == shown } }?.let { palmTooltip(it, workspace, latchedFollow) }?.let { label ->
-            val tooltipPose = Pose(transformPoint(panel.pose, floatArrayOf(0f, panel.heightM * unit * .5f + .026f * unit, .006f * unit)), panel.pose.rotation)
-            SpatialPanel(modifier = placedPanel(tooltipPose, panel.widthM * unit, PalmMenuLayout.tooltipHeightM * unit, density, pixelDensity)) {
+        panel.buttons.firstOrNull{it.action==(hovered ?: panelFocused)}?.let{button->
+            val label=palmTooltip(button.action,workspace,latchedFollow)
+            val tip=palmTooltipPlacement(panel,button,label)
+            SpatialPanel(modifier=placedPanel(tip.pose,tip.width,tip.height,density,pixelDensity)) {
                 androidx.compose.foundation.layout.Box(Modifier.fillMaxSize().background(Color(0xFF18232E)), contentAlignment = Alignment.Center) {
                     androidx.compose.foundation.text.BasicText(label, Modifier.padding(horizontal = 6.dp), style = androidx.compose.ui.text.TextStyle(color = Color.White),
                         maxLines = 1, softWrap = false,
@@ -149,46 +154,57 @@ internal fun DeskContent(
         }
     }
     // Retain native assets across Workspace visits; hide them instead of destroying/re-instancing glTF.
-    val controlsOpenNow=rememberUpdatedState(displayControlsOpen)
+    // Keep palm and tracking coordinates independent of host video acquisition.
+    if(session!=null)SpatialExternalSurface(
+        stereoMode=StereoMode.Mono,
+        modifier=placedPanel(Pose(floatArrayOf(0f,0f,1f)),.002f,.002f,density,pixelDensity),
+    ){
+        onSurfaceCreated{surface->
+            session.scene.getEntitiesOfType(androidx.xr.scenecore.SurfaceEntity::class.java)
+                .firstOrNull{it.getSurface()===surface}?.parent?.let(onDeskRoot)
+        }
+    }
+    val controlsOpenNow=rememberUpdatedState(displayControlsOpen || !placementReady)
     layout.forEachIndexed { index, placement ->
         androidx.compose.runtime.key(placement.hostSourceId,placement.pixelWidth,placement.pixelHeight) {
         val hands = remember(index) { grabs.getOrPut(index) { TwoHandState() } }
         var nativeResize by remember(index) { mutableStateOf(false) }
         var nativeMove by remember(index) { mutableStateOf(false) }
         var nativeGestureAt by remember(index) {mutableStateOf(0L)}
-        var moveBefore by remember(index) { mutableStateOf<Pose?>(null) }
+        val angularDrag=remember(index){MagnifierRayDrag()}
+        var angularHand by remember(index){mutableStateOf<String?>(null)}
+        var angularPending by remember(index){mutableStateOf<FloatArray?>(null)}
         var nativeGeometryPending by remember(index) { mutableStateOf(false) }
         var nativeResizeStartWidth by remember(index) { mutableStateOf(1f) }
         var nativeResizeStartHeight by remember(index) { mutableStateOf(1f) }
         val videoSurface = remember(index) { AtomicReference<Surface?>(null) }
         val warp = remember(index, session) { MonitorWarp() }
-        val systemControls=remember(index,session) { MonitorSystemControls() }
         val cornerHandles=remember(index,session) { PaneCornerResize() }
-        DisposableEffect(systemControls,cornerHandles) { onDispose { systemControls.close();cornerHandles.close();pointerControl.nativeManipulation(index,false) } }
+        DisposableEffect(cornerHandles) { onDispose { cornerHandles.close();pointerControl.nativeManipulation(index,false) } }
         var frozenMonitor by remember(index) { mutableStateOf<FrozenMonitor?>(null) }
         LaunchedEffect(index, session) {
             val current = session ?: return@LaunchedEffect
             var grabProjectionAt=0L
             var outputResizePending=false
             while (isActive) {
-                delay(20)
+                delay(if(connection.thermalPaused.value)100 else 20)
                 if(controlsOpenNow.value) {
-                    warp.setVisible(false);systemControls.setVisible(false);cornerHandles.cancel()
+                    warp.setVisible(false);cornerHandles.cancel()
                     hands.cancel();pointerControl.clearMonitor(index)
                     if(nativeMove || nativeResize)onManipulate(false)
-                    nativeMove=false;nativeResize=false;moveBefore=null
+                    nativeMove=false;nativeResize=false;angularHand=null;angularPending=null;angularDrag.clear()
                     frozenMonitor?.suspendVisibility()
                     delay(100);continue
                 }
-                if(!connection.isRenderingActive() || !current.lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) { delay(100);continue }
-                warp.setVisible(true);systemControls.setVisible(true)
+                if(!connection.isRenderingActive() || connection.thermalPaused.value || !current.lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) { delay(100);continue }
+                warp.setVisible(true)
                 if (videoSurface.get() == null) continue
                 val root = warp.coordinateParent.liveOrNull() ?: continue
                 val file = latest.value
                 val screen = file.monitorAt(index) ?: continue
                 try {
-                    if((!handInputNow.value || handTracking.pinched.isEmpty() && SystemClock.uptimeMillis()-nativeGestureAt>=120) && (nativeMove || nativeResize)) {
-                        systemControls.close();nativeMove=false;nativeResize=false;moveBefore=null
+                    if((!handInputNow.value || handTracking.pinched.isEmpty() && SystemClock.uptimeMillis()-nativeGestureAt>=120) && nativeResize) {
+                        cornerHandles.cancel();nativeResize=false
                         nativeGeometryPending=true;onManipulate(false)
                     }
                     // Freeze before the platform DOWN arrives: replacing a native canvas while
@@ -203,52 +219,50 @@ internal fun DeskContent(
                             forceUpdate=(hands.engaged || !hands.busy) && (nativeGeometryPending || !warp.matchesSize(screen)),
                             viewDirection=handTracking.points["VIEW_DIRECTION"],
                             freezeProjection=(hands.busy && !hands.engaged) || nativeMove || nativeResize || handTracking.pointerHeld,
-                            submitShape={update->connection.tryDesktopShapeUpdate(index,update)})
+                            submitShape={update->connection.tryDesktopShapeUpdate(index,update)},
+                            minGeometryIntervalMs=if(connection.limitOptionalRendering)180 else 80,
+                            minimumGeometryRadius=dev.floatdesk.client.workspace.ViewLayers.DesktopDistanceM*handTracking.unitsPerMeter,
+                            cutouts=if(index==0)handTracking.desktopCutouts else emptyList())
                         grabProjectionAt=projectionNow
                     }
-                    if(outputResizePending){connection.refreshOutput(index);outputResizePending=false}
                     frozenMonitor?.update(screen,warp.mesh)
-                    warp.syncCurvedInput(current)
                     // Collider creation suspends: a newer resize event may arrive while awaiting it.
                     // Clear the pending update only after matching the latest canonical size.
                     latest.value.monitorAt(index)?.let { if(warp.matchesSize(it)) nativeGeometryPending=false }
-                    val viewer=(handTracking.points["VIEWER"] ?: handTracking.points["HEAD"])?.let { viewerInMonitor(it,screen.pose.position,screen.pose.rotation) }
-                    systemControls.update(current,warp.displayEntity,warp.mesh,screen.physicalWidthM,screen.physicalHeightM,viewer,
-                        handTracking.unitsPerMeter,!hands.engaged && handInputNow.value,onResize={ event,factor ->
-                        if(!handInputNow.value || hands.engaged) { nativeResize=false; return@update }
-                        val existing=latest.value.monitorAt(index) ?: return@update
-                        if(event.resizeState==androidx.xr.scenecore.ResizeEvent.ResizeState.START) {
-                            if(hands.busy) hands.cancel()
-                            nativeResizeStartWidth=existing.physicalWidthM
-                            nativeResizeStartHeight=existing.physicalHeightM
-                            nativeGestureAt=SystemClock.uptimeMillis();nativeResize=true; onManipulate(true)
+                    val pending=angularPending
+                    if(pending!=null && angularHand==null){
+                        val now=SystemClock.uptimeMillis()
+                        val selected=handTracking.pinched.singleOrNull()
+                        val hand=selected?.let{handTracking.points[it]}
+                        val head=viewer.get()
+                        if(!file.grabToMove || now-nativeGestureAt>180L){
+                            angularPending=null;nativeMove=false;onManipulate(false)
+                        }else if(hand!=null && head!=null){
+                            val contact=transformPoint(screen.pose,pending)
+                            val pane=MagnifiedWindow(0,screen.pose,screen.physicalWidthM,screen.physicalHeightM,
+                                screen.pixelWidth,screen.pixelHeight,units=handTracking.unitsPerMeter)
+                            angularDrag.begin(pane,head,head.position,subtract(contact,head.position),contact,hand)
+                            angularHand=selected
+                            angularPending=null
                         }
-                        if(!nativeResize) return@update
-                        nativeGeometryPending=true
-                        val end=event.resizeState==androidx.xr.scenecore.ResizeEvent.ResizeState.END
-                        val size=resizeDimensions(nativeResizeStartWidth,nativeResizeStartHeight,factor)
-                        // END must always release ownership, even if the SDK's final size is invalid.
-                        if(end) {nativeResize=false;onManipulate(false)}
-                        if(size!=null || end) {
-                            val next=size?.let {existing.copy(physicalWidthM=it.first,physicalHeightM=it.second)} ?: existing
-                            onWorkspace(latest.value.monitorPlaced(index,next,store,end))
+                    }
+                    val side=angularHand
+                    if(side!=null) {
+                        val head=viewer.get()
+                        val hand=handTracking.points[side]
+                        if(!file.grabToMove || !handInputNow.value || (side !in handTracking.pinched && SystemClock.uptimeMillis()-nativeGestureAt>=120L) || hand==null) {
+                            angularHand=null;angularPending=null;angularDrag.clear();nativeMove=false
+                            store.save(latest.value);onManipulate(false)
+                        } else if(head!=null) {
+                            angularDrag.moveHand(head,hand)?.let { position ->
+                                val existing=latest.value.monitorAt(index) ?: return@let
+                                val next=existing.copy(pose=Pose(position,facingMagnifierRotation(position,head,file.layoutOrigin?.rotation ?: head.rotation)),viewCenterU=.5f,viewCenterV=.5f)
+                                onWorkspace(latest.value.monitorPlaced(index,next,store,false))
+                            }
                         }
-                    },onMove={ phase,pose ->
-                        if(!handInputNow.value || hands.engaged) { nativeMove=false; return@update }
-                        val sample=pose.toWorkspacePose()
-                        val before=moveBefore
-                        moveBefore=sample
-                        if(phase==SystemMovePhase.START) { if(hands.busy) hands.cancel();nativeGestureAt=SystemClock.uptimeMillis();nativeMove=true;onManipulate(true);return@update }
-                        if(!nativeMove) return@update
-                        val existing=latest.value.monitorAt(index) ?: return@update
-                        val safe=before!=null && distance(before.position,sample.position)<=.25f && kotlin.math.abs(dot4(before.rotation,sample.rotation))>=.9f
-                        val next=if(safe) existing.copy(pose=nativeRelativePose(before!!,sample,existing.pose)) else existing
-                        val end=phase==SystemMovePhase.END
-                        onWorkspace(latest.value.monitorPlaced(index,next,store,end))
-                        if(end) { nativeMove=false;moveBefore=null;nativeGeometryPending=true;onManipulate(false) }
-                    })
+                    }
                     val handleEntity=warp.displayEntity
-                    if(handleEntity!=null && !hands.engaged && handInputNow.value) {
+                    if(handleEntity!=null && file.grabToMove && !hands.engaged && handInputNow.value) {
                         cornerHandles.update(current,handleEntity,screen.physicalWidthM,screen.physicalHeightM,handTracking.unitsPerMeter,ViewLayers.DesktopDistanceM,handTracking,pointerControl.aimedAt(index)) { active,factor ->
                             if(!handInputNow.value || hands.engaged) { nativeResize=false; return@update }
                             val existing=latest.value.monitorAt(index) ?: return@update
@@ -267,21 +281,26 @@ internal fun DeskContent(
                                 onWorkspace(latest.value.monitorPlaced(index,next,store,!active))
                             }
                         }
-                    } else cornerHandles.cancel()
-                    pointerControl.nativeManipulation(index,systemControls.isManipulating)
+                    } else {
+                        cornerHandles.cancel()
+                        if(nativeResize){nativeResize=false;onManipulate(false)}
+                    }
+                    pointerControl.nativeManipulation(index,nativeMove || nativeResize)
                     pointerControl.meshes[index] = warp.mesh
                     pointerControl.qualityReferences[index]=warp.gazeReference
                     connection.projection(index,null)
                     warp.outputSurface?.let { display ->
                         if (videoSurface.get() !== display) {
                             warp.coordinateParent?.let(onDeskRoot)
-                videoSurface.set(display)
+                            videoSurface.set(display)
                             connection.attachSurface(index, display)
                         }
                     }
+                    if(outputResizePending){connection.refreshOutput(index);outputResizePending=false}
+                    warp.syncCurvedInput(current)
                 } catch (failure: Exception) {
                     Log.e("Floatdesk", "Could not update spherical monitor", failure)
-                    nativeMove=false;nativeResize=false;systemControls.close()
+                    nativeMove=false;nativeResize=false
                     pointerControl.nativeManipulation(index,false);onManipulate(false)
                     delay(1000)
                 }
@@ -314,10 +333,28 @@ internal fun DeskContent(
                 object : InteractionPolicy {
                     override val isEnabled: Boolean = true
                     override fun onInputEvent(event: SpatialInputEvent) {
-                        if(!handInputNow.value || nativeResize || nativeMove) return // The explicit handle owns this sequence.
+                        if(!handInputNow.value || connection.thermalPaused.value || nativeResize || nativeMove) return // The explicit handle owns this sequence.
                         if (event.action == InputEvent.Action.CANCEL && frozenMonitor != null && hands.engaged) return
                         val file = latest.value
                         val existing = file.monitorAt(index) ?: return
+                        if(file.grabToMove && event.action==InputEvent.Action.DOWN) {
+                            val local=event.hitPosition?.let { eventMeters(it,pixelDensity) } ?: return
+                            val side=event.pointerType.toString().takeIf{it=="LEFT" || it=="RIGHT"}
+                                ?: handTracking.pinched.singleOrNull()
+                            val hand=side?.let{handTracking.points[it]}
+                            val head=viewer.get() ?: return
+                            if(hand==null){
+                                angularPending=local;nativeMove=true;nativeGestureAt=SystemClock.uptimeMillis();onManipulate(true)
+                                return
+                            }
+                            val contact=transformPoint(existing.pose,local)
+                            val pane=MagnifiedWindow(0,existing.pose,existing.physicalWidthM,existing.physicalHeightM,
+                                existing.pixelWidth,existing.pixelHeight,units=handTracking.unitsPerMeter)
+                            angularDrag.begin(pane,head,head.position,subtract(contact,head.position),contact,hand)
+                            angularHand=side;nativeMove=true;nativeGestureAt=SystemClock.uptimeMillis();onManipulate(true)
+                            return
+                        }
+                        if(!file.freeManipulation)return
                         val wasBusy = hands.busy
                         if (event.action == InputEvent.Action.DOWN || event.action == InputEvent.Action.UP || event.action == InputEvent.Action.CANCEL) {
                             Log.i("Floatdesk", "monitor input index=$index side=${event.pointerType} action=${event.action} hit=${event.hitPosition} busy=${hands.busy}")
@@ -326,9 +363,7 @@ internal fun DeskContent(
                         // raw perception-space hit; do not localize it again through ActivitySpace.
                         val next = hands.onEvent(event, existing, pixelDensity, handTracking, warp.mesh)
                         if (hands.blocksNative) nativeResize = false
-                        if (wasBusy != hands.busy) onManipulate(hands.busy)
-                        if (next == null) return
-                        onWorkspace(
+                        if (next != null) onWorkspace(
                             file.monitorPlaced(
                                 index,
                                 next,
@@ -336,6 +371,7 @@ internal fun DeskContent(
                                 event.action == InputEvent.Action.UP || event.action == InputEvent.Action.CANCEL,
                             ),
                         )
+                        if (wasBusy != hands.busy) onManipulate(hands.busy)
                     }
                 }
             }
@@ -352,17 +388,17 @@ internal fun DeskContent(
         ) {
             onSurfaceCreated { surface ->
                 val current = session ?: return@onSurfaceCreated
-                val display = warp.attach(current, surface, latest.value.monitorAt(index) ?: placement, pixelDensity, inputPolicy::onInputEvent) { side, point, flat, width, height ->
+                val display = warp.attach(current, surface, latest.value.monitorAt(index) ?: placement, pixelDensity, inputPolicy::onInputEvent,onHover={ side, point, flat, width, height ->
                     pointerControl.hover(index,side,point,flat,width,height,SystemClock.uptimeMillis())
-                }
+                },forwardGaze={latest.value.grabToMove})
                 warp.coordinateParent?.let(onDeskRoot)
                 videoSurface.set(display)
                 warp.setVisible(!controlsOpenNow.value)
                 connection.attachSurface(index, display)
             }
             onSurfaceDestroyed {
-                systemControls.close();cornerHandles.cancel()
-                nativeMove=false;nativeResize=false;moveBefore=null;nativeGeometryPending=false
+                cornerHandles.cancel()
+                nativeMove=false;nativeResize=false;angularHand=null;angularPending=null;angularDrag.clear();nativeGeometryPending=false
                 onManipulate(false)
                 val previousSurface=videoSurface.getAndSet(null)
                 connection.detachSurface(index,previousSurface)

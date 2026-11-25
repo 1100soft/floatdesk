@@ -25,6 +25,7 @@ private data class Pose(val position: FloatArray, val rotation: FloatArray = flo
 private data class MonitorPlacement(val pose: Pose, val physicalWidthM: Float = 0.8f, val physicalHeightM: Float = 0.45f)
 private data class WorkspaceFile(val activeLayout: String="Desk",val layouts: Map<String,List<MonitorPlacement>> = emptyMap())
 private data class Vector3(val x: Float, val y: Float, val z: Float)
+private data class VideoCutout(val planes: List<List<Float>>)
 private class PixelDensity { fun convertPixelsToMeters(x: Float) = x / 1000f }
 private class InputEvent { enum class Action { DOWN, MOVE, UP, CANCEL }; enum class Source { HANDS, GAZE_AND_GESTURE } }
 private data class SpatialInputEvent(val pointerType: String, val action: InputEvent.Action, val hitPosition: Vector3?, val source: InputEvent.Source = InputEvent.Source.HANDS)
@@ -410,28 +411,28 @@ fun main() {
     check(distance(centeredSphere.project(floatArrayOf(.4f,0f,0f)),floatArrayOf(.4f,0f,0f)) > .01f)
     check(distance(centeredSphere.project(floatArrayOf(0f,.25f,0f)),floatArrayOf(0f,.25f,0f)) > .01f)
     val panel = PalmPanelState("LEFT",Pose(floatArrayOf(0f,0f,0f)))
-    // Main page: 3 x 2 window-menu cells (0.189 m x 0.128 m); quarter points map to u=v=0.25.
+    // Main page: 3 columns and 3 rows (0.189 m square); quarter points map to u=v=0.25.
     val qx=-PalmMenuLayout.widthM/4; val qy=PalmMenuLayout.heightM(PalmPage.MAIN)/4
     val panelRay=palmRayPoint(panel,floatArrayOf(qx,qy,1f),floatArrayOf(0f,0f,-1f))!!
     check(kotlin.math.abs(panelRay[0]-.25f)<.00001f && kotlin.math.abs(panelRay[1]-.25f)<.00001f)
     check(palmRayPoint(panel,floatArrayOf(0f,0f,-1f),floatArrayOf(0f,0f,1f))==null)
     val scaledRay=palmRayPoint(panel.copy(unitsPerMeter=5f),floatArrayOf(qx*5,qy*5,1f),floatArrayOf(0f,0f,-1f))!!
     check(kotlin.math.abs(scaledRay[0]-.25f)<.00001f)
-    val pc=.061f; val pr=.0305f
+    val pc=.061f
     val poke = PalmPoke()
-    check(poke.update(panel,floatArrayOf(pc,pr,.04f)) == null)
-    check(poke.update(panel,floatArrayOf(pc,pr,-.02f)) == PalmAction.FOLLOW)
-    check(poke.update(panel,floatArrayOf(pc,pr,-.01f)) == null)
+    check(poke.update(panel,floatArrayOf(0f,pc,.04f)) == null)
+    check(poke.update(panel,floatArrayOf(0f,pc,-.02f)) == PalmAction.FOLLOW)
+    check(poke.update(panel,floatArrayOf(0f,pc,-.01f)) == null)
     check(poke.update(panel,null) == null)
     val scaledPanel=panel.copy(unitsPerMeter=5f)
-    check(poke.update(scaledPanel,floatArrayOf(pc*5,pr*5,.2f)) == null)
-    check(poke.update(scaledPanel,floatArrayOf(pc*5,pr*5,-.1f)) == PalmAction.FOLLOW)
+    check(poke.update(scaledPanel,floatArrayOf(0f,pc*5,.2f)) == null)
+    check(poke.update(scaledPanel,floatArrayOf(0f,pc*5,-.1f)) == PalmAction.FOLLOW)
     val more=panel.copy(page=PalmPage.MORE)
-    val pokes=listOf(Triple(panel,floatArrayOf(-pc,pr),PalmAction.SPACE),Triple(panel,floatArrayOf(0f,pr),PalmAction.RESET),
-        Triple(panel,floatArrayOf(-pc,-pr),PalmAction.WARP),Triple(panel,floatArrayOf(0f,-pr),PalmAction.MODE),Triple(panel,floatArrayOf(pc,-pr),PalmAction.MORE),
-        Triple(panel,floatArrayOf(-.0305f,pr),null), // gap between cells
-        Triple(more,floatArrayOf(-pc,pc),PalmAction.DIAGNOSTICS),Triple(more,floatArrayOf(pc,pc),PalmAction.GESTURES),Triple(more,floatArrayOf(pc,0f),PalmAction.MAGNIFIER),
-        Triple(more,floatArrayOf(-pc,-pc),PalmAction.MOUSE_SPACES),Triple(more,floatArrayOf(0f,-pc),PalmAction.BACK),Triple(more,floatArrayOf(pc,-pc),null))
+    val pokes=listOf(Triple(panel,floatArrayOf(-pc,pc),PalmAction.LAYOUT),Triple(panel,floatArrayOf(0f,pc),PalmAction.FOLLOW),
+        Triple(panel,floatArrayOf(pc,pc),PalmAction.RESET),Triple(panel,floatArrayOf(0f,0f),PalmAction.MODE),Triple(panel,floatArrayOf(0f,-pc),PalmAction.MORE),
+        Triple(panel,floatArrayOf(-.0305f,pc),null), // gap between cells
+        Triple(more,floatArrayOf(-pc,pc),PalmAction.GAZE_FOCUS),Triple(more,floatArrayOf(0f,pc),PalmAction.MAGNIFIER),Triple(more,floatArrayOf(pc,0f),PalmAction.SEARCH),
+        Triple(more,floatArrayOf(-pc,0f),PalmAction.MOUSE_SPACES),Triple(more,floatArrayOf(-pc,-pc),PalmAction.BACK),Triple(more,floatArrayOf(pc,-pc),null))
     for((page,point,expected) in pokes) {
         poke.clear()
         check(poke.update(page,floatArrayOf(point[0],point[1],.04f)) == null)

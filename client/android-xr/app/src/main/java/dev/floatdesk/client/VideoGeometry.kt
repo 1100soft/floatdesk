@@ -13,11 +13,53 @@ internal fun videoCoverageIsFull(rects:FloatArray,spacing:Float):Boolean {
     }
     return true
 }
-internal fun clippedVideoGeometry(width:Float,height:Float,mesh:MonitorMesh?,rects:FloatArray,spacing:Float):VideoGeometry {
+/** A convex silhouette extruded from the viewing eye. Points are in desktop local space. */
+internal data class VideoCutout(val planes:List<List<Float>>)
+
+internal fun foregroundCutout(eye:FloatArray,outline:List<FloatArray>):VideoCutout? {
+    if(outline.size<3)return null
+    fun cross(a:FloatArray,b:FloatArray)=floatArrayOf(a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0])
+    fun dot(a:FloatArray,b:FloatArray)=a[0]*b[0]+a[1]*b[1]+a[2]*b[2]
+    fun unit(v:FloatArray):FloatArray?{
+        val length=kotlin.math.sqrt(dot(v,v))
+        return if(length>.000001f && length.isFinite())FloatArray(3){v[it]/length}else null
+    }
+    val rays=outline.map{point->FloatArray(3){point[it]-eye[it]}}
+    val forward=unit(FloatArray(3){axis->rays.sumOf{it[axis].toDouble()}.toFloat()}) ?: return null
+    val side=unit(cross(if(kotlin.math.abs(forward[1])<.9f)floatArrayOf(0f,1f,0f) else floatArrayOf(1f,0f,0f),forward)) ?: return null
+    val up=cross(forward,side)
+    val points=rays.map{ray->
+        val z=dot(forward,ray)
+        if(z<=.00001f)return null
+        dot(side,ray)/z to dot(up,ray)/z
+    }.distinct().sortedWith(compareBy({it.first},{it.second}))
+    fun chain(sequence:List<Pair<Float,Float>>):List<Pair<Float,Float>> {
+        val result=mutableListOf<Pair<Float,Float>>()
+        for(p in sequence){
+            while(result.size>=2){
+                val a=result[result.lastIndex-1];val b=result.last()
+                if((b.first-a.first)*(p.second-a.second)>(b.second-a.second)*(p.first-a.first))break
+                result.removeAt(result.lastIndex)
+            }
+            result+=p
+        }
+        return result.dropLast(1)
+    }
+    val hull=chain(points)+chain(points.asReversed())
+    if(hull.size<3)return null
+    fun ray(p:Pair<Float,Float>)=FloatArray(3){forward[it]+side[it]*p.first+up[it]*p.second}
+    val planes=hull.indices.map{index->
+        val n=unit(cross(ray(hull[index]),ray(hull[(index+1)%hull.size]))) ?: return null
+        listOf(n[0],n[1],n[2],-dot(n,eye))
+    }
+    return VideoCutout(planes)
+}
+
+internal fun clippedVideoGeometry(width:Float,height:Float,mesh:MonitorMesh?,rects:FloatArray,spacing:Float,cutouts:List<VideoCutout> = emptyList()):VideoGeometry {
     val xyz=mesh?.positions ?: floatArrayOf(-width/2,height/2,0f,width/2,height/2,0f,-width/2,-height/2,0f,width/2,-height/2,0f)
     val uv=mesh?.texCoords ?: floatArrayOf(0f,0f,1f,0f,0f,1f,1f,1f)
     val indices=mesh?.indices ?: intArrayOf(0,2,1,1,2,3)
-    if(videoCoverageIsFull(rects,spacing)) return VideoGeometry(xyz,FloatArray(uv.size){if(it%2==1)1f-uv[it] else uv[it]},indices)
+    if(cutouts.isEmpty() && videoCoverageIsFull(rects,spacing)) return VideoGeometry(xyz,FloatArray(uv.size){if(it%2==1)1f-uv[it] else uv[it]},indices)
     data class Vertex(val x:Float,val y:Float,val z:Float,val u:Float,val v:Float)
     fun vertex(i:Int)=Vertex(xyz[i*3],xyz[i*3+1],xyz[i*3+2],uv[i*2],uv[i*2+1])
     val positions=ArrayList<Float>();val tex=ArrayList<Float>()
@@ -42,7 +84,40 @@ internal fun clippedVideoGeometry(width:Float,height:Float,mesh:MonitorMesh?,rec
                 }
                 polygon=next
             }
-            for(i in 1 until polygon.size-1)for(v in listOf(polygon[0],polygon[i],polygon[i+1])) {
+            fun distance(v:Vertex,plane:List<Float>)=plane[0]*v.x+plane[1]*v.y+plane[2]*v.z+plane[3]
+            fun split(vertices:List<Vertex>,plane:List<Float>):Pair<List<Vertex>,List<Vertex>> {
+                val inside=mutableListOf<Vertex>();val outside=mutableListOf<Vertex>()
+                var a=vertices.last();var da=distance(a,plane)
+                for(b in vertices){
+                    val db=distance(b,plane)
+                    if((da>=0f)!=(db>=0f)){
+                        val f=da/(da-db)
+                        val edge=Vertex(a.x+(b.x-a.x)*f,a.y+(b.y-a.y)*f,a.z+(b.z-a.z)*f,a.u+(b.u-a.u)*f,a.v+(b.v-a.v)*f)
+                        inside+=edge;outside+=edge
+                    }
+                    if(db>=0f)inside+=b else outside+=b
+                    a=b;da=db
+                }
+                return inside to outside
+            }
+            var pieces=listOf(polygon).filter{it.size>=3}
+            for(mask in cutouts){
+                pieces=pieces.flatMap{piece->
+                    if(mask.planes.any{plane->piece.all{distance(it,plane)<0f}})return@flatMap listOf(piece)
+                    if(mask.planes.all{plane->piece.all{distance(it,plane)>=0f}})return@flatMap emptyList()
+                    var inside=piece
+                    val outside=mutableListOf<List<Vertex>>()
+                    // If a plane rejects the whole polygon, the original needs no splits.
+                    for(plane in mask.planes){
+                        if(inside.size<3)break
+                        val (next,rest)=split(inside,plane)
+                        if(rest.size>=3)outside+=rest
+                        inside=next
+                    }
+                    if(inside.size<3)listOf(piece) else outside
+                }
+            }
+            for(piece in pieces)for(i in 1 until piece.size-1)for(v in listOf(piece[0],piece[i],piece[i+1])){
                 positions.add(v.x);positions.add(v.y);positions.add(v.z);tex.add(v.u);tex.add(1f-v.v)
             }
         }

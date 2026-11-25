@@ -24,6 +24,7 @@ class Handler {
  }
 }
 internal class Connection {
+ var lastAcceptedHello=1L
  val main=Handler();val outgoing:Handler?=main
  val monitorPending=java.util.concurrent.atomic.AtomicInteger()
  val monitorSequence=java.util.concurrent.atomic.AtomicInteger()
@@ -35,6 +36,13 @@ internal class Connection {
 '''+method+'''
 }
 fun main() {
+ val disconnected=Connection()
+ disconnected.requestDisplays(1)
+ disconnected.monitorPending.set(0)
+ disconnected.lastAcceptedHello=0
+ disconnected.requestDisplays(1)
+ disconnected.main.advance(30000)
+ check(disconnected.sent.isEmpty()) // Drop both a queued mutation and one initiated offline.
  val c=Connection()
  c.requestDisplays(1);c.main.advance(24000)
  check(c.displayBusy.value && c.sent.size==9)

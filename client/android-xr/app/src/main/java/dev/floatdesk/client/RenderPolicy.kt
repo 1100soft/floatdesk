@@ -1,8 +1,8 @@
 package dev.floatdesk.client
 
-/** Temporary conservative backend while native custom-mesh material faults are investigated. */
+/** Shared native surface and capture limits. */
 internal object RenderPolicy {
-    const val CustomMeshes=false
+    const val CustomMeshes=true
     const val SphericalDesktop=true
     const val GrabGuides=true
     const val CursorTopology=true

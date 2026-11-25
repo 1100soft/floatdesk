@@ -359,11 +359,7 @@ pub fn system_catalogue() -> Result<Vec<FocusWindow>> {
                 return Ok(None);
             }
             let kinds = values(&link, id, types, AtomEnum::ATOM)?;
-            if kinds.contains(&desktop)
-                || kinds.contains(&tooltip)
-                || kinds.contains(&notification)
-                || kinds.contains(&osd)
-            {
+            if kinds.contains(&desktop) || kinds.contains(&notification) || kinds.contains(&osd) {
                 return Ok(None);
             }
             let wmclass = link
@@ -385,6 +381,11 @@ pub fn system_catalogue() -> Result<Vec<FocusWindow>> {
                 .map_err(Error::x11)?
                 .reply()
                 .map_err(Error::x11)?;
+            // Plasma task thumbnails are tooltip windows. Leave small textual hints in
+            // the desktop image and mirror the substantial previews next to their panel.
+            if kinds.contains(&tooltip) && (!plasma || g.width < 64 || g.height < 64) {
+                return Ok(None);
+            }
             let root = &link.conn.setup().roots[link.screen];
             if g.width <= 1
                 || g.height <= 1
@@ -826,6 +827,103 @@ pub fn occluders(link: &X11Link, client: u32) -> Result<Vec<[i32; 4]>> {
     Ok(result)
 }
 
+fn kwin(link: &X11Link) -> Result<bool> {
+    let root = link.root;
+    let check = atom(link, b"_NET_SUPPORTING_WM_CHECK")?;
+    let Some(manager) = values(link, root, check, AtomEnum::WINDOW)?
+        .first()
+        .copied()
+    else {
+        return Ok(false);
+    };
+    let name = link
+        .conn
+        .get_property(
+            false,
+            manager,
+            atom(link, b"_NET_WM_NAME")?,
+            atom(link, b"UTF8_STRING")?,
+            0,
+            32,
+        )
+        .map_err(Error::x11)?
+        .reply()
+        .map_err(Error::x11)?;
+    Ok(name.value.starts_with(b"KWin"))
+}
+
+fn run_kwin_script(source: &str) -> Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let plugin = format!(
+        "floatdesk-geometry-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    );
+    let directory = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let path = directory.join(format!("{plugin}.js"));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)?;
+    let call = |object: &str, method: &str, args: &[&std::ffi::OsStr]| -> Result<String> {
+        let output = std::process::Command::new("gdbus")
+            .args([
+                "call",
+                "--session",
+                "--timeout=1",
+                "--dest",
+                "org.kde.KWin",
+                "--object-path",
+                object,
+                "--method",
+                method,
+            ])
+            .args(args)
+            .output()?;
+        if !output.status.success() {
+            return Err(Error::Msg(
+                String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    };
+    let result = (|| {
+        file.write_all(source.as_bytes())?;
+        let output = call(
+            "/Scripting",
+            "org.kde.kwin.Scripting.loadScript",
+            &[path.as_os_str(), plugin.as_ref()],
+        )?;
+        let id = output
+            .trim()
+            .trim_start_matches('(')
+            .split(',')
+            .next()
+            .and_then(|v| v.parse::<u32>().ok())
+            .ok_or_else(|| Error::Msg("KWin did not load the placement script".into()))?;
+        let result = call(
+            &format!("/Scripting/Script{id}"),
+            "org.kde.kwin.Script.run",
+            &[],
+        )
+        .or_else(|_| call(&format!("/{id}"), "org.kde.kwin.Script.run", &[]));
+        let _ = call(
+            "/Scripting",
+            "org.kde.kwin.Scripting.unloadScript",
+            &[plugin.as_ref()],
+        );
+        result.map(|_| ())
+    })();
+    let _ = std::fs::remove_file(path);
+    result
+}
+
 /// Apply application-selected geometry/actions; never enter the WM's interactive drag.
 pub fn window_action(value: &serde_json::Value) -> Result<()> {
     let id = value["windowId"]
@@ -906,6 +1004,16 @@ pub fn window_action(value: &serde_json::Value) -> Result<()> {
                     ),
                 )
                 .map_err(Error::x11)?;
+            if kwin(&link).unwrap_or(false) {
+                // KWin ignores EWMH geometry while a window is quick-tiled.
+                // Clear its tile without a native drag, then apply the release geometry below.
+                let script = format!(
+                    "const w = workspace.getClient({id}); if (w && w.tile) {{ w.tile = null; }}"
+                );
+                if let Err(error) = run_kwin_script(&script) {
+                    tracing::debug!(%error, "KWin tile reset unavailable; trying EWMH geometry");
+                }
+            }
             let flags = 10
                 | (2 << 12)
                 | (1 << 8)
@@ -937,6 +1045,68 @@ mod tests {
     use super::*;
     use x11rb::protocol::xproto::{CreateWindowAux, PropMode, WindowClass};
     use x11rb::wrapper::ConnectionExt as _;
+    #[test]
+    #[ignore = "private Xvfb/KWin only"]
+    fn taskbar_preview_private_kwin() {
+        assert_eq!(
+            std::env::var("FLOATDESK_SYNTHETIC_DISPLAY").as_deref(),
+            Ok("1")
+        );
+        let link = X11Link::open().unwrap();
+        let create_tooltip = |class: &[u8], width, height| {
+            let id = link.conn.generate_id().unwrap();
+            link.conn
+                .create_window(
+                    x11rb::COPY_DEPTH_FROM_PARENT,
+                    id,
+                    link.root,
+                    40,
+                    40,
+                    width,
+                    height,
+                    0,
+                    WindowClass::INPUT_OUTPUT,
+                    0,
+                    &CreateWindowAux::new().override_redirect(1),
+                )
+                .unwrap()
+                .check()
+                .unwrap();
+            link.conn
+                .change_property8(
+                    PropMode::REPLACE,
+                    id,
+                    atom(&link, b"WM_CLASS").unwrap(),
+                    AtomEnum::STRING,
+                    class,
+                )
+                .unwrap()
+                .check()
+                .unwrap();
+            link.conn
+                .change_property32(
+                    PropMode::REPLACE,
+                    id,
+                    atom(&link, b"_NET_WM_WINDOW_TYPE").unwrap(),
+                    AtomEnum::ATOM,
+                    &[atom(&link, b"_NET_WM_WINDOW_TYPE_TOOLTIP").unwrap()],
+                )
+                .unwrap()
+                .check()
+                .unwrap();
+            link.conn.map_window(id).unwrap().check().unwrap();
+            id
+        };
+        let preview = create_tooltip(b"plasmashell\0plasmashell\0", 280, 160);
+        let text = create_tooltip(b"plasmashell\0plasmashell\0", 120, 28);
+        let unrelated = create_tooltip(b"unrelated\0unrelated\0", 280, 160);
+        let catalogue = system_catalogue().unwrap();
+        assert!(catalogue
+            .iter()
+            .any(|w| w.id == preview && !w.panel && w.width == 280 && w.height == 160));
+        assert!(!catalogue.iter().any(|w| w.id == text || w.id == unrelated));
+    }
+
     #[test]
     #[ignore = "private Xvfb/KWin only"]
     fn window_actions_private_kwin() {
@@ -1062,6 +1232,25 @@ mod tests {
             (i32::from(p.dst_x) - 190).abs() <= 3 && (i32::from(p.dst_y) - 140).abs() <= 3,
             "{p:?}"
         );
+        run_kwin_script(&format!("workspace.activeWindow = workspace.getClient({id}); workspace.slotWindowQuickTileLeft();")).unwrap();
+        wait(&|| link.conn.get_geometry(id).unwrap().reply().unwrap().width > 500);
+        window_action(&serde_json::json!({"windowId":id,"action":"geometry","x":270,"y":170,"width":330,"height":240})).unwrap();
+        wait(&|| {
+            let g = link.conn.get_geometry(id).unwrap().reply().unwrap();
+            g.width == 330 && g.height == 240
+        });
+        run_kwin_script("workspace.slotWindowQuickTileRight();").unwrap();
+        wait(&|| link.conn.get_geometry(id).unwrap().reply().unwrap().width > 500);
+        window_action(&serde_json::json!({"windowId":id,"action":"move","x":160,"y":120})).unwrap();
+        wait(&|| {
+            let p = link
+                .conn
+                .translate_coordinates(id, link.root, 0, 0)
+                .unwrap()
+                .reply()
+                .unwrap();
+            (i32::from(p.dst_x) - 160).abs() <= 3 && (i32::from(p.dst_y) - 120).abs() <= 3
+        });
         window_action(&serde_json::json!({"windowId":id,"action":"maximize"})).unwrap();
         let maximized = atom(&link, b"_NET_WM_STATE_MAXIMIZED_HORZ").unwrap();
         let state = atom(&link, b"_NET_WM_STATE").unwrap();

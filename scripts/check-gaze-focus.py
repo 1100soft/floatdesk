@@ -53,7 +53,15 @@ with tempfile.TemporaryDirectory(prefix="floatdesk-gaze-kwin-") as tmp:
             )
             env.pop("XAUTHORITY", None)
             wm = subprocess.Popen(
-                ["/usr/bin/dbus-run-session", "--", "kwin_x11", "--replace"],
+                [
+                    "/usr/bin/dbus-run-session",
+                    "--",
+                    "sh",
+                    "-c",
+                    'printf "%s" "$DBUS_SESSION_BUS_ADDRESS" > "$1"; exec kwin_x11 --replace',
+                    "kwin-test",
+                    str(p / "bus"),
+                ],
                 env=env,
                 stdout=log,
                 stderr=log,
@@ -73,6 +81,7 @@ with tempfile.TemporaryDirectory(prefix="floatdesk-gaze-kwin-") as tmp:
                 time.sleep(0.05)
             else:
                 raise RuntimeError("KWin did not manage private display")
+            env["DBUS_SESSION_BUS_ADDRESS"] = (p / "bus").read_text()
             result = subprocess.run(
                 [
                     "cargo",

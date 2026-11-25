@@ -11,6 +11,27 @@ source+='\n'+'\n'.join(line for line in (root/'workspace/WorkspacePlacement.kt')
 code=source+'''
 fun main() {
  check(ViewLayers.DiagnosticsDistanceM<ViewLayers.ControlsDistanceM && ViewLayers.ControlsDistanceM<ViewLayers.DesktopDistanceM)
+ val eye=floatArrayOf(0f,0f,.35f)
+ val enlarged=MonitorMesh(24f,14f,eye,columns=32,rows=20,focus=floatArrayOf(0f,0f),minimumGeometryRadius=1.5f)
+ val originalSphere=MonitorMesh(24f,14f,eye,columns=32,rows=20,focus=floatArrayOf(0f,0f))
+ check(enlarged.innerRadius>=1.5f-.00001f)
+ check(enlarged.texCoords.contentEquals(originalSphere.texCoords))
+ for(i in enlarged.positions.indices step 3){
+    val scale=enlarged.geometryRadius/originalSphere.radius
+    for(axis in 0..2)check(kotlin.math.abs((enlarged.positions[i+axis]-eye[axis])/scale-
+        (originalSphere.positions[i+axis]-eye[axis]))<.00001f)
+ }
+ val opening=foregroundCutout(floatArrayOf(0f,0f,2f),listOf(
+    floatArrayOf(-.25f,-.25f,1f),floatArrayOf(.25f,-.25f,1f),
+    floatArrayOf(.25f,.25f,1f),floatArrayOf(-.25f,.25f,1f)))!!
+ val remaining=clippedVideoGeometry(2f,2f,null,floatArrayOf(0f,0f,1f,1f),0f,listOf(opening))
+ var remainingArea=0f
+ for(i in remaining.indices.indices step 3){
+    val a=remaining.indices[i]*3;val b=remaining.indices[i+1]*3;val c=remaining.indices[i+2]*3
+    val p=remaining.positions
+    remainingArea+=kotlin.math.abs((p[b]-p[a])*(p[c+1]-p[a+1])-(p[b+1]-p[a+1])*(p[c]-p[a]))*.5f
+ }
+ check(kotlin.math.abs(remainingArea-3f)<.001f)
  val viewer0=Pose()
  val depthBase=MonitorPlacement("depth","existing-0",Pose(floatArrayOf(.3f,.2f,-2.4f)),2f,1f,0f,5120,2560,60)
  val locked=fixedDesktopDepth(depthBase,viewer0,1f)
@@ -96,13 +117,59 @@ fun main() {
  val fallback=MonitorPlacement("fallback","existing-0",Pose(),1f,1f,0f,1000,1000,60)
  check(fitDesktopInView(listOf(fallback),Pose(),Float.NaN,0f,Float.NaN,true).single().physicalWidthM.isFinite())
  val original=MonitorPlacement("a","existing-0",Pose(floatArrayOf(1f,0f,-2f)),1.2f,.8f,0f,1920,1080,60)
- val old=WorkspaceFile(layouts=mutableMapOf("Desk" to mutableListOf(original)),viewerReference=Pose())
+ val angular=WorkspaceFile(handMouse=true,grabToMove=true,freeManipulation=false)
+ check(!angular.handMouseActive && !angular.focusMode && !angular.windowGrabMode)
+ check(angular.copy(grabToMove=false).handMouseActive)
+ check(angular.copy(grabToMove=false,handMouse=false).focusMode)
+ val free=angular.copy(grabToMove=false,freeManipulation=true)
+ check(free.layoutModeActive && !free.handMouseActive && !free.focusMode && !free.windowGrabMode)
+
+ val old=WorkspaceFile(layoutOrigin=original.pose,layouts=mutableMapOf("Desk" to mutableListOf(original)),viewerReference=Pose())
  val turned=Pose(floatArrayOf(10f,2f,5f),floatArrayOf(0f,.70710677f,0f,.70710677f))
- val restored=old.restoreViewer(turned).layouts["Desk"]!!.single()
+ val restoredWorkspace=old.restoreViewer(turned)
+ val restored=restoredWorkspace.layouts["Desk"]!!.single()
+ check(restoredWorkspace.layoutOrigin!!.position.contentEquals(restored.pose.position))
  check(kotlin.math.abs(restored.pose.position[0]-8f)<.00001f)
  check(kotlin.math.abs(restored.pose.position[1]-2f)<.00001f)
  check(kotlin.math.abs(restored.pose.position[2]-4f)<.00001f)
  check(restored.physicalWidthM==original.physicalWidthM)
+ val scaled=old.copy(referenceUnitsPerMeter=2f).restoreViewer(Pose(),1f)
+ check(scaled.layouts["Desk"]!!.single().physicalWidthM==original.physicalWidthM*.5f)
+ check(scaled.layoutOrigin!!.position[2]==original.pose.position[2]*.5f)
+ val spread=FixedMagnifierPlacement("offscreen",Pose(floatArrayOf(8f,-7f,-2f)),3f,2f,true)
+ val placed=old.copy(fixedMagnifiers=listOf(spread),systemPanels=listOf(spread),referencePlacement=spread,
+     layoutOrigin=Pose(floatArrayOf(0f,0f,-2f)))
+ val target=Pose(floatArrayOf(0f,0f,-1.2f),floatArrayOf(0f,.70710677f,0f,.70710677f))
+ val reset=placed.moveLayoutOrigin(target)
+ check(reset.layoutOrigin===target)
+ val movedDesk=reset.layouts["Desk"]!!.single()
+ val offset=viewerInMonitor(movedDesk.pose.position,target.position,target.rotation)
+ check(kotlin.math.abs(offset[0]-1f)<.00001f && kotlin.math.abs(offset[2])<.00001f)
+ check(movedDesk.physicalWidthM==original.physicalWidthM)
+ val resized=reset.restoreDefaultDesktopSize(target,listOf(original.copy(physicalWidthM=.7f,physicalHeightM=.4f)))
+ val resetDesk=resized.layouts["Desk"]!!.single()
+ check(resetDesk.pose===movedDesk.pose && resetDesk.physicalWidthM==.7f && resetDesk.physicalHeightM==.4f)
+ val home=Pose(floatArrayOf(-.6f,.15f,-2f))
+ val zoomed=placed.copy(desktopHome=home,layouts=mutableMapOf("Desk" to mutableListOf(original.copy(viewCenterU=.9f))))
+ val centered=zoomed.moveLayoutOrigin(target)
+ val resetHome=centered.restoreDefaultDesktopSize(target,listOf(original)).layouts.getValue("Desk").single()
+ check(resetHome.pose===centered.desktopHome && resetHome.viewCenterU==.5f)
+ check(!resetHome.pose.position.contentEquals(centered.layouts.getValue("Desk").single().pose.position))
+
+
+ check(reset.fixedMagnifiers==placed.fixedMagnifiers && reset.systemPanels==placed.systemPanels && reset.referencePlacement==spread)
+ val rebased=placed.rebaseLayoutOrigin(target,1f)
+ check(rebased.layoutOrigin===target && rebased.layouts===placed.layouts && rebased.control===placed.control)
+ val roundTrip=rebased.rebaseLayoutOrigin(placed.layoutOrigin!!,1f).fixedMagnifiers.single()
+ check((0..2).all{kotlin.math.abs(roundTrip.pose.position[it]-spread.pose.position[it])<.00001f})
+ check(roundTrip.widthM==spread.widthM && roundTrip.heightM==spread.heightM)
+
+ val large=MonitorMesh(32f,18f,floatArrayOf(0f,0f,1.2f),columns=32,rows=20,focus=floatArrayOf(0f,0f))
+ check(large.innerRadius in 0f..large.radius)
+ for(i in large.indices.indices step 3){
+     val center=FloatArray(3){axis->(0..2).sumOf{large.positions[large.indices[i+it]*3+axis].toDouble()}.toFloat()/3f}
+     check(radius(FloatArray(3){center[it]-large.eye[it]})>=large.innerRadius-.00001f)
+ }
  val again=old.restoreViewer(turned).restoreViewer(Pose()).layouts["Desk"]!!.single()
  check((0..2).all {kotlin.math.abs(again.pose.position[it]-original.pose.position[it])<.00001f})
  check(old.copy(viewerReference=null).restoreViewer(turned).viewerReference===turned)

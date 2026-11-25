@@ -7,7 +7,7 @@ import tempfile
 
 folder = Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client'
 mesh = (folder/'MonitorMesh.kt').read_text().split('\n', 1)[1]+'\n'+(folder/'VideoGeometry.kt').read_text().split('\n',1)[1]
-mesh+='\n'+''.join('\n'.join(l for l in (folder/n).read_text().splitlines() if not l.startswith(('package ','import ','@android.annotation.SuppressLint')))+'\n' for n in ('BoundedHistory.kt','NativeSurfaceResources.kt'))
+mesh+='\n'+''.join('\n'.join(l for l in (folder/n).read_text().splitlines() if not l.startswith(('package ','import ','@android.annotation.SuppressLint')))+'\n' for n in ('BoundedHistory.kt','NativeSurfaceResources.kt','NativeNodeState.kt'))
 warp = (folder/'MonitorWarp.kt').read_text()
 warp = warp[warp.index('internal class MonitorWarp'):].replace('@SuppressLint("RestrictedApi")', '').replace('androidx.xr.runtime.math.IntSize2d','IntSize2d').replace('android.os.SystemClock','SystemClock')
 stubs = '''
@@ -26,6 +26,8 @@ internal object NativeMonitorInput {
 }
 internal data class Vector3(val x: Float, val y: Float, val z: Float) {
     val length get() = kotlin.math.sqrt(x*x+y*y+z*z)
+    operator fun times(scale: Float) = Vector3(x * scale, y * scale, z * scale)
+    companion object { val Zero = Vector3(0f,0f,0f) }
 }
 internal data class Quaternion(val x: Float=0f,val y: Float=0f,val z: Float=0f,val w: Float=1f)
 internal data class Pose(val translation: Vector3 = Vector3(0f,0f,0f),val rotation: Quaternion=Quaternion()) { fun compose(other:Pose)=Pose(Vector3(translation.x+other.translation.x,translation.y+other.translation.y,translation.z+other.translation.z),rotation) }
@@ -62,6 +64,7 @@ internal open class Entity {
     fun setPose(value: Pose) { pose = value }
     fun getScale(space: Space = Space.PARENT) = scale
     fun setScale(value: Float) { scale = value }
+    fun setScale(value: Vector3) { scale = value.x }
     fun transformVectorTo(v: Vector3,other: Entity) = v
     fun transformPoseTo(p: Pose, other: Entity): Pose {
         val a = p.translation; val b = other.getPose().translation
@@ -102,7 +105,7 @@ internal class SurfaceEntity(var shape: Shape): Entity() {
         class CustomMesh(val mesh: TriangleMesh, val rightEye: TriangleMesh? = null): Shape {val leftEye get()=mesh}
     }
     companion object {
-        fun create(session: Session, shape: Shape,pose: Pose=Pose(),parent: Entity?=null,superSampling: SuperSampling=SuperSampling.NONE) = SurfaceEntity(shape).also { it.setPose(pose); it.parent=parent; session.scene.entities.add(it) }
+        fun create(session: Session, shape: Shape,pose: Pose=Pose(),parent: Entity?=null,superSampling: SuperSampling=SuperSampling.NONE,mediaBlendingMode:MediaBlendingMode=MediaBlendingMode.TRANSPARENT) = SurfaceEntity(shape).also { it.mediaBlendingMode=mediaBlendingMode;it.setPose(pose); it.parent=parent; session.scene.entities.add(it) }
     }
 }
 '''
@@ -198,7 +201,9 @@ suspend fun main() {
     session.scene.activitySpace.setPose(Pose(Vector3(.3f,-.5f,1.2f)))
     val events = mutableListOf<SpatialInputEvent>()
     val hovering=mutableListOf<Pair<String,FloatArray?>>()
-    warp.attach(session,input.getSurface(),screen,PixelDensity(),onEvent={ events.add(it) },onHover={ side,point,flat,w,h -> hovering.add(side to flat) })
+    var oneHandLayout=false
+    warp.attach(session,input.getSurface(),screen,PixelDensity(),onEvent={ events.add(it) },
+        onHover={ side,point,flat,w,h -> hovering.add(side to flat) },forwardGaze={oneHandLayout})
     val component = input.component!!
     input.setScale(1.785f)
     val ip = input.getPose().translation
@@ -220,6 +225,13 @@ suspend fun main() {
     emit("DEFAULT",InputEvent.Action.DOWN,InputEvent.Source.GAZE_AND_GESTURE)
     emit("DEFAULT",InputEvent.Action.UP,InputEvent.Source.GAZE_AND_GESTURE)
     check(events.size==beforeGazeEvents) // Eye+hand selection cannot arm a custom monitor grab.
+    oneHandLayout=true
+    emit("DEFAULT",InputEvent.Action.DOWN,InputEvent.Source.GAZE_AND_GESTURE)
+    emit("DEFAULT",InputEvent.Action.UP,InputEvent.Source.GAZE_AND_GESTURE)
+    check(events.size==beforeGazeEvents+2)
+    events.subList(beforeGazeEvents,events.size).clear()
+    oneHandLayout=false
+
     check(input.pointer?.spatialPointerIcon==SpatialPointerIcon.NONE)
     component.listener(InputEvent(InputEvent.Action.CANCEL,InputEvent.Source.GAZE_AND_GESTURE,"DEFAULT",0,Vector3(0f,0f,0f),Vector3(0f,0f,0f),emptyList()))
     check(hovering.last().first=="GAZE" && hovering.last().second==null)
@@ -229,29 +241,29 @@ suspend fun main() {
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false)
     warp.syncCurvedInput(session)
     val patch=CurvedMonitorInput.last!!
-    val retainedEntity=warp.displayEntity!!
-    val retained=warp.outputSurface
+    val retained=warp.outputSurface!!
+    val retainedEntity=session.scene.entities.single { it.getSurface()===retained }
     val entityCount=session.scene.entities.size
     repeat(50){
         warp.setVisible(false);warp.syncCurvedInput(session)
         check(!retainedEntity.enabled && !input.enabled)
         warp.setVisible(true);warp.syncCurvedInput(session)
-        check(retainedEntity.enabled && warp.outputSurface===retained)
+        check(retainedEntity.enabled && !input.enabled && warp.outputSurface===retained)
     }
     check(session.scene.entities.size==entityCount)
-    val fixedMesh=warp.mesh;val fixedShape=warp.displayEntity!!.shape
+    val fixedMesh=warp.mesh;val fixedShape=retainedEntity.shape
     SystemClock.now+=1000L
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false,viewDirection=floatArrayOf(.2f,0f,-1f))
     warp.syncCurvedInput(session)
-    check(warp.mesh!==fixedMesh && warp.displayEntity!!.shape!==fixedShape && CurvedMonitorInput.last===patch && patch.mesh===warp.mesh)
+    check(warp.mesh!==fixedMesh && retainedEntity.shape!==fixedShape && CurvedMonitorInput.last===patch && patch.mesh===warp.mesh)
     check(warp.mesh!!.focus!=null) // View correction uses GPU pixels, not native geometry/model churn.
     val beforeCorrection=warp.mesh
     SystemClock.now+=1000L
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false,viewDirection=floatArrayOf(-.2f,0f,-1f),freezeProjection=false)
     warp.syncCurvedInput(session)
     check(warp.mesh!==beforeCorrection && CurvedMonitorInput.last===patch && patch.mesh===warp.mesh)
-    check(patch.entity.parent === session.scene.entities.last())
-    check(input.primaryAlphaMaskTexture != null && input.component == null && !input.enabled)
+    check(patch.entity.parent === root)
+    check(input.primaryAlphaMaskTexture == null && input.component == null && !input.enabled)
     check(session.scene.entities.last().enabled)
     val offAxis=MonitorMesh(1.4094946f,.8809341f,floatArrayOf(-.3641987f,-.037884656f,1.4811001f))
     check(offAxis.project(floatArrayOf(-.25f,0f,0f))[2]<0f) // Previously occluded left-middle area lies behind the old flat owner.
@@ -265,7 +277,7 @@ suspend fun main() {
     SystemClock.now+=1000L
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false,viewDirection=floatArrayOf(.2f,0f,-1f))
     warp.syncCurvedInput(session)
-    check(CurvedMonitorInput.last===patch && patch.entity.disposeCount==0 && patch.entity.enabled && patch.entity.parent===warp.displayEntity)
+    check(CurvedMonitorInput.last===patch && patch.entity.disposeCount==0 && patch.entity.enabled && patch.entity.parent===root)
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,false,false)
     warp.syncCurvedInput(session)
     warp.close(); check(input.component == null && input.parent === root && input.enabled)
@@ -312,14 +324,15 @@ suspend fun main() {
 
     warp.update(session,root,floatArrayOf(0f,0f,0f),screen,true,false)
     val prior=warp.mesh
-    val originalPixels=warp.displayEntity!!.pixelDimensions
+    val shown=session.scene.entities.single { it.getSurface()===warp.outputSurface }
+    val originalPixels=shown.pixelDimensions
     check(originalPixels==IntSize2d(screen.pixelWidth,screen.pixelHeight))
     SystemClock.now+=100
     val larger=screen.copy(physicalWidthM=screen.physicalWidthM*1.2f)
     warp.update(session,root,floatArrayOf(0f,0f,0f),larger,true,false,submitShape={false})
     check(warp.mesh===prior && !warp.matchesSize(larger))
     warp.update(session,root,floatArrayOf(0f,0f,0f),larger,true,false,submitShape={ submit->submit();true })
-    check(warp.matchesSize(larger) && warp.displayEntity!!.pixelDimensions==originalPixels)
+    check(warp.matchesSize(larger) && shown.pixelDimensions==originalPixels)
 
 
     warp.close()

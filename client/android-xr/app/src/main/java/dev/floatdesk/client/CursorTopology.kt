@@ -6,6 +6,12 @@ import kotlin.math.abs
 /** Shared render/debug/transport representation of the current view-plane map. */
 internal data class CursorPatch(val key:String,val points:List<Pair<Float,Float>>,val source:FocusRect,val depth:Float,val front:Boolean){
     val viewBounds=FocusRect(points.minOf{it.first},points.minOf{it.second},points.maxOf{it.first},points.maxOf{it.second})
+    fun valid()=depth.isFinite() && viewBounds.left.isFinite() && viewBounds.right.isFinite() &&
+        viewBounds.top.isFinite() && viewBounds.bottom.isFinite() &&
+        viewBounds.right-viewBounds.left>.00001f && viewBounds.bottom-viewBounds.top>.00001f &&
+        source.left.isFinite() && source.right.isFinite() && source.top.isFinite() && source.bottom.isFinite() &&
+        source.right>source.left && source.bottom>source.top
+
 }
 internal data class CursorTopology(val patches:List<CursorPatch> = emptyList(),val scale:Pair<Float,Float> = .001f to .001f){
     fun json():String {
@@ -18,10 +24,27 @@ internal data class CursorTopology(val patches:List<CursorPatch> = emptyList(),v
 }
 /** Logical content rectangles. Orientation/curvature never skew a cursor space. */
 internal fun cursorPatches(key:String,pose:Pose,width:Float,height:Float,mesh:MonitorMesh?,source:FocusRect,viewer:Pose,
-    region:FocusRect=FocusRect(0f,0f,1f,1f),front:Boolean=false,divisions:Int=4):List<CursorPatch>{
+    region:FocusRect=FocusRect(0f,0f,1f,1f),front:Boolean=false,divisions:Int=4,projectBounds:Boolean=false):List<CursorPatch>{
     val center=viewerInMonitor(pose.position,viewer.position,viewer.rotation)
     val depth=-center[2]
     if(depth<=.001f || center.any{!it.isFinite()} || width<=0 || height<=0)return emptyList()
+    if(projectBounds){
+        val points=buildList {
+            for(edge in 0..3)for(step in 0..8){
+                val t=step/8f
+                val u=if(edge<2)region.left+t*(region.right-region.left) else if(edge==2)region.left else region.right
+                val v=if(edge>=2)region.top+t*(region.bottom-region.top) else if(edge==0)region.top else region.bottom
+                val flat=floatArrayOf((u-.5f)*width,(.5f-v)*height,0f)
+                val world=transformPoint(pose,mesh?.project(flat,onTriangles=true) ?: flat)
+                val local=viewerInMonitor(world,viewer.position,viewer.rotation)
+                if(local[2]<-.001f)add(local[0]/-local[2] to local[1]/local[2])
+            }
+        }
+        if(points.isEmpty())return emptyList()
+        val left=points.minOf{it.first};val right=points.maxOf{it.first}
+        val top=points.minOf{it.second};val bottom=points.maxOf{it.second}
+        return listOf(CursorPatch(key,listOf(left to top,right to top,right to bottom,left to bottom),source,depth,front))
+    }
     val left=(center[0]+(region.left-.5f)*width)/depth
     val right=(center[0]+(region.right-.5f)*width)/depth
     val top=(-center[1]+(region.top-.5f)*height)/depth
@@ -69,14 +92,15 @@ internal fun CursorTopology.wires():List<CursorWire> = buildList {
 }
 /** Express the whole virtual workspace in desktop pixels, including extra-desktop space. */
 internal fun CursorTopology.logicalPixels():CursorTopology {
-    val base=patches.firstOrNull{!it.front} ?: return this
+    val valid=patches.filter{it.valid()}
+    val base=valid.firstOrNull{!it.front} ?: return CursorTopology()
     val b=base.viewBounds
     val sx=(base.source.right-base.source.left)/(b.right-b.left)
     val sy=(base.source.bottom-base.source.top)/(b.bottom-b.top)
     if(!sx.isFinite() || !sy.isFinite() || sx<=0f || sy<=0f)return CursorTopology()
-    return CursorTopology(patches.map{p->p.copy(points=p.points.map{(x,y)->
+    return CursorTopology(valid.map{p->p.copy(points=p.points.map{(x,y)->
         base.source.left+(x-b.left)*sx to base.source.top+(y-b.top)*sy
-    })},1f to 1f)
+    })}.filter{it.valid()},1f to 1f)
 }
 internal fun CursorTopology.debugSegments():FloatArray=patches.flatMap{p->(0..3).flatMap{i->
     val a=p.points[i];val b=p.points[(i+1)%4];listOf(a.first,a.second,b.first,b.second,if(p.front)1f else 0f)

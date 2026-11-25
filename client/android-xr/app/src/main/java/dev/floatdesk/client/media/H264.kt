@@ -7,7 +7,7 @@ import android.view.Surface
 import java.io.File
 import java.io.FileOutputStream
 import java.net.DatagramPacket
-import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -247,9 +247,9 @@ internal class MonitorDecoder(
         decodeThread = Thread({ decodeLoop() }, "floatdesk-decode").also { it.start() }
     }
 
-    fun punch(host: InetAddress) {
+    fun punch(host: InetSocketAddress) {
         runCatching {
-            socket.send(DatagramPacket(byteArrayOf(0), 1, host, 47000))
+            socket.send(DatagramPacket(byteArrayOf(0), 1, host))
         }
     }
 
@@ -262,6 +262,13 @@ internal class MonitorDecoder(
     private val detailDiagnostics=AtomicReference(dev.floatdesk.client.net.DetailDiagnostics())
     fun detailDebug(value:dev.floatdesk.client.net.DetailDiagnostics){detailDiagnostics.set(value);compositor?.detailDebug(value)}
     fun refreshOutput(){compositor?.output(surface.get(),true)}
+    fun lastPresentedAt()=compositor?.lastPresentedAt ?: 0L
+
+    fun recoverOutput() {
+        refreshOutput()
+        recover("output recovery")
+    }
+
     fun diagnosticSnapshot()=compositor?.diagnosticSnapshot()
     fun displayedQualityFocus():Pair<Float,Float>?=compositor?.displayedQualityFocus()
     fun hasViewedDetail():Boolean=compositor?.hasViewedDetail()==true
@@ -300,6 +307,7 @@ internal class MonitorDecoder(
         val buffer = ByteArray(2048)
         val packet = java.net.DatagramPacket(buffer, buffer.size)
         var packets = 0
+        var lastVideoActivity = System.nanoTime()
         try {
             socket.receiveBufferSize = 8 * 1024 * 1024
             socket.soTimeout = 20
@@ -311,6 +319,7 @@ internal class MonitorDecoder(
             val ready = try {
                 packet.setLength(buffer.size)
                 socket.receive(packet)
+                lastVideoActivity = System.nanoTime()
                 packets += 1
                 if (packets == 1 || packets % 600 == 0) {
                     Log.i(TAG, "video packets=$packets last=${packet.length} surface=${surface.get() != null}")
@@ -321,7 +330,18 @@ internal class MonitorDecoder(
             } catch (_: java.net.SocketException) {
                 break
             }
-            if(!renderingActive.get()) { depacketizer.restart();reorder.consumeRestart();continue }
+            if(!renderingActive.get()) {
+                lastVideoActivity = System.nanoTime()
+                depacketizer.restart()
+                reorder.consumeRestart()
+                continue
+            }
+            val monotonicNow = System.nanoTime()
+            if (monotonicNow - lastVideoActivity >= TimeUnit.SECONDS.toNanos(3)) {
+                lastVideoActivity = monotonicNow
+                depacketizer.restart()
+                recover("video packets timed out")
+            }
             if (reorder.consumeRestart()) {
                 depacketizer.restart()
                 recover("RTP source restarted")

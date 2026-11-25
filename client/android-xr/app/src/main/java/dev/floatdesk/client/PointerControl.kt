@@ -1,6 +1,6 @@
 package dev.floatdesk.client
 
-internal data class PointerTarget(val monitor: Int, val u: Float, val v: Float, val local: FloatArray)
+internal data class PointerTarget(val monitor: Int, val u: Float, val v: Float, val local: FloatArray, val spaceKey: String = "desktop")
 internal data class HandAimPose(val position: FloatArray,val rotation: FloatArray)
 internal enum class PointerMode { OFF, GAZE, HAND, PREVIEW, GRAB;
     val reservesDesktop get()=this==PREVIEW || this==GRAB
@@ -94,13 +94,13 @@ internal class PointerControl {
         return hovering.toMap()
     }
 
-    fun choose(enabled: Boolean, gaze: PointerTarget?, hands: Map<String, PointerTarget>, grabbing: Boolean, nowMs: Long = 0): PointerChoice {
+    fun choose(enabled: Boolean, gaze: PointerTarget?, hands: Map<String, PointerTarget>, grabbing: Boolean, nowMs: Long = 0, previewHands: Map<String, PointerTarget> = hands): PointerChoice {
         if (grabbing) resumeAfterGrab = nowMs+120
         // Restoring the live surface restarts its native hover sequence. Let both hands
         // repopulate before allowing gaze to take over after releasing a monitor.
         return when {
             grabbing || nowMs < resumeAfterGrab -> PointerChoice(PointerMode.GRAB)
-            handPreviewMonitor(hands)!=null -> PointerChoice(PointerMode.PREVIEW)
+            handPreviewMonitor(previewHands)!=null -> PointerChoice(PointerMode.PREVIEW)
             hands.isNotEmpty() -> PointerChoice(PointerMode.HAND,hands.maxBy {lastHoverAt[it.key] ?: 0L}.value)
             enabled -> PointerChoice(PointerMode.GAZE,gaze)
             else -> PointerChoice(PointerMode.OFF)

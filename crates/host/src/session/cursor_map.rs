@@ -55,6 +55,17 @@ impl Surface {
             && self.source[3] > self.source[1]
     }
 }
+fn overlaps(a: &Surface, b: &Surface) -> [f64; 2] {
+    [0, 1].map(|axis| {
+        a.points[2][axis].min(b.points[2][axis]) - a.points[0][axis].max(b.points[0][axis])
+    })
+}
+
+fn shares_edge(a: &Surface, b: &Surface) -> bool {
+    let [x, y] = overlaps(a, b);
+    x >= 0.0 && y >= 0.0 && (x > 0.0 || y > 0.0)
+}
+
 /// Clip the motion segment against each rectangle, then traverse only through
 /// intersections with a shared edge or area. A single shared corner is a wall.
 fn sweep(
@@ -81,14 +92,6 @@ fn sweep(
             }
         }
         (enter <= exit).then_some((enter, exit))
-    }
-
-    fn shares_edge(a: &Surface, b: &Surface) -> bool {
-        let overlap = |axis: usize| {
-            a.points[2][axis].min(b.points[2][axis]) - a.points[0][axis].max(b.points[0][axis])
-        };
-        let (x, y) = (overlap(0), overlap(1));
-        x >= 0.0 && y >= 0.0 && (x > 0.0 || y > 0.0)
     }
 
     let intervals: Vec<_> = surfaces
@@ -270,6 +273,14 @@ impl Router {
         {
             return None;
         }
+        if delta == [0.0, 0.0] {
+            if let Some(key) = self.owner.as_deref().filter(|key| *key != "desktop") {
+                return surfaces
+                    .iter()
+                    .filter(|s| s.key == key)
+                    .find_map(|s| s.map(point, false));
+            }
+        }
         let travel = [delta[0] * scale[0], delta[1] * scale[1]];
         let intended = [point[0] + travel[0], point[1] + travel[1]];
         let (end, mut reachable) = sweep(surfaces, point, travel, self.owner.as_deref());
@@ -284,8 +295,15 @@ impl Router {
         }
         let (surface, target) = surfaces
             .iter()
-            .zip(reachable)
-            .filter(|(_, reached)| *reached)
+            .zip(reachable.iter().copied())
+            .filter(|(surface, reached)| {
+                // Even when motion ends exactly at the leading edge of a foreground
+                // panel, its shadow owns the point. A corner-only contact is still a wall.
+                *reached
+                    || surfaces.iter().zip(&reachable).any(|(back, reached)| {
+                        *reached && overlaps(surface, back).iter().all(|size| *size > 0.0)
+                    })
+            })
             .filter_map(|(surface, _)| surface.map(point, false).map(|target| (surface, target)))
             .min_by(|a, b| a.0.depth.total_cmp(&b.0.depth))?;
         self.point = Some(point);
@@ -325,6 +343,12 @@ impl Router {
             root,
         ))
     }
+    pub fn observe_root_warp(&mut self) {
+        if self.owner.as_deref() == Some("desktop") {
+            self.reset();
+        }
+    }
+
     pub fn inactive(&mut self, motion: [f64; 2]) {
         // A sleeping viewer does not move the virtual cursor. Real desktop use
         // while XR is inactive deliberately relinquishes the old virtual owner.
@@ -371,6 +395,45 @@ mod tests {
             .unwrap();
         assert_eq!(p, [400., 50.]);
     }
+    #[test]
+    fn reaching_a_panel_shadow_at_the_end_of_a_step_transfers_ownership() {
+        let desktop = pane(0., 2., [0., 0., 100., 100.]);
+        let panel = pane(0.5, 1., [50., 0., 60., 100.]);
+        let mut router = Router::default();
+        let surfaces = [desktop, panel];
+        router
+            .advance(&surfaces, [25., 50.], [0.25, 0.], [1., 1.])
+            .unwrap();
+        assert_eq!(router.location(&surfaces).unwrap().0, surfaces[1].key);
+        router
+            .advance(&surfaces, [50., 50.], [0., 0.], [1., 1.])
+            .unwrap();
+        assert_eq!(router.location(&surfaces).unwrap().0, surfaces[1].key);
+    }
+
+    #[test]
+    fn mirrored_root_warp_does_not_take_ownership_from_a_panel() {
+        let mut desktop = pane(0., 2., [0., 0., 100., 100.]);
+        desktop.key = "desktop".into();
+        let panel = pane(0.5, 1., [10., 0., 20., 100.]);
+        let surfaces = [desktop, panel];
+        let mut router = Router::default();
+        router
+            .advance(&surfaces, [25., 50.], [0.5, 0.], [1., 1.])
+            .unwrap();
+        let point = router.virtual_position();
+        router.observe_root_warp();
+        router
+            .advance(&surfaces, [10., 50.], [0., 0.], [1., 1.])
+            .unwrap();
+        assert_eq!(router.location(&surfaces).unwrap().0, surfaces[1].key);
+        assert_eq!(router.virtual_position(), point);
+        router
+            .advance(&surfaces, [10., 50.], [-0.5, 0.], [1., 1.])
+            .unwrap();
+        assert_eq!(router.location(&surfaces).unwrap().0, "desktop");
+    }
+
     #[test]
     fn cursor_stays_in_owned_space_when_its_content_changes() {
         let mut surfaces = vec![

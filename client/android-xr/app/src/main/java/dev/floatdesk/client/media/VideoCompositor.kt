@@ -23,7 +23,7 @@ internal data class VideoAim @JvmOverloads constructor(
 )
 
 internal data class VideoCrop(val left:Float,val top:Float,val right:Float,val bottom:Float,val aspect:Float)
-internal data class VideoMirror @JvmOverloads constructor(val surface:Surface,val padX:Float=0f,val padY:Float=0f,val pinned:Boolean=false,val aspect:Float=0f,val before:((Long)->Unit)?=null,val presented:(()->Unit)?=null,val crop:(()->VideoCrop?)?=null,val ink:(()->VideoAim)?=null)
+internal data class VideoMirror @JvmOverloads constructor(val surface:Surface,val padX:Float=0f,val padY:Float=0f,val pinned:Boolean=false,val aspect:Float=0f,val before:((Long)->Unit)?=null,val presented:(()->Unit)?=null,val crop:(()->VideoCrop?)?=null,val ink:(()->VideoAim)?=null,val minFrameIntervalNs:(()->Long)?=null)
 
 /** One GPU pass keeps aiming decorations and live video in the same compositor layer. */
 internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
@@ -69,7 +69,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         private set
     @Volatile private var diagnostics=dev.floatdesk.client.net.DetailDiagnostics()
     private var detailUploads=0L
-    private val debugTick=object:Runnable {override fun run(){if(closed || (!diagnostics.showOverlay && !diagnostics.showResources))return;samplePresentation();handler.postDelayed(this,250)}}
+    private val debugTick=object:Runnable {override fun run(){if(closed || (!diagnostics.showOverlay && !diagnostics.showResources))return;samplePresentation();handler.postDelayed(this,1000)}}
     private var viewTextureId=0
     private lateinit var viewTexture:SurfaceTexture
     lateinit var viewInput:Surface
@@ -119,7 +119,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             if(windowEpoch.get()==epoch){windowFrames[pts]=epoch to rect;while(windowFrames.size>64)windowFrames.pollFirstEntry()}
         },{if(windowEpoch.compareAndSet(epoch,epoch+1)){windowRequested=false;handler.post{windowRect=null;windowFrames.clear();requestDraw()}}},{w,h->windowTexture.setDefaultBufferSize(w,h)},{pts,mask->windowMasks[pts]=mask;while(windowMasks.size>64)windowMasks.pollFirstEntry()})
     }
-    private data class Mirror(val value:VideoMirror,val egl:android.opengl.EGLSurface)
+    private data class Mirror(val value:VideoMirror,val egl:android.opengl.EGLSurface,var lastDraw:Long=0L)
     private var mirrors=emptyList<Mirror>()
     private var activeMirror:VideoMirror?=null
     fun mirrors(values:List<VideoMirror>){if(!closed)handler.post{if(!closed)guard{
@@ -227,7 +227,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                 val buffers=IntArray(1)
                 GLES20.glGenBuffers(1,buffers,0)
                 inkVertexBuffer=buffers[0]
-                if(diagnostics.showOverlay || diagnostics.showResources)handler.postDelayed(debugTick,250)
+                if(diagnostics.showOverlay || diagnostics.showResources)handler.postDelayed(debugTick,1000)
                 Log.i("Floatdesk","live video compositor ready ${width}x$height")
             } catch(error: Throwable) { failure=error }
             finally { ready.countDown() }
@@ -285,11 +285,14 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         } finally {GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER,0)}
     }
 
+    @Volatile var lastPresentedAt=0L
+        private set
+
     @JvmOverloads
     fun output(surface: Surface?,force:Boolean=false) {
         if(closed) return
         handler.post {
-            if(closed || target===surface && !force) return@post
+            if(closed || target===surface && !force && (surface==null || window!=EGL14.EGL_NO_SURFACE)) return@post
             guard {
                 check(EGL14.eglMakeCurrent(display,pbuffer,pbuffer,context))
                 if(window!=EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(display,window)
@@ -316,7 +319,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
 
     fun detailDebug(value:dev.floatdesk.client.net.DetailDiagnostics) {
         val before=diagnostics;diagnostics=value
-        if(!(before.showOverlay || before.showResources) && (value.showOverlay || value.showResources) && !closed)handler.postDelayed(debugTick,250)
+        if(!(before.showOverlay || before.showResources) && (value.showOverlay || value.showResources) && !closed)handler.postDelayed(debugTick,1000)
         if(!(value.showOverlay || value.showResources))handler.removeCallbacks(debugTick)
     }
 
@@ -368,12 +371,22 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
 
     private fun drawLocked() {
         val primaryWindow=window;val primaryTarget=target
+        if(mirrors.isEmpty()){
+            if(primaryWindow!=EGL14.EGL_NO_SURFACE && primaryTarget?.isValid==true){
+                if(EGL14.eglGetCurrentSurface(EGL14.EGL_DRAW)!=primaryWindow)
+                    check(EGL14.eglMakeCurrent(display,primaryWindow,primaryWindow,context))
+                drawSurface()
+            }
+            return
+        }
         try{
             if(primaryWindow!=EGL14.EGL_NO_SURFACE && primaryTarget?.isValid==true){
                 check(EGL14.eglMakeCurrent(display,window,window,context));activeMirror=null;drawSurface()
             }
             if(hasFrame)for(mirror in mirrors){
                 if(!mirror.value.surface.isValid || mirror.egl==EGL14.EGL_NO_SURFACE)continue
+                val now=System.nanoTime()
+                if(mirror.lastDraw!=0L && now-mirror.lastDraw<(mirror.value.minFrameIntervalNs?.invoke() ?: 0L))continue
                 window=mirror.egl;target=mirror.value.surface;activeMirror=mirror.value
                 check(EGL14.eglMakeCurrent(display,window,window,context))
                 val pts=texture.timestamp/1000
@@ -381,7 +394,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                 val crop=mirror.value.crop?.invoke()
                 if(crop!=null && (crop.right<=crop.left || crop.bottom<=crop.top))continue
                 EGLExt.eglPresentationTimeANDROID(display,window,pts*1000)
-                drawSurface();mirror.value.presented?.invoke()
+                if(drawSurface()){mirror.lastDraw=now;mirror.value.presented?.invoke()}
             }
         }finally{
             window=primaryWindow;target=primaryTarget;activeMirror=null
@@ -389,8 +402,8 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             EGL14.eglMakeCurrent(display,restore,restore,context)
         }
     }
-    private fun drawSurface() {
-        if(window==EGL14.EGL_NO_SURFACE || target?.isValid!=true) return
+    private fun drawSurface():Boolean {
+        if(window==EGL14.EGL_NO_SURFACE || target?.isValid!=true) return false
         val drawStarted=System.nanoTime()
         val w=IntArray(1); val h=IntArray(1)
         EGL14.eglQuerySurface(display,window,EGL14.EGL_WIDTH,w,0); EGL14.eglQuerySurface(display,window,EGL14.EGL_HEIGHT,h,0)
@@ -399,10 +412,10 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             if(degenerateOutputs<=6 || degenerateOutputs%200==0)Log.i("Floatdesk","desktop output ${w[0]}x${h[0]} base ${baseWidth}x$baseHeight changes=$degenerateOutputs")
         }
         // A surface briefly reporting a placeholder size would stretch one pixel over the screen.
-        if(w[0]<=2 || h[0]<=2){requestDraw();return}
+        if(w[0]<=2 || h[0]<=2)return false
         outputPixels=w[0] to h[0]
         val view=viewCurrent?.takeIf{viewLatched && (diagnostics.enabled || handoff)}
-        if(view==null && !hasFrame)return
+        if(view==null && !hasFrame)return false
         GLES20.glViewport(0,0,w[0],h[0]); GLES20.glUseProgram(program)
         GLES20.glUniform1f(uniform(program,"viewGutter"),view?.gutterPixels?.toFloat() ?: 0f)
         GLES20.glUniform1i(uniform(program,"viewMode"),if(view?.tiles?.isNotEmpty()==true)2 else if(view!=null)1 else 0)
@@ -506,7 +519,9 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         GLES20.glDisable(GLES20.GL_SCISSOR_TEST)
         drawInk(w[0],h[0])
         check(EGL14.eglSwapBuffers(display,window)) { "video swap failed" }
+        if(activeMirror==null)lastPresentedAt=android.os.SystemClock.elapsedRealtime()
         lastDraw=System.nanoTime();submitNs+=lastDraw-drawStarted;swaps++;outputPresented?.invoke()
+        return true
     }
 
     private fun samplePresentation() {

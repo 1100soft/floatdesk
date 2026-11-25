@@ -16,7 +16,6 @@ internal class HostDiscovery {
         while(candidates.size>32) candidates.remove(candidates.keys.first())
     }
     fun select(current:InetSocketAddress?,healthy:Boolean,now:Long):InetSocketAddress? {
-        if(healthy)return current
         if(current==null) {
             val first=candidates.entries.firstOrNull {now-it.value.seenAt<=10_000} ?: return null
             selected=first.key;selectedName=first.value.name;selectedAt=now
@@ -26,7 +25,9 @@ internal class HostDiscovery {
             selected=current;selectedName=candidates[current]?.name;selectedAt=now
             return current
         }
-        if(now-selectedAt<2500)return current
+        // A unicast reply may select the host before its first beacon arrives.
+        if (selectedName == null) selectedName = candidates[current]?.name
+        if(healthy || now-selectedAt<2500)return current
         val name=selectedName ?: return current
         val fresh=candidates.filter {it.value.name==name && now-it.value.seenAt<=10_000}.keys.toList()
         if(fresh.isEmpty())return current

@@ -45,7 +45,8 @@ fun main() {
     frame(1820,open)
     frame(1840,index)
     val blocked=frame(1900,open,blocked=true)
-    check(blocked.click == null && !blocked.dragging)
+    check(blocked.click == null && !blocked.dragging && blocked.target==null)
+    check(frame(1901,open,enabled=false).target==null)
     frame(2000,open)
     frame(2020,index)
     check(frame(2400,index).dragging)
@@ -187,8 +188,10 @@ fun main() {
     check(sf(30,middle.copy(position=floatArrayOf(.003f,0f,0f))).scroll==null)
     val moved=sf(40,middle.copy(position=floatArrayOf(.025f,.015f,0f)))
     check(moved.scroll!!.fingers==2 && moved.target!!.u==.8f) // Starts after 20 ms, with no hold delay.
-    check(kotlin.math.abs(moved.scroll.x-.6f)<.0001f && kotlin.math.abs(moved.scroll.y-.4f)<.0001f)
-    check(sf(60,middle.copy(position=floatArrayOf(.025f,.015f,.05f))).scroll!!.y==moved.scroll.y)
+    // The time filter and deadband hold the first sample short of the raw 0.6, 0.4 mapping.
+    check(moved.scroll.x in .528f.. .536f && moved.scroll.y in .468f.. .476f)
+    val settled=sf(60,middle.copy(position=floatArrayOf(.025f,.015f,.05f)))
+    check(settled.scroll!!.x>moved.scroll.x && settled.scroll.x<.6f && settled.scroll.y<moved.scroll.y && settled.scroll.y>.4f)
     val end=sf(80,open)
     check(end.scroll!!.fingers==0 && end.click==null && !end.dragging)
     sf(100,middle.copy(position=floatArrayOf(0f,0f,0f)))

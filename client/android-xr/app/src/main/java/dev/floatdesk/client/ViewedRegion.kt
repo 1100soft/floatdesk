@@ -46,12 +46,12 @@ internal fun extendedQualityTarget(origin:FloatArray,direction:FloatArray,width:
     val offset=FloatArray(3){origin[it]-mesh.eye[it]}
     fun dot(a:FloatArray,b:FloatArray)=(0..2).sumOf{(a[it]*b[it]).toDouble()}.toFloat()
     val a=dot(direction,direction);if(a<1e-12f)return null
-    val b=dot(offset,direction);val c=dot(offset,offset)-mesh.radius*mesh.radius
+    val b=dot(offset,direction);val c=dot(offset,offset)-mesh.geometryRadius*mesh.geometryRadius
     val discriminant=b*b-a*c;if(discriminant<0)return null
     val root=kotlin.math.sqrt(discriminant)
     val near=(-b-root)/a;val far=(-b+root)/a
     val t=if(near>0)near else far;if(t<=0)return null
-    val radial=FloatArray(3){(offset[it]+t*direction[it])/mesh.radius}
+    val radial=FloatArray(3){(offset[it]+t*direction[it])/mesh.geometryRadius}
     val x=dot(radial,mesh.frameTangentX);val y=dot(radial,mesh.frameTangentY)
     val sine=kotlin.math.sqrt(x*x+y*y);val forward=-dot(radial,mesh.frameNormal)
     if(sine<1e-6f && forward<0)return null // The antipode has no unique source direction.

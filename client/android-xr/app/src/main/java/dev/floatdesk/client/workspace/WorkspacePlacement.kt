@@ -2,6 +2,7 @@ package dev.floatdesk.client.workspace
 
 import dev.floatdesk.client.viewHalfAngles
 import dev.floatdesk.client.focusViewHalfAngles
+import dev.floatdesk.client.viewerInMonitor
 
 /** UI panel compositing plus ordered physical planes; all values are in meters. */
 internal object ViewLayers {
@@ -41,18 +42,73 @@ internal object ViewLayers {
 }
 
 /** Without a restored room anchor, keep the saved arrangement relative to the startup viewer. */
-internal fun WorkspaceFile.restoreViewer(viewer:Pose):WorkspaceFile {
+internal fun WorkspaceFile.restoreViewer(viewer:Pose,unitsPerMeter:Float=referenceUnitsPerMeter ?: 1f):WorkspaceFile {
     val prior=viewerReference ?: Pose()
     if(anchorUuid!=null)return this
+    val scale=referenceUnitsPerMeter?.let{unitsPerMeter/it}?.takeIf{it.isFinite() && it>0f} ?: 1f
     fun multiply(a:FloatArray,b:FloatArray)=floatArrayOf(a[3]*b[0]+a[0]*b[3]+a[1]*b[2]-a[2]*b[1],a[3]*b[1]-a[0]*b[2]+a[1]*b[3]+a[2]*b[0],a[3]*b[2]+a[0]*b[1]-a[1]*b[0]+a[2]*b[3],a[3]*b[3]-a[0]*b[0]-a[1]*b[1]-a[2]*b[2])
     val q=multiply(viewer.rotation,floatArrayOf(-prior.rotation[0],-prior.rotation[1],-prior.rotation[2],prior.rotation[3]))
     fun transform(p:Pose):Pose {
-        val v=FloatArray(3){p.position[it]-prior.position[it]}
+        val v=FloatArray(3){(p.position[it]-prior.position[it])*scale}
         val t=floatArrayOf(2*(q[1]*v[2]-q[2]*v[1]),2*(q[2]*v[0]-q[0]*v[2]),2*(q[0]*v[1]-q[1]*v[0]))
         val rotated=floatArrayOf(v[0]+q[3]*t[0]+q[1]*t[2]-q[2]*t[1],v[1]+q[3]*t[1]+q[2]*t[0]-q[0]*t[2],v[2]+q[3]*t[2]+q[0]*t[1]-q[1]*t[0])
         return Pose(FloatArray(3){viewer.position[it]+rotated[it]},multiply(q,p.rotation))
     }
-    return copy(viewerReference=viewer,layouts=layouts.mapValues {(_,screens)->screens.map {it.copy(pose=transform(it.pose))}.toMutableList()}.toMutableMap(),control=control.copy(pose=transform(control.pose)))
+    return copy(viewerReference=viewer,referenceUnitsPerMeter=unitsPerMeter,layoutOrigin=layoutOrigin?.let(::transform),desktopHome=desktopHome?.let(::transform),cursorMapReference=cursorMapReference?.let(::transform),
+        layouts=layouts.mapValues {(_,screens)->screens.map {
+            it.copy(pose=transform(it.pose),physicalWidthM=it.physicalWidthM*scale,physicalHeightM=it.physicalHeightM*scale)
+        }.toMutableList()}.toMutableMap(),control=control.copy(pose=transform(control.pose)))
+}
+
+private fun inverseRotation(q:FloatArray)=floatArrayOf(-q[0],-q[1],-q[2],q[3])
+
+private fun composeLayoutRotation(a:FloatArray,b:FloatArray)=floatArrayOf(
+    a[3]*b[0]+a[0]*b[3]+a[1]*b[2]-a[2]*b[1],
+    a[3]*b[1]-a[0]*b[2]+a[1]*b[3]+a[2]*b[0],
+    a[3]*b[2]+a[0]*b[1]-a[1]*b[0]+a[2]*b[3],
+    a[3]*b[3]-a[0]*b[0]-a[1]*b[1]-a[2]*b[2])
+
+private fun originTransform(from:Pose,to:Pose):(Pose)->Pose {
+    val delta=composeLayoutRotation(to.rotation,inverseRotation(from.rotation))
+    val inverseDelta=inverseRotation(delta)
+    return {pose->
+        val rotated=viewerInMonitor(pose.position,from.position,inverseDelta)
+        Pose(FloatArray(3){to.position[it]+rotated[it]},composeLayoutRotation(delta,pose.rotation))
+    }
+}
+
+/** Reset and explicit Follow carry the environment along with its origin. */
+internal fun WorkspaceFile.moveLayoutOrigin(target:Pose):WorkspaceFile {
+    val origin=layoutOrigin ?: layouts[activeLayout]?.firstOrNull()?.pose ?: return this
+    val transform=originTransform(origin,target)
+    val moved=layouts.mapValues{(_,screens)->screens.map{it.copy(pose=transform(it.pose))}.toMutableList()}.toMutableMap()
+    return copy(layoutOrigin=target,desktopHome=desktopHome?.let(transform),cursorMapReference=cursorMapReference?.let(transform),layouts=moved,control=control.copy(pose=transform(control.pose)))
+}
+
+/** Preserve the authored desktop center/orientation and replace its size and view framing. */
+internal fun WorkspaceFile.restoreDefaultDesktopSize(origin:Pose,defaults:List<MonitorPlacement>):WorkspaceFile {
+    val current=layouts[activeLayout]
+    val resized=defaults.mapIndexed{index,fitted->
+        current?.getOrNull(index)?.let{saved->saved.copy(pose=if(index==0)desktopHome ?: saved.pose else saved.pose,
+            physicalWidthM=fitted.physicalWidthM,physicalHeightM=fitted.physicalHeightM,viewCenterU=.5f,viewCenterV=.5f)} ?: fitted
+    }.toMutableList()
+    return copy(layoutOrigin=origin,desktopHome=resized.firstOrNull()?.pose,layouts=layouts.toMutableMap().also{it[activeLayout]=resized})
+}
+
+/** Dragging the axes changes coordinates while world-space object poses stay put. */
+internal fun WorkspaceFile.rebaseLayoutOrigin(target:Pose,units:Float):WorkspaceFile {
+    val origin=layoutOrigin ?: layouts[activeLayout]?.firstOrNull()?.pose ?: return this
+    fun rebase(record:FixedMagnifierPlacement)=rebaseSupportingPlacement(record,origin,target,units)
+    return copy(layoutOrigin=target,fixedMagnifiers=fixedMagnifiers.map(::rebase),
+        systemPanels=systemPanels.map(::rebase),referencePlacement=referencePlacement?.let(::rebase))
+}
+
+internal fun rebaseSupportingPlacement(record:FixedMagnifierPlacement,old:Pose,next:Pose,units:Float):FixedMagnifierPlacement {
+    val toWorld=originTransform(Pose(),old)
+    val toLocal=originTransform(next,Pose())
+    val scaled=record.pose.copy(position=FloatArray(3){record.pose.position[it]*units})
+    val local=toLocal(toWorld(scaled))
+    return record.copy(pose=local.copy(position=FloatArray(3){local.position[it]/units}))
 }
 
 /** Fit the complete desktop into a symmetric, inset portion of the current camera view. */
@@ -95,18 +151,26 @@ internal fun fitDesktopInView(screens:List<MonitorPlacement>,viewer:Pose,horizon
 }
 
 /** Reframe a displayed source region using Reset's fit policy, preserving the whole desktop. */
-internal fun focusDesktopRegion(screen:MonitorPlacement,rect:FloatArray,viewer:Pose,horizontal:Float,vertical:Float,units:Float,spherical:Boolean):MonitorPlacement {
+internal fun focusDesktopRegion(screen:MonitorPlacement,rect:FloatArray,viewer:Pose,horizontal:Float,vertical:Float,units:Float,spherical:Boolean,home:Pose?=null):MonitorPlacement {
     require(rect.size==4 && rect.all{it.isFinite()} && rect[2]>rect[0] && rect[3]>rect[1])
     val u=(rect[0]+rect[2])*.5f;val v=(rect[1]+rect[3])*.5f
     val region=screen.copy(pose=Pose(),physicalWidthM=screen.physicalWidthM*(rect[2]-rect[0]),physicalHeightM=screen.physicalHeightM*(rect[3]-rect[1]))
-    val fitted=fitDesktopInView(listOf(region),viewer,horizontal,vertical,units,spherical,centralView=true).single()
+    val distanceM=home?.let{target->
+        kotlin.math.sqrt((0..2).sumOf{axis->
+            val d=(target.position[axis]-viewer.position[axis]).toDouble()
+            d*d
+        }).toFloat()/units
+    }?.takeIf{it.isFinite() && it>0f} ?: ViewLayers.DesktopDistanceM
+    val fitted=fitDesktopInView(listOf(region),viewer,horizontal,vertical,units,spherical,
+        centralView=true,distanceM=distanceM).single()
     val width=fitted.physicalWidthM/(rect[2]-rect[0]);val height=fitted.physicalHeightM/(rect[3]-rect[1])
     val x=(u-.5f)*width;val y=(.5f-v)*height
-    val q=viewer.rotation
+    val target=home ?: fitted.pose
+    val q=home?.rotation ?: viewer.rotation
     val tx=-2f*q[2]*y;val ty=2f*q[2]*x;val tz=2f*(q[0]*y-q[1]*x)
     val offset=floatArrayOf(x+q[3]*tx+q[1]*tz-q[2]*ty,y+q[3]*ty+q[2]*tx-q[0]*tz,q[3]*tz+q[0]*ty-q[1]*tx)
-    return screen.copy(pose=Pose(FloatArray(3){fitted.pose.position[it]-offset[it]},q.copyOf()),
-        physicalWidthM=width,physicalHeightM=height,viewCenterU=u,viewCenterV=v)
+    return screen.copy(pose=Pose(FloatArray(3){target.position[it]-offset[it]},q.copyOf()),
+        physicalWidthM=width,physicalHeightM=height,viewCenterU=u,viewCenterV=v,freePose=home!=null)
 }
 
 
@@ -144,7 +208,7 @@ internal fun fixedDesktopDepth(screen:MonitorPlacement,viewer:Pose,unitsPerMeter
 
 /**
  * Move every saved object onto the layers for new viewing distances without changing its direction
- * or apparent size. Magnifier records are desktop-relative, so their offsets follow the desktop's
+ * or apparent size. Magnifier records use the layout origin, so their offsets follow the workspace's
  * scale about the eye and their sizes follow their own layer.
  */
 internal fun WorkspaceFile.withViewingDistances(nearest:Float,farthest:Float,viewer:Pose?,unitsPerMeter:Float):WorkspaceFile {
@@ -160,5 +224,6 @@ internal fun WorkspaceFile.withViewingDistances(nearest:Float,farthest:Float,vie
         it.copy(pose=Pose(FloatArray(3){i->it.pose.position[i]*desktopScale},it.pose.rotation),widthM=it.widthM*size,heightM=it.heightM*size)
     }
     return copy(layouts=nextLayouts,fixedMagnifiers=rescale(fixedMagnifiers,ratio(3)),systemPanels=rescale(systemPanels,ratio(2)),
+        referencePlacement=rescale(listOfNotNull(referencePlacement),ratio(3)).firstOrNull(),
         nearestDistanceM=near,farthestDistanceM=far)
 }

@@ -123,27 +123,51 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
             StreamingSettings(quality,onQuality)
         }
         if(section=="Viewing distance")ViewingDistanceSettings(quality,onViewingDistances)
-        if(section=="Pinches")PinchSettings(pinches,onPinches)
+        if(section=="Pinches"){
+            Row(verticalAlignment=Alignment.CenterVertically){
+                androidx.compose.material3.Switch(checked=quality.reverseHandScroll,onCheckedChange={onQuality(quality.copy(reverseHandScroll=it))})
+                Text("Reverse hand scrolling",color=Color.White)
+            }
+            PinchSettings(pinches,onPinches)
+        }
         if(section=="Virtual screen setup") {
             Text("Virtual screen setup",color=Color.White,fontSize=18.sp)
             Text("On the computer, run: python3 scripts/virtual-display-setup.py --check\nIf no pool is available, use --write-bundle to prepare installation files. A compatible VKMS configfs kernel, administrator setup and a graphical-session restart are required. Existing pools are reused; Floatdesk never rebuilds kernel topology during use.",color=Color(0xFFB8D9EA),fontSize=13.sp)
         }
         if(section=="Screens") {
+        val names=sizes.indices.map{screens?.getOrNull(it)?.name ?: state.names.getOrNull(it) ?: "Screen ${it+1}"}
+        var selectedName by remember {mutableStateOf<String?>(null)}
+        var choosing by remember {mutableStateOf(false)}
+        val index=names.indexOf(selectedName).takeIf{it>=0} ?: sizes.indices.firstOrNull{
+            (screens?.getOrNull(it)?.role ?: state.roles.getOrNull(it))==1
+        } ?: 0
+        val name=names.getOrNull(index)
+        if(name!=null){
+            val output=screens?.getOrNull(index)
+            val role=output?.role ?: state.roles.getOrNull(index)
+            val managed=role==1 || output?.managed==true || (state.owned and (1 shl index))!=0
+            val current=sizes[index]
+            Box{
+                Button(onClick={choosing=true},modifier=Modifier.fillMaxWidth()){
+                    Text("$name · ${current.first} × ${current.second} ▾")
+                }
+                androidx.compose.material3.DropdownMenu(expanded=choosing,onDismissRequest={choosing=false}){
+                    names.forEachIndexed{i,label->
+                        val kind=when(screens?.getOrNull(i)?.role ?: state.roles.getOrNull(i)){3->"Built-in";2->"Physical";1->"Virtual";else->"Display"}
+                        androidx.compose.material3.DropdownMenuItem(text={Text("$label · $kind")},onClick={selectedName=label;choosing=false})
+                    }
+                }
+            }
+            output?.refreshHz?.let {hz->Text(String.format(Locale.ROOT,"Refresh: %.3f Hz",hz),color=Color(0xFFB8D9EA),fontSize=12.sp)}
+            if(managed) androidx.compose.runtime.key(name){
+                ResolutionChoice(current,output?.modes.orEmpty(),!busy) {(w,h)->connection.requestDisplays(3,index,w,h)}
+                Button(enabled=!busy,onClick={connection.requestDisplays(2,index)}) {Text("Remove $name")}
+            }
+        }
         ScreenArrangementEditor(sizes,positions,busy,screens?.indexOfFirst {it.primary}?.coerceAtLeast(0) ?: if(state.primary==0) 0 else Integer.numberOfTrailingZeros(state.primary),info?.limits ?: (32767 to 32767)) {draft->connection.requestArrangement(draft)}
         if(sizes.isNotEmpty()) {
             Text(String.format(Locale.ROOT,"Visual spacing: %.1f%%",spacing*100),color=Color.White)
             androidx.compose.material3.Slider(value=spacing,onValueChange={onSpacing((it*1000).roundToInt()/1000f)},onValueChangeFinished=onSpacingFinished,valueRange=0f..0.15f,steps=149,enabled=!busy)
-        }
-        sizes.forEachIndexed { index,(width,height) ->
-            val managed=screens?.getOrNull(index)?.managed ?: ((state.owned and (1 shl index))!=0)
-            val role=when(screens?.getOrNull(index)?.role ?: state.roles.getOrNull(index)) {3->"Built-in display";2->"Physical display";1->"Virtual display";else->"Display"}
-            val name=screens?.getOrNull(index)?.name ?: state.names.getOrNull(index) ?: "Screen ${index+1}"
-            Text("${index+1}. $name · $role${if(screens?.getOrNull(index)?.primary ?: (state.primary and (1 shl index)!=0)) " · Primary" else ""} — $width × $height",color=Color.White,fontSize=16.sp)
-            screens?.getOrNull(index)?.refreshHz?.let {hz->Text(String.format(Locale.ROOT,"Refresh: %.3f Hz",hz),color=Color(0xFFB8D9EA),fontSize=12.sp)}
-            if(managed) {
-                ResolutionChoice(width to height,screens?.getOrNull(index)?.modes.orEmpty(),!busy) {(w,h)->connection.requestDisplays(3,index,w,h)}
-                Button(enabled=!busy,onClick={connection.requestDisplays(2,index)}) {Text("Remove")}
-            }
         }
         }
         }

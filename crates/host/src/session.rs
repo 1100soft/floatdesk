@@ -289,7 +289,7 @@ fn focus_desktop_target(
     value: &serde_json::Value,
     sources: &[(String, MonitorRect)],
     pointer: &mut InputDevices,
-) -> Result<[f32; 4]> {
+) -> Result<([f32; 4], [f64; 2])> {
     let bounds = desktop_rect(sources)?;
     let (x, y, width, height) = if let Some(id) = value["windowId"]
         .as_u64()
@@ -340,17 +340,18 @@ fn focus_desktop_target(
             )
         })
         .unwrap_or((left + (right - left) / 2, top + (bottom - top) / 2));
-    pointer.move_pointer(
-        cursor_x.clamp(left, right - 1),
-        cursor_y.clamp(top, bottom - 1),
-        false,
-    )?;
-    Ok([
-        (left - bounds.x) as f32 / bounds.width as f32,
-        (top - bounds.y) as f32 / bounds.height as f32,
-        (right - bounds.x) as f32 / bounds.width as f32,
-        (bottom - bounds.y) as f32 / bounds.height as f32,
-    ])
+    let cursor_x = cursor_x.clamp(left, right - 1);
+    let cursor_y = cursor_y.clamp(top, bottom - 1);
+    pointer.move_pointer(cursor_x, cursor_y, false)?;
+    Ok((
+        [
+            (left - bounds.x) as f32 / bounds.width as f32,
+            (top - bounds.y) as f32 / bounds.height as f32,
+            (right - bounds.x) as f32 / bounds.width as f32,
+            (bottom - bounds.y) as f32 / bounds.height as f32,
+        ],
+        [f64::from(cursor_x), f64::from(cursor_y)],
+    ))
 }
 
 type DisplayWorker = (
@@ -612,6 +613,11 @@ fn run(
                                 }
                                 continue;
                             }
+                            // Older clients can keep emitting these packets. Hover must
+                            // never change the server-wide XInput device hierarchy.
+                            if value["type"] == "aimHover" {
+                                continue;
+                            }
                             if value["type"] == "windowAction" {
                                 let allowed = shared
                                     .client
@@ -797,7 +803,12 @@ fn run(
                                 }
                                 let result = focus_desktop_target(&value, &sources, &mut pointer);
                                 let reply = match result {
-                                    Ok(rect) => {
+                                    Ok((rect, point)) => {
+                                        *shared
+                                            .cursor_claim
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner()) =
+                                            Some(("desktop".to_owned(), point));
                                         serde_json::json!({"type":"focusResult","requestId":id,"ok":true,"rect":rect})
                                     }
                                     Err(error) => {

@@ -2,7 +2,9 @@
 use super::*;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use x11rb::protocol::xproto::ConnectionExt as _;
+use x11rb::connection::Connection as _;
+use x11rb::protocol::xproto::{ChangeWindowAttributesAux, ConnectionExt as _, EventMask};
+use x11rb::protocol::Event;
 pub(super) fn start(
     shared: Arc<Shared>,
     address: SocketAddr,
@@ -63,6 +65,9 @@ pub(super) fn start(
                     let mut current_id = 0;
                     let mut client_size = (0, 0);
                     let mut frame = 0u64;
+                    let mut last_sent = None;
+                    let mut decoder_priming = 0u8;
+                    let mut watched_preview = 0;
                     let mut last = Instant::now() - Duration::from_secs(1);
                     while !shared.stop.load(Ordering::Relaxed) {
                         let mut size = [0u8; 4];
@@ -90,6 +95,8 @@ pub(super) fn start(
                             .and_then(|v| u32::try_from(v).ok())
                             .ok_or_else(|| Error::Msg("Missing window".into()))?;
                         if request["paused"].as_bool() == Some(true) {
+                            last_sent = None;
+                            decoder_priming = 3;
                             let header=serde_json::json!({"type":"window-paused-v1","windowId":id,"bytes":0}).to_string();
                             socket.write_all(&(header.len() as u32).to_be_bytes())?;
                             socket.write_all(header.as_bytes())?;
@@ -137,8 +144,48 @@ pub(super) fn start(
                         };
                         let (source_x, source_y, source_width, source_height) =
                             (owner_x, owner_y, owner_width, owner_height);
+                        let shell_preview = system_windows
+                            .iter()
+                            .any(|window| window.id == id && !window.panel);
+                        let mut preview_remapped = false;
+                        if shell_preview {
+                            if watched_preview != id {
+                                position_link
+                                    .conn
+                                    .change_window_attributes(
+                                        id,
+                                        &ChangeWindowAttributesAux::new()
+                                            .event_mask(EventMask::STRUCTURE_NOTIFY),
+                                    )
+                                    .map_err(Error::x11)?
+                                    .check()
+                                    .map_err(Error::x11)?;
+                                watched_preview = id;
+                            }
+                            while let Some(event) =
+                                position_link.conn.poll_for_event().map_err(Error::x11)?
+                            {
+                                preview_remapped |= match event {
+                                    Event::MapNotify(event) => event.window == id,
+                                    Event::UnmapNotify(event) => event.window == id,
+                                    _ => false,
+                                };
+                            }
+                            if position_link
+                                .conn
+                                .get_window_attributes(id)
+                                .map_err(Error::x11)?
+                                .reply()
+                                .map_err(Error::x11)?
+                                .map_state
+                                != x11rb::protocol::xproto::MapState::VIEWABLE
+                            {
+                                return Err(Error::Msg("Shell preview closed".into()));
+                            }
+                        }
                         let root_capture = request["rootCapture"].as_bool().unwrap_or(false);
                         if !root_capture
+                            && !shell_preview
                             && (current_id != id
                                 || popups_at.elapsed() >= Duration::from_millis(80))
                         {
@@ -147,7 +194,7 @@ pub(super) fn start(
                                     .unwrap_or_default();
                             popups_at = Instant::now();
                         }
-                        if root_capture {
+                        if root_capture || shell_preview {
                             popups.clear();
                         }
                         let (source_x, source_y, source_width, source_height) =
@@ -181,11 +228,14 @@ pub(super) fn start(
                         let w = ((source_width as f64 * scale) as u32 / 2 * 2).max(128) as u16;
                         let h = ((source_height as f64 * scale) as u32 / 2 * 2).max(128) as u16;
                         if capture.is_none()
+                            || preview_remapped
                             || native != (source_width, source_height)
                             || root_mode != root_capture
                             || current_id != id
                             || client_size != (geometry.width, geometry.height)
                         {
+                            last_sent = None;
+                            decoder_priming = 3;
                             encoder.take();
                             capture.take();
                             popup_captures.clear();
@@ -362,6 +412,27 @@ pub(super) fn start(
                                 (0, 0, w.into(), h.into()),
                             )
                         }
+                        if mask_at.elapsed() >= Duration::from_millis(100) {
+                            mask = crate::platform::x11::windows::occluders(&position_link, id)
+                                .unwrap_or_default();
+                            mask_at = Instant::now();
+                        }
+                        let mut header = serde_json::json!({"type":"window-h264-v1","windowId":id,"width":w,"height":h,"occluders":mask,"ownerX":owner_x,"ownerY":owner_y,"ownerWidth":owner_width,"ownerHeight":owner_height,"popups":popups,"sourceX":source_x,"sourceY":source_y,"sourceWidth":source_width,"sourceHeight":source_height});
+                        // Compare the exact capture and mapping. A static surface can keep its
+                        // last buffer, including at full resolution and with all overlays.
+                        if decoder_priming == 0
+                            && request["skipIdentical"].as_bool() == Some(true)
+                            && last_sent.as_ref().is_some_and(
+                                |(pixels, metadata): &(Vec<u8>, serde_json::Value)| {
+                                    pixels == &image.bgra && metadata == &header
+                                },
+                            )
+                        {
+                            let response=serde_json::json!({"type":"window-unchanged-v1","windowId":id,"bytes":0}).to_string();
+                            socket.write_all(&(response.len() as u32).to_be_bytes())?;
+                            socket.write_all(response.as_bytes())?;
+                            continue;
+                        }
                         encoder.as_mut().unwrap().submit(&image)?;
                         let encoded = encoder
                             .as_mut()
@@ -371,13 +442,16 @@ pub(super) fn start(
                         if encoded.bytes.len() > 8 * 1024 * 1024 {
                             return Err(Error::Msg("Window frame too large".into()));
                         }
-                        if mask_at.elapsed() >= Duration::from_millis(100) {
-                            mask = crate::platform::x11::windows::occluders(&position_link, id)
-                                .unwrap_or_default();
-                            mask_at = Instant::now();
+                        if request["skipIdentical"].as_bool() == Some(true) {
+                            last_sent = Some((image.bgra, header.clone()));
+                        } else {
+                            last_sent = None;
                         }
+                        decoder_priming = decoder_priming.saturating_sub(1);
                         frame += 1;
-                        let header=serde_json::json!({"type":"window-h264-v1","windowId":id,"frame":frame,"width":w,"height":h,"occluders":mask,"ownerX":owner_x,"ownerY":owner_y,"ownerWidth":owner_width,"ownerHeight":owner_height,"popups":popups,"sourceX":source_x,"sourceY":source_y,"sourceWidth":source_width,"sourceHeight":source_height,"bytes":encoded.bytes.len()}).to_string();
+                        header["frame"] = frame.into();
+                        header["bytes"] = encoded.bytes.len().into();
+                        let header = header.to_string();
                         socket.write_all(&(header.len() as u32).to_be_bytes())?;
                         socket.write_all(header.as_bytes())?;
                         socket.write_all(&encoded.bytes)?;

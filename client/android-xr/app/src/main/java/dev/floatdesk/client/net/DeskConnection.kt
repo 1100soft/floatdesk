@@ -55,6 +55,24 @@ internal class DeskConnection(
     @Volatile private var nativeAreaPixels=0L
     @Volatile private var detailTargetFps=30
     private var localResources:LocalResources?=null
+    private val cooling=ThermalVideoGate()
+    val thermalPaused=mutableStateOf(false)
+    private val optionalRenderingLimited=mutableStateOf(false)
+    val limitOptionalRendering get()=optionalRenderingLimited.value
+    @Volatile private var heatPaused=false
+    fun isVideoActive()=renderingActive && !heatPaused
+
+    private fun updateThermal(level:Int,now:Long){
+        optionalRenderingLimited.value=level>=android.os.PowerManager.THERMAL_STATUS_SEVERE
+        val paused=cooling.update(level,now)
+        if(paused==heatPaused)return
+        heatPaused=paused
+        thermalPaused.value=paused
+        if(paused)viewedDetail(null,"Paused: headset cooling")
+        Log.i("Floatdesk",if(paused)"Video paused at thermal level $level" else "Video resumed after cooling")
+        applyVideoActivity()
+        if(!paused && renderingActive)askKeyframe()
+    }
     fun configureVideo(quality:Int,mbps:Float,sharpen:Float,fraction:Float,areaPixels:Long=0,targetFps:Int=30){
         val encodingChanged=videoQuality!=quality || videoMbps!=mbps
         nativeAreaPixels=areaPixels;detailTargetFps=targetFps
@@ -84,7 +102,7 @@ internal class DeskConnection(
         val format=currentMonitors.singleOrNull()
         val target=bounds?.let{qualityOutputSize(it[2],it[3],qualityOutputLimit())}
         val fraction=if(rect!=null && target!=null)qualityDenseFraction(denseFraction,rect,target.first,target.second) else denseFraction
-        val request=if(detailDiagnostics.get().enabled && rect!=null && renderingActive && desktopVisible && remote!=null && bounds!=null && format!=null)DetailRequest(remote,detailSession,rect,bounds,center ?: (rect.centerU to rect.centerV),videoQuality,videoMbps,fraction,if(magnifierActive)4096 else nativeAreaPixels,detailTargetFps) else null
+        val request=if(detailDiagnostics.get().enabled && rect!=null && isVideoActive() && desktopVisible && remote!=null && bounds!=null && format!=null)DetailRequest(remote,detailSession,rect,bounds,center ?: (rect.centerU to rect.centerV),videoQuality,videoMbps,fraction,if(magnifierActive)4096 else nativeAreaPixels,detailTargetFps) else null
         val reason=when {
             !detailDiagnostics.get().enabled->"Normal full-desktop streaming"
             rect==null->blockedReason
@@ -119,10 +137,11 @@ internal class DeskConnection(
     private val monitorPending=AtomicInteger()
     private var currentMonitors=emptyList<MonitorHello>()
     private val hostDiscovery=HostDiscovery()
-    private var lastAcceptedHello=0L
+    @Volatile private var lastAcceptedHello=0L
     private val activeSurfaces=ConcurrentHashMap<Int,Surface>()
     private val main = Handler(Looper.getMainLooper())
-    private val assembler = CursorAssembler()
+    private var assembler = CursorAssembler()
+    private val inputEpoch = AtomicInteger()
     @Volatile private var renderingActive=true
     @Volatile private var desktopVisible=true
     private val decoders = ConcurrentHashMap<Int, MonitorDecoder>()
@@ -181,7 +200,10 @@ internal class DeskConnection(
             acquire()
         }
         running = true
-        localResources=LocalResources(thermalStatus={context.applicationContext.getSystemService(android.os.PowerManager::class.java)?.currentThermalStatus ?: -1}) {message->
+        val power=context.applicationContext.getSystemService(android.os.PowerManager::class.java)
+        localResources=LocalResources(thermalStatus={power?.currentThermalStatus ?: -1},
+            onThermal={level,now->main.post{if(running)updateThermal(level,now)}},
+            diagnosticsVisible={detailDiagnostics.get().let{it.showResources && it.showOverlay}}) {message->
             val value=detailDiagnostics.updateAndGet{it.copy(localResources=message)};decoders[0]?.detailDebug(value);publishResources()
         }
         outgoingThread = HandlerThread("floatdesk-input").also { it.start(); outgoing = Handler(it.looper) }
@@ -190,7 +212,8 @@ internal class DeskConnection(
     }
 
     fun disconnect() {
-        publishCursorMap(dev.floatdesk.client.CursorTopology());windowRequests.clear()
+        publishCursorMap(dev.floatdesk.client.CursorTopology())
+        invalidateHostState()
         localResources?.close();localResources=null
         detailWorker?.close();detailWorker=null
         running = false
@@ -237,27 +260,51 @@ internal class DeskConnection(
     fun setDesktopVisible(visible:Boolean) {
         if(desktopVisible==visible)return
         desktopVisible=visible
+        sendRenderingState()
         if(!visible)viewedDetail(null)
-        decoders.values.forEach { it.setRenderingActive(renderingActive && visible) }
+        decoders.values.forEach { it.setRenderingActive(isVideoActive() && visible) }
     }
 
-    private fun sendRenderingState(){send(Protocol.workspace(org.json.JSONObject().put("type","renderState").put("active",renderingActive).toString()))}
+    private fun sendRenderingState(){send(Protocol.workspace(org.json.JSONObject().put("type","renderState").put("active",isVideoActive() && desktopVisible).toString()))}
     @Synchronized
     fun setRenderingActive(active: Boolean) {
         renderingActive=active
-        sendRenderingState()
-        if(windowCapturesLazy.isInitialized())windowCaptures.setActive(active)
         if(!active){viewedDetail(null);cancelGazeFocus();publishCursorMap(dev.floatdesk.client.CursorTopology())}
+        applyVideoActivity()
+    }
+
+    @Synchronized
+    private fun applyVideoActivity(){
+        sendRenderingState()
+        val active=isVideoActive()
+        if(windowCapturesLazy.isInitialized())windowCaptures.setActive(active)
         decoders.values.forEach { it.setRenderingActive(active && desktopVisible) }
     }
 
+    private val rebuildStalledDecoders=java.util.concurrent.atomic.AtomicBoolean()
+    private val outputRecoveryEpoch=java.util.concurrent.atomic.AtomicInteger()
     fun recoverRenderingOutputs(){
-        decoders.values.forEach{it.refreshOutput()}
-        windowCaptureEpoch.intValue++
+        val epoch=outputRecoveryEpoch.incrementAndGet()
+        val started=android.os.SystemClock.elapsedRealtime()
+        fun recover(attempt:Int){
+            if(!running || !isVideoActive() || !desktopVisible || outputRecoveryEpoch.get()!=epoch)return
+            val stalled=decoders.filter{(index,decoder)->outputNeedsRecovery(activeSurfaces[index]?.isValid==true,decoder.lastPresentedAt(),started)}
+            if(attempt==0 || stalled.isNotEmpty()){
+                stalled.values.forEach{it.recoverOutput()}
+                pendingRemote?.let{remote->stalled.values.forEach{it.punch(remote)}}
+                send(Protocol.keyframeRequest(0xff))
+            }
+            if(attempt<3 && (attempt==0 || stalled.isNotEmpty()))main.postDelayed({recover(attempt+1)},1500L)
+            else if(attempt==3 && stalled.isNotEmpty() && dumpFile==null){
+                Log.w("Floatdesk","Rebuilding desktop decoders after wake without a presented frame")
+                rebuildStalledDecoders.set(true)
+            }
+        }
+        main.post{windowCaptureEpoch.intValue++;recover(0)}
     }
 
     fun requestDisplays(action:Int=0,index:Int=0,width:Int=1920,height:Int=1080) {
-        val handler=outgoing ?: return
+        if (lastAcceptedHello == 0L || outgoing == null) return
         if(!monitorPending.compareAndSet(0,-1)) return
         val id=monitorSequence.incrementAndGet()
         monitorPending.set(id);displayBusy.value=true
@@ -265,6 +312,7 @@ internal class DeskConnection(
     }
 
     fun requestArrangement(positions:List<Pair<Int,Int>>) {
+        if (lastAcceptedHello == 0L) return
         val info=workspaceInfo.value ?: return
         if(positions.size!=info.screens.size || outgoing==null || !monitorPending.compareAndSet(0,-1))return
         val id=monitorSequence.incrementAndGet();monitorPending.set(id);displayBusy.value=true
@@ -276,7 +324,7 @@ internal class DeskConnection(
 
     private fun submitDisplayRequest(id:Int,packet:ByteArray,readOnly:Boolean) {
         val handler=outgoing ?: return
-        handler.post { send(packet) }
+        handler.post { if(monitorPending.get()==id) send(packet) }
         for(delay in listOf(300L,900L,1800L,3000L,5000L,8000L,12000L,18000L)) handler.postDelayed({ if(monitorPending.get()==id) send(packet) },delay)
         main.postDelayed({ if(monitorPending.get()==id) {
             displayState.value=displayState.value.copy(ok=true,message=if(readOnly) "Checking screen state…" else "Applying screen changes…")
@@ -319,6 +367,7 @@ internal class DeskConnection(
     fun pollTyping(now:Long){if(now-lastTypingPoll>=150){lastTypingPoll=now;send(Protocol.workspace(org.json.JSONObject().put("type","typingState").toString()))}}
     fun cancelGazeFocus(){gazeFocusPending.set(0)}
     fun requestGazeFocus(window:Long){
+        if (lastAcceptedHello == 0L) return
         val handler=outgoing ?: return
         val id=monitorSequence.incrementAndGet();gazeFocusPending.set(id);gazeFocusError.value=""
         val packet=Protocol.workspace(org.json.JSONObject().put("type","gazeFocus").put("quietMs",typingQuietMs).put("requestId",id).put("windowId",window).toString())
@@ -326,11 +375,25 @@ internal class DeskConnection(
         main.postDelayed({if(gazeFocusPending.compareAndSet(id,0))gazeFocusError.value="Gaze focus request timed out"},2000)
     }
     @Volatile var cursorLocation:dev.floatdesk.client.CursorLocation?=null
+    @Volatile var layoutMapDebug=floatArrayOf()
     @Volatile var cursorTopology=dev.floatdesk.client.CursorTopology()
     private val cursorMapSequence=java.util.concurrent.atomic.AtomicLong()
     @Volatile var cursorMapDebug=floatArrayOf()
     @Volatile var cursorWires=emptyMap<String,FloatArray>()
+    private var lastCursorMap:dev.floatdesk.client.CursorTopology?=null
+    private var lastCursorMapJson=""
+    private var cursorMapSentAt=0L
+    private var cursorMapSentEpoch=-1
     fun publishCursorMap(map:dev.floatdesk.client.CursorTopology){
+        val now=android.os.SystemClock.uptimeMillis()
+        if(lastCursorMap==map){
+            if(cursorMapSentEpoch!=inputEpoch.get() || now-cursorMapSentAt>=400){
+                cursorMapSentEpoch=inputEpoch.get()
+                cursorMapSentAt=now
+                sendCursorMap(lastCursorMapJson)
+            }
+            return
+        }
         var actual=map
         var json=actual.json()
         while(json.toByteArray(Charsets.UTF_8).size>60000){
@@ -352,10 +415,14 @@ internal class DeskConnection(
             }
             rows.flatMap{val a=point(it.a);val b=point(it.b);listOf(a.first,a.second,b.first,b.second)}.toFloatArray()
         }
-        send(Protocol.workspace(org.json.JSONObject(json).put("sequence",cursorMapSequence.incrementAndGet()).toString()))
+        lastCursorMap=map;lastCursorMapJson=json;cursorMapSentAt=now;cursorMapSentEpoch=inputEpoch.get()
+        sendCursorMap(json)
     }
+    private fun sendCursorMap(json:String)=send(Protocol.workspace(org.json.JSONObject(json)
+        .put("sequence",cursorMapSequence.incrementAndGet()).toString()))
     private val windowRequests=java.util.concurrent.ConcurrentHashMap<Int,ByteArray>()
     fun windowAction(window:Long,action:String,move:dev.floatdesk.client.WindowMove?=null){
+        if (lastAcceptedHello == 0L) return
         val json=org.json.JSONObject().put("type","windowAction").put("requestId",monitorSequence.incrementAndGet()).put("windowId",window).put("action",action)
         move?.let{json.put("x",it.x).put("y",it.y);it.width?.let{w->json.put("width",w)};it.height?.let{h->json.put("height",h)}}
         val id=json.getInt("requestId");val packet=Protocol.workspace(json.toString())
@@ -368,6 +435,7 @@ internal class DeskConnection(
         }
     }
     fun requestFocus(target:FocusTarget):Boolean {
+        if (lastAcceptedHello == 0L) return false
         val handler=outgoing ?: return false
         if(!focusPending.compareAndSet(0,-1))return false
         val id=monitorSequence.incrementAndGet();focusPending.set(id);focusBusy.value=true
@@ -408,11 +476,21 @@ internal class DeskConnection(
 
     @Synchronized
     fun projection(index:Int,value:ViewProjection?) {viewProjections[index]=value;decoders[index]?.projection(value)}
+    private var nextNativeMeshUpdate=0L
+    /** Mesh replacements share one SceneCore command queue, even across different video decoders. */
+    fun tryNativeMeshUpdate(submit:()->Boolean):Boolean {
+        val now=android.os.SystemClock.uptimeMillis()
+        if(now<nextNativeMeshUpdate || thermalPaused.value)return false
+        if(!submit())return false
+        nextNativeMeshUpdate=now+if(limitOptionalRendering)64 else 32
+        return true
+    }
+
     fun tryDesktopShapeUpdate(index:Int,update:()->Unit):Boolean {
         val compositor=decoders[index]?.windowRenderer()
-        if(compositor!=null)return compositor.tryShapeUpdate(update)
-        update()
-        return true
+        return tryNativeMeshUpdate {
+            if(compositor!=null)compositor.tryShapeUpdate(update) else {update();true}
+        }
     }
     fun aimOverlay(index: Int,value: VideoAim) { decoders[index]?.overlay(value) }
 
@@ -420,6 +498,31 @@ internal class DeskConnection(
     fun detachSurface(index: Int,expected:Surface?=null) {
         if(expected==null) activeSurfaces.remove(index) else if(!activeSurfaces.remove(index,expected)) return
         decoders[index]?.detach()
+    }
+
+    private fun invalidateHostState() {
+        inputEpoch.incrementAndGet()
+        windowRequests.clear()
+        pendingPointer.set(null)
+        pendingPad.set(null)
+        cursorLocation = null
+        pendingCursors.clear()
+        assembler = CursorAssembler()
+        lastTypingAt = 0L
+        typingWindow = null
+        monitorPending.set(0)
+        focusPending.set(0)
+        gazeFocusPending.set(0)
+        val epoch = inputEpoch.get()
+        main.post {
+            if (inputEpoch.get() != epoch) return@post
+            pointerDragging = false
+            padFingers = 0
+            cursors.value = emptyMap()
+            displayBusy.value = false
+            focusBusy.value = false
+            focusResult.value = null
+        }
     }
 
     private fun controlLoop() {
@@ -440,12 +543,8 @@ internal class DeskConnection(
             socket=next;control=next;previous.close()
             // Host mutation deduplication includes the source endpoint. Never
             // resend an uncertain mutation after changing our ephemeral port.
-            val reconcile=monitorPending.getAndSet(0)!=0
-            focusPending.set(0);gazeFocusPending.set(0)
-            if(reconcile)main.post {
-                displayBusy.value=false
-                requestDisplays()
-            }
+            lastAcceptedHello = 0L
+            invalidateHostState()
             lastHello=0L;lastReplyAt=android.os.SystemClock.elapsedRealtime()
             Log.w("Floatdesk","Control socket reopened: $reason");events.append("control socket reopened: $reason")
             return true
@@ -458,12 +557,14 @@ internal class DeskConnection(
                 lastProblemCheck=discoveryNow
                 reportProblem(connectionProblem(discoveryNow,startedAt,lastHostReplyAt,lastBeaconAt,headsetNetwork(appContext)))
             }
-            if(pendingRemote!=null && currentMonitors.isNotEmpty() && discoveryNow-lastReplyAt>=replyTimeoutMs) {
+            if(pendingRemote!=null && discoveryNow-lastReplyAt>=replyTimeoutMs) {
                 if(!reopenControl("host replies timed out"))Thread.sleep(250)
             }
-            val selected=hostDiscovery.select(pendingRemote,currentMonitors.isNotEmpty() && discoveryNow-lastAcceptedHello<5000,discoveryNow)
+            val selected=hostDiscovery.select(pendingRemote,lastAcceptedHello!=0L && discoveryNow-lastAcceptedHello<5000,discoveryNow)
             if(selected!=null && selected!=pendingRemote) {
                 Log.i("Floatdesk","Retrying host interface $pendingRemote -> $selected")
+                lastAcceptedHello = 0L
+                invalidateHostState()
                 pendingRemote=selected
                 lastHello=0L
             }
@@ -487,8 +588,10 @@ internal class DeskConnection(
                         if (pendingRemote == null) {
                             pendingRemote = InetSocketAddress(incoming.address, incoming.port)
                         }
+                        val recovered = lastAcceptedHello == 0L || detailSession != decoded.sessionId ||
+                            android.os.SystemClock.elapsedRealtime()-lastAcceptedHello>3500L
                         lastAcceptedHello=android.os.SystemClock.elapsedRealtime()
-                        onHello(decoded, pendingRemote ?: InetSocketAddress(incoming.address, 47000))
+                        onHello(decoded, InetSocketAddress(incoming.address, incoming.port), recovered)
                     }
                     is Packet.StreamState -> {if(incoming.address==pendingRemote?.address && incoming.port==pendingRemote?.port) main.post {reloading.value=decoded.reloading || videoPending.get()}}
                     is Packet.MonitorStatus -> {
@@ -497,20 +600,20 @@ internal class DeskConnection(
                         }
                     }
                     is Packet.Workspace -> {
-                        runCatching{org.json.JSONObject(decoded.json)}.getOrNull()?.takeIf{it.optString("type")=="windowActionResult"}?.let{windowRequests.remove(it.optInt("requestId"))}
-
                         if(incoming.address==pendingRemote?.address && incoming.port==pendingRemote?.port) {
-                            runCatching{org.json.JSONObject(decoded.json)}.getOrNull()?.takeIf{it.optString("type")=="cursorOwner"}?.let{reply->
+                            val reply = runCatching { org.json.JSONObject(decoded.json) }.getOrNull()
+                            reply?.takeIf{it.optString("type")=="windowActionResult"}?.let{windowRequests.remove(it.optInt("requestId"))}
+                            reply?.takeIf{it.optString("type")=="cursorOwner"}?.let{reply->
                                 cursorLocation=reply.optString("key").takeIf{it.isNotEmpty()}?.let{dev.floatdesk.client.CursorLocation(it,reply.optDouble("u").toFloat(),reply.optDouble("v").toFloat(),reply.optDouble("x").toFloat(),reply.optDouble("y").toFloat(),reply.optDouble("sourceX",reply.optDouble("x")).toFloat(),reply.optDouble("sourceY",reply.optDouble("y")).toFloat())}
                             }
-                            runCatching{org.json.JSONObject(decoded.json)}.getOrNull()?.takeIf{it.optString("type")=="typingState"}?.let{reply->
+                            reply?.takeIf{it.optString("type")=="typingState"}?.let{reply->
                                 typingWindow=reply.optLong("windowId").takeIf{it>0L}
                                 if(reply.optBoolean("available"))lastTypingAt=(android.os.SystemClock.uptimeMillis()-reply.optLong("ageMs",60000)).coerceAtLeast(1)
                             }
-                            runCatching{org.json.JSONObject(decoded.json)}.getOrNull()?.takeIf{it.optString("type")=="gazeFocusResult"}?.let{reply->
+                            reply?.takeIf{it.optString("type")=="gazeFocusResult"}?.let{reply->
                                 if(gazeFocusPending.compareAndSet(reply.optInt("requestId"),0))main.post{gazeFocusError.value=if(reply.optBoolean("ok"))"" else reply.optString("message","Could not focus window")}
                             }
-                            runCatching {org.json.JSONObject(decoded.json)}.getOrNull()?.takeIf{it.optString("type")=="focusResult"}?.let {reply->
+                            reply?.takeIf{it.optString("type")=="focusResult"}?.let {reply->
                                 val id=reply.optInt("requestId")
                                 if(id>0 && focusPending.compareAndSet(id,0))main.post {
                                     val a=reply.optJSONArray("rect")
@@ -518,7 +621,7 @@ internal class DeskConnection(
                                     focusBusy.value=false;focusResult.value=FocusResult(id,reply.optBoolean("ok") && rect!=null,rect,reply.optString("message"))
                                 }
                             }
-                            runCatching{org.json.JSONObject(decoded.json)}.getOrNull()?.takeIf{it.optString("type")=="resourceStats"}?.let{stats->
+                            reply?.takeIf{it.optString("type")=="resourceStats"}?.let{stats->
                                 fun n(key:String)=stats.optDouble(key,Double.NaN).takeIf{it.isFinite()}
                                 val gpu=n("gpuPct")?.let{String.format(java.util.Locale.ROOT,"%.0f%%",it)} ?: "n/a"
                                 val stages=if(n("captureMs")!=null && n("encodeMs")!=null)String.format(java.util.Locale.ROOT,"cap %.1fms enc %.1fms",n("captureMs"),n("encodeMs")) else "view timing n/a"
@@ -528,7 +631,7 @@ internal class DeskConnection(
                             WorkspaceInfo.parse(decoded.json)?.let {info->main.post {workspaceInfo.value=info;configurePresentation(screenSpacing)}}
                         }
                     }
-                    is Packet.Cursor -> onCursor(decoded.fragment)
+                    is Packet.Cursor -> if(incoming.address==pendingRemote?.address && incoming.port==pendingRemote?.port) onCursor(decoded.fragment)
                     is Packet.Beacon -> Unit
                     is Packet.Ignored -> Unit
                 }
@@ -580,11 +683,21 @@ internal class DeskConnection(
     }
 
     @Synchronized
-    private fun onHello(hello: Packet.HostHello, remote: InetSocketAddress) {
+    private fun onHello(hello: Packet.HostHello, remote: InetSocketAddress, recovered: Boolean) {
         sendRenderingState()
         sendEncoderSettings()
-        if(detailSession!=hello.sessionId){viewedDetail(null);detailSession=hello.sessionId;main.post{windowCaptureEpoch.intValue++}}
-        val healthy=decoders.isNotEmpty() && decoders.size==hello.monitors.size && hello.monitors.all{decoders[it.index]?.isHealthy()==true}
+        if (recovered) {
+            invalidateHostState()
+            viewedDetail(null)
+            detailSession = hello.sessionId
+            decoders.values.forEach { it.punch(remote) }
+            recoverRenderingOutputs()
+            main.post {
+                status.value = "Connected to ${remote.hostString}:${remote.port}, ${hello.monitors.size} monitor(s)"
+                requestDisplays()
+            }
+        }
+        val healthy=!rebuildStalledDecoders.getAndSet(false) && decoders.size==hello.monitors.size && hello.monitors.all{decoders[it.index]?.isHealthy()==true}
         if (hello.monitors==currentMonitors && healthy) {
             // A dropped one-shot progress notification must not leave an overlay
             // behind after the host has returned to its normal heartbeat.
@@ -592,7 +705,7 @@ internal class DeskConnection(
             return
         }
         Log.i("Floatdesk","Host handshake from $remote: ${hello.monitors.size} video stream(s)")
-        main.post {reloading.value=true}
+        main.post {reloading.value=hello.monitors.isNotEmpty()}
         val sameFormat=hello.monitors.map {it.copy(ssrc=0)}==currentMonitors.map {it.copy(ssrc=0)} && healthy
         if(sameFormat) {
             currentMonitors=hello.monitors;videoPending.set(true)
@@ -602,7 +715,7 @@ internal class DeskConnection(
         }
         val generation=decoderGeneration.incrementAndGet()
         decoders.values.forEach { it.stop() };decoders.clear()
-        videoPending.set(true)
+        videoPending.set(hello.monitors.isNotEmpty())
         videos=videos.mapIndexed { index,socket -> if(socket.isClosed) DatagramSocket(48000+index).apply {receiveBufferSize=8*1024*1024} else socket }
         currentMonitors=hello.monitors
         for (monitor in hello.monitors) {
@@ -614,8 +727,8 @@ internal class DeskConnection(
             decoder.presentation(if(hello.monitors.size>1) ScreenPresentation() else screenPresentation.get())
             decoder.projection(viewProjections[monitor.index])
             activeSurfaces[monitor.index]?.let { decoder.attach(it) }
-            decoder.punch(remote.address)
-            decoder.setRenderingActive(renderingActive && desktopVisible)
+            decoder.punch(remote)
+            decoder.setRenderingActive(isVideoActive() && desktopVisible)
             decoder.start()
             decoders[monitor.index] = decoder
         }
@@ -663,18 +776,19 @@ internal class DeskConnection(
     }
 
     fun claimCursor(key:String,u:Float,v:Float){
-        if(cursorTopology.patches.isEmpty())return
+        if(lastAcceptedHello==0L || cursorTopology.patches.isEmpty())return
         val b=workspaceInfo.value?.bounds() ?: return
         send(Protocol.workspace(org.json.JSONObject().put("type","cursorSpace").put("sequence",pointerSeq.incrementAndGet()).put("key",key).put("x",b[0]+u*b[2]).put("y",b[1]+v*b[3]).toString()))
     }
     fun movePointer(monitor: Int,x: Float,y: Float,dragging: Boolean = false) {
-        if (monitors.value.none { it.index == monitor }) return
+        if (lastAcceptedHello == 0L || monitors.value.none { it.index == monitor }) return
         val packet=Protocol.pointerMove(monitor,x,y,pointerSeq.incrementAndGet(),dragging)
         if(dragging != pointerDragging) {
             pointerDragging=dragging
             pendingPointer.set(null)
             // Button edges must not disappear into a newer coalesced motion frame.
-            outgoing?.post { send(packet) }
+            val epoch = inputEpoch.get()
+            outgoing?.post { if (inputEpoch.get() == epoch) send(packet) }
         } else {
             pendingPointer.set(packet)
             schedulePointerFlush()
@@ -682,27 +796,33 @@ internal class DeskConnection(
     }
 
     fun clickPointer(monitor: Int,x: Float,y: Float,button: Int) {
-        if (monitors.value.none { it.index == monitor }) return
+        if (lastAcceptedHello == 0L || monitors.value.none { it.index == monitor }) return
         val sequence=clickSeq.incrementAndGet()
+        val epoch = inputEpoch.get()
         val requestedAt=System.nanoTime()/1_000_000
         val packet=Protocol.pointerClick(monitor,x,y,button,sequence)
         val handler=outgoing ?: return
         // Atomic click commands are deduplicated by the host. Retries cannot become extra clicks.
         handler.post {
+            if (inputEpoch.get() != epoch) return@post
             if(button==3) Log.i("Floatdesk","right click sent sequence=$sequence queueMs=${System.nanoTime()/1_000_000-requestedAt}")
             send(packet)
         }
-        handler.postDelayed({ send(packet) },20)
-        handler.postDelayed({ send(packet) },60)
+        handler.postDelayed({ if (inputEpoch.get() == epoch) send(packet) },20)
+        handler.postDelayed({ if (inputEpoch.get() == epoch) send(packet) },60)
     }
 
     fun touchpad(fingers: Int,x: Float,y: Float) {
+        if (lastAcceptedHello == 0L) return
+        val epoch = inputEpoch.get()
         val packet=Protocol.touchpad(fingers,x,y,padSeq.incrementAndGet())
         val handler=outgoing ?: return
         if(fingers!=padFingers) {
             padFingers=fingers; pendingPad.set(null)
-            handler.post { send(packet) }
-            if(fingers==0) { handler.postDelayed({ send(packet) },20); handler.postDelayed({ send(packet) },60) }
+            handler.post { if (inputEpoch.get() == epoch) send(packet) }
+            if(fingers==0) {
+                for (delay in listOf(20L, 60L)) handler.postDelayed({ if (inputEpoch.get() == epoch) send(packet) }, delay)
+            }
         } else {
             pendingPad.set(packet)
             schedulePadFlush()
@@ -731,7 +851,8 @@ internal class DeskConnection(
 
     private fun send(bytes: ByteArray) {
         if (Looper.myLooper() == Looper.getMainLooper()) {
-            outgoing?.post { send(bytes) }
+            val epoch = inputEpoch.get()
+            outgoing?.post { if (inputEpoch.get() == epoch) send(bytes) }
             return
         }
         val socket = control ?: return

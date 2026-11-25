@@ -28,6 +28,7 @@ internal data class MonitorPlacement(
     val preferredRefreshHz: Int,
     val viewCenterU:Float=.5f,
     val viewCenterV:Float=.5f,
+    val freePose:Boolean=false,
 )
 
 internal data class PanelPlacement(
@@ -36,10 +37,10 @@ internal data class PanelPlacement(
     val heightM: Float = 0.48f,
 )
 
-internal data class FixedMagnifierPlacement(val id:String,val pose:Pose,val widthM:Float,val heightM:Float)
+internal data class FixedMagnifierPlacement(val id:String,val pose:Pose,val widthM:Float,val heightM:Float,val freePose:Boolean=false)
 
 internal enum class InteractionMode(val label:String){
-    MOUSE("Mouse"), FOCUS("Focus"), WINDOW_GRAB("Window grab");
+    FOCUS("Focus"), WINDOW_GRAB("Window grab");
     fun next()=entries[(ordinal+1)%entries.size]
 }
 
@@ -50,11 +51,19 @@ internal data class WorkspaceFile(
     val layouts: MutableMap<String, MutableList<MonitorPlacement>> = mutableMapOf(),
     val control: PanelPlacement = PanelPlacement(),
     val sphericalWarp: Boolean = false,
-    val eyeAiming: Boolean = false,
-    val mouseGestures: Boolean = false,
+    val handMouse: Boolean = false,
+    val reverseHandScroll:Boolean=true,
+    val grabToMove: Boolean = false,
+    val freeManipulation: Boolean = false,
+    val desktopReference: Boolean = false,
+    val referencePlacement: FixedMagnifierPlacement? = null,
+    val layoutOrigin:Pose?=null,
+    val desktopHome:Pose?=null,
+    val cursorMapReference:Pose?=null,
     val screenSpacing:Float=0f,
     val viewerReference:Pose?=null,
-    val interactionMode:InteractionMode=InteractionMode.MOUSE,
+    val referenceUnitsPerMeter:Float?=null,
+    val interactionMode:InteractionMode=InteractionMode.FOCUS,
     val cursorRemap:Boolean=true,
     val gazeToFocus:Boolean=false,
     val magnifyWindow:Boolean=false,
@@ -78,8 +87,10 @@ internal data class WorkspaceFile(
     /** Loaded from a file laid out for the fixed 0.9–1.5 m layers; not persisted. */
     val legacyDistances:Boolean=false,
 ){
-    val focusMode get()=interactionMode==InteractionMode.FOCUS
-    val windowGrabMode get()=interactionMode==InteractionMode.WINDOW_GRAB
+    val layoutModeActive get()=grabToMove || freeManipulation
+    val handMouseActive get()=handMouse && !layoutModeActive
+    val focusMode get()=!layoutModeActive && !handMouseActive && interactionMode==InteractionMode.FOCUS
+    val windowGrabMode get()=!layoutModeActive && !handMouseActive && interactionMode==InteractionMode.WINDOW_GRAB
 }
 
 internal class WorkspaceStore(private val file: File) {
@@ -92,13 +103,130 @@ internal class WorkspaceStore(private val file: File) {
         return runCatching { decode(JSONObject(file.readText())) }.getOrElse { WorkspaceFile() }
     }
 
-    fun save(workspace: WorkspaceFile) = synchronized(lock) {
-        file.parentFile?.mkdirs()
-        val temporary=File(file.parentFile,file.name+".tmp")
-        temporary.writeText(encode(workspace.copy(viewerReference=viewerReference ?: workspace.viewerReference)).toString(2))
-        java.nio.file.Files.move(temporary.toPath(),file.toPath(),java.nio.file.StandardCopyOption.REPLACE_EXISTING,java.nio.file.StandardCopyOption.ATOMIC_MOVE)
-
+    private val historyFile = File(file.parentFile, "layout-history.json")
+    private val history by lazy {
+        runCatching { JSONObject(historyFile.readText()) }
+            .getOrElse { JSONObject().put("entries", JSONArray()).put("index", -1) }
     }
+    private val layoutKeys = listOf("active_layout", "layouts", "layout_origin", "desktop_home",
+        "cursor_map_reference", "fixed_magnifiers", "system_panels", "reference_placement")
+
+    private val savedLayoutsFile = File(file.parentFile, "saved-layouts.json")
+    private val savedLayouts by lazy {
+        runCatching { JSONObject(savedLayoutsFile.readText()) }.getOrElse { JSONObject() }
+    }
+
+    fun layoutPreviews(): List<FloatArray?> = synchronized(lock) {
+        (0 until 3).map { slot ->
+            savedLayouts.optJSONObject(slot.toString())?.optJSONArray("map")?.let { values ->
+                FloatArray(values.length()) { values.optDouble(it).toFloat() }
+            }
+        }
+    }
+
+    fun saveLayoutSlot(slot: Int, workspace: WorkspaceFile, preview: FloatArray) = synchronized(lock) {
+        if (workspace.layouts[workspace.activeLayout].isNullOrEmpty() || preview.isEmpty()) return
+        savedLayouts.put(slot.toString(), JSONObject().put("layout", layoutSnapshot(encode(workspace)))
+            .put("map", JSONArray(preview.toList())))
+        write(savedLayoutsFile, savedLayouts)
+    }
+
+    fun restoreLayoutSlot(slot: Int, workspace: WorkspaceFile): WorkspaceFile? = synchronized(lock) {
+        val saved = savedLayouts.optJSONObject(slot.toString())?.optJSONObject("layout") ?: return null
+        val restored = applyLayout(workspace, saved)
+        recordLayout(restored, "restore saved layout ${slot+1}")
+        restored
+    }
+
+    private fun applyLayout(workspace: WorkspaceFile, snapshot: JSONObject): WorkspaceFile {
+        val saved = decode(snapshot)
+        return workspace.copy(activeLayout = saved.activeLayout, layouts = saved.layouts,
+            layoutOrigin = saved.layoutOrigin, desktopHome = saved.desktopHome, cursorMapReference = saved.cursorMapReference,
+            fixedMagnifiers = saved.fixedMagnifiers, systemPanels = saved.systemPanels, referencePlacement = saved.referencePlacement)
+    }
+
+    fun save(workspace: WorkspaceFile) = synchronized(lock) {
+        write(file, encode(withViewer(workspace)))
+    }
+
+    fun recordLayout(workspace: WorkspaceFile, reason: String) = synchronized(lock) {
+        val encoded = encode(withViewer(workspace))
+        val snapshot = layoutSnapshot(encoded)
+        val entries = history.getJSONArray("entries")
+        val index = history.getInt("index")
+        val current = entries.optJSONObject(index)?.getJSONObject("layout")
+        if (current != null && layoutKeys.all { current.opt(it)?.toString() == snapshot.opt(it)?.toString() }) return
+        val next = JSONArray()
+        for (i in maxOf(0, index - 38)..index) next.put(entries.getJSONObject(i))
+        next.put(JSONObject().put("time_ms", System.currentTimeMillis()).put("action", reason).put("layout", snapshot))
+        updateHistory(next, next.length() - 1, reason)
+        write(file, encoded)
+    }
+
+    fun hasLayoutHistory(): Boolean = synchronized(lock) {
+        history.getJSONArray("entries").length() > 0
+    }
+
+    fun hasPlacementChange(workspace: WorkspaceFile): Boolean = synchronized(lock) {
+        val current = history.getJSONArray("entries").optJSONObject(history.getInt("index"))
+            ?.getJSONObject("layout") ?: return true
+        val encoded = encode(workspace)
+        layoutKeys.any { it != "cursor_map_reference" && current.opt(it)?.toString() != encoded.opt(it)?.toString() }
+    }
+
+    fun stepLayout(workspace: WorkspaceFile, delta: Int): WorkspaceFile? = synchronized(lock) {
+        val entries = history.getJSONArray("entries")
+        val index = history.getInt("index") + delta
+        val entry = entries.optJSONObject(index) ?: return null
+        val restored = applyLayout(workspace, entry.getJSONObject("layout"))
+        write(file, encode(withViewer(restored)))
+        updateHistory(entries, index, if (delta < 0) "undo" else "redo")
+        restored
+    }
+
+    // Apply the same XR tracking-space recovery to every undo/redo entry.
+    fun rebaseLayoutHistory(prior: Pose, priorUnits: Float, viewer: Pose, units: Float) = synchronized(lock) {
+        fun rebase(entry: JSONObject) {
+            val saved = decode(entry.getJSONObject("layout"))
+            val restored = saved.copy(viewerReference = prior, referenceUnitsPerMeter = priorUnits)
+                .restoreViewer(viewer, units)
+            entry.put("layout", layoutSnapshot(encode(restored)))
+        }
+        if (historyFile.exists()) {
+            val entries = history.getJSONArray("entries")
+            for (i in 0 until entries.length()) rebase(entries.getJSONObject(i))
+            write(historyFile, history)
+        }
+        if (savedLayoutsFile.exists()) {
+            savedLayouts.keys().forEach { rebase(savedLayouts.getJSONObject(it)) }
+            write(savedLayoutsFile, savedLayouts)
+        }
+    }
+
+    private fun layoutSnapshot(encoded: JSONObject) = JSONObject().also { snapshot ->
+        for (key in layoutKeys + listOf("anchor_uuid")) {
+            encoded.opt(key)?.let { snapshot.put(key, it) }
+        }
+    }
+
+    private fun updateHistory(entries: JSONArray, index: Int, reason: String) {
+        history.put("entries", entries).put("index", index)
+        write(historyFile, history)
+        val snapshot = entries.getJSONObject(index).getJSONObject("layout")
+        android.util.Log.i("Floatdesk", "layout action=$reason step=${index + 1}/${entries.length()} state=$snapshot")
+    }
+
+    private fun withViewer(workspace: WorkspaceFile) = workspace.copy(viewerReference=viewerReference ?: workspace.viewerReference,
+        referenceUnitsPerMeter=if(viewerReference!=null)viewerUnitsPerMeter else workspace.referenceUnitsPerMeter)
+
+    private fun write(destination: File, json: JSONObject) {
+        destination.parentFile?.mkdirs()
+        val temporary = File(destination.parentFile, destination.name + ".tmp")
+        temporary.writeText(json.toString(2))
+        java.nio.file.Files.move(temporary.toPath(), destination.toPath(),
+            java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+    }
+
 }
 
 internal fun deskLayout(monitors: List<Triple<String, Int, Int>>): MutableList<MonitorPlacement> {
@@ -135,10 +263,11 @@ internal fun WorkspaceFile.monitorPlaced(
     val current = layouts[activeLayout] ?: return this
     if (index !in current.indices) return this
     val updated = current.toMutableList()
-    updated[index] = store.viewerReference?.let{fixedDesktopDepth(placement,it,store.viewerUnitsPerMeter,sphericalWarp)} ?: placement
+    updated[index] = if(placement.freePose || grabToMove)placement else store.viewerReference?.let{fixedDesktopDepth(placement,it,store.viewerUnitsPerMeter,sphericalWarp)} ?: placement
     val nextLayouts = layouts.toMutableMap()
     nextLayouts[activeLayout] = updated
-    val next = copy(layouts = nextLayouts)
+    val home=if(index==0 && layoutModeActive)updated[index].pose else desktopHome
+    val next = copy(layouts = nextLayouts,desktopHome=home)
     if (persist) store.save(next)
     return next
 }
@@ -167,19 +296,24 @@ private fun encode(workspace: WorkspaceFile): JSONObject {
         .put("layouts", layouts)
         .put("control", encodePanel(workspace.control))
         .put("spherical_warp", workspace.sphericalWarp)
-        .put("eye_aiming", workspace.eyeAiming)
+        .put("reverse_hand_scroll",workspace.reverseHandScroll).put("hand_mouse", workspace.handMouse).put("desktop_reference",workspace.desktopReference)
         .put("interaction_mode",workspace.interactionMode.name).put("cursor_remap",workspace.cursorRemap).put("window_grab_mode",workspace.windowGrabMode).put("focus_mode",workspace.focusMode).put("gaze_to_focus",workspace.gazeToFocus).put("magnify_window",workspace.magnifyWindow).put("typing_quiet_ms",workspace.typingQuietMs)
         .put("magnifier_mode",workspace.magnifierMode).put("magnify_system_panels",workspace.magnifySystemPanels)
         .put("fixed_magnifiers",encodePlacements(workspace.fixedMagnifiers))
         .put("system_panels",encodePlacements(workspace.systemPanels))
+        .put("reference_placement",encodePlacements(listOfNotNull(workspace.referencePlacement)))
+        .put("cursor_map_reference",workspace.cursorMapReference?.let{JSONObject().put("position",JSONArray(it.position.toList())).put("rotation",JSONArray(it.rotation.toList()))})
+        .put("desktop_home",workspace.desktopHome?.let{JSONObject().put("position",JSONArray(it.position.toList())).put("rotation",JSONArray(it.rotation.toList()))})
+        .put("layout_origin",workspace.layoutOrigin?.let{JSONObject().put("position",JSONArray(it.position.toList())).put("rotation",JSONArray(it.rotation.toList()))})
         .put("experimental_viewed_detail",workspace.experimentalViewedDetail)
         .put("view_detail_debug",workspace.viewDetailDebug)
         .put("encoder_quality",workspace.encoderQuality).put("encoder_mbps",workspace.encoderMbps)
         .put("sharpening",workspace.sharpening).put("dense_fraction",workspace.denseFraction).put("detail_area_pixels",workspace.detailAreaPixels).put("detail_target_fps",workspace.detailTargetFps).put("show_resources",workspace.showResources)
         .put("pinch_thresholds_mm",JSONArray(listOf(workspace.pinchThresholds.leftIndexMm,workspace.pinchThresholds.rightIndexMm,workspace.pinchThresholds.leftMiddleMm,workspace.pinchThresholds.rightMiddleMm)))
-        .put("mouse_gestures", workspace.mouseGestures)
+
         .put("screen_spacing",workspace.screenSpacing.toDouble())
         .put("nearest_distance_m",workspace.nearestDistanceM.toDouble()).put("farthest_distance_m",workspace.farthestDistanceM.toDouble())
+        .put("viewer_units_per_meter",workspace.referenceUnitsPerMeter?.toDouble())
         .put("viewer_reference",workspace.viewerReference?.let {JSONObject().put("position",JSONArray(it.position.toList())).put("rotation",JSONArray(it.rotation.toList()))})
 }
 
@@ -199,7 +333,7 @@ private fun encodeMonitor(monitor: MonitorPlacement): JSONObject {
         .put("pixel_width", monitor.pixelWidth)
         .put("pixel_height", monitor.pixelHeight)
         .put("preferred_refresh_hz", monitor.preferredRefreshHz)
-        .put("view_center_u",monitor.viewCenterU.toDouble()).put("view_center_v",monitor.viewCenterV.toDouble())
+        .put("view_center_u",monitor.viewCenterU.toDouble()).put("view_center_v",monitor.viewCenterV.toDouble()).put("free_pose",monitor.freePose)
 }
 
 private fun decode(json: JSONObject): WorkspaceFile {
@@ -220,7 +354,7 @@ private fun decode(json: JSONObject): WorkspaceFile {
         layouts = layouts,
         control = json.optJSONObject("control")?.let { decodePanel(it) } ?: PanelPlacement(),
         sphericalWarp = json.optBoolean("spherical_warp", false),
-        interactionMode=runCatching{InteractionMode.valueOf(json.optString("interaction_mode",if(json.optBoolean("window_grab_mode",false))"WINDOW_GRAB" else if(json.optBoolean("focus_mode",false))"FOCUS" else "MOUSE"))}.getOrDefault(InteractionMode.MOUSE),
+        interactionMode=runCatching{InteractionMode.valueOf(json.optString("interaction_mode",if(json.optBoolean("window_grab_mode",false))"WINDOW_GRAB" else if(json.optBoolean("focus_mode",false))"FOCUS" else "MOUSE"))}.getOrDefault(InteractionMode.FOCUS),
         cursorRemap=json.optBoolean("cursor_remap",true),
         gazeToFocus=json.optBoolean("gaze_to_focus",false),
         magnifyWindow=json.optBoolean("magnify_window",false),
@@ -241,8 +375,14 @@ private fun decode(json: JSONObject): WorkspaceFile {
         pinchThresholds=json.optJSONArray("pinch_thresholds_mm")?.takeIf{it.length()==4}?.let {a->
             PinchThresholds(a.optDouble(0,Double.NaN).toFloat(),a.optDouble(1,Double.NaN).toFloat(),a.optDouble(2,Double.NaN).toFloat(),a.optDouble(3,Double.NaN).toFloat()).takeIf{it.valid()}
         } ?: PinchThresholds.Default,
-        eyeAiming = json.optBoolean("eye_aiming", json.optBoolean("mouse_control", false)),
-        mouseGestures = json.optBoolean("mouse_gestures", false),
+        reverseHandScroll=json.optBoolean("reverse_hand_scroll",true),
+        handMouse = json.optBoolean("hand_mouse", json.optBoolean("mouse_gestures", false) && json.optString("interaction_mode", "MOUSE")=="MOUSE"),
+        desktopReference = json.optBoolean("desktop_reference",false),
+        referencePlacement = decodePlacements(json.optJSONArray("reference_placement")).firstOrNull(),
+        cursorMapReference=json.optJSONObject("cursor_map_reference")?.let{Pose(floatArray(it,"position",3),floatArray(it,"rotation",4))},
+        desktopHome=json.optJSONObject("desktop_home")?.let{Pose(floatArray(it,"position",3),floatArray(it,"rotation",4))},
+        layoutOrigin = (json.optJSONObject("layout_origin") ?: json.optJSONObject("support_basis"))?.let{Pose(floatArray(it,"position",3),floatArray(it,"rotation",4))},
+        referenceUnitsPerMeter=json.optDouble("viewer_units_per_meter",Double.NaN).toFloat().takeIf{it.isFinite() && it>0f},
         viewerReference=json.optJSONObject("viewer_reference")?.let {Pose(floatArray(it,"position",3),floatArray(it,"rotation",4))},
         screenSpacing=json.optDouble("screen_spacing",0.0).toFloat().takeIf {it.isFinite()}?.coerceIn(0f,.15f)?.let { kotlin.math.round(it*1000)/1000f } ?: 0f,
     ).let{decoded->
@@ -287,6 +427,7 @@ private fun decodeMonitor(json: JSONObject): MonitorPlacement {
         pixelHeight = json.optInt("pixel_height"),
         preferredRefreshHz = json.optInt("preferred_refresh_hz", 60),
         viewCenterU=json.optDouble("view_center_u",.5).toFloat().takeIf{it.isFinite()}?.coerceIn(0f,1f) ?: .5f,
+        freePose=json.optBoolean("free_pose",false),
         viewCenterV=json.optDouble("view_center_v",.5).toFloat().takeIf{it.isFinite()}?.coerceIn(0f,1f) ?: .5f,
     )
 }
@@ -304,8 +445,8 @@ private fun floatArray(json: JSONObject, name: String, size: Int): FloatArray {
 }
 
 
-private fun encodePlacements(rows:List<FixedMagnifierPlacement>)=JSONArray(rows.map{p->JSONObject().put("id",p.id).put("pose",JSONObject().put("position",JSONArray(p.pose.position.toList())).put("rotation",JSONArray(p.pose.rotation.toList()))).put("width_m",p.widthM).put("height_m",p.heightM)})
-private fun decodePlacements(array:JSONArray?):List<FixedMagnifierPlacement> = array?.let{a->(0 until a.length()).mapNotNull{i->runCatching{val p=a.getJSONObject(i);val pose=p.getJSONObject("pose");val w=p.getDouble("width_m").toFloat();val h=p.getDouble("height_m").toFloat();require(w.isFinite() && h.isFinite() && w>0f && h>0f);FixedMagnifierPlacement(p.getString("id"),Pose(floatArray(pose,"position",3),floatArray(pose,"rotation",4)),w,h)}.getOrNull()}} ?: emptyList()
+private fun encodePlacements(rows:List<FixedMagnifierPlacement>)=JSONArray(rows.map{p->JSONObject().put("id",p.id).put("pose",JSONObject().put("position",JSONArray(p.pose.position.toList())).put("rotation",JSONArray(p.pose.rotation.toList()))).put("width_m",p.widthM).put("height_m",p.heightM).put("free_pose",p.freePose)})
+private fun decodePlacements(array:JSONArray?):List<FixedMagnifierPlacement> = array?.let{a->(0 until a.length()).mapNotNull{i->runCatching{val p=a.getJSONObject(i);val pose=p.getJSONObject("pose");val w=p.getDouble("width_m").toFloat();val h=p.getDouble("height_m").toFloat();require(w.isFinite() && h.isFinite() && w>0f && h>0f);FixedMagnifierPlacement(p.getString("id"),Pose(floatArray(pose,"position",3),floatArray(pose,"rotation",4)),w,h,p.optBoolean("free_pose",false))}.getOrNull()}} ?: emptyList()
 
 /** Reconcile stable source identities without resetting poses when a display is added or removed. */
 internal fun WorkspaceFile.reconcileMonitors(sources:List<Triple<String,Int,Int>>): WorkspaceFile {

@@ -49,6 +49,61 @@ internal class GrabGuideRenderer private constructor(
     private val grabBeams=mutableListOf<SurfaceEntity>()
     private val grabPoints=mutableListOf<SurfaceEntity>()
 
+    private var originCollider:SurfaceEntity?=null
+    private var originSphere:SurfaceEntity?=null
+    private val worldAxes=WorldLayoutAxes(session)
+
+    fun updateLayoutOrigin(parent:Entity,guide:LayoutOriginGuide?,units:Float,desktopRange:Float?=null,onInput:(androidx.xr.scenecore.InputEvent)->Unit) {
+        if(closed)return
+        val hitGuide=guide?.foreground(desktopRange,units)
+        worldAxes.update(parent,hitGuide)
+        if(hitGuide==null || guide==null){
+            originCollider?.let{state(it).enabled(false)}
+            originSphere?.let{state(it).enabled(false)}
+            return
+        }
+        val sphere=originSphere ?: createOriginSphere().also{originSphere=it}
+        val collider=originCollider ?: SurfaceEntity.create(session,shape=SurfaceEntity.Shape.Quad(androidx.xr.runtime.math.FloatSize2d(1f,1f)),
+            parent=null,superSampling=SurfaceEntity.SuperSampling.NONE,mediaBlendingMode=SurfaceEntity.MediaBlendingMode.TRANSPARENT).also{
+            check(it.addComponent(NativeMonitorInput.create(session,onInput)))
+            originCollider=it
+        }
+        val normal=vector(guide.viewer.position)-vector(hitGuide.near)
+        val rotation=Quaternion.fromLookTowards(normal,Vector3.Up)
+        state(sphere).apply{
+            this.parent(parent)
+            pose(Pose(vector(hitGuide.near),rotation))
+            scale(hitGuide.gripRadius)
+            enabled(true)
+        }
+        val hitCenter=(vector(hitGuide.near)+vector(guide.viewer.position)*.04f)*(1f/1.04f)
+        state(collider).apply{
+            this.parent(parent)
+            pose(Pose(hitCenter,rotation))
+            scale(Vector3(hitGuide.gripRadius*2.65f,hitGuide.gripRadius*2.65f,1f))
+            enabled(true)
+        }
+    }
+
+    @OptIn(androidx.xr.scenecore.ExperimentalSurfaceEntityPixelDimensionsApi::class)
+    private fun createOriginSphere():SurfaceEntity {
+        val entity=SurfaceEntity.create(session,shape=nativeVideoMesh(layoutOriginSphereGeometry()),parent=null,
+            superSampling=SurfaceEntity.SuperSampling.NONE,mediaBlendingMode=SurfaceEntity.MediaBlendingMode.OPAQUE)
+        entity.setEnabled(false)
+        entity.setSurfacePixelDimensions(IntSize2d(128,8))
+        SurfaceInput.disableCollider(entity)
+        val surface=entity.getSurface()
+        val canvas=surface.lockCanvas(null)
+        try{
+            val paint=android.graphics.Paint()
+            paint.shader=android.graphics.LinearGradient(0f,0f,canvas.width.toFloat(),0f,
+                intArrayOf(0xFF145674.toInt(),0xFF55E6FF.toInt(),0xFFE3FBFF.toInt()),
+                floatArrayOf(0f,.64f,1f),android.graphics.Shader.TileMode.CLAMP)
+            canvas.drawPaint(paint)
+        }finally{surface.unlockCanvasAndPost(canvas)}
+        return entity
+    }
+
     private fun newGroup(edgeCount: Int): Group {
         val root = Entity.create(session, name = "Floatdesk grab guide")
         // Outline segments, two tethers, then matching contact/pinch spheres.
@@ -224,10 +279,12 @@ internal class GrabGuideRenderer private constructor(
         val b = vector(to)
         val delta = b - a
         if (delta.length < 1e-6f) { entity.setEnabled(false); return }
-        entity.setEnabled(true)
-        entity.setPose(Pose((a + b) * 0.5f, Quaternion.fromRotation(Vector3.Right, delta)))
+        state(entity).enabled(true)
+        state(entity).pose(Pose((a + b) * 0.5f, Quaternion.fromRotation(Vector3.Right, delta)))
         // A glTF node's public localScale supports nonuniform scale without restricted entity APIs.
-        entity.nodes.first().localScale = Vector3(delta.length, width, width)
+        val node=entity.nodes.first()
+        val scale=Vector3(delta.length,width,width)
+        if(node.localScale!=scale)node.localScale=scale
     }
 
     private fun point(entity: GltfModelEntity, position: FloatArray, radius: Float) {
@@ -238,6 +295,11 @@ internal class GrabGuideRenderer private constructor(
     override fun close() {
         if (closed) return
         closed = true
+        worldAxes.close()
+        originCollider?.let{if(!it.isDisposed){it.setEnabled(false);it.parent=null}}
+        originCollider=null
+        originSphere?.let{if(!it.isDisposed){it.setEnabled(false);it.parent=null}}
+        originSphere=null
         nodeStates.clear()
         groups.forEach { group ->
             if(!group.root.isDisposed)group.root.dispose()

@@ -5,7 +5,7 @@ import dev.floatdesk.client.net.WorkspaceInfo
 import dev.floatdesk.client.workspace.Pose
 import kotlin.math.abs
 
-internal data class SnapCell(val columns: Int, val rows: Int, val col: Int, val row: Int)
+internal data class SnapCell(val columns: Int, val rows: Int, val col: Int, val row: Int, val endCol:Int=col,val endRow:Int=row)
 
 /** The menu grid cell this window currently fills on its screen, or null when it is freely placed. */
 internal fun currentSnapCell(window: DesktopWindow, info: WorkspaceInfo, grids: List<Pair<Int, Int>> = WindowMenuLayout.grids, toleranceFraction: Float = .03f): SnapCell? {
@@ -13,10 +13,10 @@ internal fun currentSnapCell(window: DesktopWindow, info: WorkspaceInfo, grids: 
     val screen = info.screens.firstOrNull { cx >= it.x && cx < it.x + it.width && cy >= it.y && cy < it.y + it.height } ?: return null
     val tolerance = minOf(screen.width, screen.height) * toleranceFraction
     var best: SnapCell? = null; var bestError = Float.POSITIVE_INFINITY
-    for ((columns, rows) in grids) for (row in 0 until rows) for (col in 0 until columns) {
-        val cell = windowGridCell(window.id, screen.x, screen.y, screen.width, screen.height, columns, rows, col, row)
+    for ((columns, rows) in grids) for (row in 0 until rows) for (col in 0 until columns) for(endRow in row until rows)for(endCol in col until columns){
+        val cell = windowGridCell(window.id, screen.x, screen.y, screen.width, screen.height, columns, rows, col, row,endCol,endRow)
         val error = maxOf(abs(cell.x - window.x), abs(cell.y - window.y), abs(cell.width!! - window.width), abs(cell.height!! - window.height)).toFloat()
-        if (error < bestError) { bestError = error; best = SnapCell(columns, rows, col, row) }
+        if (error < bestError) { bestError = error; best = SnapCell(columns, rows, col, row,endCol,endRow) }
     }
     return best.takeIf { bestError <= tolerance }
 }

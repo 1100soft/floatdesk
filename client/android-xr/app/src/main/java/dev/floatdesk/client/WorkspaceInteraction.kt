@@ -48,6 +48,8 @@ import dev.floatdesk.client.workspace.Pose
 import dev.floatdesk.client.workspace.WorkspaceFile
 import dev.floatdesk.client.workspace.WorkspaceStore
 import dev.floatdesk.client.workspace.fitDesktopInView
+import dev.floatdesk.client.workspace.moveLayoutOrigin
+import dev.floatdesk.client.workspace.restoreDefaultDesktopSize
 import dev.floatdesk.client.workspace.deskLayout
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -65,11 +67,18 @@ internal fun WorkspaceFile.monitorAt(index: Int): MonitorPlacement? {
 
 internal fun WorkspaceFile.reset(monitors: List<MonitorHello>, store: WorkspaceStore,viewer:Pose,angles:FloatArray,units:Float): WorkspaceFile {
     if (monitors.isEmpty()) return this
-    val nextLayouts = layouts.toMutableMap()
-    nextLayouts[activeLayout] = fitDesktopInView(deskLayout(monitors.map { Triple(it.name, it.width, it.height) }),viewer,angles[0],angles[1],units,sphericalWarp,centralView=true)
-    val next = copy(layouts = nextLayouts, control = PanelPlacement(pose=Pose(transformPoint(viewer,floatArrayOf(0f,-.55f*units,-1f*units)),viewer.rotation.copyOf())),viewerReference=viewer)
+    val target=Pose(transformPoint(viewer,floatArrayOf(0f,0f,-farthestDistanceM*units)),viewer.rotation.copyOf())
+    val next=moveLayoutOrigin(target).restoreDesktopFraming(monitors,viewer,angles,units)
     store.save(next)
     return next
+}
+
+internal fun WorkspaceFile.restoreDesktopFraming(monitors:List<MonitorHello>,viewer:Pose,angles:FloatArray,units:Float):WorkspaceFile {
+    val origin=layoutOrigin ?: monitorAt(0)?.pose ?: return this
+    if(monitors.isEmpty())return this
+    val fitted=fitDesktopInView(deskLayout(monitors.map{Triple(it.name,it.width,it.height)}),viewer,
+        angles[0],angles[1],units,sphericalWarp,centralView=true,distanceM=farthestDistanceM)
+    return restoreDefaultDesktopSize(origin,fitted)
 }
 
 internal fun SpatialMoveEvent.workspacePose(pixelDensity: PixelDensity): Pose {
@@ -129,6 +138,26 @@ internal data class PalmPanelState(val side: String, val pose: Pose, val unitsPe
     val widthM get() = PalmMenuLayout.widthM
     val heightM get() = PalmMenuLayout.heightM(page)
     val buttons get() = PalmMenuLayout.buttons(page)
+}
+
+internal data class PalmTooltipPlacement(val pose:Pose,val width:Float,val height:Float){
+    fun contains(origin:FloatArray,direction:FloatArray):Boolean{
+        val local=viewerInMonitor(origin,pose.position,pose.rotation)
+        val end=viewerInMonitor(add(origin,direction),pose.position,pose.rotation)
+        return monitorRayHit(local,subtract(end,local),width,height,null)!=null
+    }
+}
+
+internal fun palmTooltipPlacement(panel:PalmPanelState,button:PalmButton,label:String):PalmTooltipPlacement {
+    val unit=panel.unitsPerMeter
+    val width=panel.widthM*unit
+    val height=panel.heightM*unit
+    val tipH=PalmMenuLayout.tooltipHeightM*unit*.70f
+    val tipW=minOf(width,maxOf(width*button.w*1.7f,width*label.length*.022f))
+    val x=(button.x+button.w*.5f-.5f)*width
+    val y=(.5f-button.y)*height+tipH*.38f
+    val pose=Pose(transformPoint(panel.pose,floatArrayOf(x,y,.003f*unit)),panel.pose.rotation)
+    return PalmTooltipPlacement(pose,tipW,tipH)
 }
 
 internal fun Vector3.toArray() = floatArrayOf(x, y, z)
@@ -284,9 +313,12 @@ internal fun transformPoint(pose: Pose, local: FloatArray, scale: Float = 1f): F
 internal class FollowLock(
     val head: androidx.xr.runtime.math.Pose,
     val monitors: List<androidx.xr.runtime.math.Pose>,
+    val origin: androidx.xr.runtime.math.Pose?,
+    val wholeLayout:Boolean,
 ) {
     fun advance(headNow: androidx.xr.runtime.math.Pose, file: WorkspaceFile): WorkspaceFile {
         val delta = headNow.compose(head.inverse)
+        if(wholeLayout && origin!=null)return file.moveLayoutOrigin(delta.compose(origin).toWorkspacePose())
         val current = file.layouts[file.activeLayout] ?: return file
         val moved = current.mapIndexed { index, monitor ->
             val source = monitors.getOrNull(index) ?: monitor.pose.toRuntimePose()
@@ -300,9 +332,9 @@ internal class FollowLock(
     }
 
     companion object {
-        fun capture(head: androidx.xr.runtime.math.Pose, file: WorkspaceFile): FollowLock {
+        fun capture(head: androidx.xr.runtime.math.Pose, file: WorkspaceFile, wholeLayout:Boolean=true): FollowLock {
             val monitors = file.layouts[file.activeLayout].orEmpty().map { it.pose.toRuntimePose() }
-            return FollowLock(head, monitors)
+            return FollowLock(head, monitors, file.layoutOrigin?.toRuntimePose(),wholeLayout)
         }
     }
 }

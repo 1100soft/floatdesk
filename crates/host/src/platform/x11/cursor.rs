@@ -237,6 +237,7 @@ mod tests {
             .check()
             .unwrap();
         let _ = term.kill();
+        term.wait().unwrap();
         eprintln!("free={free:?} grabbed={grabbed:?}");
         assert!(free.0[0] > 0.0, "no raw motion without a grab");
         assert!(

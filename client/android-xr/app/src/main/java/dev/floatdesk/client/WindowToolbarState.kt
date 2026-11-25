@@ -27,11 +27,31 @@ internal sealed interface ToolbarTarget {
     data class Magnifier(val key: String) : ToolbarTarget
 }
 
+internal class SnapGridPresence(private val graceMs:Long=700L){
+    private var lastPresent:Long?=null
+    fun update(now:Long,present:Boolean){if(present || lastPresent==null)lastPresent=now}
+    fun expired(now:Long)=lastPresent?.let{now-it>=graceMs} ?: false
+    fun clear(){lastPresent=null}
+}
+
 /** The space just above a target's top edge: a gaze target while highlighted, then the toolbar's place. */
 internal data class ToolbarStrip(val pose: Pose, val width: Float, val height: Float, val cell: Float, val gap: Float, val magnifier: Boolean) {
     fun contains(origin: FloatArray, direction: FloatArray) = surfaceRayDistance(pose, width, height, null, origin, direction) != null
     /** The one-icon highlight at the strip centre, with a little margin for gaze jitter. */
     fun containsMarker(origin: FloatArray, direction: FloatArray) = surfaceRayDistance(pose, cell * 1.6f, cell * 1.6f, null, origin, direction) != null
+}
+
+/** Fit the full menu hit rectangle inside the foreground radius, preserving its view angles. */
+internal fun ToolbarStrip.insideViewSphere(eye:FloatArray,radius:Float?,units:Float):ToolbarStrip {
+    if(radius==null)return this
+    val local=viewerInMonitor(eye,pose.position,pose.rotation)
+    val x=kotlin.math.abs(local[0])+width*.5f
+    val y=kotlin.math.abs(local[1])+height*.5f
+    val extent=kotlin.math.sqrt(x*x+y*y+local[2]*local[2])
+    val clearance=minOf(.065f*units,radius*.3f)
+    val scale=((radius-clearance)/extent.coerceAtLeast(.001f)).coerceAtMost(1f)
+    return copy(pose=pose.copy(position=FloatArray(3){eye[it]+(pose.position[it]-eye[it])*scale}),
+        width=width*scale,height=height*scale,cell=cell*scale,gap=gap*scale)
 }
 
 /** [anchor] is the centre of the target's top edge; the strip is exactly where the toolbar opens. */

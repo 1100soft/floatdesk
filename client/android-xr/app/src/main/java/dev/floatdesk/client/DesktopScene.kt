@@ -230,8 +230,7 @@ internal fun DeskContent(
                             freezeProjection=(hands.busy && !hands.engaged) || nativeMove || nativeResize || handTracking.pointerHeld,
                             submitShape={update->connection.tryDesktopShapeUpdate(index,update)},
                             minGeometryIntervalMs=if(connection.limitOptionalRendering)180 else 80,
-                            minimumGeometryRadius=dev.floatdesk.client.workspace.ViewLayers.DesktopDistanceM*handTracking.unitsPerMeter,
-                            cutouts=if(index==0)handTracking.desktopCutouts else emptyList())
+                            minimumGeometryRadius=dev.floatdesk.client.workspace.ViewLayers.DesktopDistanceM*handTracking.unitsPerMeter)
                         grabProjectionAt=projectionNow
                     }
                     frozenMonitor?.update(screen,warp.mesh)

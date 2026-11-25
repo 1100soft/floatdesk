@@ -21,6 +21,22 @@ metadata=body('net/WorkspaceInfo.kt');metadata=metadata[:metadata.index('    com
 code='import kotlin.math.*\n'+body('MonitorMesh.kt')+surface_hit+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+re.search(r'internal fun deskLayout\(.*?\n}',(root/'workspace/Workspace.kt').read_text(),re.S).group(0)+body('workspace/WorkspacePlacement.kt')+metadata+body('WindowMagnification.kt')+body('LayoutOrigin.kt')+body('LayoutAdjustment.kt')+body('LayoutGuideInk.kt')+body('WindowInteraction.kt').replace('dev.floatdesk.client.workspace.MonitorPlacement','MonitorPlacement')+body('WindowToolbarState.kt')+re.search(r'internal object WindowMenuLayout \{.*?\n}',(root/'WindowActionsMenu.kt').read_text(),re.S).group(0)+'\n'+topology+body('VideoGeometry.kt')+body('MagnifierContacts.kt')+body('BoundedHistory.kt')+body('RenderPolicy.kt')+body('net/WindowCaptureRetry.kt')+body('net/WindowCaptureFormat.kt').replace('dev.floatdesk.client.RenderPolicy','RenderPolicy')+''.join(re.search(r'internal fun '+name+r'\(.*?\n}',application_sources(),re.S).group(0) for name in ('transformPoint','rotateVector','quaternionBetween','multiplyQuaternion','normalize3','normalize4'))+re.search(r'internal fun distance\(a: FloatArray.*?\n}',application_sources(),re.S).group(0)+'\n'+re.search(r'internal fun subtract\(a: FloatArray[^\n]*\n[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun dot\(a: FloatArray[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun cross3\(.*',application_sources()).group(0)+'\n'+r'''
 fun add(a:FloatArray,b:FloatArray)=FloatArray(3){a[it]+b[it]}
 fun main() {
+ val gridInk=SnapGridPresence(500)
+ gridInk.update(100L,false)
+ check(!gridInk.expired(599L))
+ gridInk.update(590L,true)
+ check(!gridInk.expired(1089L) && gridInk.expired(1090L))
+ gridInk.clear()
+ check(!gridInk.expired(2000L))
+ val gridEye=floatArrayOf(0f,0f,0f)
+ val grid=ToolbarStrip(Pose(floatArrayOf(.8f,.3f,-1f)),.5f,.7f,.06f,.01f,false)
+ val insetGrid=grid.insideViewSphere(gridEye,1f,1f)
+ for(x in listOf(-.5f,.5f))for(y in listOf(-.5f,.5f)){
+    val near=transformPoint(insetGrid.pose,floatArrayOf(x*insetGrid.width,y*insetGrid.height,0f))
+    val far=transformPoint(grid.pose,floatArrayOf(x*grid.width,y*grid.height,0f))
+    check(distance(near,gridEye)<1f)
+    check(distance(normalize3(near),normalize3(far))<1e-5f)
+ }
  val savedOrigin=Pose(floatArrayOf(.4f,.2f,-2f))
  val curvedOrigin=layoutOriginGuide(savedOrigin,Pose(),.9f,1.2f,true)!!
  val flatOrigin=layoutOriginGuide(savedOrigin,Pose(),.9f,1.2f,false)!!
@@ -697,7 +713,7 @@ fun main() {
  val otherSpace=target.copy(spaceKey="shell:other",u=.91f)
  val keep=dragMouse.update(845,true,false,mapOf("LEFT" to FingerPinch(.002f,.05f)),otherSpace)
  check(keep.dragging && keep.target?.u==.58f && keep.target?.spaceKey=="desktop")
- check(dragAt(846,.95f,true).target?.u==.58f)
+ check(dragAt(846,.95f,true).target?.u==.95f)
  check(!dragAt(850,.58f,false).dragging)
  val scrollMouse=MouseGestures(thresholds={profile})
  fun scroll(at:Long,y:Float,closed:Boolean=true)=scrollMouse.update(at,true,false,

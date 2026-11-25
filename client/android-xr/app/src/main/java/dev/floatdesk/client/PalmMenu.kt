@@ -14,6 +14,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LocalMinimumInteractiveComponentSize
+import androidx.compose.material3.Text
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
@@ -29,6 +30,7 @@ import androidx.compose.ui.graphics.drawscope.inset
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.sp
 import dev.floatdesk.client.net.WorkspaceInfo
 import dev.floatdesk.client.workspace.WorkspaceFile
 import kotlin.math.cos
@@ -41,24 +43,36 @@ internal data class PalmButton(val action: PalmAction, val x: Float, val y: Floa
 /** Same cell metrics as [WindowMenuLayout]; button rectangles are normalized to the panel. */
 internal object PalmMenuLayout {
     const val cellM = .041f
-    const val circleM=.298f
+    const val circleM=.36f
     const val modesHeight=.057f
     const val widthM = circleM
     const val tooltipHeightM = .038f
-    private val center = listOf(PalmAction.RESET,PalmAction.LAYOUT,PalmAction.SETTINGS)
     private val modes = listOf(PalmAction.HAND_MOUSE,PalmAction.TAP_TO_FOCUS,PalmAction.DRAG_TO_MOVE,PalmAction.HANDS_OFF)
-    private data class Cluster(val y:Float,val actions:List<PalmAction>,val pitch:Float=.047f)
-    private val view=Cluster(.061f,listOf(PalmAction.FOLLOW,PalmAction.WARP,PalmAction.DIAGNOSTICS))
-    private val content=Cluster(.204f,listOf(PalmAction.MAGNIFIER,PalmAction.REFERENCE,PalmAction.GAZE_FOCUS))
-    private val connection=Cluster(.252f,listOf(PalmAction.MOUSE_SPACES,PalmAction.SEARCH))
-    private val layout = listOf(
-        Cluster(.048f,listOf(PalmAction.ALIGN_AXES,PalmAction.FACE_USER,PalmAction.SNAP_OBJECTS)),
-        Cluster(.096f,listOf(PalmAction.MOVE,PalmAction.FREE,PalmAction.RESET_ORIGIN)),
-        Cluster(.147f,listOf(PalmAction.UNDO,PalmAction.RESET,PalmAction.AUTO_ADJUST,PalmAction.DONE,PalmAction.REDO)),
-        Cluster(.204f,listOf(PalmAction.LOAD_1,PalmAction.LOAD_2,PalmAction.LOAD_3),.052f),
-        Cluster(.252f,listOf(PalmAction.SAVE_1,PalmAction.SAVE_2,PalmAction.SAVE_3),.052f),
-    )
-    val layoutActions=layout.flatMap{it.actions}
+    internal data class Item(val action:PalmAction,val x:Float,val y:Float)
+    internal data class Cluster(val label:String,val x:Float,val y:Float,val items:List<Item>)
+    private fun cluster(label:String,x:Float,y:Float,vararg items:Item)=Cluster(label,x,y,items.toList())
+    private val main=run{
+        listOf(
+            cluster("Navigation",.37f,.09f,Item(PalmAction.RESET,.44f,.22f),Item(PalmAction.LAYOUT,.57f,.22f),Item(PalmAction.FOLLOW,.50f,.35f)),
+            cluster("Surfaces",.65f,.36f,Item(PalmAction.MAGNIFIER,.67f,.48f),Item(PalmAction.REFERENCE,.81f,.48f),Item(PalmAction.WARP,.74f,.62f)),
+            cluster("Input",.15f,.37f,Item(PalmAction.GAZE_FOCUS,.20f,.49f),Item(PalmAction.MOUSE_SPACES,.30f,.62f)),
+            cluster("System",.395f,.67f,Item(PalmAction.SETTINGS,.37f,.78f),Item(PalmAction.DIAGNOSTICS,.50f,.83f),Item(PalmAction.SEARCH,.63f,.78f)),
+        )
+    }
+    private val layout=run{
+        listOf(
+            cluster("Manipulate",.37f,.08f,Item(PalmAction.MOVE,.43f,.19f),Item(PalmAction.FREE,.57f,.19f)),
+            cluster("Arrange",.17f,.27f,Item(PalmAction.ALIGN_AXES,.22f,.39f),Item(PalmAction.SNAP_OBJECTS,.36f,.39f),
+                Item(PalmAction.FACE_USER,.22f,.52f),Item(PalmAction.AUTO_ADJUST,.36f,.52f)),
+            cluster("Restore",.64f,.28f,Item(PalmAction.RESET_ORIGIN,.65f,.40f),Item(PalmAction.RESET,.79f,.40f)),
+            cluster("History",.64f,.49f,Item(PalmAction.UNDO,.65f,.61f),Item(PalmAction.REDO,.79f,.61f)),
+            cluster("Saved layouts",.13f,.60f,Item(PalmAction.LOAD_1,.24f,.70f),Item(PalmAction.LOAD_2,.37f,.70f),Item(PalmAction.LOAD_3,.50f,.70f),
+                Item(PalmAction.SAVE_1,.24f,.83f),Item(PalmAction.SAVE_2,.37f,.83f),Item(PalmAction.SAVE_3,.50f,.83f)),
+            cluster("",.70f,.79f,Item(PalmAction.DONE,.68f,.80f)),
+        )
+    }
+    fun clusters(page:PalmPage)=if(page.isLayout)layout else main
+    val layoutActions=layout.flatMap{group->group.items.map{it.action}}
 
     fun heightM(page:PalmPage)=circleM+(if(page.isLayout)0f else modesHeight)
     fun circleFraction(page:PalmPage)=circleM/heightM(page)
@@ -67,18 +81,7 @@ internal object PalmMenuLayout {
         fun button(action:PalmAction,x:Float,y:Float){
             add(PalmButton(action,(x-cellM*.5f)/widthM,(y-cellM*.5f)/height,cellM/widthM,cellM/height))
         }
-        fun cluster(group:Cluster){
-            group.actions.forEachIndexed{i,action->
-                button(action,circleM*.5f+(i-(group.actions.size-1)*.5f)*group.pitch,group.y)
-            }
-        }
-        if(page.isLayout)layout.forEach(::cluster)
-        else{
-            cluster(view)
-            cluster(Cluster(.133f,center))
-            cluster(content)
-            cluster(connection)
-        }
+        for(group in clusters(page))for(item in group.items)button(item.action,item.x*circleM,item.y*circleM)
         if(!page.isLayout)modes.forEachIndexed{i,action->button(action,circleM*.5f+(i-1.5f)*.047f,circleM+modesHeight*.5f)}
     }
 }
@@ -179,14 +182,16 @@ internal fun PalmControls(page: PalmPage, workspace: WorkspaceFile, info: Worksp
                         Size(size.width*.68f,size.height),CornerRadius(size.height*.22f))
                     else{
                         drawCircle(if(page.isLayout)Color(0xFF28344F) else Color(0xFF202D3B),size.height/2)
-                        val rows=if(page.isLayout)listOf(.048f,.096f,.147f,.204f,.252f) else listOf(.061f,.133f,.204f,.252f)
-                        for(y in rows){
-                            val width=size.width*(if(page.isLayout && y==.147f).83f else if(!page.isLayout && y==.252f).34f else .49f)
-                            val height=size.height*.143f
-                            drawRoundRect(Color(0xFF34465D),Offset((size.width-width)/2,size.height*y/PalmMenuLayout.circleM-height/2),
-                                Size(width,height),CornerRadius(height*.48f))
+                        for(group in PalmMenuLayout.clusters(page)){
+                            for(item in group.items){
+                                drawCircle(Color(0xFF34465D),size.width*.065f,Offset(item.x*size.width,item.y*size.height))
+                            }
                         }
                     }
+                }
+                if(!modePanel)for(group in PalmMenuLayout.clusters(page)){
+                    if(group.label.isNotEmpty())Text(group.label,Modifier.offset(maxWidth*group.x,maxHeight*group.y),
+                        color=Color(0xFFD3E3F4),fontSize=11.sp)
                 }
                 for (button in PalmMenuLayout.buttons(page)) {
                     if((button.y>=fraction)!=modePanel)continue

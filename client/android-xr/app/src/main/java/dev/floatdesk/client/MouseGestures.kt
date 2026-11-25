@@ -32,8 +32,6 @@ internal class MouseGestures(private val thresholds:()->PinchThresholds={PinchTh
     private var scrollRight=floatArrayOf(1f,0f,0f)
     private var scrollUp=floatArrayOf(0f,1f,0f)
     private var dragging=false
-    private var lastDragSampleAt=0L
-    private var lastDragAim:PointerTarget?=null
     private var dragTarget: PointerTarget? = null
     private var lastTarget: PointerTarget? = null
     private var lastTargetAt=0L
@@ -123,23 +121,14 @@ internal class MouseGestures(private val thresholds:()->PinchThresholds={PinchTh
                     return MouseGestureOutput(current.target,scroll=TouchpadFrame(2,(.5f+scrollEmitted[0]/.25f).coerceIn(.15f,.85f),(.5f-scrollEmitted[1]/.15f).coerceIn(.1f,.9f)))
                 }
                 val moved=target!=null && target.spaceKey==current.target.spaceKey &&
-                    hypot(target.u-current.target.u,target.v-current.target.v)>.012f
+                    hypot(target.u-current.target.u,target.v-current.target.v)>.004f
                 if(current.button==1 && !dragging && (moved || nowMs-current.began>=350)) {
                     dragging=true
                     dragTarget=current.target
-                    lastDragSampleAt=nowMs
-                    lastDragAim=if(moved)target else current.target
                     return MouseGestureOutput(current.target,true)
                 }
-                if(dragging && target!=null){
-                    val prior=lastDragAim ?: current.target
-                    if(target.spaceKey==prior.spaceKey && target.monitor==prior.monitor &&
-                        hypot(target.u-prior.u,target.v-prior.v)<=(nowMs-lastDragSampleAt).coerceIn(10L,36L)*.004f){
-                        dragTarget=target
-                        lastDragAim=target
-                        lastDragSampleAt=nowMs
-                    }
-                }
+                if(dragging && target!=null && target.spaceKey==current.target.spaceKey && target.monitor==current.target.monitor)
+                    dragTarget=target
                 return MouseGestureOutput(if(dragging)dragTarget else current.target,dragging)
             }
             diagnostic("mouse gesture released side=${current.side} button=${current.button} heldMs=${nowMs-current.began} scrolling=$scrolling dragging=$dragging")

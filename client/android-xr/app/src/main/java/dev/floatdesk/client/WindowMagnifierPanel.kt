@@ -80,6 +80,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                 val entity=SurfaceEntity.create(session,shape=initialShape,parent=null,superSampling=SurfaceEntity.SuperSampling.NONE,
                     mediaBlendingMode=SurfaceEntity.MediaBlendingMode.OPAQUE)
                 resources.entity=entity;entity.setEnabled(false)
+                if(!receiveInput)SurfaceInput.disableCollider(entity)
                 val pointer=SpatialPointerComponent.create(session);entity.addComponent(pointer);pointer.spatialPointerIcon=SpatialPointerIcon.NONE
                 val listener:(InputEvent)->Unit=listener@{event->
                     val active=resources.rendered?.takeIf{resources.visible} ?: return@listener

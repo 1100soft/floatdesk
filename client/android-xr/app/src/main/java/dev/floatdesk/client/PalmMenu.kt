@@ -120,23 +120,12 @@ internal fun palmState(action: PalmAction, workspace: WorkspaceFile, latched: Bo
         PalmAction.AIM_MAGNIFY -> toggle(workspace.aimToMagnify)
         PalmAction.MOUSE_SPACES -> toggle(workspace.cursorRemap)
         PalmAction.WARP -> PalmState(2, if (workspace.sphericalWarp) 1 else 0)
-        PalmAction.MAGNIFIER -> PalmState(3, listOf("fixed", "floating", "off").indexOf(magnifierLabel(workspace)))
+        PalmAction.MAGNIFIER -> toggle(workspace.magnifyWindow)
         else -> null
     }
 }
 
-internal fun magnifierLabel(workspace: WorkspaceFile) = when {
-    !workspace.magnifyWindow -> "off"
-    workspace.magnifierMode == "fixed" -> "fixed"
-    else -> "floating"
-}
-
-/** Cycles fixed → floating → off → fixed, using the same fields as Settings. */
-internal fun nextMagnifier(workspace: WorkspaceFile): WorkspaceFile = when (magnifierLabel(workspace)) {
-    "off" -> workspace.copy(magnifyWindow = true, magnifierMode = "fixed")
-    "fixed" -> workspace.copy(magnifyWindow = true, magnifierMode = "floating")
-    else -> workspace.copy(magnifyWindow = false)
-}
+internal fun nextMagnifier(workspace:WorkspaceFile)=workspace.copy(magnifyWindow=!workspace.magnifyWindow)
 
 internal fun palmTooltip(action: PalmAction, workspace: WorkspaceFile, latched: Boolean): String = when (action) {
     PalmAction.SETTINGS -> "Settings"
@@ -158,7 +147,7 @@ internal fun palmTooltip(action: PalmAction, workspace: WorkspaceFile, latched: 
     PalmAction.SEARCH -> "Reconnect"
     PalmAction.GAZE_FOCUS -> if (workspace.gazeToFocus) "Gaze to magnify on" else "Gaze to magnify off"
     PalmAction.AIM_MAGNIFY -> if(workspace.aimToMagnify) "Aim to magnify on" else "Aim to magnify off"
-    PalmAction.MAGNIFIER -> "Magnifier ${magnifierLabel(workspace)} · tap for ${magnifierLabel(nextMagnifier(workspace))}"
+    PalmAction.MAGNIFIER -> if(workspace.magnifyWindow) "Magnifier on" else "Magnifier off"
     PalmAction.MOUSE_SPACES -> if (workspace.cursorRemap) "Mouse spaces connected" else "Mouse spaces separate"
     PalmAction.LAYOUT -> "Layout"
     PalmAction.ALIGN_AXES -> "Align with axes"
@@ -373,10 +362,7 @@ private fun DrawScope.drawPalmIcon(action: PalmAction, workspace: WorkspaceFile,
         }
         PalmAction.MAGNIFIER -> {
             ring(.42f, .42f, .3f); line(.64f, .64f, .95f, .95f)
-            when (magnifierLabel(workspace)) {
-                "off" -> line(.05f, .95f, .95f, .05f)
-                "fixed" -> { line(.42f, .26f, .42f, .5f); dot(.42f, .26f, .08f) }
-            }
+            if(!workspace.magnifyWindow)line(.05f,.95f,.95f,.05f)
         }
         PalmAction.MOUSE_SPACES -> {
             box(.02f, .25f, .36f, .65f); box(.64f, .25f, .98f, .65f)

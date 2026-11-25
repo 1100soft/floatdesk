@@ -1,103 +1,41 @@
 #!/usr/bin/env python3
-"""Run the production magnifier projection/input transition with native substitutes."""
+"""Verify the magnifier's immutable native-mesh reuse policy."""
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 
 root = Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client'
-s = (root / 'WindowMagnifierPanel.kt').read_text()
-a = s.index('private suspend fun syncMagnifierInput(')
-b = s.index('\n}\n', a) + 2
-helper = s[a:b].replace('kotlinx.coroutines.CancellationException', 'java.util.concurrent.CancellationException')
-code = r'''
-internal object RenderPolicy{var CustomMeshes=true}
-class Session
-class Pose
-class MonitorMesh(val id:Int,val planar:Boolean=false)
-object NativeMonitorInput{fun create(session:Session,listener:()->Unit)=Input()}
-class Input
-open class Entity {
-    var isDisposed=false
- var parent:Entity?=null
- @JvmField var enabled=false
- fun setPose(value:Pose){}
- fun setEnabled(value:Boolean){enabled=value}
-}
-class SurfaceEntity:Entity(){
- val components=mutableSetOf<Input>()
- var added=0;var removed=0
- fun addComponent(input:Input):Boolean {check(components.add(input));added++;return true}
- fun removeComponent(input:Input){check(components.remove(input));removed++}
-}
-class CurvedMonitorInput(var mesh:MonitorMesh?,var width:Float,var height:Float){
- val entity=Entity();var closed=false
- fun updateGeometry(next:MonitorMesh?,width:Float,height:Float){check(!closed);mesh=next;this.width=width;this.height=height}
- fun close(){check(!closed);closed=true;entity.enabled=false}
- companion object{
-  var creates=0;var last:CurvedMonitorInput?=null;var afterCreate:(()->Unit)?=null
-  suspend fun create(session:Session,parent:SurfaceEntity,mesh:MonitorMesh?,columns:Int,rows:Int,width:Float,height:Float,listener:()->Unit):CurvedMonitorInput{
-   creates++;return CurvedMonitorInput(mesh,width,height).also{last=it;afterCreate?.invoke()}
-  }
- }
-}
-class MagnifierResources{
- var flatInput:Input?=null
- var mesh:MonitorMesh?=null
- var curved:CurvedMonitorInput?=null
- var generation=0
- var entity:SurfaceEntity?=null
- var visible=true
- var listener:(()->Unit)?={}
-}
-''' + helper + r'''
-suspend fun main(){
- val session=Session();val surface=SurfaceEntity();val resources=MagnifierResources()
- resources.entity=surface
- val preview=MagnifierResources()
- val previewSurface=SurfaceEntity()
- val previewMesh=MonitorMesh(-1)
- preview.entity=previewSurface
- val created=CurvedMonitorInput.creates
- syncMagnifierInput(session,preview,previewSurface,previewMesh,2f,1f,direct=true)
- check(preview.mesh===previewMesh && previewSurface.components.size==1)
- check(preview.curved==null && CurvedMonitorInput.creates==created)
- repeat(50){cycle->
-  syncMagnifierInput(session,resources,surface,null,2f,1f)
-  check(surface.components.size==1 && resources.flatInput!=null)
-  check(resources.curved?.entity?.enabled!=true && resources.mesh==null)
-  val mesh=MonitorMesh(cycle)
-  syncMagnifierInput(session,resources,surface,mesh,2f,1f)
-  check(surface.components.isEmpty())
-  check(resources.curved!!.mesh===mesh && resources.curved!!.entity.enabled)
-  check(resources.curved!!.entity.parent===surface)
- }
- check(CurvedMonitorInput.creates==1)
- resources.visible=false
- syncMagnifierInput(session,resources,surface,MonitorMesh(100),2f,1f)
- check(!resources.curved!!.entity.enabled)
- syncMagnifierInput(session,resources,surface,MonitorMesh(101,planar=true),3f,2f)
- check(!resources.curved!!.entity.enabled && surface.components.size==1 && resources.mesh==null)
- resources.visible=true
- syncMagnifierInput(session,resources,surface,null,3f,2f)
- check(!resources.curved!!.entity.enabled && surface.components.size==1)
- syncMagnifierInput(session,resources,surface,MonitorMesh(102),3f,2f)
- check(resources.curved!!.entity.enabled && resources.curved!!.width==3f && surface.components.isEmpty())
- val late=MagnifierResources();val lateSurface=SurfaceEntity();late.entity=lateSurface
- CurvedMonitorInput.afterCreate={late.generation++}
- try{syncMagnifierInput(session,late,lateSurface,MonitorMesh(101),2f,1f);error("stale completion accepted")}
- catch(expected:java.util.concurrent.CancellationException){}
- check(CurvedMonitorInput.last!!.closed && late.curved==null)
- RenderPolicy.CustomMeshes=false
- val stable=MagnifierResources();val quad=SurfaceEntity();stable.entity=quad
- syncMagnifierInput(session,stable,quad,null,2f,1f)
- syncMagnifierInput(session,stable,quad,null,2f,1f)
- check(quad.added==1 && stable.curved==null && stable.flatInput!=null && stable.mesh==null)
- println("PASS repeated flat/curved input handoff, stable collider ownership, hidden state and cancelled creation")
+panel = (root / 'WindowMagnifierPanel.kt').read_text()
+assert 'entity.shape=' not in panel.replace(' ', '')
+assert 'resources.curvedInput?.entity ?: resources.entity' in panel
+assert 'curvedInput?.detach()' in panel
+assert '.updateGeometry(' not in panel
+assert 'transientSurface && regionId==null' in panel
+source = (root / 'WindowMagnification.kt').read_text()
+start = source.index('internal fun sameNativePaneExtent(')
+end = source.index('/** Lower bound', start)
+code = 'import kotlin.math.abs\n' + '''
+internal data class MagnifiedWindow(val width:Float,val height:Float,val spherical:Boolean)
+''' + source[start:end] + '''
+fun main() {
+    for(curved in listOf(false,true)){
+        val pane=MagnifiedWindow(1.2f,.8f,curved)
+        check(sameNativePaneExtent(pane,pane.copy()))
+        check(sameNativePaneExtent(pane,pane.copy(width=1.201f)))
+        check(!sameNativePaneExtent(pane,pane.copy(width=1.5f)))
+        check(!sameNativePaneExtent(pane,pane.copy(height=.9f)))
+        check(!sameNativePaneExtent(pane,pane.copy(spherical=!curved)))
+        check(!sameNativePaneExtent(null,pane))
+    }
+    println("PASS immutable magnifier meshes, reusable extent, and flat/curved separation")
 }
 '''
-lib = Path(sys.argv[1]);stdlib = next(lib.glob('kotlin-stdlib-*.jar'))
-with tempfile.TemporaryDirectory(prefix='floatdesk-magnifier-transition-') as tmp:
-    file = Path(tmp) / 'TransitionCheck.kt';file.write_text(code)
-    subprocess.run(['java','-Xmx512m','-cp',str(lib/'*'),'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler','-no-stdlib','-no-reflect','-classpath',str(stdlib),'-d',tmp,str(file)],check=True)
-    subprocess.run(['java','-cp',tmp+':'+str(stdlib),'TransitionCheckKt'],check=True)
+lib = Path(sys.argv[1])
+stdlib = next(lib.glob('kotlin-stdlib-*.jar'))
+with tempfile.TemporaryDirectory(prefix='floatdesk-magnifier-transition-') as temp:
+    path = Path(temp) / 'MagnifierTransition.kt'
+    path.write_text(code)
+    subprocess.run(['java','-cp',str(lib/'*'),'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler',
+                    '-no-stdlib','-no-reflect','-classpath',str(stdlib),'-d',temp,str(path)],check=True)
+    subprocess.run(['java','-cp',temp+':'+str(stdlib),'MagnifierTransitionKt'],check=True)

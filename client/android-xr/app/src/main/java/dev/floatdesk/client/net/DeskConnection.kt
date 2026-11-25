@@ -102,7 +102,7 @@ internal class DeskConnection(
         val format=currentMonitors.singleOrNull()
         val target=bounds?.let{qualityOutputSize(it[2],it[3],qualityOutputLimit())}
         val fraction=if(rect!=null && target!=null)qualityDenseFraction(denseFraction,rect,target.first,target.second) else denseFraction
-        val request=if(detailDiagnostics.get().enabled && rect!=null && isVideoActive() && desktopVisible && remote!=null && bounds!=null && format!=null)DetailRequest(remote,detailSession,rect,bounds,center ?: (rect.centerU to rect.centerV),videoQuality,videoMbps,fraction,if(magnifierActive)4096 else nativeAreaPixels,detailTargetFps) else null
+        val request=if(detailDiagnostics.get().enabled && rect!=null && isVideoActive() && desktopVisible && remote!=null && bounds!=null && format!=null)DetailRequest(remote,detailSession,rect,bounds,center ?: (rect.centerU to rect.centerV),videoQuality,videoMbps,fraction,nativeAreaPixels,detailTargetFps) else null
         val reason=when {
             !detailDiagnostics.get().enabled->"Normal full-desktop streaming"
             rect==null->blockedReason
@@ -346,7 +346,6 @@ internal class DeskConnection(
     }
     fun windowRenderer()=decoders[0]?.windowRenderer()
     fun hasWindowDetail()=decoders[0]?.windowRenderer()?.hasWindowDetail()==true
-    @Volatile var magnifierActive=false
     fun openWindowVideo(id:Long,video:dev.floatdesk.client.media.VideoCompositor,failed:(String)->Unit,output:WindowDestination?=null):WindowVideo?{
         val remote=pendingRemote ?: return null
         return WindowVideo(java.net.InetSocketAddress(remote.address,remote.port+2),detailSession,id,detailTargetFps,video,failed,output?.surface ?: video.input,if(output==null)null else {pts,meta->

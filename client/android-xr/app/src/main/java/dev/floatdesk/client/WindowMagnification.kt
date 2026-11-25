@@ -109,6 +109,11 @@ internal fun samePaneGeometry(previous:MagnifiedWindow,next:MagnifiedWindow):Boo
         a.positions.indices.none{abs(a.positions[it]-b.positions[it])>.0005f}
 }
 
+/** A live native canvas retains its triangle mesh across visibility and pose changes. */
+internal fun sameNativePaneExtent(current:MagnifiedWindow?,requested:MagnifiedWindow):Boolean =
+    current!=null && current.spherical==requested.spherical &&
+        abs(current.width-requested.width)<.003f && abs(current.height-requested.height)<.003f
+
 /** Lower bound for every point of the actual pane, including curved triangle chords. */
 internal fun paneFrontRadius(pane:MagnifiedWindow,viewer:Pose):Float{
     val localEye=viewerInMonitor(viewer.position,pane.pose.position,pane.pose.rotation)

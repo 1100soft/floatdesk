@@ -88,16 +88,14 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
             }
             Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)){
                 androidx.compose.material3.Switch(checked=quality.magnifyWindow,enabled=info?.windowMagnify==true || quality.magnifyWindow,onCheckedChange={onQuality(quality.copy(magnifyWindow=it))})
-                Text("Magnify focused window",color=Color.White)
+                Text("Magnifier",color=Color.White)
             }
-            Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){
-                listOf("floating" to "Floating","fixed" to "Fixed").forEach{(mode,label)->Button(onClick={onQuality(quality.copy(magnifierMode=mode))}){Text(if(quality.magnifierMode==mode)"✓ $label" else label)}}
-            }
+
             Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
                 Text("Panels & system menu",color=Color.White)
                 androidx.compose.material3.Switch(checked=quality.magnifySystemPanels,onCheckedChange={onQuality(quality.copy(magnifySystemPanels=it))})
             }
-            if(quality.magnifierMode=="fixed")Button(onClick=onAddFixed){Text("Add fixed magnifier")}
+            if(quality.magnifyWindow)Button(onClick=onAddFixed){Text("Add magnifier")}
             if(quality.gazeToFocus && connection.gazeFocusError.value.isNotEmpty())Text(connection.gazeFocusError.value,color=Color(0xFFFFB4AB),fontSize=12.sp)
             var quiet by remember(quality.typingQuietMs){mutableStateOf((quality.typingQuietMs/1000f).toString())}
             Row(horizontalArrangement=Arrangement.spacedBy(8.dp),verticalAlignment=Alignment.CenterVertically){

@@ -41,6 +41,19 @@ internal class CurvedMonitorInput private constructor(
         if(!entity.isDisposed)entity.dispose()
     }
 
+    /** Detach an immutable pane collider without retiring its borrowed native material. */
+    @android.annotation.SuppressLint("RestrictedApi")
+    fun detach(){
+        if(closed)return
+        closed=true
+        if(!entity.isDisposed){
+            entity.removeComponent(pointer)
+            entity.removeComponent(component)
+            entity.setEnabled(false)
+            entity.parent=null
+        }
+    }
+
     companion object {
         // One immutable input asset per grid/session. Menu slots instance it; they
         // never repeatedly create/free its shared texture and material objects.

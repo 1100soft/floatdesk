@@ -67,7 +67,6 @@ internal data class WorkspaceFile(
     val aimToMagnify:Boolean=false,
     val magnifyWindow:Boolean=false,
     val magnifySystemPanels:Boolean=false,
-    val magnifierMode:String="floating",
     val fixedMagnifiers:List<FixedMagnifierPlacement> = emptyList(),
     val systemPanels:List<FixedMagnifierPlacement> = emptyList(),
     val typingQuietMs:Long=1000,
@@ -297,7 +296,7 @@ private fun encode(workspace: WorkspaceFile): JSONObject {
         .put("spherical_warp", workspace.sphericalWarp)
         .put("reverse_hand_scroll",workspace.reverseHandScroll).put("wake_mac",workspace.wakeMac).put("hand_mouse", workspace.handMouse).put("desktop_reference",workspace.desktopReference)
         .put("tap_to_focus",workspace.tapToFocus).put("drag_to_move",workspace.dragToMove).put("hands_off",workspace.handsOff).put("cursor_remap",workspace.cursorRemap).put("window_grab_mode",workspace.windowGrabMode).put("focus_mode",workspace.focusMode).put("gaze_to_focus",workspace.gazeToFocus).put("aim_to_magnify",workspace.aimToMagnify).put("magnify_window",workspace.magnifyWindow).put("typing_quiet_ms",workspace.typingQuietMs)
-        .put("magnifier_mode",workspace.magnifierMode).put("magnify_system_panels",workspace.magnifySystemPanels)
+        .put("magnify_system_panels",workspace.magnifySystemPanels)
         .put("fixed_magnifiers",encodePlacements(workspace.fixedMagnifiers))
         .put("system_panels",encodePlacements(workspace.systemPanels))
         .put("reference_placement",encodePlacements(listOfNotNull(workspace.referencePlacement)))
@@ -361,7 +360,6 @@ private fun decode(json: JSONObject): WorkspaceFile {
         aimToMagnify=json.optBoolean("aim_to_magnify",false),
         magnifyWindow=json.optBoolean("magnify_window",false),
         magnifySystemPanels=json.optBoolean("magnify_system_panels",false),
-        magnifierMode=if(json.optString("magnifier_mode")=="fixed")"fixed" else "floating",
         fixedMagnifiers=decodePlacements(json.optJSONArray("fixed_magnifiers")),
         systemPanels=decodePlacements(json.optJSONArray("system_panels")),
         typingQuietMs=json.optLong("typing_quiet_ms",1000).coerceIn(0,10000),

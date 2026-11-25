@@ -58,6 +58,16 @@ fun main() {
     check(contact.second.second<lastVertical && abs(contact.second.second-v)<.0001f)
     lastVertical=contact.second.second
  }
+ val hitMatrix=floatArrayOf(1f,0f,0f,0f,0f,1f,0f,0f,0f,0f,1f,0f,-.7f,.2f,0f,1f)
+ val nativeOffset=floatArrayOf(.7f,-.2f,0f)
+ for(v in listOf(.05f,.5f,.95f)){
+    val desired=squareSphere.project(floatArrayOf(0f,(.5f-v)*cursorPane.height,0f),onTriangles=true)
+    val raw=add(desired,nativeOffset)
+    val nativeEye=add(squareSphere.eye,nativeOffset)
+    val resolved=eventMatrixHit(raw,hitMatrix,squareSphere.width,squareSphere.height,squareSphere,
+        rayDirection=subtract(raw,nativeEye),rayOrigin=nativeEye)!!
+    check(abs(sphericalPanePoint(cursorPane,squareSphere,resolved)!!.second.second-v)<.0001f)
+ }
  val offPane=transformPoint(cursorPose,squareSphere.project(floatArrayOf(.55f,0f,0f),onTriangles=true))
  val cursorEye=transformPoint(cursorPose,squareSphere.eye)
  check(sphericalPaneContact(cursorPane,squareSphere,cursorEye to subtract(offPane,cursorEye))==null)

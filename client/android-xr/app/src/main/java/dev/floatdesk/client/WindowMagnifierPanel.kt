@@ -121,19 +121,28 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                     val mesh=resources.mesh
                     val capturedMove=event.action==InputEvent.Action.MOVE || event.action==InputEvent.Action.UP
                     val ray=lazy{surfaceInputRay(session,root,event)}
-                    val acceptedRay=hit!=null || capturedMove
                     val sphere=resources.baseGeometry?.mesh?.takeIf{sphericalFit}
-                    val aperture=if(acceptedRay && sphere!=null)sphericalPaneContact(active,sphere,ray.value) else null
-                    val local=if(sphere!=null)aperture?.first else if(mesh!=null){
-                        if(acceptedRay)surfaceInputHit(ray.value,active.pose,active.width,active.height,mesh) else null
-                    }else{
-                        (if(acceptedRay)surfaceInputHit(ray.value,active.pose,active.width,active.height,null) else null)
-                            ?: hit?.hitPosition?.let{eventMatrixHit(floatArrayOf(it.x,it.y,it.z),hit.transform.data,
-                                active.width,active.height,null,entity.getScale(Space.ACTIVITY))}
+                    val inputMesh=sphere ?: mesh
+                    // Native hit data is timestamped with the collider. Do not resolve it
+                    // against the newer viewer-relative pose while the pane is moving.
+                    val eventLocal=hit?.hitPosition?.let{point->
+                        eventMatrixHit(floatArrayOf(point.x,point.y,point.z),hit.transform.data,
+                            inputMesh?.width ?: active.width,inputMesh?.height ?: active.height,inputMesh,
+                            (expected ?: entity).getScale(Space.ACTIVITY),
+                            rayDirection=if(inputMesh!=null)floatArrayOf(event.direction.x,event.direction.y,event.direction.z) else null,
+                            rayOrigin=if(inputMesh!=null)floatArrayOf(event.origin.x,event.origin.y,event.origin.z) else null)
                     }
+                    val aperture=if(sphere==null)null else if(eventLocal!=null)
+                        sphericalPanePoint(active,sphere,eventLocal)
+                    else if(hit==null && capturedMove)sphericalPaneContact(active,sphere,ray.value)
+                    else null
+                    val local=if(sphere!=null)aperture?.first else eventLocal
+                        ?: (if(hit!=null || capturedMove)surfaceInputHit(ray.value,active.pose,active.width,active.height,mesh) else null)
                     val uv=if(sphere!=null)aperture?.second else local?.let{point->
                         val flat=mesh?.unproject(point) ?: point
-                        (flat[0]/active.width+.5f) to (.5f-flat[1]/active.height)
+                        val u=flat[0]/active.width+.5f
+                        val v=.5f-flat[1]/active.height
+                        if(u in -.001f..1.001f && v in -.001f..1.001f)u.coerceIn(0f,1f) to v.coerceIn(0f,1f) else null
                     }
                     val pointerSide=event.pointerType.toString()
                     val handInput=event.source==InputEvent.Source.HANDS

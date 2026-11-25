@@ -307,6 +307,11 @@ internal fun sphericalPaneContact(pane:MagnifiedWindow,canvas:MonitorMesh,ray:Pa
     val origin=viewerInMonitor(ray.first,pane.pose.position,pane.pose.rotation)
     val end=viewerInMonitor(add(ray.first,ray.second),pane.pose.position,pane.pose.rotation)
     val hit=meshRayHit(canvas,origin,subtract(end,origin)) ?: return null
+    return sphericalPanePoint(pane,canvas,hit)
+}
+
+/** Convert one submitted-mesh hit to the image aperture's top-left UV. */
+internal fun sphericalPanePoint(pane:MagnifiedWindow,canvas:MonitorMesh,hit:FloatArray):Pair<FloatArray,Pair<Float,Float>>?{
     val flat=canvas.unproject(hit) ?: return null
     val u=flat[0]/pane.width+.5f
     val v=.5f-flat[1]/pane.height

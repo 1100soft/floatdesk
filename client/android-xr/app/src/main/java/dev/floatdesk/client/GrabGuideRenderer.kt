@@ -165,10 +165,10 @@ internal class GrabGuideRenderer private constructor(
     fun updatePointer(parent:Entity,position:FloatArray?,eye:FloatArray?,unitsPerMeter:Float){
         if(closed)return
         if(position==null || eye==null){pointerPoint?.let{state(it).enabled(false)};return}
-        val entity=pointerPoint ?: ink(pointerQuad,0,painter=::paintCursorGlow)?.also{pointerPoint=it} ?: return
+        val entity=pointerPoint ?: ink({SurfaceEntity.Shape.Quad(androidx.xr.runtime.math.FloatSize2d(2f,2f))},0,painter=::paintCursorGlow)?.also{pointerPoint=it} ?: return
         val range=distance(position,eye)
         if(range<.0001f){state(entity).enabled(false);return}
-        val lift=minOf(.006f*unitsPerMeter,range*.006f)
+        val lift=minOf(.014f*unitsPerMeter,range*.012f)
         val front=FloatArray(3){position[it]+(eye[it]-position[it])*lift/range}
         state(entity).apply{
             this.parent(parent)
@@ -195,7 +195,7 @@ internal class GrabGuideRenderer private constructor(
         val center=canvas.width*.5f
         val paint=android.graphics.Paint().apply{
             shader=android.graphics.RadialGradient(center,center,center,
-                intArrayOf(0x78FFFFFF,0x44FFFFFF,0x13FFFFFF,0x00FFFFFF),
+                intArrayOf(0xB0FFFFFF.toInt(),0x62FFFFFF,0x1FFFFFFF,0x00FFFFFF),
                 floatArrayOf(0f,.24f,.65f,1f),android.graphics.Shader.TileMode.CLAMP)
         }
         canvas.drawColor(android.graphics.Color.TRANSPARENT,android.graphics.PorterDuff.Mode.CLEAR)
@@ -212,12 +212,15 @@ internal class GrabGuideRenderer private constructor(
         canvas.drawPaint(paint)
     }
 
+    private fun ink(geometry:VideoGeometry,color:Int,painter:((android.graphics.Canvas)->Unit)?=null):SurfaceEntity? =
+        ink({nativeVideoMesh(geometry)},color,painter)
+
     @OptIn(androidx.xr.scenecore.ExperimentalSurfaceEntityPixelDimensionsApi::class)
-    private fun ink(geometry:VideoGeometry,color:Int,painter:((android.graphics.Canvas)->Unit)?=null):SurfaceEntity?{
+    private fun ink(shape:()->SurfaceEntity.Shape,color:Int,painter:((android.graphics.Canvas)->Unit)?=null):SurfaceEntity?{
         val now=android.os.SystemClock.uptimeMillis()
         if(now<nextInkAllocation)return null
         nextInkAllocation=now+90L
-        val entity=SurfaceEntity.create(session,shape=nativeVideoMesh(geometry),parent=null,
+        val entity=SurfaceEntity.create(session,shape=shape(),parent=null,
             superSampling=SurfaceEntity.SuperSampling.NONE,mediaBlendingMode=SurfaceEntity.MediaBlendingMode.TRANSPARENT)
         entity.setEnabled(false)
         if(!SurfaceInput.disableCollider(entity)){
@@ -299,11 +302,6 @@ internal class GrabGuideRenderer private constructor(
     }
 
     companion object {
-        private val pointerQuad=VideoGeometry(
-            floatArrayOf(-1f,1f,0f,1f,1f,0f,-1f,-1f,0f,1f,-1f,0f),
-            floatArrayOf(0f,1f,1f,1f,0f,0f,1f,0f),
-            intArrayOf(0,2,1,1,2,3),
-        )
         private val glowingSphere=layoutOriginSphereGeometry().let{sphere->
             val uv=FloatArray(sphere.texCoords.size){i->
                 if(i%2==0)(sphere.positions[i/2*3+2]+1f)*.5f else .5f

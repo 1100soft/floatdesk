@@ -15,6 +15,9 @@ for name in ['MonitorMesh.kt','PointerControl.kt','GazeStabilizer.kt','PinchPoli
 checks='''
 fun main() {
     val target=PointerTarget(0,.5f,.5f,floatArrayOf(0f,0f,0f))
+    check(lockedMouseContact(target,target.copy(u=.7f))?.u==.7f)
+    check(lockedMouseContact(target,target.copy(spaceKey="shell:panel"))==null)
+    check(lockedMouseContact(target,target.copy(monitor=1))==null)
     val open=FingerPinch(.07f,.07f); val index=FingerPinch(.009f,.07f); val middle=FingerPinch(.07f,.011f)
     val gestures=MouseGestures()
     fun frame(t: Long,sample: FingerPinch,point: PointerTarget?=target,enabled: Boolean=true,blocked: Boolean=false)=

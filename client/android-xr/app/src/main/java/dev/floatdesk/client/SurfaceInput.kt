@@ -46,3 +46,10 @@ internal fun updateSurfaceAimingIcon(entity:androidx.xr.scenecore.Entity?,gaze:B
         if(it.spatialPointerIcon!=icon)it.spatialPointerIcon=icon
     }
 }
+
+
+internal fun pointerEventContinues(action:androidx.xr.scenecore.InputEvent.Action)=when(action){
+    androidx.xr.scenecore.InputEvent.Action.MOVE,androidx.xr.scenecore.InputEvent.Action.UP,
+    androidx.xr.scenecore.InputEvent.Action.CANCEL->true
+    else->false
+}

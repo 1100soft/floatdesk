@@ -95,7 +95,14 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                         ?: if(capturedMove)surfaceInputHit(ray.value,active.pose,active.width,active.height,mesh) else null
                     val flat=local?.let{mesh?.unproject(it) ?: it}
                     val uv=flat?.let{it[0]/active.width+.5f to (.5f-it[1]/active.height)}
-                    val side=event.pointerType.toString()
+                    val pointerSide=event.pointerType.toString()
+                    val handInput=event.source==InputEvent.Source.HANDS
+                    val side=if(handInput && pointerSide=="DEFAULT" && pointerEventContinues(event.action))
+                        resources.capturedHands.singleOrNull() ?: pointerSide else pointerSide
+                    if(handInput){
+                        if(event.action==InputEvent.Action.DOWN && local!=null && side in setOf("LEFT","RIGHT"))resources.capturedHands.add(side)
+                        if(event.action==InputEvent.Action.UP || event.action==InputEvent.Action.CANCEL)resources.capturedHands.remove(side)
+                    }
                     if(hit!=null)updateSurfaceAimingIcon(expected,event.source==InputEvent.Source.GAZE_AND_GESTURE)
                     if(event.source==InputEvent.Source.HANDS){
                         if(event.action==InputEvent.Action.HOVER_EXIT || event.action==InputEvent.Action.CANCEL)hoverNow.value(side,null)
@@ -381,9 +388,10 @@ private class MagnifierResources:AutoCloseable{
     var moveContact:Pair<Float,Float>?=null
     var moveStarted=0L
     val hovering=mutableSetOf<String>()
+    val capturedHands=mutableSetOf<String>()
     var visible=false;var hasFrame=false;var generation=0;val shapes=RetainedSurfaceShapes(128,16L*1024*1024)
     fun clearInteraction(){
-        if(free.busy)free.cancel();freeContacts.clear()
+        if(free.busy)free.cancel();freeContacts.clear();capturedHands.clear()
         corners.cancel();drag.clear();dragSide=null;dragHandSide=null;pending=null
         resizing=false;resizeStart=null;moving=false
         moveContact=null

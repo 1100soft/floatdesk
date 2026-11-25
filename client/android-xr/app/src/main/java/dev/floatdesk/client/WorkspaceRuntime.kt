@@ -445,7 +445,8 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
     val palmLayouts=remember(palmPreferences){mutableStateMapOf<PalmPage,PalmCustomLayout>().apply{
         PalmPage.entries.forEach{page->PalmCustomLayout.read(palmPreferences.getString(page.name,null))?.let{put(page,it)}}
     }}
-    var palmEditing by remember{mutableStateOf(false)}
+    var palmEdit by remember{mutableStateOf<PalmEditSession?>(null)}
+    val palmEditing=palmEdit!=null
     val poke = remember { PalmPoke() }
     var lastPalmAction by remember { mutableStateOf(0L) }
     val palmAction: (PalmAction) -> Unit = { action ->
@@ -455,7 +456,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             panelPressed=action; feedbackAt=now
             clickView.playSoundEffect(android.view.SoundEffectConstants.CLICK)
             when (action) {
-                PalmAction.EDIT -> {palmEditing=true;poke.clear()}
+                PalmAction.EDIT -> {palmPanel?.let{panel->palmEdit=PalmEditSession(panel,panel.customLayout ?: PalmCustomLayout.defaults(panel.page))};poke.clear()}
                 PalmAction.FOLLOW -> { latchedFollow = !latchedFollow; suppressFist = true; followGeneration += 1 }
                 PalmAction.RESET -> resetDesk()
                 PalmAction.TAP_TO_FOCUS -> {workspace=workspace.copy(tapToFocus=!workspace.tapToFocus);store.save(workspace)}
@@ -701,10 +702,14 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     if(handInputAllowed) palmInteractionEpoch++
                     handInputAllowed=false
                     val release=mouseGestures.update(SystemClock.uptimeMillis(),false,true,emptyMap(),null)
-                    release.target?.let { connection.movePointer(it.monitor,it.u,it.v,false) }
+                    release.target?.let {target->
+                        connection.desktopPoint(target.monitor,target.u,target.v)?.let{(u,v)->
+                            connection.movePointer(target.monitor,u,v,false,target.spaceKey)
+                        }
+                    }
                     release.scroll?.let { connection.touchpad(it.fingers,it.x,it.y) }
                     grabs.values.forEach { it.cancel() }
-                    pointerControl.clear(resetAiming=true);palmEditing=false;palmPanel=null;holdingFist=false;followLock=null
+                    pointerControl.clear(resetAiming=true);palmPanel=null;holdingFist=false;followLock=null
                     deskSpace.get()?.let { parent ->
                         guideRenderer?.update(parent,emptyList())
                         guideRenderer?.updateRays(parent,emptyMap(),null,1f,true)
@@ -1183,45 +1188,56 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     MouseAimSurface(it.pose,it.width,it.height,it.mesh,it)
                 }
             }
+            fun captureMouseAnchor(side:String,target:PointerTarget):MouseAimAnchor?{
+                val surface=mouseSurface(target) ?: return null
+                val hand=aimPoses[side]?.position ?: grips[side] ?: return null
+                val eye=magnifierViewer.get()?.position ?: return null
+                val uv=if(surface.window==null)target.u to target.v else magnifierHands[side]?.let{
+                    val rect=magnifierContentRect(surface.window)
+                    (rect.left+it.first*(rect.right-rect.left)) to (rect.top+it.second*(rect.bottom-rect.top))
+                } ?: return null
+                val local=pointerSurfacePoint(target.copy(u=uv.first,v=uv.second),surface.width,surface.height,surface.mesh)
+                return MouseAimAnchor(target,hand.copyOf(),eye.copyOf(),transformPoint(surface.pose,local))
+            }
             val mouseAim=if(workspace.handMouseActive){
-                val native=choice.target?.takeIf{choice.mode==PointerMode.HAND}
                 if(!mouseGestures.engaged){
                     if(handTracking.nowMs-lastMouseAimAt>180L)mouseAimAnchors.clear()
+                    val native=choice.target?.takeIf{choice.mode==PointerMode.HAND}
                     val side=contextHands.entries.firstOrNull{it.value===native}?.key
                     if(side!=null && native!=null){
-                        val surface=mouseSurface(native)
-                        val hand=aimPoses[side]?.position ?: grips[side]
-                        val eye=magnifierViewer.get()?.position
-                        if(surface!=null && hand!=null && eye!=null){
-                            val uv=if(surface.window==null)native.u to native.v else magnifierHands[side]?.let{
-                                val rect=magnifierContentRect(surface.window)
-                                (rect.left+it.first*(rect.right-rect.left)) to (rect.top+it.second*(rect.bottom-rect.top))
-                            }
-                            if(uv!=null){
-                                val local=pointerSurfacePoint(native.copy(u=uv.first,v=uv.second),surface.width,surface.height,surface.mesh)
-                                mouseAimAnchors.clear()
-                                mouseAimAnchors[side]=MouseAimAnchor(native,hand.copyOf(),eye.copyOf(),transformPoint(surface.pose,local))
-                                lastMouseAimSide=side
-                                lastMouseAimAt=handTracking.nowMs
-                            }
+                        captureMouseAnchor(side,native)?.let{anchor->
+                            mouseAimAnchors.clear()
+                            mouseAimAnchors[side]=anchor
+                            lastMouseAimSide=side
+                            lastMouseAimAt=handTracking.nowMs
                         }
                     }
                     native
                 }else{
                     val side=lastMouseAimSide
                     val anchor=mouseAimAnchors[side]
-                    val hand=aimPoses[side]?.position ?: grips[side]
-                    if(anchor==null || hand==null)null else mouseSurface(anchor.target)?.let{surface->
-                        val gain=distance(anchor.eye,anchor.contact)/distance(anchor.eye,anchor.hand).coerceAtLeast(.1f*unitsPerMeter)
-                        val contact=FloatArray(3){anchor.contact[it]+(hand[it]-anchor.hand[it])*gain}
-                        val point=surfaceInputHit(anchor.eye to subtract(contact,anchor.eye),surface.pose,surface.width,surface.height,surface.mesh)
-                            ?: return@let null
-                        val flat=if(surface.mesh==null)point else surface.mesh.unproject(point) ?: return@let null
-                        val u=flat[0]/surface.width+.5f;val v=.5f-flat[1]/surface.height
-                        val target=anchor.target
-                        val window=surface.window
-                        if(window==null)target.copy(u=u,v=v,local=point)
-                        else magnifiedTarget(magnifierContentPoint(window,u to v),window.id)?.copy(spaceKey=target.spaceKey)
+                    val native=lockedMouseContact(mouseGestures.heldTarget,contextHands[side])
+                    val eventAt=if(native?.spaceKey=="desktop")pointerControl.contactTime(side) else magnifierHands.contactTime(side)
+                    if(native!=null && eventAt!=null && handTracking.nowMs-eventAt<=85L){
+                        if(side!=null && eventAt>lastMouseAimAt)captureMouseAnchor(side,native)?.let{
+                            mouseAimAnchors[side]=it
+                            lastMouseAimAt=eventAt
+                        }
+                        native
+                    }else{
+                        val hand=aimPoses[side]?.position ?: grips[side]
+                        if(anchor==null || hand==null)null else mouseSurface(anchor.target)?.let{surface->
+                            val gain=distance(anchor.eye,anchor.contact)/distance(anchor.eye,anchor.hand).coerceAtLeast(.1f*unitsPerMeter)
+                            val contact=FloatArray(3){anchor.contact[it]+(hand[it]-anchor.hand[it])*gain}
+                            val point=surfaceInputHit(anchor.eye to subtract(contact,anchor.eye),surface.pose,surface.width,surface.height,surface.mesh)
+                                ?: return@let null
+                            val flat=if(surface.mesh==null)point else surface.mesh.unproject(point) ?: return@let null
+                            val u=flat[0]/surface.width+.5f;val v=.5f-flat[1]/surface.height
+                            val target=anchor.target
+                            val window=surface.window
+                            if(window==null)target.copy(u=u,v=v,local=point)
+                            else magnifiedTarget(magnifierContentPoint(window,u to v),window.id)?.copy(spaceKey=target.spaceKey)
+                        }
                     }
                 }
             }else{mouseAimAnchors.clear();null}
@@ -1362,7 +1378,8 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 lastFocusGate=focusGateKey
             }
             val paneGrabPreview=workspace.freeManipulation && magnifierHands.owner("LEFT")?.let{it==magnifierHands.owner("RIGHT")}==true
-            val gestureBlocked=connection.thermalPaused.value || paneGrabPreview || workspace.layoutModeActive || magnifierMoving || toolbarEngaged || displayControlsOpen || choice.mode.reservesDesktop || palmPanel!=null
+            val hardInputBlock=connection.thermalPaused.value || workspace.layoutModeActive || magnifierMoving || displayControlsOpen || palmPanel!=null || palmEditing
+            val gestureBlocked=hardInputBlock || paneGrabPreview || toolbarEngaged || choice.mode.reservesDesktop
             for(frame in pinchFrames.drain(handTracking.nowMs)) {
                 val samples=frame.samples.filterKeys { it in mouseSamples }.mapValues { (side,sample) ->
                     val basis=mouseSamples.getValue(side)
@@ -1387,9 +1404,10 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     focusGate.isNotEmpty(),samples,focusHover).takeUnless{grabUpdate.move!=null || windowGrab.preview!=null}
                 if(selected?.resetDesktop==true)resetDesk()
                 else if(selected!=null)requestFocus(selected)
+                val mouseEngaged=mouseGestures.engaged
                 val mouse=mouseGestures.update(frame.at,workspace.handMouseActive,
-                    gestureBlocked || uncertain || referenceFocus.isNotEmpty() && mouseAim==null,
-                    samples.filterKeys{it !in referenceFocus},mouseAim)
+                    hardInputBlock || !mouseEngaged && (gestureBlocked || uncertain || referenceFocus.isNotEmpty() && mouseAim==null),
+                    if(mouseEngaged)samples else samples.filterKeys{it !in referenceFocus},mouseAim)
                 mouse.scroll?.let {
                     if(it.fingers==0) Log.i("Floatdesk","mouse scroll released at=${frame.at}")
                     connection.touchpad(it.fingers,if(workspace.reverseHandScroll)1f-it.x else it.x,if(workspace.reverseHandScroll)1f-it.y else it.y)
@@ -1563,7 +1581,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 store = store,
                 density = density,
                 pixelDensity = pixelDensity,
-                palmPanel = palmPanel,
+                palmPanel = palmEdit?.let{it.panel.copy(customLayout=it.draft)} ?: palmPanel,
                 latchedFollow = latchedFollow,
                 onPalmAction = { action-> if(actionEpoch==palmInteractionEpoch) palmAction(action) },
                 handInputAllowed = handInputAllowed,
@@ -1580,8 +1598,9 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 onManipulate = { updateManipulation(it) },
                 savedLayoutPreviews=savedLayoutPreviews,
                 palmEditing=palmEditing,
+                onPalmDraft={draft->palmEdit=palmEdit?.copy(draft=draft)},
                 onPalmEdited={page,layout->
-                    palmEditing=false
+                    palmEdit=null
                     if(layout!=null){
                         palmLayouts[page]=layout
                         palmPreferences.edit().putString(page.name,layout.encode()).apply()
@@ -1602,7 +1621,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
         if(magnifierRoot!=null) {
             WindowMagnifierPanel(session,magnifierRoot,magnified?.copy(desktopRotation=workspace.layoutOrigin?.rotation ?: workspace.monitorAt(0)?.pose?.rotation).takeIf{workspace.magnifierMode=="floating" && magnifierSurfacesAllowed(workspace.magnifyWindow,sceneActive && !restoreViewerPending,displayControlsOpen)},connection,magnifierPinned,magnifierViewer,{handTracking.unitsPerMeter},handTracking,
                 {magnifierReady=true},{message->magnifierFailed=true;Log.w("Floatdesk",message)},
-                {side,uv->magnifierHands.update("floating",side,magnified?.let{pane->uv?.let{magnifierContentPoint(pane,it)}},magnified?.id)},
+                {side,uv->magnifierHands.update("floating",side,magnified?.let{pane->uv?.let{magnifierContentPoint(pane,it)}},magnified?.id,now=SystemClock.uptimeMillis())},
                 {next,_->if(workspace.magnifierMode=="floating" && workspace.magnifyWindow){magnified=next;magnifierMesh=next.mesh}},{moving->if(moving)fixedEditing.add("floating")else fixedEditing.remove("floating");magnifierMoving=fixedEditing.isNotEmpty()},allowManipulation=workspace.grabToMove,freeManipulation=workspace.freeManipulation,topologyKey="floating",projectionMode=workspace.sphericalWarp,onPointerHover={hands,gaze->if(gaze)pointerControl.noteSystemGaze();if(hands || gaze)magnifierPointerHover["floating"]=hands to gaze else magnifierPointerHover.remove("floating")},onHidden={magnifierReady=false})
         }
         val layoutBasis=workspace.monitorAt(0)?.let{desktop->workspace.layoutOrigin?.let{desktop.copy(pose=it)} ?: desktop}
@@ -1621,7 +1640,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 workspace.sphericalWarp && RenderPolicy.CustomMeshes,referencePane,updateGeometry=false)
             WindowMagnifierPanel(session,magnifierRoot,pane.takeIf{enabled},connection,false,magnifierViewer,{handTracking.unitsPerMeter},handTracking,
                 {referenceReady=true},{message->referenceReady=false;Log.w("Floatdesk",message)},
-                {side,uv->magnifierHands.update("reference",side,uv,-1)},{next,changed->
+                {side,uv->magnifierHands.update("reference",side,uv,-1,now=SystemClock.uptimeMillis())},{next,changed->
                     referencePane=next
                     if(changed)workspace=workspace.copy(referencePlacement=saveFixedMagnifier("reference",next,layoutBasis,unit))
                 },{moving->if(moving)fixedEditing.add("reference")else if(fixedEditing.remove("reference"))recordPlacement("reference gesture");magnifierMoving=fixedEditing.isNotEmpty()},
@@ -1641,7 +1660,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 DisposableEffect(record.id,pane.id){fixedReady[record.id]=false;onDispose{fixedReady.remove(record.id);fixedDisplayed.remove(record.id)}}
                 WindowMagnifierPanel(session,magnifierRoot,pane.takeIf{paneEnabled},connection,record.id in fixedPins,magnifierViewer,{handTracking.unitsPerMeter},handTracking,
                     {magnifierReady=true},{message->fixedReady[record.id]=false;Log.w("Floatdesk",message)},
-                    {side,uv->magnifierHands.update(record.id,side,uv?.let{magnifierContentPoint(pane,it)},pane.id)},
+                    {side,uv->magnifierHands.update(record.id,side,uv?.let{magnifierContentPoint(pane,it)},pane.id,now=SystemClock.uptimeMillis())},
                     {next,manipulated->
                         fixedRuntime[record.id]=next
                         if(manipulated && record.id in fixedEditing){
@@ -1717,7 +1736,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 DisposableEffect(live.id){onDispose{systemReady.remove(live.id);systemRuntime.remove(live.id)}}
                 WindowMagnifierPanel(session,magnifierRoot,pane.takeIf{enabled},connection,false,magnifierViewer,{handTracking.unitsPerMeter},handTracking,
                     {systemReady[live.id]=true},{message->systemReady[live.id]=false;Log.w("Floatdesk",message)},
-                    {side,uv->magnifierHands.update("system:${live.id}",side,uv?.let{magnifierContentPoint(pane,it)},pane.id)},
+                    {side,uv->magnifierHands.update("system:${live.id}",side,uv?.let{magnifierContentPoint(pane,it)},pane.id,now=SystemClock.uptimeMillis())},
                     {next,manipulated->systemRuntime[live.id]=next
                         if(manipulated && "system:${live.id}" in fixedEditing){
                             val saved=saveFixedMagnifier(placementKey,next,layoutBasis,handTracking.unitsPerMeter)
@@ -1752,7 +1771,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     if(pane!=null && popupReady[name]==true)renderedPopups.add(pane)
                     WindowMagnifierPanel(session,magnifierRoot,pane,connection,false,magnifierViewer,{handTracking.unitsPerMeter},handTracking,
                         {popupReady[name]=true},{message->popupReady[name]=false;Log.w("Floatdesk",message)},
-                        {side,uv->magnifierHands.update(name,side,if(pane!=null)uv?.let{magnifierContentPoint(pane,it)}else null,pane?.id)},
+                        {side,uv->magnifierHands.update(name,side,if(pane!=null)uv?.let{magnifierContentPoint(pane,it)}else null,pane?.id,now=SystemClock.uptimeMillis())},
                         {_,_->},{},topologyKey="menu:${popup?.id}",projectionMode=workspace.sphericalWarp,onHidden={popupReady[name]=false},captureId=owner.id,regionId=popup?.id,allowManipulation=false,showFrame=false,transientSurface=true)
                 }
             }

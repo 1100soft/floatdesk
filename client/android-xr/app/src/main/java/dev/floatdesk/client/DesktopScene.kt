@@ -98,6 +98,7 @@ internal fun DeskContent(
     onManipulate: (Boolean) -> Unit,
     savedLayoutPreviews:List<FloatArray?>,
     palmEditing:Boolean,
+    onPalmDraft:(PalmCustomLayout)->Unit,
     onPalmEdited:(PalmPage,PalmCustomLayout?)->Unit,
 ) {
     val session = LocalSession.current
@@ -135,7 +136,7 @@ internal fun DeskContent(
             }
         }
     }
-    palmPanel?.takeIf { handInputAllowed }?.let { panel ->
+    palmPanel?.takeIf { handInputAllowed || palmEditing }?.let { panel ->
         val unit = panel.unitsPerMeter
         var hovered by remember(panel.page) { mutableStateOf<PalmAction?>(null) }
         val circle=panel.page.isLayout
@@ -148,7 +149,7 @@ internal fun DeskContent(
             SpatialPanel(modifier=placedPanel(pose,panel.widthM*unit,(panel.heightM+editHeight)*unit,density,pixelDensity),shape=palmShape){
                 EditablePalmControls(panel.page,panel.customLayout,workspace,connection.workspaceInfo.value,latchedFollow,
                     palmEditing,panelFocused,panelPressed,savedLayoutPreviews,panel.heightM/(panel.heightM+editHeight),
-                    {hovered=it},onPalmAction){layout->onPalmEdited(panel.page,layout)}
+                    {hovered=it},onPalmAction,onPalmDraft){layout->onPalmEdited(panel.page,layout)}
             }
         }else{
         SpatialPanel(modifier=placedPanel(circlePose,panel.widthM*unit,PalmMenuLayout.circleM*unit,density,pixelDensity),shape=palmShape){

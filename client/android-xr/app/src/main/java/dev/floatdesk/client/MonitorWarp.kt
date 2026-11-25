@@ -193,7 +193,12 @@ internal class MonitorWarp : AutoCloseable {
                 val info = event.hitInfoList.firstOrNull { it.inputEntity === expected } ?: event.hitInfoList.firstOrNull()
                 val gazeSource=event.source==InputEvent.Source.GAZE_AND_GESTURE
                 if(info?.inputEntity===expected)updateSurfaceAimingIcon(expected,gazeSource)
-                val side = if(gazeSource)"GAZE" else event.pointerType.toString()
+                val pointerSide=event.pointerType.toString()
+                val side=when{
+                    gazeSource->"GAZE"
+                    pointerSide=="DEFAULT" && pointerEventContinues(event.action)->sequences.singleOrNull() ?: pointerSide
+                    else->pointerSide
+                }
                 if(gazeSource && event.action==InputEvent.Action.CANCEL){
                     onHover?.invoke(side,null,null,flatWidth,flatHeight);sequences.remove(side);return@listener
                 }

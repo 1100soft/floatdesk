@@ -46,6 +46,7 @@ code += window_menu[window_menu.index('internal object WindowMenuLayout'):window
 code += palm_menu[palm_menu.index('internal enum class PalmAction'):palm_menu.index('internal fun palmActionEnabled')]
 palm_editor=(Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client/PalmMenuEditor.kt').read_text()
 code += palm_editor[palm_editor.index('private const val PalmGridM'):palm_editor.index('    fun encode():String')].replace('abs(', 'kotlin.math.abs(')+ '}\n'
+code += palm_editor[palm_editor.index('internal sealed interface PalmDragItem'):palm_editor.index('@Composable\ninternal fun EditablePalmControls')]
 code += section('internal data class PalmPanelState', 'internal fun Vector3.toArray()')
 code += section('private fun palmRayPoint(', '/** Direct fingertip contact')
 code += section('private class PalmPoke', '/** Find the parent')
@@ -70,6 +71,9 @@ fun main() {
     val edited=PalmPanelState("LEFT",Pose(floatArrayOf(0f,0f,-1f)),customLayout=customized)
     val reset=edited.buttons.first{it.action==PalmAction.RESET}
     check(kotlin.math.abs((reset.x+reset.w/2)*edited.widthM-PalmMenuLayout.cellM/2)<.00001f)
+    check(customized.itemAt(PalmPage.MAIN,reset.x+reset.w/2,reset.y+reset.h/2)==PalmDragItem.Button(PalmAction.RESET))
+    val label=customized.labels.single()
+    check(customized.itemAt(PalmPage.MAIN,label.point.x/edited.widthM,label.point.y/edited.heightM)==PalmDragItem.Label(label.point))
     val l = floatArrayOf(-0.21f,0.06f,0f); val r = floatArrayOf(0.19f,-0.04f,0f)
     val initial = MonitorPlacement(Pose(floatArrayOf(0.4f,0.2f,-1.3f), normalize4(floatArrayOf(0.2f,0.3f,0.1f,0.9f))))
     fun event(side: String, action: InputEvent.Action, hit: FloatArray? = null) = SpatialInputEvent(side,action,hit?.let{Vector3(it[0]*1000,it[1]*1000,0f)})

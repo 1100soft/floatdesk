@@ -2,8 +2,8 @@ package dev.floatdesk.client
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -25,6 +25,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
@@ -70,6 +74,16 @@ internal data class PalmCustomLayout(
         return copy(labels=if(text.isBlank())remaining else remaining+PalmMenuLabel(point,text.trim().take(32)))
     }
 
+    fun itemAt(page:PalmPage,u:Float,v:Float):PalmDragItem?{
+        buttons(page).firstOrNull{u in it.x..it.x+it.w && v in it.y..it.y+it.h}
+            ?.let{return PalmDragItem.Button(it.action)}
+        return labels.asReversed().firstOrNull{
+            val dx=(u*PalmMenuLayout.widthM-it.point.x)/PalmGridM
+            val dy=(v*PalmMenuLayout.heightM(page)-it.point.y)/PalmGridM
+            dx>=-.35f && dx<=maxOf(1f,it.text.length*.40f) && dy in -.25f..1f
+        }?.let{PalmDragItem.Label(it.point)}
+    }
+
     fun encode():String{
         val cells=JSONObject()
         positions.forEach{(action,point)->cells.put(action.name,JSONArray(listOf(point.column,point.row)))}
@@ -98,52 +112,86 @@ internal data class PalmCustomLayout(
     }
 }
 
+internal data class PalmEditSession(val panel:PalmPanelState,val draft:PalmCustomLayout)
+
+internal sealed interface PalmDragItem{
+    data class Button(val action:PalmAction):PalmDragItem
+    data class Label(val point:PalmGridPoint):PalmDragItem
+}
+
 @Composable
 internal fun EditablePalmControls(
     page:PalmPage,saved:PalmCustomLayout?,workspace:WorkspaceFile,info:WorkspaceInfo?,latched:Boolean,
     editing:Boolean,focused:PalmAction?,pressed:PalmAction?,previews:List<FloatArray?>,bodyFraction:Float,
-    onHover:(PalmAction?)->Unit,onAction:(PalmAction)->Unit,onFinish:(PalmCustomLayout?)->Unit,
+    onHover:(PalmAction?)->Unit,onAction:(PalmAction)->Unit,onDraft:(PalmCustomLayout)->Unit,onFinish:(PalmCustomLayout?)->Unit,
 ){
-    var draft by remember(page,saved,editing){mutableStateOf(saved ?: PalmCustomLayout.defaults(page))}
-    var toolLabels by remember(page,editing){mutableStateOf(false)}
     var selectedLabel by remember(page,editing){mutableStateOf<PalmGridPoint?>(null)}
+    var keyboardRequest by remember(page,editing){mutableStateOf(0)}
     var labelText by remember(page,editing){mutableStateOf("")}
-    var dragged by remember(page,editing){mutableStateOf<PalmAction?>(null)}
-    var dragCenter by remember(page,editing){mutableStateOf(Offset.Zero)}
-    val chosen=if(editing)draft else saved ?: draft
+    var dragged by remember(page,editing){mutableStateOf<PalmDragItem?>(null)}
+    var displacement by remember(page,editing){mutableStateOf(Offset.Zero)}
+    val chosen=saved ?: remember(page){PalmCustomLayout.defaults(page)}
     val currentLayout=rememberUpdatedState(chosen)
+    val changeDraft=rememberUpdatedState(onDraft)
     val heightM=PalmMenuLayout.heightM(page)
+    val focus=remember{FocusRequester()}
+    val keyboard=LocalSoftwareKeyboardController.current
+    fun editLabel(point:PalmGridPoint){
+        labelText=currentLayout.value.labels.firstOrNull{it.point==point}?.text.orEmpty()
+        selectedLabel=point
+        keyboardRequest++
+    }
     MaterialTheme(colorScheme=darkColorScheme()){
         BoxWithConstraints(Modifier.fillMaxSize()){
             val bodyHeight=maxHeight*bodyFraction
             val width=maxWidth
+            val density=androidx.compose.ui.platform.LocalDensity.current
             var plane=Modifier.fillMaxWidth().height(bodyHeight).background(Color(0xFF202D3B))
-            if(editing)plane=plane.pointerInput(page,toolLabels){
-                fun cell(point:Offset,button:Boolean):PalmGridPoint{
+            if(editing)plane=plane.pointerInput(page){
+                fun cell(x:Float,y:Float,button:Boolean):PalmGridPoint{
                     val min=if(button)1 else 0
-                    return PalmGridPoint(
-                        (point.x/size.width*PalmMenuLayout.widthM/PalmGridM).roundToInt()
-                            .coerceIn(min,floor(PalmMenuLayout.widthM/PalmGridM).toInt()-maxOf(1,min)),
-                        (point.y/size.height*heightM/PalmGridM).roundToInt()
-                            .coerceIn(min,floor(heightM/PalmGridM).toInt()-maxOf(1,min)),
-                    )
+                    return PalmGridPoint((x/PalmGridM).roundToInt().coerceIn(min,floor(PalmMenuLayout.widthM/PalmGridM).toInt()-1),
+                        (y/PalmGridM).roundToInt().coerceIn(min,floor(heightM/PalmGridM).toInt()-1))
                 }
-                if(toolLabels)detectTapGestures{point->
-                    val picked=cell(point,false)
-                    selectedLabel=picked
-                    labelText=currentLayout.value.labels.firstOrNull{it.point==picked}?.text.orEmpty()
-                }else detectDragGestures(
-                    onDragStart={position->
-                        val u=position.x/size.width;val v=position.y/size.height
-                        val button=currentLayout.value.buttons(page).firstOrNull{u in it.x..it.x+it.w && v in it.y..it.y+it.h}
-                        if(button!=null){
-                            dragged=button.action
-                            dragCenter=Offset((button.x+button.w/2)*size.width,(button.y+button.h/2)*size.height)
+                awaitEachGesture{
+                    val down=awaitFirstDown(requireUnconsumed=false)
+                    val u=down.position.x/size.width
+                    val v=down.position.y/size.height
+                    val layout=currentLayout.value
+                    val item=layout.itemAt(page,u,v) ?: return@awaitEachGesture
+                    val button=(item as? PalmDragItem.Button)?.let{picked->layout.buttons(page).first{it.action==picked.action}}
+                    down.consume()
+                    displacement=Offset.Zero
+                    try{
+                        while(true){
+                            val change=awaitPointerEvent().changes.firstOrNull{it.id==down.id} ?: break
+                            if(change.isConsumed)break
+                            val delta=change.position-down.position
+                            if(delta.getDistance()>viewConfiguration.touchSlop && dragged==null)dragged=item
+                            if(!change.pressed){
+                                change.consume()
+                                val latest=currentLayout.value
+                                if(dragged!=null){
+                                    val dx=delta.x/size.width*PalmMenuLayout.widthM
+                                    val dy=delta.y/size.height*heightM
+                                    when(item){
+                                        is PalmDragItem.Button->if(button!=null)changeDraft.value(latest.move(page,item.action,cell(
+                                            (button.x+button.w/2)*PalmMenuLayout.widthM+dx,(button.y+button.h/2)*heightM+dy,true)))
+                                        is PalmDragItem.Label->{
+                                            val destination=cell(item.point.x+dx,item.point.y+dy,false)
+                                            val text=latest.labels.firstOrNull{it.point==item.point}?.text
+                                            if(text!=null && latest.labels.none{it.point==destination})
+                                                changeDraft.value(latest.label(item.point,"").label(destination,text))
+                                        }
+                                    }
+                                }else if(item is PalmDragItem.Label)editLabel(item.point)
+                                break
+                            }
+                            if(dragged!=null)displacement=delta
+                            change.consume()
                         }
-                    },
-                    onDragCancel={dragged=null},
-                    onDragEnd={dragged?.let{draft=draft.move(page,it,cell(dragCenter,true))};dragged=null},
-                ){change,delta->if(dragged!=null){change.consume();dragCenter+=delta}}
+                    }finally{dragged=null;displacement=Offset.Zero}
+                }
             }
             Box(plane){
                 if(editing)Canvas(Modifier.fillMaxSize()){
@@ -153,38 +201,46 @@ internal fun EditablePalmControls(
                         drawLine(Color(0xFF43627C),Offset(i*dx,0f),Offset(i*dx,size.height))
                     for(i in 1..floor(heightM/PalmGridM).toInt())
                         drawLine(Color(0xFF43627C),Offset(0f,i*dy),Offset(size.width,i*dy))
-                    selectedLabel?.takeIf{toolLabels}?.let{
-                        drawCircle(Color(0xFF65E0FC),3.dp.toPx(),Offset(it.column*dx,it.row*dy))
-                    }
                 }
                 chosen.labels.forEach{label->
-                    Text(label.text,Modifier.offset(width*(label.point.x/PalmMenuLayout.widthM),bodyHeight*(label.point.y/heightM)),
+                    val delta=if(dragged==PalmDragItem.Label(label.point))displacement else Offset.Zero
+                    Text(label.text,Modifier.offset(width*(label.point.x/PalmMenuLayout.widthM)+with(density){delta.x.toDp()},
+                        bodyHeight*(label.point.y/heightM)+with(density){delta.y.toDp()}),
                         color=Color(0xFFD3E3F4),fontSize=11.sp,maxLines=1)
                 }
-                val scale=androidx.compose.ui.platform.LocalDensity.current
                 for(button in chosen.buttons(page)){
                     val action=button.action
-                    val x=if(dragged==action)with(scale){dragCenter.x.toDp()}-width*button.w/2 else width*button.x
-                    val y=if(dragged==action)with(scale){dragCenter.y.toDp()}-bodyHeight*button.h/2 else bodyHeight*button.y
+                    val delta=if(dragged==PalmDragItem.Button(action))displacement else Offset.Zero
                     val slot=action.ordinal-PalmAction.LOAD_1.ordinal
                     val preview=previews.getOrNull(slot.takeIf{it in 0..2} ?: -1)
                     PalmIcon(action,workspace,palmTooltip(action,workspace,latched),width*button.w,
                         editing || palmActionEnabled(action,workspace,info) && (slot !in 0..2 || preview!=null),
                         palmState(action,workspace,latched),!editing && action==focused,!editing && action==pressed,
-                        {if(!editing)onHover(action.takeIf{_->it})},Modifier.offset(x,y),preview){if(!editing)onAction(action)}
+                        {if(!editing)onHover(action.takeIf{_->it})},Modifier.offset(width*button.x+with(density){delta.x.toDp()},
+                            bodyHeight*button.y+with(density){delta.y.toDp()}),preview,interactive=!editing){onAction(action)}
                 }
             }
             if(editing)Column(Modifier.offset(y=bodyHeight).fillMaxWidth().background(Color(0xFF16232F)).padding(horizontal=6.dp)){
                 Row{
-                    TextButton(onClick={toolLabels=!toolLabels;selectedLabel=null}){Text(if(toolLabels)"Move buttons" else "Labels")}
+                    TextButton(onClick={
+                        val columns=1 until floor(PalmMenuLayout.widthM/PalmGridM).toInt()
+                        val rows=1 until floor(heightM/PalmGridM).toInt()
+                        val point=rows.asSequence().flatMap{row->columns.asSequence().map{PalmGridPoint(it,row)}}
+                            .firstOrNull{cell->chosen.labels.none{it.point==cell} && chosen.buttons(page).none{
+                                cell.x/PalmMenuLayout.widthM in it.x..it.x+it.w && cell.y/heightM in it.y..it.y+it.h
+                            }}
+                        point?.let(::editLabel)
+                    }){Text("Add label")}
                     TextButton(onClick={onFinish(null)}){Text("Cancel")}
-                    TextButton(onClick={onFinish(draft)}){Text("Save")}
+                    TextButton(onClick={onFinish(selectedLabel?.let{chosen.label(it,labelText)} ?: chosen)}){Text("Save")}
                 }
-                if(toolLabels && selectedLabel==null)Text("Tap a grid point to place or edit a label")
-                selectedLabel?.takeIf{toolLabels}?.let{point->
+                selectedLabel?.let{point->
+                    LaunchedEffect(keyboardRequest){focus.requestFocus();keyboard?.show()}
                     Row{
-                        OutlinedTextField(labelText,{labelText=it.take(32)},Modifier.weight(1f),singleLine=true,label={Text("Label")})
-                        TextButton(onClick={draft=draft.label(point,labelText);selectedLabel=null}){Text(if(labelText.isBlank())"Remove" else "Place")}
+                        OutlinedTextField(labelText,{labelText=it.take(32)},Modifier.weight(1f).focusRequester(focus),singleLine=true,label={Text("Label")})
+                        TextButton(onClick={onDraft(chosen.label(point,labelText));selectedLabel=null;keyboard?.hide()}){
+                            Text(if(labelText.isBlank())"Remove" else "Done")
+                        }
                     }
                 }
             }

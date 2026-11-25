@@ -217,7 +217,7 @@ internal fun PalmControls(page: PalmPage, workspace: WorkspaceFile, info: Worksp
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun PalmIcon(action: PalmAction, workspace: WorkspaceFile, description: String, cell: Dp, enabled: Boolean, state: PalmState?,
-                     focused: Boolean, pressed: Boolean, onHover: (Boolean) -> Unit, modifier: Modifier, preview:FloatArray?, onClick: () -> Unit) {
+                     focused: Boolean, pressed: Boolean, onHover: (Boolean) -> Unit, modifier: Modifier, preview:FloatArray?, interactive:Boolean=true, onClick: () -> Unit) {
     val done=action==PalmAction.DONE
     val shape = if(done)RoundedCornerShape(28) else if(state==null)CircleShape else RoundedCornerShape(22)
     val container = when {
@@ -227,9 +227,7 @@ internal fun PalmIcon(action: PalmAction, workspace: WorkspaceFile, description:
         state != null -> Color(0xFF405369)
         else -> null
     }
-    FilledTonalIconButton(onClick = onClick, enabled = enabled, shape = shape,
-        colors = container?.let { IconButtonDefaults.filledTonalIconButtonColors(containerColor = it) } ?: IconButtonDefaults.filledTonalIconButtonColors(),
-        modifier = modifier.size(cell).trackMenuHover { onHover(it != null) }.semantics { contentDescription = description }) {
+    val artwork:@Composable ()->Unit = {
         Canvas(Modifier.fillMaxSize()) {
             val inset = size.minDimension * .25f
             inset(inset,inset){
@@ -240,6 +238,13 @@ internal fun PalmIcon(action: PalmAction, workspace: WorkspaceFile, description:
             else if(state!=null)drawStatePips(state,if(enabled)1f else .38f)
         }
     }
+    if(interactive){
+    FilledTonalIconButton(onClick = onClick, enabled = enabled, shape = shape,
+        colors = container?.let { IconButtonDefaults.filledTonalIconButtonColors(containerColor = it) } ?: IconButtonDefaults.filledTonalIconButtonColors(),
+        modifier = modifier.size(cell).trackMenuHover { onHover(it != null) }.semantics { contentDescription = description }) {
+            artwork()
+        }
+    }else androidx.compose.foundation.layout.Box(modifier.size(cell).background(container ?: Color(0xFF34465D),shape)){artwork()}
     if (focused) Canvas(modifier.size(cell)) {
         val width = size.minDimension * .035f
         if (state == null && !done) drawCircle(Color(0xFF8ADFFF), (size.minDimension - width) / 2, style = Stroke(width))

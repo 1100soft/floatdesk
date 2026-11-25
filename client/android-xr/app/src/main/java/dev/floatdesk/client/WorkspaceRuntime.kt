@@ -1483,10 +1483,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                         }
                     }
                     val pointerViewer=magnifierViewer.get()
-                    val pointerForeground=listOfNotNull(handTracking.desktopSphereRadius, pointerViewer?.let{eye->
-                        visibleMagnifiers.map{paneFrontRadius(it.second,eye)}.filter{it>.05f*handTracking.unitsPerMeter}.minOrNull()
-                    }).minOrNull()
-                    renderer.updatePointer(root,pointer,pointerViewer?.position,handTracking.unitsPerMeter,pointerForeground)
+                    renderer.updatePointer(root,pointer,pointerViewer?.position,handTracking.unitsPerMeter)
                     val pulse=.5f+.5f*kotlin.math.sin(SystemClock.uptimeMillis()%2400L/2400f*2f*Math.PI.toFloat())
                     renderer.updateHighlight(root,highlightStrip?.pose?.position,highlightStrip?.pose?.rotation ?: floatArrayOf(0f,0f,0f,1f),highlightStrip?.cell ?: 0f,pulse)
                     val draw: ()->Unit = {

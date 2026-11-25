@@ -105,10 +105,10 @@ internal fun DeskContent(
     val layout = workspace.reconcileMonitors(monitors.map { Triple(it.name,it.width,it.height) }).layouts[workspace.activeLayout].orEmpty()
     DiagnosticsPanel(connection,viewer,{handTracking.unitsPerMeter},{viewerAngles.get()},
         workspace.showResources,workspace.experimentalViewedDetail,workspace.viewDetailDebug,workspace.sphericalWarp,workspace.layoutModeActive)
-    var managerPage by remember{mutableStateOf("Screens")}
+    var managerPage by remember{mutableStateOf("Settings")}
     val managerHeight=when(managerPage){"Settings"->.40f;"Focus & magnification"->.40f;"Pinches"->.48f;"Viewing distance"->.42f;"Virtual screen setup"->.38f;else->.65f}
     val managerScale=remember(displayControlsPose){settingsPanelScale(handTracking.unitsPerMeter)}
-    if(displayControlsOpen) SpatialPanel(modifier=placedPanel(displayControlsPose,if(managerPage=="Screens") .60f else .52f,managerHeight,density,pixelDensity,scale=managerScale)) {
+    if(displayControlsOpen) SpatialPanel(modifier=placedPanel(displayControlsPose,if(managerPage=="Workspace") .60f else .52f,managerHeight,density,pixelDensity,scale=managerScale)) {
         MonitorManagerPanel(connection,workspace.screenSpacing,{onWorkspace(workspace.copy(screenSpacing=it))},{store.save(latest.value)},onCloseDisplays,workspace.pinchThresholds,{profile->
             val next=latest.value.copy(pinchThresholds=profile);onWorkspace(next);store.save(next)
         },workspace.experimentalViewedDetail,{enabled->
@@ -541,7 +541,7 @@ internal fun ControlPanel(
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = onDisconnect) { Text("Search again") }
-            Button(onClick = onOpenWorkspace) { Text("Open workspace") }
+            Button(onClick = onOpenWorkspace) { Text("Settings") }
             Button(onClick = onAnchor) { Text("Save room anchor") }
             Button(onClick = onReset) { Text("Reset desk") }
             Button(onClick = onToggleHead) {

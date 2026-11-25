@@ -1,5 +1,6 @@
 package dev.floatdesk.client
 
+import dev.floatdesk.client.workspace.centerDesktop
 import androidx.compose.runtime.key
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -104,8 +105,13 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
     var activatedScene by remember{mutableStateOf(false)}
     var sceneActive by remember { mutableStateOf(false) }
     var workspace by remember { mutableStateOf(store.load()) }
+    val startupWakeMac=remember{workspace.wakeMac}
+    LaunchedEffect(startupWakeMac){
+        if(startupWakeMac.isNotEmpty())kotlinx.coroutines.withContext(Dispatchers.IO){sendWakeOnLan(startupWakeMac)}
+    }
     val workspaceAtLifecycle=rememberUpdatedState(workspace)
     var restoreViewerPending by remember {mutableStateOf(true)}
+    var centerOnStartup by remember{mutableStateOf(true)}
     DisposableEffect(session,connection) {
         val current = session
         onSession(current)
@@ -338,7 +344,6 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 val scale=settingsPanelScale(handTracking.unitsPerMeter)
                 displayControlsPose=Pose(transformPoint(head,floatArrayOf(0f,-.15f*scale,-.9f*scale)),head.rotation.copyOf())
             }
-            connection.requestDisplays()
         }
     }
 
@@ -423,7 +428,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     workspace=workspace.copy(interactionMode=workspace.interactionMode.next());store.save(workspace)
                 }
                 PalmAction.SEARCH -> { connection.disconnect(); connection.start(context) }
-                PalmAction.SPACE -> { session?.scene?.requestFullSpace();toggleDisplays() }
+                PalmAction.SETTINGS -> { session?.scene?.requestFullSpace();toggleDisplays() }
                 PalmAction.HAND_MOUSE -> { workspace=workspace.copy(handMouse=!workspace.handMouse);store.save(workspace) }
                 PalmAction.LAYOUT,PalmAction.MOVE,PalmAction.FREE,PalmAction.DONE -> {
                     if(action==PalmAction.LAYOUT){
@@ -486,9 +491,6 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     workspace = workspace.copy(sphericalWarp = RenderPolicy.SphericalDesktop && !workspace.sphericalWarp)
                     store.save(workspace)
                 }
-                PalmAction.MORE -> palmPanel = palmPanel?.copy(page = PalmPage.MORE)
-                PalmAction.ADJUST -> palmPanel=palmPanel?.copy(page=PalmPage.LAYOUT_ADJUST)
-                PalmAction.SAVED_LAYOUTS -> palmPanel=palmPanel?.copy(page=PalmPage.LAYOUT_SLOTS)
                 PalmAction.SAVE_1,PalmAction.SAVE_2,PalmAction.SAVE_3 -> {
                     if(!manipulating && !magnifierMoving){
                         store.saveLayoutSlot(action.ordinal-PalmAction.SAVE_1.ordinal,workspace,connection.layoutMapDebug)
@@ -505,7 +507,6 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                         followGeneration++
                     }
                 }
-                PalmAction.BACK -> palmPanel = palmPanel?.copy(page = if(workspace.layoutModeActive)PalmPage.LAYOUT else PalmPage.MAIN)
                 PalmAction.DIAGNOSTICS -> { workspace = workspace.copy(viewDetailDebug = !workspace.viewDetailDebug); store.save(workspace) }
                 PalmAction.GAZE_FOCUS -> { workspace = workspace.copy(gazeToFocus = !workspace.gazeToFocus); store.save(workspace) }
                 PalmAction.MAGNIFIER -> { workspace = nextMagnifier(workspace); store.save(workspace) }
@@ -744,6 +745,11 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     if(workspace.anchorUuid==null)store.rebaseLayoutHistory(workspace.viewerReference ?: Pose(),
                         workspace.referenceUnitsPerMeter ?: unitsPerMeter,reference,unitsPerMeter)
                     workspace=workspace.restoreViewer(reference,unitsPerMeter)
+                    if(centerOnStartup){
+                        val target=Pose(transformPoint(reference,floatArrayOf(0f,0f,-workspace.farthestDistanceM*unitsPerMeter)),reference.rotation.copyOf())
+                        workspace=workspace.centerDesktop(target)
+                        centerOnStartup=false
+                    }
                     if(!store.hasLayoutHistory()){
                         Log.i("Floatdesk","Initializing layout history, previous cursor reference=${workspace.cursorMapReference?.position?.contentToString()}")
                         workspace=workspace.copy(cursorMapReference=reference)
@@ -972,7 +978,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 if (palmPanel == null) Log.i("Floatdesk", "palm panel shown side=${candidate.side} unitsPerMeter=${candidate.unitsPerMeter} pose=${candidate.pose.toRuntimePose()}")
                 panelHand = candidate.side
                 lastPalmSeen = SystemClock.uptimeMillis()
-                val centered=candidate.copy(page=if(workspace.layoutModeActive)palmPanel?.page?.takeIf{it.isLayout} ?: PalmPage.LAYOUT else palmPanel?.page?.takeUnless{it.isLayout} ?: PalmPage.MAIN,pose=palmPanel?.pose ?: (head ?: candidate.pose.toRuntimePose()).compose(
+                val centered=candidate.copy(page=if(workspace.layoutModeActive)PalmPage.LAYOUT else PalmPage.MAIN,pose=palmPanel?.pose ?: (head ?: candidate.pose.toRuntimePose()).compose(
                     androidx.xr.runtime.math.Pose(Vector3(0f,0f,-ViewLayers.PalmMenuDistanceM*unitsPerMeter))).toWorkspacePose())
                 palmPanel = centered
                 val other = if (candidate.side == "LEFT") "RIGHT" else "LEFT"
@@ -1779,7 +1785,11 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 Subspace{SpatialPanel(modifier=placedPanel(gridPose,gridW,gridH,density,pixelDensity),shape=square){
                     SnapGridMenu(toolbarWindow,snap,cell,gap,onHover={snapGridHovered=it},onDrag={snapGridDragging=it}){range->
                         val screen=systemInfo?.screens?.firstOrNull{r->toolbarSource!=null && toolbarSource.x+toolbarSource.width/2 in r.x until r.x+r.width && toolbarSource.y+toolbarSource.height/2 in r.y until r.y+r.height} ?: systemInfo?.screens?.firstOrNull{it.primary}
-                        if(toolbarWindow!=null && screen!=null)connection.windowAction(toolbarWindow,"geometry",windowGridCell(toolbarWindow,screen.x,screen.y,screen.width,screen.height,range.columns,range.rows,range.col,range.row,range.endCol,range.endRow))
+                        if(toolbarWindow!=null && screen!=null){
+                            val work=windowWorkArea(screen,systemInfo?.systemWindows.orEmpty())
+                            connection.windowAction(toolbarWindow,"geometry",windowGridCell(toolbarWindow,work[0],work[1],
+                                work[2],work[3],range.columns,range.rows,range.col,range.row,range.endCol,range.endRow))
+                        }
                         snapExpanded=false;snapGridHovered=false
                     }
                 }}

@@ -1,5 +1,6 @@
 package dev.floatdesk.client
 
+import dev.floatdesk.client.net.DesktopOutput
 import dev.floatdesk.client.net.DesktopWindow
 import dev.floatdesk.client.net.WorkspaceInfo
 import dev.floatdesk.client.workspace.Pose
@@ -76,6 +77,29 @@ internal class WindowGrabController(private val thresholds:()->PinchThresholds){
     }
 }
 
+/** Reserve the X11 panel on the edge it occupies, in desktop pixels. */
+internal fun windowWorkArea(screen:DesktopOutput,panels:List<DesktopWindow>):IntArray{
+    val right=screen.x+screen.width;val bottom=screen.y+screen.height
+    var leftInset=screen.x;var topInset=screen.y;var rightInset=right;var bottomInset=bottom
+    for(panel in panels.filter{it.panel}){
+        val x=maxOf(screen.x,panel.x);val y=maxOf(screen.y,panel.y)
+        val r=minOf(right,panel.x+panel.width);val d=minOf(bottom,panel.y+panel.height)
+        if(r<=x || d<=y)continue
+        if(panel.width>=panel.height){
+            val top=y-screen.y;val below=bottom-d
+            if(minOf(top,below)>panel.height)continue
+            if(top<=below)topInset=maxOf(topInset,d) else bottomInset=minOf(bottomInset,y)
+        }else{
+            val left=x-screen.x;val after=right-r
+            if(minOf(left,after)>panel.width)continue
+            if(left<=after)leftInset=maxOf(leftInset,r) else rightInset=minOf(rightInset,x)
+        }
+    }
+    return if(leftInset<rightInset && topInset<bottomInset)
+        intArrayOf(leftInset,topInset,rightInset-leftInset,bottomInset-topInset)
+    else intArrayOf(screen.x,screen.y,screen.width,screen.height)
+}
+
 /** Edge regions select the same half/quarter cells exposed by the visual grid menu. */
 internal fun snapWindowDrop(window:DesktopWindow,x:Int,y:Int,u:Float,v:Float,info:WorkspaceInfo):WindowMove {
     val bounds=info.bounds() ?: return WindowMove(window.id,x,y)
@@ -88,7 +112,8 @@ internal fun snapWindowDrop(window:DesktopWindow,x:Int,y:Int,u:Float,v:Float,inf
     val row=if(sy<edge || corner && sy<.5f)0 else if(sy>1-edge || corner)1 else -1
     if(col<0 && row<0)return snapWindowMove(window,x,y,info)
     val columns=if(col<0)1 else 2;val rows=if(row<0)1 else 2
-    return windowGridCell(window.id,screen.x,screen.y,screen.width,screen.height,columns,rows,maxOf(0,col),maxOf(0,row))
+    val work=windowWorkArea(screen,info.systemWindows)
+    return windowGridCell(window.id,work[0],work[1],work[2],work[3],columns,rows,maxOf(0,col),maxOf(0,row))
 }
 internal fun windowGridCell(id:Long,x:Int,y:Int,width:Int,height:Int,columns:Int,rows:Int,col:Int,row:Int,endCol:Int=col,endRow:Int=row):WindowMove {
     val left=x+width*col/columns;val top=y+height*row/rows

@@ -713,6 +713,10 @@ fun main() {
   }
   check(fitted.pixelWidth==original.pixelWidth && fitted.pixelHeight==original.pixelHeight)
  }
+ val deskOutput=DesktopOutput("panels",1920,1080,0,0,false,true,2,emptyList())
+ val work=windowWorkArea(deskOutput,listOf(DesktopWindow(1,0,1030,1920,50,true),
+    DesktopWindow(2,0,0,44,1030,true),DesktopWindow(3,200,200,800,280,false)))
+ check(work.contentEquals(intArrayOf(44,0,1876,1030)))
  val span=windowGridCell(1,100,50,1001,701,3,2,1,0,2,1)
  check(span.x==433 && span.y==50 && span.width==668 && span.height==701)
  val home=Pose(floatArrayOf(1.1f,.4f,-1.6f))

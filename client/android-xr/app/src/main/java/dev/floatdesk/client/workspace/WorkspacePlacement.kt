@@ -85,6 +85,14 @@ internal fun WorkspaceFile.moveLayoutOrigin(target:Pose):WorkspaceFile {
     return copy(layoutOrigin=target,desktopHome=desktopHome?.let(transform),cursorMapReference=cursorMapReference?.let(transform),layouts=moved,control=control.copy(pose=transform(control.pose)))
 }
 
+/** Recenter the visible desktop while keeping the arrangement rigid. */
+internal fun WorkspaceFile.centerDesktop(target:Pose):WorkspaceFile {
+    val screen=layouts[activeLayout]?.firstOrNull() ?: return this
+    val origin=layoutOrigin ?: screen.pose
+    val from=screen.pose
+    return moveLayoutOrigin(originTransform(from,target)(origin))
+}
+
 /** Preserve the authored desktop center/orientation and replace its size and view framing. */
 internal fun WorkspaceFile.restoreDefaultDesktopSize(origin:Pose,defaults:List<MonitorPlacement>):WorkspaceFile {
     val current=layouts[activeLayout]

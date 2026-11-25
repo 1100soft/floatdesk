@@ -11,10 +11,11 @@ internal data class SnapCell(val columns: Int, val rows: Int, val col: Int, val 
 internal fun currentSnapCell(window: DesktopWindow, info: WorkspaceInfo, grids: List<Pair<Int, Int>> = WindowMenuLayout.grids, toleranceFraction: Float = .03f): SnapCell? {
     val cx = window.x + window.width / 2; val cy = window.y + window.height / 2
     val screen = info.screens.firstOrNull { cx >= it.x && cx < it.x + it.width && cy >= it.y && cy < it.y + it.height } ?: return null
-    val tolerance = minOf(screen.width, screen.height) * toleranceFraction
+    val work=windowWorkArea(screen,info.systemWindows)
+    val tolerance = minOf(work[2],work[3]) * toleranceFraction
     var best: SnapCell? = null; var bestError = Float.POSITIVE_INFINITY
     for ((columns, rows) in grids) for (row in 0 until rows) for (col in 0 until columns) for(endRow in row until rows)for(endCol in col until columns){
-        val cell = windowGridCell(window.id, screen.x, screen.y, screen.width, screen.height, columns, rows, col, row,endCol,endRow)
+        val cell = windowGridCell(window.id, work[0],work[1],work[2],work[3], columns, rows, col, row,endCol,endRow)
         val error = maxOf(abs(cell.x - window.x), abs(cell.y - window.y), abs(cell.width!! - window.width), abs(cell.height!! - window.height)).toFloat()
         if (error < bestError) { bestError = error; best = SnapCell(columns, rows, col, row,endCol,endRow) }
     }

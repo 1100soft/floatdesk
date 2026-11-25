@@ -411,32 +411,26 @@ fun main() {
     check(distance(centeredSphere.project(floatArrayOf(.4f,0f,0f)),floatArrayOf(.4f,0f,0f)) > .01f)
     check(distance(centeredSphere.project(floatArrayOf(0f,.25f,0f)),floatArrayOf(0f,.25f,0f)) > .01f)
     val panel = PalmPanelState("LEFT",Pose(floatArrayOf(0f,0f,0f)))
-    // Main page: 3 columns and 3 rows (0.189 m square); quarter points map to u=v=0.25.
+    // Quarter points map to the same normalized coordinates for any menu aspect.
     val qx=-PalmMenuLayout.widthM/4; val qy=PalmMenuLayout.heightM(PalmPage.MAIN)/4
     val panelRay=palmRayPoint(panel,floatArrayOf(qx,qy,1f),floatArrayOf(0f,0f,-1f))!!
     check(kotlin.math.abs(panelRay[0]-.25f)<.00001f && kotlin.math.abs(panelRay[1]-.25f)<.00001f)
     check(palmRayPoint(panel,floatArrayOf(0f,0f,-1f),floatArrayOf(0f,0f,1f))==null)
     val scaledRay=palmRayPoint(panel.copy(unitsPerMeter=5f),floatArrayOf(qx*5,qy*5,1f),floatArrayOf(0f,0f,-1f))!!
     check(kotlin.math.abs(scaledRay[0]-.25f)<.00001f)
-    val pc=.061f
     val poke = PalmPoke()
-    check(poke.update(panel,floatArrayOf(0f,pc,.04f)) == null)
-    check(poke.update(panel,floatArrayOf(0f,pc,-.02f)) == PalmAction.FOLLOW)
-    check(poke.update(panel,floatArrayOf(0f,pc,-.01f)) == null)
-    check(poke.update(panel,null) == null)
-    val scaledPanel=panel.copy(unitsPerMeter=5f)
-    check(poke.update(scaledPanel,floatArrayOf(0f,pc*5,.2f)) == null)
-    check(poke.update(scaledPanel,floatArrayOf(0f,pc*5,-.1f)) == PalmAction.FOLLOW)
-    val more=panel.copy(page=PalmPage.MORE)
-    val pokes=listOf(Triple(panel,floatArrayOf(-pc,pc),PalmAction.LAYOUT),Triple(panel,floatArrayOf(0f,pc),PalmAction.FOLLOW),
-        Triple(panel,floatArrayOf(pc,pc),PalmAction.RESET),Triple(panel,floatArrayOf(0f,0f),PalmAction.MODE),Triple(panel,floatArrayOf(0f,-pc),PalmAction.MORE),
-        Triple(panel,floatArrayOf(-.0305f,pc),null), // gap between cells
-        Triple(more,floatArrayOf(-pc,pc),PalmAction.GAZE_FOCUS),Triple(more,floatArrayOf(0f,pc),PalmAction.MAGNIFIER),Triple(more,floatArrayOf(pc,0f),PalmAction.SEARCH),
-        Triple(more,floatArrayOf(-pc,0f),PalmAction.MOUSE_SPACES),Triple(more,floatArrayOf(-pc,-pc),PalmAction.BACK),Triple(more,floatArrayOf(pc,-pc),null))
-    for((page,point,expected) in pokes) {
-        poke.clear()
-        check(poke.update(page,floatArrayOf(point[0],point[1],.04f)) == null)
-        check(poke.update(page,floatArrayOf(point[0],point[1],-.02f)) == expected)
+    for(page in PalmPage.entries){
+        val state=panel.copy(page=page)
+        val buttons=state.buttons
+        check(buttons.map{it.action}.distinct().size==buttons.size)
+        for(button in buttons)for(units in listOf(1f,5f)){
+            val scaled=state.copy(unitsPerMeter=units)
+            val x=(button.x+button.w/2-.5f)*state.widthM*units
+            val y=(.5f-button.y-button.h/2)*state.heightM*units
+            poke.clear()
+            check(poke.update(scaled,floatArrayOf(x,y,.04f*units))==null)
+            check(poke.update(scaled,floatArrayOf(x,y,-.02f*units))==button.action)
+        }
     }
     println("Passed: mouse priority/off/tracking loss, gaze hit bounds, observational grab preview, mouse palm toggle, equal actual neighboring-ray angles and angular aspect, video/PNG orientation separation, planar-input curved grabbing and regrab, action labels, spherical radius/inverse projection, curved grab/guide geometry, spherical palm button, virtual-copy gain, 3D endpoints, depth, close-contact and close-hand rejection, DEFAULT release, physical release without UP, tracking-loss cancellation, rearm, discontinuity rejection, miniature wireframe and endpoint alignment, guide cleanup, view-ray visibility offset, rotation, palm and fist")
 }

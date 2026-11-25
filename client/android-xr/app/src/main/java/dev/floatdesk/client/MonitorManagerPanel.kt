@@ -38,16 +38,17 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
     val sizes=screens?.map {it.width to it.height} ?: state.screens
     val positions=screens?.map {it.x to it.y} ?: state.positions
     val available=info?.available ?: state.available
-    var section by remember { mutableStateOf("Screens") }
+    var section by remember { mutableStateOf("Settings") }
     androidx.compose.runtime.SideEffect{onPage(section)}
+    androidx.compose.runtime.LaunchedEffect(section){if(section=="Workspace")connection.requestDisplays()}
     MaterialTheme(colorScheme=darkColorScheme()) {
     Column(Modifier.fillMaxSize().background(Color(0xF01C2430)).padding(16.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
             Text(section,color=Color.White,fontSize=22.sp)
             IconButton(onClick=onClose,modifier=Modifier.background(MaterialTheme.colorScheme.surfaceContainerHighest,CircleShape).semantics {contentDescription="Close workspace"}) {Text("×",fontSize=30.sp)}
         }
-        if(section!="Screens")Button(onClick={section=if(section=="Settings")"Screens" else "Settings"}){Text("‹ Back")}
-        Text(if(busy) "Updating screens…" else "${sizes.size} desktop screens · $available available",color=Color.White)
+        if(section!="Settings")Button(onClick={section="Settings"}){Text("‹ Back")}
+        if(section=="Workspace")Text(if(busy) "Updating screens…" else "${sizes.size} desktop screens · $available available",color=Color.White)
         if(section=="Focus & magnification") Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(4.dp)){
             for(mode in dev.floatdesk.client.workspace.InteractionMode.entries){
                 Button(onClick={onQuality(quality.copy(interactionMode=mode))},modifier=Modifier.weight(1f)){
@@ -59,30 +60,29 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
             Text("Connected mouse spaces",color=Color.White)
             androidx.compose.material3.Switch(enabled=RenderPolicy.CursorTopology,checked=quality.cursorRemap,onCheckedChange={onQuality(quality.copy(cursorRemap=it))})
         }
-        if(section=="Screens") Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+        if(section=="Workspace") Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             Button(enabled=!busy && available>0,onClick={connection.requestDisplays(1)}) {Text("Add screen")}
             Button(enabled=!busy,onClick={connection.requestDisplays()}) {Text("Refresh")}
-            Button(onClick={section="Settings"}) {Text("Settings")}
         }
-        if(section=="Screens") Button(enabled=!busy && info!=null,onClick={
+        if(section=="Workspace") Button(enabled=!busy && info!=null,onClick={
             connection.requestDisplays(if(info?.virtualScreensDisabled==true)7 else 6)
         }) {Text(if(info?.virtualScreensDisabled==true)"Restore virtual screens" else "Disable virtual screens")}
-        if(section=="Screens")info?.let {host->
+        if(section=="Workspace")info?.let {host->
             val pixels=sizes.sumOf {it.first.toLong()*it.second}
             val capturePixels=if(sizes.isEmpty()) 0L else (sizes.indices.maxOf {positions[it].first+sizes[it].first}-positions.minOf {it.first}).toLong()*(sizes.indices.maxOf {positions[it].second+sizes[it].second}-positions.minOf {it.second})
             Text(String.format(Locale.ROOT,"%,d pixels (%.2f MP) · capture %.2f MP",pixels,pixels/1e6,capturePixels/1e6),color=Color.White,fontSize=13.sp)
             if(host.setupRequired) Text("No virtual output backend is ready. Open the computer's Floatdesk tray → Virtual screen setup.",color=Color(0xFFFFD69A),fontSize=13.sp)
         }
-        if(section=="Screens")monitors.firstOrNull()?.let {stream->
+        if(section=="Workspace")monitors.firstOrNull()?.let {stream->
             val sourceWidth=if(sizes.isEmpty()) stream.width else sizes.indices.maxOf {positions[it].first+sizes[it].first}-positions.minOf {it.first}
             val percent=(100f*stream.width/sourceWidth.coerceAtLeast(1)).roundToInt()
             Text("${if(viewedDetail) "Normal fallback" else "Stream"} ${stream.width} × ${stream.height} · $percent% scale",color=Color.White,fontSize=13.sp)
         }
-        if(section=="Screens" && quality.showResources)Text(connection.resourceStatus.value,color=Color(0xFFB8D9EA),fontSize=11.sp,maxLines=3)
-        if(!state.ok) Text(state.message,color=Color(0xFFFFB4AB),fontSize=13.sp)
+        if(section=="Workspace" && quality.showResources)Text(connection.resourceStatus.value,color=Color(0xFFB8D9EA),fontSize=11.sp,maxLines=3)
+        if(section=="Workspace" && !state.ok) Text(state.message,color=Color(0xFFFFB4AB),fontSize=13.sp)
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(8.dp)) {
         if(section=="Settings") {
-            listOf("Focus & magnification","Viewing distance","Streaming","Pinches","Virtual screen setup").forEach{label->Button(onClick={section=label},modifier=Modifier.fillMaxWidth()){Text(label)}}
+            listOf("Workspace","Focus & magnification","Viewing distance","Streaming","Pinches","Connection","Virtual screen setup").forEach{label->Button(onClick={section=label},modifier=Modifier.fillMaxWidth()){Text(label)}}
         }
         if(section=="Focus & magnification") {
             Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)){
@@ -122,6 +122,16 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
             if(viewedDetail)Text(connection.detailStatus.value,color=Color(0xFFB8D9EA),fontSize=13.sp)
             StreamingSettings(quality,onQuality)
         }
+        if(section=="Connection"){
+            var address by remember(quality.wakeMac){mutableStateOf(quality.wakeMac)}
+            androidx.compose.material3.OutlinedTextField(address,{address=it},Modifier.fillMaxWidth(),
+                label={Text("Wake on LAN MAC address")},singleLine=true)
+            Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){
+                val mac=normalizeWakeMac(address)
+                Button(enabled=mac!=null && mac!=quality.wakeMac,onClick={mac?.let{onQuality(quality.copy(wakeMac=it))}}){Text("Save")}
+                Button(enabled=quality.wakeMac.isNotEmpty(),onClick={onQuality(quality.copy(wakeMac=""))}){Text("Disable")}
+            }
+        }
         if(section=="Viewing distance")ViewingDistanceSettings(quality,onViewingDistances)
         if(section=="Pinches"){
             Row(verticalAlignment=Alignment.CenterVertically){
@@ -134,7 +144,7 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
             Text("Virtual screen setup",color=Color.White,fontSize=18.sp)
             Text("On the computer, run: python3 scripts/virtual-display-setup.py --check\nIf no pool is available, use --write-bundle to prepare installation files. A compatible VKMS configfs kernel, administrator setup and a graphical-session restart are required. Existing pools are reused; Floatdesk never rebuilds kernel topology during use.",color=Color(0xFFB8D9EA),fontSize=13.sp)
         }
-        if(section=="Screens") {
+        if(section=="Workspace") {
         val names=sizes.indices.map{screens?.getOrNull(it)?.name ?: state.names.getOrNull(it) ?: "Screen ${it+1}"}
         var selectedName by remember {mutableStateOf<String?>(null)}
         var choosing by remember {mutableStateOf(false)}

@@ -1,9 +1,10 @@
 package dev.floatdesk.client
 
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -71,13 +72,13 @@ internal fun WindowToolbar(window: Long?, magnifier: Boolean, snap: SnapCell?, s
 
 /** Every destination cell is selectable directly; the current placement is shown filled. */
 @Composable
-internal fun SnapGridMenu(window: Long?, current: SnapCell?, cell: Dp, gap: Dp, onHover: (Boolean) -> Unit, onSnap: (Int, Int, Int, Int) -> Unit) {
+internal fun SnapGridMenu(window: Long?, current: SnapCell?, cell: Dp, gap: Dp, onHover: (Boolean) -> Unit, onDrag:(Boolean)->Unit,onSnap: (SnapCell) -> Unit) {
     Column(Modifier.background(ToolbarSurface).trackMenuHover { onHover(it != null) }.padding(gap), verticalArrangement = Arrangement.spacedBy(gap)) {
         for (row in WindowMenuLayout.grids.chunked(WindowMenuLayout.columns)) {
             Row(horizontalArrangement = Arrangement.spacedBy(gap)) {
                 for ((columns, rows) in row) {
-                    val selected = current?.takeIf { it.columns == columns && it.rows == rows }?.let { it.col to it.row }
-                    GridChoice(columns, rows, cell, window != null, selected) { col, r -> onSnap(columns, rows, col, r) }
+                    val selected = current?.takeIf { it.columns == columns && it.rows == rows }
+                    GridChoice(columns, rows, cell, window != null, selected, onDrag, onSnap)
                 }
             }
         }
@@ -101,7 +102,7 @@ private fun MenuIcon(action: String, description: String, cell: Dp, enabled: Boo
                     "snap" -> {
                         val outline = Stroke(stroke * .8f)
                         if (snap != null) {
-                            drawRect(SelectedCell, Offset(size.width * snap.col / snap.columns, size.height * snap.row / snap.rows), Size(size.width / snap.columns, size.height / snap.rows))
+                            drawRect(SelectedCell, Offset(size.width * snap.col / snap.columns, size.height * snap.row / snap.rows), Size(size.width * (snap.endCol-snap.col+1) / snap.columns, size.height * (snap.endRow-snap.row+1) / snap.rows))
                             for (c in 1 until snap.columns) line(c.toFloat() / snap.columns, 0f, c.toFloat() / snap.columns, 1f)
                             for (r in 1 until snap.rows) line(0f, r.toFloat() / snap.rows, 1f, r.toFloat() / snap.rows)
                         }
@@ -140,8 +141,11 @@ private fun Modifier.trackMenuHoverLatest(onHover: (Offset?) -> Unit) = pointerI
 }
 
 @Composable
-private fun GridChoice(columns: Int, rows: Int, cell: Dp, enabled: Boolean, selected: Pair<Int, Int>?, onChoose: (Int, Int) -> Unit) {
+private fun GridChoice(columns: Int, rows: Int, cell: Dp, enabled: Boolean, selected: SnapCell?, onDragging:(Boolean)->Unit,onChoose: (SnapCell) -> Unit) {
     var hovered by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    var selection by remember { mutableStateOf<SnapCell?>(null) }
+    val choose by rememberUpdatedState(onChoose)
+    val dragging by rememberUpdatedState(onDragging)
     fun target(x: Float, y: Float): Pair<Int, Int> {
         fun axis(value: Float, count: Int) = ((value - .12f) / .76f * count).toInt().coerceIn(0, count - 1)
         return axis(x, columns) to axis(y, rows)
@@ -151,20 +155,35 @@ private fun GridChoice(columns: Int, rows: Int, cell: Dp, enabled: Boolean, sele
     }.background(Color(0xFF243544)).border(cell * .015f, Color(0xFF708EA4))
         .semantics { contentDescription = "$columns by $rows snap grid" }
         .pointerInput(columns, rows, enabled) {
-            if (enabled) detectTapGestures { point ->
-                val (col, row) = target(point.x / size.width, point.y / size.height)
-                onChoose(col, row)
+            if(enabled)awaitEachGesture {
+                fun at(point:Offset)=target(point.x/size.width,point.y/size.height)
+                val down=awaitFirstDown()
+                val (col,row)=at(down.position)
+                down.consume()
+                try{
+                    dragging(true)
+                    while(true){
+                        val event=awaitPointerEvent()
+                        val change=event.changes.firstOrNull{it.id==down.id} ?: break
+                        val (endCol,endRow)=at(change.position)
+                        val range=SnapCell(columns,rows,minOf(col,endCol),minOf(row,endRow),maxOf(col,endCol),maxOf(row,endRow))
+                        selection=range
+                        change.consume()
+                        if(!change.pressed){choose(range);break}
+                    }
+                }finally{selection=null;dragging(false)}
             }
         }) {
         val pad = size.minDimension * .12f
         val width = size.width - 2 * pad; val height = size.height - 2 * pad
         val ink = Color(0xFFB6D6E8)
-        selected?.let { (col, row) ->
-            drawRect(SelectedCell.copy(alpha = .55f), Offset(pad + width * col / columns, pad + height * row / rows), Size(width / columns, height / rows))
+        fun highlight(range:SnapCell,color:Color){
+            drawRect(color,Offset(pad+width*range.col/columns,pad+height*range.row/rows),
+                Size(width*(range.endCol-range.col+1)/columns,height*(range.endRow-range.row+1)/rows))
         }
-        hovered?.let { (col, row) ->
-            drawRect(Color(0xFF3988AA), Offset(pad + width * col / columns, pad + height * row / rows), Size(width / columns, height / rows))
-        }
+        selected?.let{highlight(it,SelectedCell.copy(alpha=.55f))}
+        val preview=selection ?: hovered?.let{(col,row)->SnapCell(columns,rows,col,row)}
+        preview?.let{highlight(it,Color(0xFF3988AA))}
         drawRect(ink, Offset(pad, pad), Size(width, height), style = Stroke(size.minDimension * .025f))
         for (col in 1 until columns) drawLine(ink, Offset(pad + width * col / columns, pad), Offset(pad + width * col / columns, pad + height), size.minDimension * .02f)
         for (row in 1 until rows) drawLine(ink, Offset(pad, pad + height * row / rows), Offset(pad + width, pad + height * row / rows), size.minDimension * .02f)

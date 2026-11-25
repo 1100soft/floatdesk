@@ -383,15 +383,12 @@ internal class DeskConnection(
     private var lastCursorMap:dev.floatdesk.client.CursorTopology?=null
     private var lastCursorMapJson=""
     private var cursorMapSentAt=0L
-    fun aimHover(window:Long?,x:Int=0,y:Int=0){
-        if(lastAcceptedHello!=0L)send(Protocol.workspace(org.json.JSONObject()
-            .put("type","aimHover").put("window",window).put("x",x).put("y",y).toString()))
-    }
-
+    private var cursorMapSentEpoch=-1
     fun publishCursorMap(map:dev.floatdesk.client.CursorTopology){
         val now=android.os.SystemClock.uptimeMillis()
         if(lastCursorMap==map){
-            if(now-cursorMapSentAt>=800){
+            if(cursorMapSentEpoch!=inputEpoch.get() || now-cursorMapSentAt>=400){
+                cursorMapSentEpoch=inputEpoch.get()
                 cursorMapSentAt=now
                 sendCursorMap(lastCursorMapJson)
             }
@@ -418,7 +415,7 @@ internal class DeskConnection(
             }
             rows.flatMap{val a=point(it.a);val b=point(it.b);listOf(a.first,a.second,b.first,b.second)}.toFloatArray()
         }
-        lastCursorMap=map;lastCursorMapJson=json;cursorMapSentAt=now
+        lastCursorMap=map;lastCursorMapJson=json;cursorMapSentAt=now;cursorMapSentEpoch=inputEpoch.get()
         sendCursorMap(json)
     }
     private fun sendCursorMap(json:String)=send(Protocol.workspace(org.json.JSONObject(json)

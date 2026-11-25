@@ -41,6 +41,7 @@ internal class MonitorWarp : AutoCloseable {
     private var curvedState:NativeNodeState?=null
 
     private var videoOrigin=Vector3.Zero
+    private var appliedCutouts:List<VideoCutout> = emptyList()
     private fun syncCurvedPose(original:SurfaceEntity) {
         curvedState?.let{
             it.parent(original.parent)
@@ -86,15 +87,16 @@ internal class MonitorWarp : AutoCloseable {
         if(!screenRects.contentEquals(rects) || spacing!=inset) {screenRects=rects.copyOf();spacing=inset;presentationDirty=true}
     }
     @SuppressLint("RestrictedApi")
-    private fun videoShape(width:Float,height:Float,sphere:MonitorMesh?,origin:Vector3=Vector3.Zero):SurfaceEntity.Shape {
+    private fun videoShape(width:Float,height:Float,sphere:MonitorMesh?,origin:Vector3=Vector3.Zero,cutouts:List<VideoCutout> = emptyList()):SurfaceEntity.Shape {
         if(sphere==null && (!RenderPolicy.CustomMeshes || videoCoverageIsFull(screenRects,spacing))) return SurfaceEntity.Shape.Quad(FloatSize2d(width,height))
-        val geometry=clippedVideoGeometry(width,height,sphere,screenRects,spacing)
+        val geometry=clippedVideoGeometry(width,height,sphere,screenRects,spacing,cutouts)
         val valid=geometry.indices.isNotEmpty() && geometry.positions.size%3==0 && geometry.texCoords.size*3==geometry.positions.size*2 && geometry.indices.size%3==0 &&
             geometry.positions.all{it.isFinite()} && geometry.texCoords.all{it.isFinite()} && geometry.indices.all{it>=0 && it<geometry.positions.size/3}
-        if(!valid)return appliedShape ?: SurfaceEntity.Shape.Quad(FloatSize2d(.001f,.001f))
+        if(!valid)return SurfaceEntity.Shape.Quad(FloatSize2d(.00001f,.00001f))
         if(origin!=Vector3.Zero){
             val offset=floatArrayOf(origin.x,origin.y,origin.z)
-            for(i in geometry.positions.indices)geometry.positions[i]-=offset[i%3]
+            val shifted=FloatArray(geometry.positions.size){i->geometry.positions[i]-offset[i%3]}
+            return nativeVideoMesh(geometry.copy(positions=shifted))
         }
         return nativeVideoMesh(geometry)
     }
@@ -278,7 +280,7 @@ internal class MonitorWarp : AutoCloseable {
     @SuppressLint("RestrictedApi") // CustomMesh is available in the pinned SceneCore 1.0 runtime.
     fun update(session: Session, root: Entity, eye: FloatArray?, placement: MonitorPlacement,
                enabled: Boolean, held: Boolean, forceUpdate: Boolean = false, viewDirection:FloatArray? = null, freezeProjection:Boolean=held,viewFocus:FloatArray?=null,
-               submitShape:((()->Unit)->Boolean)?=null,minGeometryIntervalMs:Long=80,minimumGeometryRadius:Float=0f) {
+               submitShape:((()->Unit)->Boolean)?=null,minGeometryIntervalMs:Long=80,minimumGeometryRadius:Float=0f,cutouts:List<VideoCutout> = emptyList()) {
         val original = input ?: return
         if(enabled==(mesh!=null))live?.let{applyPixels(it,placement)}
         if (live !== original) syncCurvedPose(original)
@@ -344,7 +346,7 @@ internal class MonitorWarp : AutoCloseable {
         val selectedFocus=focus?.let {floatArrayOf(it[0].coerceIn(-reference!!.width*.5f,reference.width*.5f),it[1].coerceIn(-reference.height*.5f,reference.height*.5f))} ?: center.copyOf(2)
         val focusChanged=(previous?.focus==null || (0..1).any {kotlin.math.abs(selectedFocus[it]-previous.focus!![it])>.001f})
         val foregroundIntrusion=previous!=null && previous.innerRadius+0.001f<minimumGeometryRadius
-        val changed = foregroundIntrusion || focusChanged || previous?.center?.contentEquals(center)!=true || presentationDirty || previous == null || previous.width != placement.physicalWidthM || previous.height != placement.physicalHeightM ||
+        val changed = cutouts!=appliedCutouts || foregroundIntrusion || focusChanged || previous?.center?.contentEquals(center)!=true || presentationDirty || previous == null || previous.width != placement.physicalWidthM || previous.height != placement.physicalHeightM ||
             viewer.indices.any { kotlin.math.abs(viewer[it] - previous.eye[it]) > 0.01f }
         if (changed) {
             val next = MonitorMesh(placement.physicalWidthM, placement.physicalHeightM, viewer,columns=32,rows=20,focus=selectedFocus,center=center,minimumGeometryRadius=minimumGeometryRadius)
@@ -362,7 +364,7 @@ internal class MonitorWarp : AutoCloseable {
                 next.eye[1]-next.normal[1]*next.geometryRadius,
                 next.eye[2]-next.normal[2]*next.geometryRadius,
             )
-            val shape = videoShape(next.width,next.height,next,origin)
+            val shape = videoShape(next.width,next.height,next,origin,cutouts)
             val target = if (live === original && retainedCurved!=null) retainedCurved!!.also {
                 syncCurvedPose(original)
                 applyPixels(it,placement)
@@ -382,6 +384,7 @@ internal class MonitorWarp : AutoCloseable {
             if(submitShape!=null){
                 if(!submitShape{applyShape(target,shape)})return
             }else applyShape(target,shape)
+            appliedCutouts=cutouts
             videoOrigin=origin
             live=target;syncCurvedPose(original);curvedState?.enabled(shown)
             flatWidth = next.width; flatHeight = next.height
@@ -409,5 +412,6 @@ internal class MonitorWarp : AutoCloseable {
         geometryUpdatedAt=0L
         appliedShape = null
         videoOrigin=Vector3.Zero
+        appliedCutouts=emptyList()
     }
 }

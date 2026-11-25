@@ -713,6 +713,8 @@ fun main() {
   }
   check(fitted.pixelWidth==original.pixelWidth && fitted.pixelHeight==original.pixelHeight)
  }
+ val span=windowGridCell(1,100,50,1001,701,3,2,1,0,2,1)
+ check(span.x==433 && span.y==50 && span.width==668 && span.height==701)
  val home=Pose(floatArrayOf(1.1f,.4f,-1.6f))
  val atHome=focusDesktopRegion(original,floatArrayOf(.7f,.2f,.9f,.6f),Pose(),.65f,.5f,1f,false,home)
  val point=transformPoint(atHome.pose,floatArrayOf((atHome.viewCenterU-.5f)*atHome.physicalWidthM,

@@ -21,6 +21,17 @@ fun main() {
     for(axis in 0..2)check(kotlin.math.abs((enlarged.positions[i+axis]-eye[axis])/scale-
         (originalSphere.positions[i+axis]-eye[axis]))<.00001f)
  }
+ val opening=foregroundCutout(floatArrayOf(0f,0f,2f),listOf(
+    floatArrayOf(-.25f,-.25f,1f),floatArrayOf(.25f,-.25f,1f),
+    floatArrayOf(.25f,.25f,1f),floatArrayOf(-.25f,.25f,1f)))!!
+ val remaining=clippedVideoGeometry(2f,2f,null,floatArrayOf(0f,0f,1f,1f),0f,listOf(opening))
+ var remainingArea=0f
+ for(i in remaining.indices.indices step 3){
+    val a=remaining.indices[i]*3;val b=remaining.indices[i+1]*3;val c=remaining.indices[i+2]*3
+    val p=remaining.positions
+    remainingArea+=kotlin.math.abs((p[b]-p[a])*(p[c+1]-p[a+1])-(p[b+1]-p[a+1])*(p[c]-p[a]))*.5f
+ }
+ check(kotlin.math.abs(remainingArea-3f)<.001f)
  val viewer0=Pose()
  val depthBase=MonitorPlacement("depth","existing-0",Pose(floatArrayOf(.3f,.2f,-2.4f)),2f,1f,0f,5120,2560,60)
  val locked=fixedDesktopDepth(depthBase,viewer0,1f)

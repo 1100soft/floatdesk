@@ -96,6 +96,7 @@ internal fun DeskContent(
     panelPressed: PalmAction?,
     onManipulate: (Boolean) -> Unit,
     savedLayoutPreviews:List<FloatArray?>,
+    placementReady:Boolean,
 ) {
     val session = LocalSession.current
     val latest = rememberUpdatedState(workspace)
@@ -163,7 +164,7 @@ internal fun DeskContent(
                 .firstOrNull{it.getSurface()===surface}?.parent?.let(onDeskRoot)
         }
     }
-    val controlsOpenNow=rememberUpdatedState(displayControlsOpen)
+    val controlsOpenNow=rememberUpdatedState(displayControlsOpen || !placementReady)
     layout.forEachIndexed { index, placement ->
         androidx.compose.runtime.key(placement.hostSourceId,placement.pixelWidth,placement.pixelHeight) {
         val hands = remember(index) { grabs.getOrPut(index) { TwoHandState() } }
@@ -220,8 +221,8 @@ internal fun DeskContent(
                             freezeProjection=(hands.busy && !hands.engaged) || nativeMove || nativeResize || handTracking.pointerHeld,
                             submitShape={update->connection.tryDesktopShapeUpdate(index,update)},
                             minGeometryIntervalMs=if(connection.limitOptionalRendering)180 else 80,
-                            minimumGeometryRadius=maxOf(handTracking.desktopForegroundRadius,
-                                dev.floatdesk.client.workspace.ViewLayers.DesktopDistanceM*handTracking.unitsPerMeter))
+                            minimumGeometryRadius=dev.floatdesk.client.workspace.ViewLayers.DesktopDistanceM*handTracking.unitsPerMeter,
+                            cutouts=if(index==0)handTracking.desktopCutouts else emptyList())
                         grabProjectionAt=projectionNow
                     }
                     frozenMonitor?.update(screen,warp.mesh)

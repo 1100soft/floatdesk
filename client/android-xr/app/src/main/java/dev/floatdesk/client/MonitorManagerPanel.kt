@@ -85,10 +85,6 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
             listOf("Focus & magnification","Viewing distance","Streaming","Pinches","Virtual screen setup").forEach{label->Button(onClick={section=label},modifier=Modifier.fillMaxWidth()){Text(label)}}
         }
         if(section=="Focus & magnification") {
-            Row(verticalAlignment=Alignment.CenterVertically){
-                androidx.compose.material3.Switch(checked=quality.aimToHover,onCheckedChange={onQuality(quality.copy(aimToHover=it))})
-                Text("Aim to hover",color=Color.White)
-            }
             Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)){
                 androidx.compose.material3.Switch(checked=quality.gazeToFocus,enabled=info?.gazeFocus==true || quality.gazeToFocus,onCheckedChange={onQuality(quality.copy(gazeToFocus=it))})
                 Text("Gaze to focus",color=Color.White)

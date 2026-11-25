@@ -6,6 +6,12 @@ import kotlin.math.abs
 /** Shared render/debug/transport representation of the current view-plane map. */
 internal data class CursorPatch(val key:String,val points:List<Pair<Float,Float>>,val source:FocusRect,val depth:Float,val front:Boolean){
     val viewBounds=FocusRect(points.minOf{it.first},points.minOf{it.second},points.maxOf{it.first},points.maxOf{it.second})
+    fun valid()=depth.isFinite() && viewBounds.left.isFinite() && viewBounds.right.isFinite() &&
+        viewBounds.top.isFinite() && viewBounds.bottom.isFinite() &&
+        viewBounds.right-viewBounds.left>.00001f && viewBounds.bottom-viewBounds.top>.00001f &&
+        source.left.isFinite() && source.right.isFinite() && source.top.isFinite() && source.bottom.isFinite() &&
+        source.right>source.left && source.bottom>source.top
+
 }
 internal data class CursorTopology(val patches:List<CursorPatch> = emptyList(),val scale:Pair<Float,Float> = .001f to .001f){
     fun json():String {
@@ -86,14 +92,15 @@ internal fun CursorTopology.wires():List<CursorWire> = buildList {
 }
 /** Express the whole virtual workspace in desktop pixels, including extra-desktop space. */
 internal fun CursorTopology.logicalPixels():CursorTopology {
-    val base=patches.firstOrNull{!it.front} ?: return this
+    val valid=patches.filter{it.valid()}
+    val base=valid.firstOrNull{!it.front} ?: return CursorTopology()
     val b=base.viewBounds
     val sx=(base.source.right-base.source.left)/(b.right-b.left)
     val sy=(base.source.bottom-base.source.top)/(b.bottom-b.top)
     if(!sx.isFinite() || !sy.isFinite() || sx<=0f || sy<=0f)return CursorTopology()
-    return CursorTopology(patches.map{p->p.copy(points=p.points.map{(x,y)->
+    return CursorTopology(valid.map{p->p.copy(points=p.points.map{(x,y)->
         base.source.left+(x-b.left)*sx to base.source.top+(y-b.top)*sy
-    })},1f to 1f)
+    })}.filter{it.valid()},1f to 1f)
 }
 internal fun CursorTopology.debugSegments():FloatArray=patches.flatMap{p->(0..3).flatMap{i->
     val a=p.points[i];val b=p.points[(i+1)%4];listOf(a.first,a.second,b.first,b.second,if(p.front)1f else 0f)

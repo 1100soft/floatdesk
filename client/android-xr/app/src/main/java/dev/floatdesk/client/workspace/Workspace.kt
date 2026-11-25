@@ -53,7 +53,6 @@ internal data class WorkspaceFile(
     val sphericalWarp: Boolean = false,
     val handMouse: Boolean = false,
     val reverseHandScroll:Boolean=true,
-    val aimToHover:Boolean=true,
     val grabToMove: Boolean = false,
     val freeManipulation: Boolean = false,
     val desktopReference: Boolean = false,
@@ -297,7 +296,7 @@ private fun encode(workspace: WorkspaceFile): JSONObject {
         .put("layouts", layouts)
         .put("control", encodePanel(workspace.control))
         .put("spherical_warp", workspace.sphericalWarp)
-        .put("reverse_hand_scroll",workspace.reverseHandScroll).put("aim_to_hover",workspace.aimToHover).put("hand_mouse", workspace.handMouse).put("desktop_reference",workspace.desktopReference)
+        .put("reverse_hand_scroll",workspace.reverseHandScroll).put("hand_mouse", workspace.handMouse).put("desktop_reference",workspace.desktopReference)
         .put("interaction_mode",workspace.interactionMode.name).put("cursor_remap",workspace.cursorRemap).put("window_grab_mode",workspace.windowGrabMode).put("focus_mode",workspace.focusMode).put("gaze_to_focus",workspace.gazeToFocus).put("magnify_window",workspace.magnifyWindow).put("typing_quiet_ms",workspace.typingQuietMs)
         .put("magnifier_mode",workspace.magnifierMode).put("magnify_system_panels",workspace.magnifySystemPanels)
         .put("fixed_magnifiers",encodePlacements(workspace.fixedMagnifiers))
@@ -377,7 +376,6 @@ private fun decode(json: JSONObject): WorkspaceFile {
             PinchThresholds(a.optDouble(0,Double.NaN).toFloat(),a.optDouble(1,Double.NaN).toFloat(),a.optDouble(2,Double.NaN).toFloat(),a.optDouble(3,Double.NaN).toFloat()).takeIf{it.valid()}
         } ?: PinchThresholds.Default,
         reverseHandScroll=json.optBoolean("reverse_hand_scroll",true),
-        aimToHover=json.optBoolean("aim_to_hover",true),
         handMouse = json.optBoolean("hand_mouse", json.optBoolean("mouse_gestures", false) && json.optString("interaction_mode", "MOUSE")=="MOUSE"),
         desktopReference = json.optBoolean("desktop_reference",false),
         referencePlacement = decodePlacements(json.optJSONArray("reference_placement")).firstOrNull(),

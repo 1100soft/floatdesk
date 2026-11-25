@@ -90,9 +90,9 @@ internal fun snapWindowDrop(window:DesktopWindow,x:Int,y:Int,u:Float,v:Float,inf
     val columns=if(col<0)1 else 2;val rows=if(row<0)1 else 2
     return windowGridCell(window.id,screen.x,screen.y,screen.width,screen.height,columns,rows,maxOf(0,col),maxOf(0,row))
 }
-internal fun windowGridCell(id:Long,x:Int,y:Int,width:Int,height:Int,columns:Int,rows:Int,col:Int,row:Int):WindowMove {
+internal fun windowGridCell(id:Long,x:Int,y:Int,width:Int,height:Int,columns:Int,rows:Int,col:Int,row:Int,endCol:Int=col,endRow:Int=row):WindowMove {
     val left=x+width*col/columns;val top=y+height*row/rows
-    return WindowMove(id,left,top,x+width*(col+1)/columns-left,y+height*(row+1)/rows-top)
+    return WindowMove(id,left,top,x+width*(endCol+1)/columns-left,y+height*(endRow+1)/rows-top)
 }
 
 /** A temporary window pane uses the same distance-scaled drag as magnifiers. */

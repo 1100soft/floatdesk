@@ -48,6 +48,19 @@ fun main() {
  check(markerUv==(.8f to .5f))
  val markerPoint=magnifierCursorPoint(cursorPane,markerUv.first,markerUv.second)
  check(distance(markerPoint,transformPoint(cursorPose,tallAperture.project(floatArrayOf(.18f,0f,0f),onTriangles=true)))<.0001f)
+ var lastVertical=1.01f
+ for(step in 0..20){
+    val v=.98f-step*.048f
+    val local=squareSphere.project(floatArrayOf(.12f,(.5f-v)*cursorPane.height,0f),onTriangles=true)
+    val world=transformPoint(cursorPose,local)
+    val eye=transformPoint(cursorPose,squareSphere.eye)
+    val contact=sphericalPaneContact(cursorPane,squareSphere,eye to subtract(world,eye))!!
+    check(contact.second.second<lastVertical && abs(contact.second.second-v)<.0001f)
+    lastVertical=contact.second.second
+ }
+ val offPane=transformPoint(cursorPose,squareSphere.project(floatArrayOf(.55f,0f,0f),onTriangles=true))
+ val cursorEye=transformPoint(cursorPose,squareSphere.eye)
+ check(sphericalPaneContact(cursorPane,squareSphere,cursorEye to subtract(offPane,cursorEye))==null)
  val popupEye=Pose()
  for(curved in listOf(false,true)){
     val popupOwner=MagnifiedWindow(70,Pose(floatArrayOf(.5f,.15f,-1.2f)),1.8f,1.2f,1200,800,

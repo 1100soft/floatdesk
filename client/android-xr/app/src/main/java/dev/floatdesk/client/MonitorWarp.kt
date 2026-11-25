@@ -171,7 +171,7 @@ internal class MonitorWarp : AutoCloseable {
     }
 
     @SuppressLint("RestrictedApi")
-    fun attach(session: Session, inputSurface: Surface, placement: MonitorPlacement, density: PixelDensity? = null, onEvent: ((SpatialInputEvent) -> Unit)? = null, onHover: ((String, FloatArray?, FloatArray?, Float, Float) -> Unit)? = null, forwardGaze:()->Boolean={false}): Surface {
+    fun attach(session: Session, inputSurface: Surface, placement: MonitorPlacement, density: PixelDensity? = null, onEvent: ((SpatialInputEvent) -> Unit)? = null, onHover: ((String, FloatArray?, FloatArray?, Float, Float) -> Unit)? = null, forwardGaze:()->Boolean={false},hideHandMarker:()->Boolean={false}): Surface {
         close()
         val target = session.scene.getEntitiesOfType(SurfaceEntity::class.java)
             .firstOrNull { it.getSurface() === inputSurface }
@@ -192,7 +192,7 @@ internal class MonitorWarp : AutoCloseable {
                 // Keep the native monitor hit and its matrix together instead of using the front hit.
                 val info = event.hitInfoList.firstOrNull { it.inputEntity === expected } ?: event.hitInfoList.firstOrNull()
                 val gazeSource=event.source==InputEvent.Source.GAZE_AND_GESTURE
-                if(info?.inputEntity===expected)updateSurfaceAimingIcon(expected,gazeSource)
+                if(info?.inputEntity===expected)updateSurfaceAimingIcon(expected,gazeSource || hideHandMarker() && event.source==InputEvent.Source.HANDS)
                 val pointerSide=event.pointerType.toString()
                 val side=when{
                     gazeSource->"GAZE"

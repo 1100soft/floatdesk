@@ -427,7 +427,7 @@ internal fun DeskContent(
                 val current = session ?: return@onSurfaceCreated
                 val display = warp.attach(current, surface, latest.value.monitorAt(index) ?: placement, pixelDensity, inputPolicy::onInputEvent,onHover={ side, point, flat, width, height ->
                     pointerControl.hover(index,side,point,flat,width,height,SystemClock.uptimeMillis())
-                },forwardGaze={latest.value.grabToMove})
+                },forwardGaze={latest.value.grabToMove},hideHandMarker={connection.cursorLocation?.key=="desktop"})
                 warp.coordinateParent?.let(onDeskRoot)
                 videoSurface.set(display)
                 warp.setVisible(!controlsOpenNow.value)

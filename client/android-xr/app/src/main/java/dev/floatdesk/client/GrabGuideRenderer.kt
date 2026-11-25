@@ -162,15 +162,17 @@ internal class GrabGuideRenderer private constructor(
 
     }
 
-    fun updatePointer(parent:Entity,position:FloatArray?,eye:FloatArray?,unitsPerMeter:Float){
+    fun updatePointer(parent:Entity,position:FloatArray?,eye:FloatArray?,unitsPerMeter:Float,foregroundRange:Float?=null){
         if(closed)return
         if(position==null || eye==null){pointerPoint?.let{state(it).enabled(false)};return}
-        val entity=pointerPoint ?: ink(layoutOriginSphereGeometry(),0xA03BEAFF.toInt())
+        val entity=pointerPoint ?: ink(layoutOriginSphereGeometry(),0xFF35F2FF.toInt())
             ?.also{pointerPoint=it} ?: return
-        val radius=(distance(position,eye)*.0035f).coerceAtLeast(.0015f*unitsPerMeter)
+        val front=foregroundGuidePoint(position,eye,unitsPerMeter,
+            foregroundRange?.times(.90f) ?: distance(position,eye)*.90f)
+        val radius=(distance(front,eye)*.009f).coerceAtLeast(.0035f*unitsPerMeter)
         state(entity).apply{
             this.parent(parent)
-            pose(Pose(vector(visibleGrabContact(position,eye,unitsPerMeter))))
+            pose(Pose(vector(front)))
             scale(radius)
             enabled(true)
         }

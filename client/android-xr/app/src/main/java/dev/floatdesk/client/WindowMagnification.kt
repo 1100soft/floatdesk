@@ -302,6 +302,18 @@ internal fun magnifierContentPoint(window:MagnifiedWindow,point:Pair<Float,Float
         ((point.second-rect.top)/(rect.bottom-rect.top)).coerceIn(0f,1f)
 }
 
+/** Resolve curved input against the submitted sphere, then bound it to the visible aperture. */
+internal fun sphericalPaneContact(pane:MagnifiedWindow,canvas:MonitorMesh,ray:Pair<FloatArray,FloatArray>):Pair<FloatArray,Pair<Float,Float>>?{
+    val origin=viewerInMonitor(ray.first,pane.pose.position,pane.pose.rotation)
+    val end=viewerInMonitor(add(ray.first,ray.second),pane.pose.position,pane.pose.rotation)
+    val hit=meshRayHit(canvas,origin,subtract(end,origin)) ?: return null
+    val flat=canvas.unproject(hit) ?: return null
+    val u=flat[0]/pane.width+.5f
+    val v=.5f-flat[1]/pane.height
+    if(u !in -.001f..1.001f || v !in -.001f..1.001f)return null
+    return hit to (u.coerceIn(0f,1f) to v.coerceIn(0f,1f))
+}
+
 internal fun magnifierCursorPoint(window:MagnifiedWindow,u:Float,v:Float):FloatArray{
     val content=magnifierContentRect(window)
     val x=content.left+u*(content.right-content.left)

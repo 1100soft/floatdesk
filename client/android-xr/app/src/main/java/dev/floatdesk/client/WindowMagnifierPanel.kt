@@ -121,12 +121,20 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                     val mesh=resources.mesh
                     val capturedMove=event.action==InputEvent.Action.MOVE || event.action==InputEvent.Action.UP
                     val ray=lazy{surfaceInputRay(session,root,event)}
-                    val local=(if(hit!=null)
-                        surfaceInputHit(ray.value,active.pose,active.width,active.height,mesh) else null)
-                        ?: hit?.hitPosition?.let{eventMatrixHit(floatArrayOf(it.x,it.y,it.z),hit.transform.data,active.width,active.height,mesh,entity.getScale(Space.ACTIVITY),rayDirection=if(mesh!=null)floatArrayOf(event.direction.x,event.direction.y,event.direction.z)else null,rayOrigin=floatArrayOf(event.origin.x,event.origin.y,event.origin.z))}
-                        ?: if(capturedMove)surfaceInputHit(ray.value,active.pose,active.width,active.height,mesh) else null
-                    val flat=local?.let{mesh?.unproject(it) ?: it}
-                    val uv=flat?.let{it[0]/active.width+.5f to (.5f-it[1]/active.height)}
+                    val acceptedRay=hit!=null || capturedMove
+                    val sphere=resources.baseGeometry?.mesh?.takeIf{sphericalFit}
+                    val aperture=if(acceptedRay && sphere!=null)sphericalPaneContact(active,sphere,ray.value) else null
+                    val local=if(sphere!=null)aperture?.first else if(mesh!=null){
+                        if(acceptedRay)surfaceInputHit(ray.value,active.pose,active.width,active.height,mesh) else null
+                    }else{
+                        (if(acceptedRay)surfaceInputHit(ray.value,active.pose,active.width,active.height,null) else null)
+                            ?: hit?.hitPosition?.let{eventMatrixHit(floatArrayOf(it.x,it.y,it.z),hit.transform.data,
+                                active.width,active.height,null,entity.getScale(Space.ACTIVITY))}
+                    }
+                    val uv=if(sphere!=null)aperture?.second else local?.let{point->
+                        val flat=mesh?.unproject(point) ?: point
+                        (flat[0]/active.width+.5f) to (.5f-flat[1]/active.height)
+                    }
                     val pointerSide=event.pointerType.toString()
                     val handInput=event.source==InputEvent.Source.HANDS
                     val side=if(handInput && pointerSide=="DEFAULT" && pointerEventContinues(event.action))
@@ -135,10 +143,10 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                         if(event.action==InputEvent.Action.DOWN && local!=null && side in setOf("LEFT","RIGHT"))resources.capturedHands.add(side)
                         if(event.action==InputEvent.Action.UP || event.action==InputEvent.Action.CANCEL)resources.capturedHands.remove(side)
                     }
-                    if(hit!=null)updateSurfaceAimingIcon(expected,event.source==InputEvent.Source.GAZE_AND_GESTURE)
+                    if(hit!=null)updateSurfaceAimingIcon(expected,event.source==InputEvent.Source.GAZE_AND_GESTURE || connection.cursorLocation?.key==topologyKey && handInput)
                     if(event.source==InputEvent.Source.HANDS){
                         if(event.action==InputEvent.Action.HOVER_EXIT || event.action==InputEvent.Action.CANCEL)hoverNow.value(side,null)
-                        else if(uv!=null || transientSurface)hoverNow.value(side,uv)
+                        else hoverNow.value(side,uv)
                     }
                     if(freeMode.value && event.source==InputEvent.Source.HANDS && side in setOf("LEFT","RIGHT")) {
                         if(local!=null && uv!=null && uv.first in 0f..1f && uv.second in 0f..1f)

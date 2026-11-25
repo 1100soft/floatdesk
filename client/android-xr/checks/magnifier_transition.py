@@ -12,6 +12,8 @@ assert 'resources.curvedInput?.entity ?: resources.entity' in panel
 assert 'curvedInput?.detach()' in panel
 assert '.updateGeometry(' not in panel
 assert 'transientSurface && regionId==null' in panel
+assert 'resources.authoredSize==authoredSize' in panel
+assert 'val authoredSize=savedPaneSize' in panel
 source = (root / 'WindowMagnification.kt').read_text()
 start = source.index('internal fun sameNativePaneExtent(')
 end = source.index('/** Lower bound', start)

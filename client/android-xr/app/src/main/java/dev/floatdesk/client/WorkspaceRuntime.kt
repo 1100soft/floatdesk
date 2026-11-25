@@ -1656,7 +1656,9 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 DisposableEffect(record.id,pane.id){fixedReady[record.id]=false;onDispose{fixedReady.remove(record.id);fixedDisplayed.remove(record.id)}}
                 WindowMagnifierPanel(session,magnifierRoot,pane.takeIf{paneEnabled},connection,record.id in fixedPins,magnifierViewer,{handTracking.unitsPerMeter},handTracking,
                     {magnifierReady=true},{message->fixedReady[record.id]=false;Log.w("Floatdesk",message)},
-                    {side,uv->magnifierHands.update(record.id,side,uv?.let{magnifierContentPoint(pane,it)},pane.id,now=SystemClock.uptimeMillis())},
+                    {side,uv->magnifierHands.update(record.id,side,uv?.let{
+                        magnifierContentPoint(fixedRuntime[record.id]?.takeIf{shown->shown.id==pane.id} ?: pane,it)
+                    },pane.id,now=SystemClock.uptimeMillis())},
                     {next,manipulated->
                         fixedRuntime[record.id]=next
                         if(manipulated && record.id in fixedEditing){
@@ -1667,7 +1669,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                         if(editing)fixedEditing.add(record.id)else if(fixedEditing.remove(record.id))recordPlacement("magnifier gesture")
                         magnifierMoving=fixedEditing.isNotEmpty()
                     },{hands,gaze->if(gaze)pointerControl.noteSystemGaze();if(hands || gaze)magnifierPointerHover[record.id]=hands to gaze else magnifierPointerHover.remove(record.id)},allowManipulation=workspace.grabToMove,freeManipulation=workspace.freeManipulation,topologyKey=record.id,onHidden={fixedReady[record.id]=false},
-                    projectionMode=workspace.sphericalWarp,retainLastFrame=true,onDisplayed={id->fixedDisplayed[record.id]=id;fixedReady[record.id]=true})
+                    projectionMode=workspace.sphericalWarp,retainLastFrame=true,savedPaneSize=record.widthM to record.heightM,onDisplayed={id->fixedDisplayed[record.id]=id;fixedReady[record.id]=true})
             }
         }
         val renderedSystem=mutableListOf<MagnifiedWindow>()

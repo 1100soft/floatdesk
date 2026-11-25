@@ -310,6 +310,20 @@ impl Router {
         self.owner = Some(surface.key.clone());
         Some(target)
     }
+    pub fn claim_exact(&mut self, surfaces: &[Surface], key: &str, root: [f64; 2]) -> bool {
+        if let Some(point) = surfaces
+            .iter()
+            .filter(|surface| surface.key == key)
+            .find_map(|surface| surface.map(root, true))
+        {
+            self.point = Some(point);
+            self.owner = Some(key.to_owned());
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn claim(&mut self, surfaces: &[Surface], key: &str, root: [f64; 2]) -> bool {
         if let Some(point) = surfaces
             .iter()
@@ -469,6 +483,19 @@ mod tests {
             Some([25., 50.])
         );
         assert!(!router.claim(&surfaces, "missing", [25., 50.]));
+    }
+    #[test]
+    fn hand_pointer_claim_retains_its_surface_in_overlapping_cursor_space() {
+        let mut desktop = pane(0., 2., [0., 0., 100., 100.]);
+        desktop.key = "desktop".into();
+        let mut panel = pane(0., 1., [200., 0., 300., 100.]);
+        panel.key = "panel".into();
+        let mut router = Router::default();
+        let surfaces = [desktop, panel];
+        assert!(router.claim_exact(&surfaces, "desktop", [25., 50.]));
+        assert_eq!(router.location(&surfaces).unwrap().0, "desktop");
+        assert!(router.claim_exact(&surfaces, "panel", [250., 50.]));
+        assert_eq!(router.location(&surfaces).unwrap().2, [250., 50.]);
     }
     #[test]
     fn virtual_position_is_authoritative_and_clamps_inside_its_owner() {

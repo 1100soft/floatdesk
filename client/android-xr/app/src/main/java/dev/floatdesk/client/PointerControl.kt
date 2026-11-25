@@ -58,6 +58,8 @@ internal class PointerControl {
         departedAt.remove(side)
     }
 
+    fun contactTime(side:String?)=lastHoverAt[side]
+
     fun rejectHand(side: String) {
         hovering.remove(side);departedAt.remove(side);lastHoverAt.remove(side);handPoses.remove(side);hoverPoses.remove(side);handOrder.remove(side)
     }

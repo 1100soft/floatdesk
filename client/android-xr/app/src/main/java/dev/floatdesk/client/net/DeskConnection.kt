@@ -775,14 +775,12 @@ internal class DeskConnection(
         send(Protocol.keyframeRequest(0xff))
     }
 
-    fun claimCursor(key:String,u:Float,v:Float){
-        if(lastAcceptedHello==0L || cursorTopology.patches.isEmpty())return
-        val b=workspaceInfo.value?.bounds() ?: return
-        send(Protocol.workspace(org.json.JSONObject().put("type","cursorSpace").put("sequence",pointerSeq.incrementAndGet()).put("key",key).put("x",b[0]+u*b[2]).put("y",b[1]+v*b[3]).toString()))
-    }
-    fun movePointer(monitor: Int,x: Float,y: Float,dragging: Boolean = false) {
+    fun movePointer(monitor: Int,x: Float,y: Float,dragging: Boolean = false,spaceKey:String?=null) {
         if (lastAcceptedHello == 0L || monitors.value.none { it.index == monitor }) return
-        val packet=Protocol.pointerMove(monitor,x,y,pointerSeq.incrementAndGet(),dragging)
+        val sequence=pointerSeq.incrementAndGet()
+        val packet=if(spaceKey==null)Protocol.pointerMove(monitor,x,y,sequence,dragging) else
+            Protocol.workspace(org.json.JSONObject().put("type","handPointer").put("monitor",monitor)
+                .put("u",x).put("v",y).put("sequence",sequence).put("dragging",dragging).put("key",spaceKey).toString())
         if(dragging != pointerDragging) {
             pointerDragging=dragging
             pendingPointer.set(null)

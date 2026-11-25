@@ -46,13 +46,12 @@ internal fun WorkspaceFile.restoreViewer(viewer:Pose,unitsPerMeter:Float=referen
     val prior=viewerReference ?: Pose()
     if(anchorUuid!=null)return this
     val scale=referenceUnitsPerMeter?.let{unitsPerMeter/it}?.takeIf{it.isFinite() && it>0f} ?: 1f
-    fun multiply(a:FloatArray,b:FloatArray)=floatArrayOf(a[3]*b[0]+a[0]*b[3]+a[1]*b[2]-a[2]*b[1],a[3]*b[1]-a[0]*b[2]+a[1]*b[3]+a[2]*b[0],a[3]*b[2]+a[0]*b[1]-a[1]*b[0]+a[2]*b[3],a[3]*b[3]-a[0]*b[0]-a[1]*b[1]-a[2]*b[2])
-    val q=multiply(viewer.rotation,floatArrayOf(-prior.rotation[0],-prior.rotation[1],-prior.rotation[2],prior.rotation[3]))
+    val q=composeLayoutRotation(viewer.rotation,inverseRotation(prior.rotation))
     fun transform(p:Pose):Pose {
         val v=FloatArray(3){(p.position[it]-prior.position[it])*scale}
         val t=floatArrayOf(2*(q[1]*v[2]-q[2]*v[1]),2*(q[2]*v[0]-q[0]*v[2]),2*(q[0]*v[1]-q[1]*v[0]))
         val rotated=floatArrayOf(v[0]+q[3]*t[0]+q[1]*t[2]-q[2]*t[1],v[1]+q[3]*t[1]+q[2]*t[0]-q[0]*t[2],v[2]+q[3]*t[2]+q[0]*t[1]-q[1]*t[0])
-        return Pose(FloatArray(3){viewer.position[it]+rotated[it]},multiply(q,p.rotation))
+        return Pose(FloatArray(3){viewer.position[it]+rotated[it]},composeLayoutRotation(q,p.rotation))
     }
     return copy(viewerReference=viewer,referenceUnitsPerMeter=unitsPerMeter,layoutOrigin=layoutOrigin?.let(::transform),desktopHome=desktopHome?.let(::transform),cursorMapReference=cursorMapReference?.let(::transform),
         layouts=layouts.mapValues {(_,screens)->screens.map {
@@ -62,11 +61,47 @@ internal fun WorkspaceFile.restoreViewer(viewer:Pose,unitsPerMeter:Float=referen
 
 private fun inverseRotation(q:FloatArray)=floatArrayOf(-q[0],-q[1],-q[2],q[3])
 
-private fun composeLayoutRotation(a:FloatArray,b:FloatArray)=floatArrayOf(
-    a[3]*b[0]+a[0]*b[3]+a[1]*b[2]-a[2]*b[1],
-    a[3]*b[1]-a[0]*b[2]+a[1]*b[3]+a[2]*b[0],
-    a[3]*b[2]+a[0]*b[1]-a[1]*b[0]+a[2]*b[3],
-    a[3]*b[3]-a[0]*b[0]-a[1]*b[1]-a[2]*b[2])
+private fun unitLayoutRotation(q:FloatArray):FloatArray{
+    val norm=kotlin.math.sqrt(q.sumOf{it.toDouble()*it})
+    return if(!norm.isFinite() || norm<1e-6)Pose().rotation else FloatArray(4){(q[it]/norm).toFloat()}
+}
+
+private fun composeLayoutRotation(left:FloatArray,right:FloatArray):FloatArray{
+    val a=unitLayoutRotation(left);val b=unitLayoutRotation(right)
+    return unitLayoutRotation(floatArrayOf(
+        a[3]*b[0]+a[0]*b[3]+a[1]*b[2]-a[2]*b[1],
+        a[3]*b[1]-a[0]*b[2]+a[1]*b[3]+a[2]*b[0],
+        a[3]*b[2]+a[0]*b[1]-a[1]*b[0]+a[2]*b[3],
+        a[3]*b[3]-a[0]*b[0]-a[1]*b[1]-a[2]*b[2]))
+}
+
+private fun Pose.isUsableNear(viewer:Pose,units:Float):Boolean{
+    val limit=ViewLayers.MaxFarthestM*20*units
+    val normSquared=rotation.sumOf{it.toDouble()*it}
+    return normSquared in .95..1.05 && position.indices.all{
+        position[it].isFinite() && kotlin.math.abs(position[it]-viewer.position[it])<=limit
+    }
+}
+
+internal fun MonitorPlacement.hasUsableGeometry(reference:Pose,units:Float):Boolean{
+    val limit=ViewLayers.MaxFarthestM*20*units
+    return pose.isUsableNear(reference,units) && physicalWidthM in .001f..limit && physicalHeightM in .001f..limit
+}
+
+/** Repair an invalid desktop without discarding valid settings or auxiliary positions. */
+internal fun WorkspaceFile.repairDesktopPlacement(viewer:Pose,angles:FloatArray,units:Float):WorkspaceFile{
+    val saved=layouts[activeLayout]?.firstOrNull() ?: return this
+    val reference=viewerReference?.takeIf{anchorUuid==null && it.isUsableNear(viewer,units)} ?: viewer
+    val scale=referenceUnitsPerMeter?.takeIf{reference!==viewer && it.isFinite() && it>0f} ?: units
+    val valid=saved.hasUsableGeometry(reference,scale) && desktopHome?.isUsableNear(reference,scale)!=false
+    if(valid)return this
+    val specs=layouts[activeLayout].orEmpty().map{Triple(it.hostSourceId,it.pixelWidth,it.pixelHeight)}
+    val fitted=fitDesktopInView(deskLayout(specs),viewer,angles[0],angles[1],units,sphericalWarp,centralView=true,distanceM=farthestDistanceM)
+    val home=fitted.firstOrNull()?.pose ?: return this
+    val origin=layoutOrigin?.takeIf{it.isUsableNear(viewer,units)} ?: home
+    return copy(viewerReference=viewer,referenceUnitsPerMeter=units,desktopHome=home,layoutOrigin=origin,
+        cursorMapReference=viewer,layouts=layouts.toMutableMap().also{it[activeLayout]=fitted})
+}
 
 private fun originTransform(from:Pose,to:Pose):(Pose)->Pose {
     val delta=composeLayoutRotation(to.rotation,inverseRotation(from.rotation))
@@ -83,6 +118,14 @@ internal fun WorkspaceFile.moveLayoutOrigin(target:Pose):WorkspaceFile {
     val transform=originTransform(origin,target)
     val moved=layouts.mapValues{(_,screens)->screens.map{it.copy(pose=transform(it.pose))}.toMutableList()}.toMutableMap()
     return copy(layoutOrigin=target,desktopHome=desktopHome?.let(transform),cursorMapReference=cursorMapReference?.let(transform),layouts=moved,control=control.copy(pose=transform(control.pose)))
+}
+
+/** Recenter the visible desktop while keeping the arrangement rigid. */
+internal fun WorkspaceFile.centerDesktop(target:Pose):WorkspaceFile {
+    val screen=layouts[activeLayout]?.firstOrNull() ?: return this
+    val origin=layoutOrigin ?: screen.pose
+    val from=screen.pose
+    return moveLayoutOrigin(originTransform(from,target)(origin))
 }
 
 /** Preserve the authored desktop center/orientation and replace its size and view framing. */

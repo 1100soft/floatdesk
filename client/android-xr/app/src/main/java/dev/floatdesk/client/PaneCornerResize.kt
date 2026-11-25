@@ -49,7 +49,11 @@ internal class PaneCornerResize : AutoCloseable {
             corners.forEach{release(it)};corners.clear();active=null;handResize=null;host=video
             submittedEdge=Float.NaN;submittedFront=Float.NaN;drawnShow=false;drawnThick=false;drawnHeld=false;live=false
         }
-        if(corners.isEmpty())for(y in listOf(-1,1))for(x in listOf(-1,1)){
+        val wantCorners=objectAimed || active!=null
+        if(corners.isEmpty() && !wantCorners)return
+        if(corners.size<4 && wantCorners && tracking.tryCornerAllocation(SystemClock.uptimeMillis())){
+            val x=if(corners.size%2==0)-1 else 1
+            val y=if(corners.size<2)-1 else 1
             val surface=SurfaceEntity.create(session,shape=SurfaceEntity.Shape.Quad(FloatSize2d(.001f,.001f)),parent=video,superSampling=SurfaceEntity.SuperSampling.NONE)
             surface.setSurfacePixelDimensions(IntSize2d(HandlePixels,HandlePixels))
             surface.mediaBlendingMode=SurfaceEntity.MediaBlendingMode.TRANSPARENT
@@ -86,7 +90,8 @@ internal class PaneCornerResize : AutoCloseable {
             }
             check(surface.addComponent(input));corner=Corner(x,y,surface,input);corners.add(corner)
             val pointer=SpatialPointerComponent.create(session);surface.addComponent(pointer);pointer.spatialPointerIcon=SpatialPointerIcon.NONE
-            paint(corner,false,false,false)
+            paint(corner,drawnShow,drawnThick,drawnHeld)
+            live=false;submittedWidth=Float.NaN;submittedEdge=Float.NaN
         }
         active?.let{corner->
             if(handResize==null){

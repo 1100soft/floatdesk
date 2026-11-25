@@ -14,11 +14,52 @@ while end<len(topology):
     end+=1
     if opened and depth==0:break
 topology=topology[:start]+topology[end:]
+surface_hit=body('SurfaceInput.kt')
+surface_hit=surface_hit[surface_hit.index('internal fun surfaceInputHit'):surface_hit.index('internal fun updateSurfaceAimingIcon')].replace('dev.floatdesk.client.workspace.Pose','Pose')
 workspace=body('workspace/Workspace.kt');workspace=workspace[workspace.index('internal data class Pose'):workspace.index('internal class WorkspaceStore')]
 metadata=body('net/WorkspaceInfo.kt');metadata=metadata[:metadata.index('    companion object')]+'}\n'
-code='import kotlin.math.*\n'+body('MonitorMesh.kt')+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+re.search(r'internal fun deskLayout\(.*?\n}',(root/'workspace/Workspace.kt').read_text(),re.S).group(0)+body('workspace/WorkspacePlacement.kt')+metadata+body('WindowMagnification.kt')+body('LayoutOrigin.kt')+body('LayoutAdjustment.kt')+body('LayoutGuideInk.kt')+body('WindowInteraction.kt').replace('dev.floatdesk.client.workspace.MonitorPlacement','MonitorPlacement')+body('WindowToolbarState.kt')+re.search(r'internal object WindowMenuLayout \{.*?\n}',(root/'WindowActionsMenu.kt').read_text(),re.S).group(0)+'\n'+topology+body('VideoGeometry.kt')+body('MagnifierContacts.kt')+body('BoundedHistory.kt')+body('RenderPolicy.kt')+body('net/WindowCaptureRetry.kt')+body('net/WindowCaptureFormat.kt').replace('dev.floatdesk.client.RenderPolicy','RenderPolicy')+''.join(re.search(r'internal fun '+name+r'\(.*?\n}',application_sources(),re.S).group(0) for name in ('transformPoint','rotateVector','quaternionBetween','multiplyQuaternion','normalize3','normalize4'))+re.search(r'internal fun distance\(a: FloatArray.*?\n}',application_sources(),re.S).group(0)+'\n'+re.search(r'internal fun subtract\(a: FloatArray[^\n]*\n[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun dot\(a: FloatArray[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun cross3\(.*',application_sources()).group(0)+'\n'+r'''
+code='import kotlin.math.*\n'+body('MonitorMesh.kt')+surface_hit+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+re.search(r'internal fun deskLayout\(.*?\n}',(root/'workspace/Workspace.kt').read_text(),re.S).group(0)+body('workspace/WorkspacePlacement.kt')+metadata+body('WindowMagnification.kt')+body('LayoutOrigin.kt')+body('LayoutAdjustment.kt')+body('LayoutGuideInk.kt')+body('WindowInteraction.kt').replace('dev.floatdesk.client.workspace.MonitorPlacement','MonitorPlacement')+body('WindowToolbarState.kt')+re.search(r'internal object WindowMenuLayout \{.*?\n}',(root/'WindowActionsMenu.kt').read_text(),re.S).group(0)+'\n'+topology+body('VideoGeometry.kt')+body('MagnifierContacts.kt')+body('BoundedHistory.kt')+body('RenderPolicy.kt')+body('net/WindowCaptureRetry.kt')+body('net/WindowCaptureFormat.kt').replace('dev.floatdesk.client.RenderPolicy','RenderPolicy')+''.join(re.search(r'internal fun '+name+r'\(.*?\n}',application_sources(),re.S).group(0) for name in ('transformPoint','rotateVector','quaternionBetween','multiplyQuaternion','normalize3','normalize4'))+re.search(r'internal fun distance\(a: FloatArray.*?\n}',application_sources(),re.S).group(0)+'\n'+re.search(r'internal fun subtract\(a: FloatArray[^\n]*\n[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun dot\(a: FloatArray[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun cross3\(.*',application_sources()).group(0)+'\n'+r'''
 fun add(a:FloatArray,b:FloatArray)=FloatArray(3){a[it]+b[it]}
 fun main() {
+ val repairMonitor=deskLayout(listOf(Triple("desktop",3456,2160))).first()
+ val repairViewer=Pose(floatArrayOf(0f,0f,0f))
+ val invalidPose=Pose(floatArrayOf(-1.2e8f,2.8e8f,2.7e8f),floatArrayOf(26f,223f,-220f,2305f))
+ val broken=WorkspaceFile(layoutOrigin=repairViewer,desktopHome=invalidPose,
+    layouts=mutableMapOf("Desk" to mutableListOf(repairMonitor.copy(pose=invalidPose,physicalWidthM=1075f))))
+ val repaired=broken.repairDesktopPlacement(repairViewer,floatArrayOf(.6f,.45f),1f)
+ check(repaired.layouts.getValue("Desk").first().physicalWidthM in .01f..10f)
+ check(repaired.repairDesktopPlacement(repairViewer,floatArrayOf(.6f,.45f),1f)===repaired)
+ var centered=repaired
+ val scaledQuaternion=Pose(rotation=floatArrayOf(0f,.30f,0f,1.50f))
+ repeat(100){centered=centered.centerDesktop(scaledQuaternion)}
+ val repairedRotation=centered.layouts.getValue("Desk").first().pose.rotation
+ check(abs(repairedRotation.sumOf{it.toDouble()*it}-1.0)<.00001)
+ val overlapEye=floatArrayOf(0f,0f,0f)
+ val overlapDesktop=Pose(floatArrayOf(0f,0f,-2f))
+ val overlapSphere=MonitorMesh(16f,9f,floatArrayOf(0f,0f,2f),focus=floatArrayOf(0f,0f))
+ val frontPane=MagnifiedWindow(42L,Pose(floatArrayOf(0f,0f,-1f)),.4f,.3f,800,600)
+ check(desktopForegroundCutouts(overlapDesktop,overlapEye,emptyList(),overlapSphere).isEmpty())
+ val frontMasks=desktopForegroundCutouts(overlapDesktop,overlapEye,listOf(frontPane),overlapSphere)
+ check(frontMasks.size==1)
+ check(desktopForegroundCutouts(overlapDesktop,overlapEye,listOf(frontPane.copy(pose=Pose(floatArrayOf(0f,0f,-4f)))),overlapSphere).isEmpty())
+ val desktopInk=clippedVideoGeometry(16f,9f,overlapSphere,floatArrayOf(0f,0f,1f,1f),0f,frontMasks)
+ check(desktopInk.indices.isNotEmpty())
+ val gridInk=SnapGridPresence(500)
+ gridInk.update(100L,false)
+ check(!gridInk.expired(599L))
+ gridInk.update(590L,true)
+ check(!gridInk.expired(1089L) && gridInk.expired(1090L))
+ gridInk.clear()
+ check(!gridInk.expired(2000L))
+ val gridEye=floatArrayOf(0f,0f,0f)
+ val grid=ToolbarStrip(Pose(floatArrayOf(.8f,.3f,-1f)),.5f,.7f,.06f,.01f,false)
+ val insetGrid=grid.insideViewSphere(gridEye,1f,1f)
+ for(x in listOf(-.5f,.5f))for(y in listOf(-.5f,.5f)){
+    val near=transformPoint(insetGrid.pose,floatArrayOf(x*insetGrid.width,y*insetGrid.height,0f))
+    val far=transformPoint(grid.pose,floatArrayOf(x*grid.width,y*grid.height,0f))
+    check(distance(near,gridEye)<1f)
+    check(distance(normalize3(near),normalize3(far))<1e-5f)
+ }
  val savedOrigin=Pose(floatArrayOf(.4f,.2f,-2f))
  val curvedOrigin=layoutOriginGuide(savedOrigin,Pose(),.9f,1.2f,true)!!
  val flatOrigin=layoutOriginGuide(savedOrigin,Pose(),.9f,1.2f,false)!!
@@ -676,6 +717,27 @@ fun main() {
  check(mouse.update(2,true,false,mapOf("LEFT" to FingerPinch(.05f,.05f)),target).click==null)
  mouse.update(3,true,false,mapOf("LEFT" to FingerPinch(.003f,.05f)),target)
  check(mouse.update(4,true,false,mapOf("LEFT" to FingerPinch(.005f,.05f)),target).click?.button==1)
+ val surfacePose=Pose(floatArrayOf(0f,0f,-2f))
+ val capturedRay=floatArrayOf(0f,0f,0f) to floatArrayOf(.2f,.05f,-2f)
+ check(surfaceInputHit(capturedRay,surfacePose,1f,1f,null)!=null)
+ val curvedCapture=MonitorMesh(1f,1f,floatArrayOf(0f,0f,2f))
+ check(surfaceInputHit(capturedRay,surfacePose,1f,1f,curvedCapture)!=null)
+ val simultaneous=WorkspaceFile(handMouse=true)
+ check(simultaneous.focusMode && simultaneous.windowGrabMode && simultaneous.handMouseActive)
+ val paused=simultaneous.copy(handsOff=true)
+ check(!paused.focusMode && !paused.windowGrabMode && !paused.handMouseActive)
+ check(paused.tapToFocus && paused.dragToMove && paused.handMouse)
+ val dragMouse=MouseGestures(thresholds={profile})
+ fun dragAt(at:Long,x:Float,pinched:Boolean)=dragMouse.update(at,true,false,
+    mapOf("LEFT" to FingerPinch(if(pinched).002f else .05f,.05f)),target.copy(u=x))
+ dragAt(800,.5f,false);dragAt(810,.5f,true)
+ check(dragAt(830,.55f,true).dragging)
+ check(dragAt(840,.58f,true).target?.u==.58f)
+ val otherSpace=target.copy(spaceKey="shell:other",u=.91f)
+ val keep=dragMouse.update(845,true,false,mapOf("LEFT" to FingerPinch(.002f,.05f)),otherSpace)
+ check(keep.dragging && keep.target?.u==.58f && keep.target?.spaceKey=="desktop")
+ check(dragAt(846,.95f,true).target?.u==.95f)
+ check(!dragAt(850,.58f,false).dragging)
  val scrollMouse=MouseGestures(thresholds={profile})
  fun scroll(at:Long,y:Float,closed:Boolean=true)=scrollMouse.update(at,true,false,
     mapOf("LEFT" to FingerPinch(.05f,if(closed).002f else .05f,floatArrayOf(0f,y,0f))),target)
@@ -713,6 +775,19 @@ fun main() {
   }
   check(fitted.pixelWidth==original.pixelWidth && fitted.pixelHeight==original.pixelHeight)
  }
+ val deskOutput=DesktopOutput("panels",1920,1080,0,0,false,true,2,emptyList())
+ val work=windowWorkArea(deskOutput,listOf(DesktopWindow(1,0,1030,1920,50,true),
+    DesktopWindow(2,0,0,44,1030,true),DesktopWindow(3,200,200,800,280,false)))
+ check(work.contentEquals(intArrayOf(44,0,1876,1030)))
+ val retainedGrid=HoverToolbarState(highlightMs=0,openMs=0,closeMs=100)
+ val gridOwner=ToolbarTarget.Window(99)
+ retainedGrid.update(0,gridOwner,null,false,false)
+ retainedGrid.update(1,gridOwner,gridOwner,false,false)
+ check(retainedGrid.open==gridOwner)
+ retainedGrid.update(500,null,null,true,true)
+ check(retainedGrid.open==gridOwner)
+ retainedGrid.update(700,null,null,false,false)
+ check(retainedGrid.open==null)
  val span=windowGridCell(1,100,50,1001,701,3,2,1,0,2,1)
  check(span.x==433 && span.y==50 && span.width==668 && span.height==701)
  val home=Pose(floatArrayOf(1.1f,.4f,-1.6f))

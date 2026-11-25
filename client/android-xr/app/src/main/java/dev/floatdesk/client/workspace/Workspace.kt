@@ -39,11 +39,6 @@ internal data class PanelPlacement(
 
 internal data class FixedMagnifierPlacement(val id:String,val pose:Pose,val widthM:Float,val heightM:Float,val freePose:Boolean=false)
 
-internal enum class InteractionMode(val label:String){
-    FOCUS("Focus"), WINDOW_GRAB("Window grab");
-    fun next()=entries[(ordinal+1)%entries.size]
-}
-
 internal data class WorkspaceFile(
     val schemaVersion: Int = 1,
     val activeLayout: String = "Desk",
@@ -52,6 +47,7 @@ internal data class WorkspaceFile(
     val control: PanelPlacement = PanelPlacement(),
     val sphericalWarp: Boolean = false,
     val handMouse: Boolean = false,
+    val wakeMac:String="",
     val reverseHandScroll:Boolean=true,
     val grabToMove: Boolean = false,
     val freeManipulation: Boolean = false,
@@ -63,7 +59,9 @@ internal data class WorkspaceFile(
     val screenSpacing:Float=0f,
     val viewerReference:Pose?=null,
     val referenceUnitsPerMeter:Float?=null,
-    val interactionMode:InteractionMode=InteractionMode.FOCUS,
+    val tapToFocus:Boolean=true,
+    val dragToMove:Boolean=true,
+    val handsOff:Boolean=false,
     val cursorRemap:Boolean=true,
     val gazeToFocus:Boolean=false,
     val magnifyWindow:Boolean=false,
@@ -88,9 +86,9 @@ internal data class WorkspaceFile(
     val legacyDistances:Boolean=false,
 ){
     val layoutModeActive get()=grabToMove || freeManipulation
-    val handMouseActive get()=handMouse && !layoutModeActive
-    val focusMode get()=!layoutModeActive && !handMouseActive && interactionMode==InteractionMode.FOCUS
-    val windowGrabMode get()=!layoutModeActive && !handMouseActive && interactionMode==InteractionMode.WINDOW_GRAB
+    val handMouseActive get()=handMouse && !layoutModeActive && !handsOff
+    val focusMode get()=!layoutModeActive && !handsOff && tapToFocus
+    val windowGrabMode get()=!layoutModeActive && !handsOff && dragToMove
 }
 
 internal class WorkspaceStore(private val file: File) {
@@ -296,8 +294,8 @@ private fun encode(workspace: WorkspaceFile): JSONObject {
         .put("layouts", layouts)
         .put("control", encodePanel(workspace.control))
         .put("spherical_warp", workspace.sphericalWarp)
-        .put("reverse_hand_scroll",workspace.reverseHandScroll).put("hand_mouse", workspace.handMouse).put("desktop_reference",workspace.desktopReference)
-        .put("interaction_mode",workspace.interactionMode.name).put("cursor_remap",workspace.cursorRemap).put("window_grab_mode",workspace.windowGrabMode).put("focus_mode",workspace.focusMode).put("gaze_to_focus",workspace.gazeToFocus).put("magnify_window",workspace.magnifyWindow).put("typing_quiet_ms",workspace.typingQuietMs)
+        .put("reverse_hand_scroll",workspace.reverseHandScroll).put("wake_mac",workspace.wakeMac).put("hand_mouse", workspace.handMouse).put("desktop_reference",workspace.desktopReference)
+        .put("tap_to_focus",workspace.tapToFocus).put("drag_to_move",workspace.dragToMove).put("hands_off",workspace.handsOff).put("cursor_remap",workspace.cursorRemap).put("window_grab_mode",workspace.windowGrabMode).put("focus_mode",workspace.focusMode).put("gaze_to_focus",workspace.gazeToFocus).put("magnify_window",workspace.magnifyWindow).put("typing_quiet_ms",workspace.typingQuietMs)
         .put("magnifier_mode",workspace.magnifierMode).put("magnify_system_panels",workspace.magnifySystemPanels)
         .put("fixed_magnifiers",encodePlacements(workspace.fixedMagnifiers))
         .put("system_panels",encodePlacements(workspace.systemPanels))
@@ -354,7 +352,9 @@ private fun decode(json: JSONObject): WorkspaceFile {
         layouts = layouts,
         control = json.optJSONObject("control")?.let { decodePanel(it) } ?: PanelPlacement(),
         sphericalWarp = json.optBoolean("spherical_warp", false),
-        interactionMode=runCatching{InteractionMode.valueOf(json.optString("interaction_mode",if(json.optBoolean("window_grab_mode",false))"WINDOW_GRAB" else if(json.optBoolean("focus_mode",false))"FOCUS" else "MOUSE"))}.getOrDefault(InteractionMode.FOCUS),
+        tapToFocus=json.optBoolean("tap_to_focus",true),
+        dragToMove=json.optBoolean("drag_to_move",true),
+        handsOff=json.optBoolean("hands_off",false),
         cursorRemap=json.optBoolean("cursor_remap",true),
         gazeToFocus=json.optBoolean("gaze_to_focus",false),
         magnifyWindow=json.optBoolean("magnify_window",false),
@@ -376,6 +376,7 @@ private fun decode(json: JSONObject): WorkspaceFile {
             PinchThresholds(a.optDouble(0,Double.NaN).toFloat(),a.optDouble(1,Double.NaN).toFloat(),a.optDouble(2,Double.NaN).toFloat(),a.optDouble(3,Double.NaN).toFloat()).takeIf{it.valid()}
         } ?: PinchThresholds.Default,
         reverseHandScroll=json.optBoolean("reverse_hand_scroll",true),
+        wakeMac=json.optString("wake_mac",""),
         handMouse = json.optBoolean("hand_mouse", json.optBoolean("mouse_gestures", false) && json.optString("interaction_mode", "MOUSE")=="MOUSE"),
         desktopReference = json.optBoolean("desktop_reference",false),
         referencePlacement = decodePlacements(json.optJSONArray("reference_placement")).firstOrNull(),

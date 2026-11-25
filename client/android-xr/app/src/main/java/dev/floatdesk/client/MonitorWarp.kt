@@ -60,7 +60,6 @@ internal class MonitorWarp : AutoCloseable {
     private var curvedInputPlacement:NativeNodeState?=null
     private var inputPointer:SpatialPointerComponent?=null
     private var ownsInputPointer=false
-    private var pointerRefreshAt=0L
     private var inputListener: ((InputEvent) -> Unit)? = null
     private var shown=true
     fun setVisible(visible:Boolean) {
@@ -88,8 +87,10 @@ internal class MonitorWarp : AutoCloseable {
     }
     @SuppressLint("RestrictedApi")
     private fun videoShape(width:Float,height:Float,sphere:MonitorMesh?,origin:Vector3=Vector3.Zero,cutouts:List<VideoCutout> = emptyList()):SurfaceEntity.Shape {
-        if(sphere==null && (!RenderPolicy.CustomMeshes || videoCoverageIsFull(screenRects,spacing))) return SurfaceEntity.Shape.Quad(FloatSize2d(width,height))
-        val geometry=clippedVideoGeometry(width,height,sphere,screenRects,spacing,cutouts)
+        if(sphere==null && cutouts.isEmpty() && (!RenderPolicy.CustomMeshes || videoCoverageIsFull(screenRects,spacing))) return SurfaceEntity.Shape.Quad(FloatSize2d(width,height))
+        val masked=clippedVideoGeometry(width,height,sphere,screenRects,spacing,cutouts)
+        val geometry=if(masked.indices.isEmpty() && cutouts.isNotEmpty())
+            clippedVideoGeometry(width,height,sphere,screenRects,spacing) else masked
         val valid=geometry.indices.isNotEmpty() && geometry.positions.size%3==0 && geometry.texCoords.size*3==geometry.positions.size*2 && geometry.indices.size%3==0 &&
             geometry.positions.all{it.isFinite()} && geometry.texCoords.all{it.isFinite()} && geometry.indices.all{it>=0 && it<geometry.positions.size/3}
         if(!valid)return SurfaceEntity.Shape.Quad(FloatSize2d(.00001f,.00001f))
@@ -191,17 +192,13 @@ internal class MonitorWarp : AutoCloseable {
                 // Keep the native monitor hit and its matrix together instead of using the front hit.
                 val info = event.hitInfoList.firstOrNull { it.inputEntity === expected } ?: event.hitInfoList.firstOrNull()
                 val gazeSource=event.source==InputEvent.Source.GAZE_AND_GESTURE
-                // Native gaze can recreate its icon after shape/aiming-mode changes. Reapply
-                // the desktop-only policy to the entity actually receiving this hover.
-                if(gazeSource && info?.inputEntity===expected && expected!=null &&
-                    event.action!=InputEvent.Action.HOVER_EXIT && event.action!=InputEvent.Action.CANCEL){
-                    val now=android.os.SystemClock.uptimeMillis()
-                    if(event.action==InputEvent.Action.HOVER_ENTER || now-pointerRefreshAt>=1000){
-                        expected.getComponentsOfType(SpatialPointerComponent::class.java).forEach{it.spatialPointerIcon=SpatialPointerIcon.NONE}
-                        pointerRefreshAt=now
-                    }
+                if(info?.inputEntity===expected)updateSurfaceAimingIcon(expected,gazeSource)
+                val pointerSide=event.pointerType.toString()
+                val side=when{
+                    gazeSource->"GAZE"
+                    pointerSide=="DEFAULT" && pointerEventContinues(event.action)->sequences.singleOrNull() ?: pointerSide
+                    else->pointerSide
                 }
-                val side = if(gazeSource)"GAZE" else event.pointerType.toString()
                 if(gazeSource && event.action==InputEvent.Action.CANCEL){
                     onHover?.invoke(side,null,null,flatWidth,flatHeight);sequences.remove(side);return@listener
                 }
@@ -241,9 +238,12 @@ internal class MonitorWarp : AutoCloseable {
                 val hit = info?.hitPosition
                 val inputScale = target.getScale(Space.ACTIVITY)
                 // Hit position includes the activity root's scale; HitInfo.transform does not.
-                val local = if (info != null && hit != null)
+                val local = (if (info != null && hit != null)
                     eventMatrixHit(floatArrayOf(hit.x,hit.y,hit.z),info.transform.data,
-                        flatWidth,flatHeight,mesh,inputScale,rayDirection=if(mesh!=null) floatArrayOf(event.direction.x,event.direction.y,event.direction.z) else null,rayOrigin=floatArrayOf(event.origin.x,event.origin.y,event.origin.z)) else null
+                        flatWidth,flatHeight,mesh,inputScale,rayDirection=if(mesh!=null) floatArrayOf(event.direction.x,event.direction.y,event.direction.z) else null,rayOrigin=floatArrayOf(event.origin.x,event.origin.y,event.origin.z)) else null)
+                    ?: if(event.action==InputEvent.Action.MOVE || event.action==InputEvent.Action.UP)target.parent?.let{parent->
+                        surfaceInputHit(surfaceInputRay(session,parent,event),target.getPose().toWorkspacePose(),flatWidth,flatHeight,mesh)
+                    }else null
                 if (event.action == InputEvent.Action.DOWN) {
                     Log.i("Floatdesk","native event contact=${local?.contentToString()} inputScale=$inputScale hit=$hit matrix=${info?.transform?.data?.contentToString()}")
                 }
@@ -296,17 +296,20 @@ internal class MonitorWarp : AutoCloseable {
         if (enabled && viewer == null) return
         val usable = enabled
         if (!usable) {
+            if (presentationDirty || mesh != null || flatWidth != placement.physicalWidthM || flatHeight != placement.physicalHeightM || cutouts!=appliedCutouts) {
+                val shape = videoShape(placement.physicalWidthM,placement.physicalHeightM,null,cutouts=cutouts)
+                if(submitShape!=null && !submitShape{applyShape(original,shape)})return
+                if(submitShape==null)applyShape(original,shape)
+                appliedCutouts=cutouts
+                flatWidth = placement.physicalWidthM; flatHeight = placement.physicalHeightM
+                mesh = null;focus=null;presentationDirty=false
+            }
             if (live !== original) {
                 curvedInputPlacement?.enabled(false)
                 curvedState?.enabled(false);curvedState?.parent(null)
                 live = original
             }
-            if (presentationDirty || mesh != null || flatWidth != placement.physicalWidthM || flatHeight != placement.physicalHeightM) {
-                val shape = videoShape(placement.physicalWidthM,placement.physicalHeightM,null)
-                applyShape(original, shape)
-                flatWidth = placement.physicalWidthM; flatHeight = placement.physicalHeightM
-                mesh = null;focus=null;presentationDirty=false
-            }
+            applyVisibility()
             applyPixels(original,placement)
             return
         }

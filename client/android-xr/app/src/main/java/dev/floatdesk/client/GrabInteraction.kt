@@ -14,8 +14,14 @@ internal class GrabTracking {
     val points = mutableMapOf<String, FloatArray>()
     val pinched = mutableSetOf<String>()
     val paneGuides = mutableMapOf<String, GrabGuide>()
+    val displayedPanes=mutableMapOf<Any,MagnifiedWindow>()
     var desktopSphereRadius:Float?=null
-    var desktopCutouts:List<VideoCutout> = emptyList()
+    private var nextCornerAllocation=0L
+    fun tryCornerAllocation(now:Long):Boolean{
+        if(now<nextCornerAllocation)return false
+        nextCornerAllocation=now+120
+        return true
+    }
     var pointerHeld=false
     var unitsPerMeter = 1f
     var nowMs = 0L

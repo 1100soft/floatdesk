@@ -139,6 +139,7 @@ struct Shared {
     cursor: Mutex<CursorSprite>,
     cursor_generation: AtomicU64,
     rendering: Mutex<(Option<SocketAddr>, bool)>,
+    cursor_hand_at: Mutex<Option<Instant>>,
     cursor_claim: Mutex<Option<(String, [f64; 2])>>,
     cursor_map: Mutex<(Vec<cursor_map::Surface>, [f64; 2], Instant)>,
     /// X11 socket of the capture thread. -1 when capture is not connected.
@@ -412,6 +413,7 @@ fn run(
         }),
         cursor_generation: AtomicU64::new(0),
         rendering: Mutex::new((None, true)),
+        cursor_hand_at: Mutex::new(None),
         cursor_claim: Mutex::new(None),
         cursor_map: Mutex::new((Vec::new(), [0.001, 0.001], Instant::now())),
         capture_fd: std::array::from_fn(|_| AtomicI32::new(-1)),
@@ -546,6 +548,49 @@ fn run(
                                             .lock()
                                             .unwrap_or_else(|e| e.into_inner()) =
                                             (Some(from), active);
+                                    }
+                                }
+                                continue;
+                            }
+                            if value["type"] == "handPointer" {
+                                let numbers = (|| {
+                                    Some((
+                                        u8::try_from(value["monitor"].as_u64()?).ok()?,
+                                        value["u"].as_f64()? as f32,
+                                        value["v"].as_f64()? as f32,
+                                        u32::try_from(value["sequence"].as_u64()?).ok()?,
+                                        value["dragging"].as_bool()?,
+                                        value["key"].as_str().filter(|key| key.len() <= 256)?,
+                                    ))
+                                })();
+                                if let Some((index, u, v, sequence, dragging, key)) = numbers {
+                                    let position = transport::pointer_position(
+                                        &mut shared
+                                            .client
+                                            .write()
+                                            .unwrap_or_else(|e| e.into_inner()),
+                                        &monitors,
+                                        from,
+                                        index,
+                                        u,
+                                        v,
+                                        sequence,
+                                    );
+                                    if let Some((x, y)) = position {
+                                        let mut driving = shared
+                                            .cursor_hand_at
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner());
+                                        *driving = Some(Instant::now());
+                                        if pointer.move_pointer(x, y, dragging).is_ok() {
+                                            *shared
+                                                .cursor_claim
+                                                .lock()
+                                                .unwrap_or_else(|e| e.into_inner()) = Some((
+                                                key.to_owned(),
+                                                [f64::from(x), f64::from(y)],
+                                            ));
+                                        }
                                     }
                                 }
                                 continue;

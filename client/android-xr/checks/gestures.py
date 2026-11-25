@@ -26,6 +26,7 @@ private data class MonitorPlacement(val pose: Pose, val physicalWidthM: Float = 
 private data class WorkspaceFile(val activeLayout: String="Desk",val layouts: Map<String,List<MonitorPlacement>> = emptyMap())
 private data class Vector3(val x: Float, val y: Float, val z: Float)
 private data class VideoCutout(val planes: List<List<Float>>)
+private class MagnifiedWindow
 private class PixelDensity { fun convertPixelsToMeters(x: Float) = x / 1000f }
 private class InputEvent { enum class Action { DOWN, MOVE, UP, CANCEL }; enum class Source { HANDS, GAZE_AND_GESTURE } }
 private data class SpatialInputEvent(val pointerType: String, val action: InputEvent.Action, val hitPosition: Vector3?, val source: InputEvent.Source = InputEvent.Source.HANDS)
@@ -43,6 +44,9 @@ window_menu=(Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client/W
 palm_menu=(Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client/PalmMenu.kt').read_text()
 code += window_menu[window_menu.index('internal object WindowMenuLayout'):window_menu.index('private val ToolbarSurface')]
 code += palm_menu[palm_menu.index('internal enum class PalmAction'):palm_menu.index('internal fun palmActionEnabled')]
+palm_editor=(Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client/PalmMenuEditor.kt').read_text()
+code += palm_editor[palm_editor.index('private const val PalmGridM'):palm_editor.index('    fun encode():String')].replace('abs(', 'kotlin.math.abs(')+ '}\n'
+code += palm_editor[palm_editor.index('internal sealed interface PalmDragItem'):palm_editor.index('@Composable\ninternal fun EditablePalmControls')]
 code += section('internal data class PalmPanelState', 'internal fun Vector3.toArray()')
 code += section('private fun palmRayPoint(', '/** Direct fingertip contact')
 code += section('private class PalmPoke', '/** Find the parent')
@@ -57,6 +61,20 @@ code += '''
 private fun near(a: FloatArray, b: FloatArray) { check(distance(a,b) < 0.0001f) { "${a.contentToString()} != ${b.contentToString()}" } }
 private fun point(m: MonitorPlacement, local: FloatArray, scale: Float = 1f) = transformPoint(m.pose, local, scale)
 fun main() {
+    val custom=PalmCustomLayout(emptyMap(),emptyList())
+    val movedButton=custom.move(PalmPage.MAIN,PalmAction.RESET,PalmGridPoint(1,7))
+    check(movedButton.positions[PalmAction.RESET]==PalmGridPoint(1,7))
+    check(movedButton.move(PalmPage.MAIN,PalmAction.SETTINGS,PalmGridPoint(1,7))===movedButton)
+    val customized= movedButton.label(PalmGridPoint(2,3),"Navigation")
+    check(customized.labels.single().point==PalmGridPoint(2,3))
+    check(customized.label(PalmGridPoint(2,3),"").labels.isEmpty())
+    val edited=PalmPanelState("LEFT",Pose(floatArrayOf(0f,0f,-1f)),customLayout=customized)
+    val reset=edited.buttons.first{it.action==PalmAction.RESET}
+    check(kotlin.math.abs((reset.x+reset.w/2)*edited.widthM-PalmMenuLayout.cellM/2)<.00001f)
+    check(customized.itemAt(PalmPage.MAIN,reset.x+reset.w/2,reset.y+reset.h/2)==PalmDragItem.Button(PalmAction.RESET))
+    val label=customized.labels.single()
+    check(customized.itemAt(PalmPage.MAIN,label.point.x/edited.widthM,label.point.y/edited.heightM)==PalmDragItem.Label(label.point))
+    check(customized.itemAt(PalmPage.MAIN,label.point.x/edited.widthM,(label.point.y+.8f*PalmMenuLayout.cellM)/edited.heightM)==null)
     val l = floatArrayOf(-0.21f,0.06f,0f); val r = floatArrayOf(0.19f,-0.04f,0f)
     val initial = MonitorPlacement(Pose(floatArrayOf(0.4f,0.2f,-1.3f), normalize4(floatArrayOf(0.2f,0.3f,0.1f,0.9f))))
     fun event(side: String, action: InputEvent.Action, hit: FloatArray? = null) = SpatialInputEvent(side,action,hit?.let{Vector3(it[0]*1000,it[1]*1000,0f)})
@@ -276,6 +294,9 @@ fun main() {
     near(normalize3(subtract(visible,eye)),normalize3(subtract(contact,eye)))
     check(distance(visible,eye) < distance(contact,eye))
     near(visibleGrabContact(contact,null,1f),contact)
+    val foreground=foregroundGuidePoint(contact,eye,1f,1f)
+    check(distance(foreground,eye)<1f)
+    near(normalize3(subtract(foreground,eye)),normalize3(subtract(contact,eye)))
     // Every sampled point is on a viewer-centered sphere; image pixels remain invertible.
     for (eye in listOf(floatArrayOf(0f,0f,1.2f), floatArrayOf(.4f,-.3f,.8f), floatArrayOf(-.7f,.2f,2.4f))) {
         val mesh = MonitorMesh(1.8f,1.1f,eye)
@@ -411,32 +432,26 @@ fun main() {
     check(distance(centeredSphere.project(floatArrayOf(.4f,0f,0f)),floatArrayOf(.4f,0f,0f)) > .01f)
     check(distance(centeredSphere.project(floatArrayOf(0f,.25f,0f)),floatArrayOf(0f,.25f,0f)) > .01f)
     val panel = PalmPanelState("LEFT",Pose(floatArrayOf(0f,0f,0f)))
-    // Main page: 3 columns and 3 rows (0.189 m square); quarter points map to u=v=0.25.
+    // Quarter points map to the same normalized coordinates for any menu aspect.
     val qx=-PalmMenuLayout.widthM/4; val qy=PalmMenuLayout.heightM(PalmPage.MAIN)/4
     val panelRay=palmRayPoint(panel,floatArrayOf(qx,qy,1f),floatArrayOf(0f,0f,-1f))!!
     check(kotlin.math.abs(panelRay[0]-.25f)<.00001f && kotlin.math.abs(panelRay[1]-.25f)<.00001f)
     check(palmRayPoint(panel,floatArrayOf(0f,0f,-1f),floatArrayOf(0f,0f,1f))==null)
     val scaledRay=palmRayPoint(panel.copy(unitsPerMeter=5f),floatArrayOf(qx*5,qy*5,1f),floatArrayOf(0f,0f,-1f))!!
     check(kotlin.math.abs(scaledRay[0]-.25f)<.00001f)
-    val pc=.061f
     val poke = PalmPoke()
-    check(poke.update(panel,floatArrayOf(0f,pc,.04f)) == null)
-    check(poke.update(panel,floatArrayOf(0f,pc,-.02f)) == PalmAction.FOLLOW)
-    check(poke.update(panel,floatArrayOf(0f,pc,-.01f)) == null)
-    check(poke.update(panel,null) == null)
-    val scaledPanel=panel.copy(unitsPerMeter=5f)
-    check(poke.update(scaledPanel,floatArrayOf(0f,pc*5,.2f)) == null)
-    check(poke.update(scaledPanel,floatArrayOf(0f,pc*5,-.1f)) == PalmAction.FOLLOW)
-    val more=panel.copy(page=PalmPage.MORE)
-    val pokes=listOf(Triple(panel,floatArrayOf(-pc,pc),PalmAction.LAYOUT),Triple(panel,floatArrayOf(0f,pc),PalmAction.FOLLOW),
-        Triple(panel,floatArrayOf(pc,pc),PalmAction.RESET),Triple(panel,floatArrayOf(0f,0f),PalmAction.MODE),Triple(panel,floatArrayOf(0f,-pc),PalmAction.MORE),
-        Triple(panel,floatArrayOf(-.0305f,pc),null), // gap between cells
-        Triple(more,floatArrayOf(-pc,pc),PalmAction.GAZE_FOCUS),Triple(more,floatArrayOf(0f,pc),PalmAction.MAGNIFIER),Triple(more,floatArrayOf(pc,0f),PalmAction.SEARCH),
-        Triple(more,floatArrayOf(-pc,0f),PalmAction.MOUSE_SPACES),Triple(more,floatArrayOf(-pc,-pc),PalmAction.BACK),Triple(more,floatArrayOf(pc,-pc),null))
-    for((page,point,expected) in pokes) {
-        poke.clear()
-        check(poke.update(page,floatArrayOf(point[0],point[1],.04f)) == null)
-        check(poke.update(page,floatArrayOf(point[0],point[1],-.02f)) == expected)
+    for(page in PalmPage.entries){
+        val state=panel.copy(page=page)
+        val buttons=state.buttons
+        check(buttons.map{it.action}.distinct().size==buttons.size)
+        for(button in buttons)for(units in listOf(1f,5f)){
+            val scaled=state.copy(unitsPerMeter=units)
+            val x=(button.x+button.w/2-.5f)*state.widthM*units
+            val y=(.5f-button.y-button.h/2)*state.heightM*units
+            poke.clear()
+            check(poke.update(scaled,floatArrayOf(x,y,.04f*units))==null)
+            check(poke.update(scaled,floatArrayOf(x,y,-.02f*units))==button.action)
+        }
     }
     println("Passed: mouse priority/off/tracking loss, gaze hit bounds, observational grab preview, mouse palm toggle, equal actual neighboring-ray angles and angular aspect, video/PNG orientation separation, planar-input curved grabbing and regrab, action labels, spherical radius/inverse projection, curved grab/guide geometry, spherical palm button, virtual-copy gain, 3D endpoints, depth, close-contact and close-hand rejection, DEFAULT release, physical release without UP, tracking-loss cancellation, rearm, discontinuity rejection, miniature wireframe and endpoint alignment, guide cleanup, view-ray visibility offset, rotation, palm and fist")
 }

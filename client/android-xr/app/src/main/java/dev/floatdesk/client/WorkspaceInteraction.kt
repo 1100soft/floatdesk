@@ -134,10 +134,10 @@ internal class PinchMemory {
     }
 }
 
-internal data class PalmPanelState(val side: String, val pose: Pose, val unitsPerMeter: Float = 1f, val page: PalmPage = PalmPage.MAIN) {
+internal data class PalmPanelState(val side: String, val pose: Pose, val unitsPerMeter: Float = 1f, val page: PalmPage = PalmPage.MAIN,val customLayout:PalmCustomLayout?=null) {
     val widthM get() = PalmMenuLayout.widthM
     val heightM get() = PalmMenuLayout.heightM(page)
-    val buttons get() = PalmMenuLayout.buttons(page)
+    val buttons get() = customLayout?.buttons(page) ?: PalmMenuLayout.buttons(page)
 }
 
 internal data class PalmTooltipPlacement(val pose:Pose,val width:Float,val height:Float){

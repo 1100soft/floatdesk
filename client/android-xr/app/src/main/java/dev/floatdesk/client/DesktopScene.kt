@@ -53,6 +53,7 @@ import dev.floatdesk.client.net.CursorView
 import dev.floatdesk.client.net.DeskConnection
 import dev.floatdesk.client.net.MonitorHello
 import androidx.xr.compose.subspace.draw.scale
+import dev.floatdesk.client.workspace.hasUsableGeometry
 import dev.floatdesk.client.workspace.MonitorPlacement
 import dev.floatdesk.client.workspace.ViewLayers
 import dev.floatdesk.client.workspace.withViewingDistances
@@ -96,7 +97,9 @@ internal fun DeskContent(
     panelPressed: PalmAction?,
     onManipulate: (Boolean) -> Unit,
     savedLayoutPreviews:List<FloatArray?>,
-    placementReady:Boolean,
+    palmEditing:Boolean,
+    onPalmDraft:(PalmCustomLayout)->Unit,
+    onPalmEdited:(PalmPage,PalmCustomLayout?)->Unit,
 ) {
     val session = LocalSession.current
     val latest = rememberUpdatedState(workspace)
@@ -105,10 +108,10 @@ internal fun DeskContent(
     val layout = workspace.reconcileMonitors(monitors.map { Triple(it.name,it.width,it.height) }).layouts[workspace.activeLayout].orEmpty()
     DiagnosticsPanel(connection,viewer,{handTracking.unitsPerMeter},{viewerAngles.get()},
         workspace.showResources,workspace.experimentalViewedDetail,workspace.viewDetailDebug,workspace.sphericalWarp,workspace.layoutModeActive)
-    var managerPage by remember{mutableStateOf("Screens")}
+    var managerPage by remember{mutableStateOf("Settings")}
     val managerHeight=when(managerPage){"Settings"->.40f;"Focus & magnification"->.40f;"Pinches"->.48f;"Viewing distance"->.42f;"Virtual screen setup"->.38f;else->.65f}
     val managerScale=remember(displayControlsPose){settingsPanelScale(handTracking.unitsPerMeter)}
-    if(displayControlsOpen) SpatialPanel(modifier=placedPanel(displayControlsPose,if(managerPage=="Screens") .60f else .52f,managerHeight,density,pixelDensity,scale=managerScale)) {
+    if(displayControlsOpen) SpatialPanel(modifier=placedPanel(displayControlsPose,if(managerPage=="Workspace") .60f else .52f,managerHeight,density,pixelDensity,scale=managerScale)) {
         MonitorManagerPanel(connection,workspace.screenSpacing,{onWorkspace(workspace.copy(screenSpacing=it))},{store.save(latest.value)},onCloseDisplays,workspace.pinchThresholds,{profile->
             val next=latest.value.copy(pinchThresholds=profile);onWorkspace(next);store.save(next)
         },workspace.experimentalViewedDetail,{enabled->
@@ -133,14 +136,33 @@ internal fun DeskContent(
             }
         }
     }
-    palmPanel?.takeIf { handInputAllowed }?.let { panel ->
+    palmPanel?.takeIf { handInputAllowed || palmEditing }?.let { panel ->
         val unit = panel.unitsPerMeter
         var hovered by remember(panel.page) { mutableStateOf<PalmAction?>(null) }
-        SpatialPanel(modifier = placedPanel(panel.pose, panel.widthM * unit, panel.heightM * unit, density, pixelDensity),
-            shape = androidx.xr.compose.subspace.layout.SpatialRoundedCornerShape(androidx.compose.foundation.shape.CornerSize(0.dp))) {
-            PalmControls(panel.page, workspace, connection.workspaceInfo.value, latchedFollow, panelFocused, panelPressed, { hovered = it }, onPalmAction,savedLayoutPreviews)
+        val circle=panel.page.isLayout
+        val circlePose=if(circle)panel.pose else panel.pose.copy(position=transformPoint(panel.pose,
+            floatArrayOf(0f,PalmMenuLayout.modesHeight*unit/2,0f)))
+        val palmShape=androidx.xr.compose.subspace.layout.SpatialRoundedCornerShape(androidx.compose.foundation.shape.CornerSize(0.dp))
+        if(palmEditing || panel.customLayout!=null){
+            val editHeight=if(palmEditing)PalmEditorControlsHeightM else 0f
+            val pose=panel.pose.copy(position=transformPoint(panel.pose,floatArrayOf(0f,-editHeight*unit/2,0f)))
+            SpatialPanel(modifier=placedPanel(pose,panel.widthM*unit,(panel.heightM+editHeight)*unit,density,pixelDensity),shape=palmShape){
+                EditablePalmControls(panel.page,panel.customLayout,workspace,connection.workspaceInfo.value,latchedFollow,
+                    palmEditing,panelFocused,panelPressed,savedLayoutPreviews,panel.heightM/(panel.heightM+editHeight),
+                    {hovered=it},onPalmAction,onPalmDraft){layout->onPalmEdited(panel.page,layout)}
+            }
+        }else{
+        SpatialPanel(modifier=placedPanel(circlePose,panel.widthM*unit,PalmMenuLayout.circleM*unit,density,pixelDensity),shape=palmShape){
+            PalmControls(panel.page,workspace,connection.workspaceInfo.value,latchedFollow,panelFocused,panelPressed,{hovered=it},onPalmAction,savedLayoutPreviews)
         }
-        panel.buttons.firstOrNull{it.action==(hovered ?: panelFocused)}?.let{button->
+        if(!circle){
+            val modePose=panel.pose.copy(position=transformPoint(panel.pose,floatArrayOf(0f,-PalmMenuLayout.circleM*unit/2,0f)))
+            SpatialPanel(modifier=placedPanel(modePose,panel.widthM*unit,PalmMenuLayout.modesHeight*unit,density,pixelDensity),shape=palmShape){
+                PalmControls(panel.page,workspace,connection.workspaceInfo.value,latchedFollow,panelFocused,panelPressed,{hovered=it},onPalmAction,modePanel=true)
+            }
+        }
+        }
+        if(!palmEditing)panel.buttons.firstOrNull{it.action==(hovered ?: panelFocused)}?.let{button->
             val label=palmTooltip(button.action,workspace,latchedFollow)
             val tip=palmTooltipPlacement(panel,button,label)
             SpatialPanel(modifier=placedPanel(tip.pose,tip.width,tip.height,density,pixelDensity)) {
@@ -164,8 +186,9 @@ internal fun DeskContent(
                 .firstOrNull{it.getSurface()===surface}?.parent?.let(onDeskRoot)
         }
     }
-    val controlsOpenNow=rememberUpdatedState(displayControlsOpen || !placementReady)
+    val controlsOpenNow=rememberUpdatedState(displayControlsOpen)
     layout.forEachIndexed { index, placement ->
+        if(!placement.hasUsableGeometry(workspace.viewerReference ?: Pose(),workspace.referenceUnitsPerMeter ?: handTracking.unitsPerMeter))return@forEachIndexed
         androidx.compose.runtime.key(placement.hostSourceId,placement.pixelWidth,placement.pixelHeight) {
         val hands = remember(index) { grabs.getOrPut(index) { TwoHandState() } }
         var nativeResize by remember(index) { mutableStateOf(false) }
@@ -186,6 +209,10 @@ internal fun DeskContent(
             val current = session ?: return@LaunchedEffect
             var grabProjectionAt=0L
             var outputResizePending=false
+            var cutoutsAt=Long.MIN_VALUE
+            var maskPose:Pose?=null
+            var maskPanes=emptyList<MagnifiedWindow>()
+            var masks=emptyList<VideoCutout>()
             while (isActive) {
                 delay(if(connection.thermalPaused.value)100 else 20)
                 if(controlsOpenNow.value) {
@@ -213,6 +240,16 @@ internal fun DeskContent(
                     val sourceSize=connection.workspaceInfo.value?.bounds()
                     if(warp.qualityResolution(if((file.experimentalViewedDetail && connection.hasViewedDetail() || connection.hasWindowDetail()) && sourceSize!=null)qualityOutputSize(sourceSize[2],sourceSize[3],connection.qualityOutputLimit()) else null))outputResizePending=true
                     val projectionNow=SystemClock.uptimeMillis()
+                    val eye=handTracking.points["VIEWER"] ?: handTracking.points["HEAD"]
+                    val panes=handTracking.displayedPanes.values.toList()
+                    val samePose=maskPose?.let{it.position.contentEquals(screen.pose.position) &&
+                        it.rotation.contentEquals(screen.pose.rotation)}==true
+                    if(index!=0 || !file.sphericalWarp || eye==null || panes.isEmpty()){
+                        masks=emptyList();maskPose=null;maskPanes=emptyList()
+                    }else if(!samePose || maskPanes!=panes || cutoutsAt==Long.MIN_VALUE || projectionNow-cutoutsAt>=120){
+                        masks=desktopForegroundCutouts(screen.pose,eye,panes,warp.mesh)
+                        maskPose=screen.pose;maskPanes=panes;cutoutsAt=projectionNow
+                    }
                     if(!hands.engaged || projectionNow-grabProjectionAt>=100) {
                         warp.update(current, root, handTracking.points["VIEWER"] ?: handTracking.points["HEAD"], screen, file.sphericalWarp,
                             (hands.busy && !hands.engaged) || nativeMove || nativeResize || handTracking.pointerHeld,
@@ -222,7 +259,7 @@ internal fun DeskContent(
                             submitShape={update->connection.tryDesktopShapeUpdate(index,update)},
                             minGeometryIntervalMs=if(connection.limitOptionalRendering)180 else 80,
                             minimumGeometryRadius=dev.floatdesk.client.workspace.ViewLayers.DesktopDistanceM*handTracking.unitsPerMeter,
-                            cutouts=if(index==0)handTracking.desktopCutouts else emptyList())
+                            cutouts=masks)
                         grabProjectionAt=projectionNow
                     }
                     frozenMonitor?.update(screen,warp.mesh)
@@ -541,7 +578,7 @@ internal fun ControlPanel(
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = onDisconnect) { Text("Search again") }
-            Button(onClick = onOpenWorkspace) { Text("Open workspace") }
+            Button(onClick = onOpenWorkspace) { Text("Settings") }
             Button(onClick = onAnchor) { Text("Save room anchor") }
             Button(onClick = onReset) { Text("Reset desk") }
             Button(onClick = onToggleHead) {

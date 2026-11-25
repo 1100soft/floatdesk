@@ -14,6 +14,13 @@ internal fun mouseIndexContactMetres(side:String)=PinchThresholds.Default.indexM
 internal fun indexPinchClosed(side:String,separationMetres:Float)=PinchThresholds.Default.indexClosed(side,separationMetres)
 internal fun mouseMiddleContactMetres(side:String)=PinchThresholds.Default.middleMetres(side)
 
+internal fun lockedMouseContact(held:PointerTarget?,candidate:PointerTarget?):PointerTarget? =
+    candidate?.takeIf{held!=null && it.spaceKey==held.spaceKey && it.monitor==held.monitor}
+
+/** Repeated reports of the same hit are not evidence that a captured ray has moved. */
+internal fun movedMouseContact(previous:PointerTarget?,next:PointerTarget):Boolean =
+    previous==null || hypot(next.u-previous.u,next.v-previous.v)>.0001f
+
 /** Raw finger gestures are independent of which hand supplies the aiming ray. */
 internal class MouseGestures(private val thresholds:()->PinchThresholds={PinchThresholds.Default},private val diagnostic: (String)->Unit = {}) {
     private data class Hold(val side: String, val button: Int, val began: Long, val target: PointerTarget)
@@ -22,6 +29,7 @@ internal class MouseGestures(private val thresholds:()->PinchThresholds={PinchTh
     private val chordClosed=mutableSetOf<String>()
     private val armed=mutableMapOf<String,MutableSet<Int>>()
     private var hold: Hold? = null
+    val heldTarget:PointerTarget? get()=hold?.target
     val engaged:Boolean get() = hold!=null || dragging || scrolling
     private var scrolling=false
     private var scrollOrigin: FloatArray?=null
@@ -120,18 +128,20 @@ internal class MouseGestures(private val thresholds:()->PinchThresholds={PinchTh
                     scrollAt=nowMs
                     return MouseGestureOutput(current.target,scroll=TouchpadFrame(2,(.5f+scrollEmitted[0]/.25f).coerceIn(.15f,.85f),(.5f-scrollEmitted[1]/.15f).coerceIn(.1f,.9f)))
                 }
-                if(current.button==1 && !dragging && nowMs-current.began>=350) {
+                val contact=lockedMouseContact(current.target,target)
+                val moved=contact!=null && hypot(contact.u-current.target.u,contact.v-current.target.v)>.004f
+                if(current.button==1 && !dragging && (moved || nowMs-current.began>=350)) {
                     dragging=true
                     dragTarget=current.target
                     return MouseGestureOutput(current.target,true)
                 }
-                if(dragging && target != null) dragTarget=target
-                return MouseGestureOutput(if(dragging) target ?: lastTarget else current.target,dragging)
+                if(dragging && contact!=null)dragTarget=contact
+                return MouseGestureOutput(if(dragging)dragTarget else current.target,dragging)
             }
             diagnostic("mouse gesture released side=${current.side} button=${current.button} heldMs=${nowMs-current.began} scrolling=$scrolling dragging=$dragging")
             hold=null
             if(scrolling) return MouseGestureOutput(current.target,scroll=endScroll())
-            if(dragging) { dragging=false; return MouseGestureOutput(target ?: lastTarget) }
+            if(dragging) { dragging=false; return MouseGestureOutput(dragTarget ?: current.target) }
             // A sampled contact followed by release is a click, even within one frame.
             var clicked=current.target
             val previous=lastClick

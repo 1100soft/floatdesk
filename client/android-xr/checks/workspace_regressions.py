@@ -7,6 +7,7 @@ source=(root/'MonitorMesh.kt').read_text().split('\n',1)[1]+'\n'+(root/'VideoGeo
 w=(root/'workspace/Workspace.kt').read_text()
 source+='\n'+(root/'PinchPolicy.kt').read_text().split('\n',1)[1]
 source+='\n'+w[w.index('internal data class Pose'):w.index('internal class WorkspaceStore')]
+source+='\n'+w[w.index('internal fun deskLayout'):w.index('internal fun WorkspaceFile.monitorPlaced')].replace('max(', 'kotlin.math.max(')
 source+='\n'+'\n'.join(line for line in (root/'workspace/WorkspacePlacement.kt').read_text().splitlines() if not line.startswith(('package ','import ')))
 code=source+'''
 fun main() {
@@ -32,6 +33,12 @@ fun main() {
     remainingArea+=kotlin.math.abs((p[b]-p[a])*(p[c+1]-p[a+1])-(p[b+1]-p[a+1])*(p[c]-p[a]))*.5f
  }
  check(kotlin.math.abs(remainingArea-3f)<.001f)
+ val offsetDesktop=MonitorPlacement("offset","desktop",Pose(floatArrayOf(2f,0f,-3f)),2f,1f,0f,1920,1080,60)
+ val offsetOrigin=Pose(floatArrayOf(3f,0f,-3f))
+ val atStartup=WorkspaceFile(layoutOrigin=offsetOrigin,desktopHome=offsetDesktop.pose,
+    layouts=mutableMapOf("Desk" to mutableListOf(offsetDesktop))).centerDesktop(Pose(floatArrayOf(0f,0f,-2f)))
+ check(atStartup.layouts.getValue("Desk").single().pose.position.contentEquals(floatArrayOf(0f,0f,-2f)))
+ check(atStartup.layoutOrigin!!.position.contentEquals(floatArrayOf(1f,0f,-2f)))
  val viewer0=Pose()
  val depthBase=MonitorPlacement("depth","existing-0",Pose(floatArrayOf(.3f,.2f,-2.4f)),2f,1f,0f,5120,2560,60)
  val locked=fixedDesktopDepth(depthBase,viewer0,1f)

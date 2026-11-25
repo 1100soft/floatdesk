@@ -74,7 +74,7 @@ fun main() {
     check(customized.itemAt(PalmPage.MAIN,reset.x+reset.w/2,reset.y+reset.h/2)==PalmDragItem.Button(PalmAction.RESET))
     val label=customized.labels.single()
     check(customized.itemAt(PalmPage.MAIN,label.point.x/edited.widthM,label.point.y/edited.heightM)==PalmDragItem.Label(label.point))
-    check(customized.itemAt(PalmPage.MAIN,label.point.x/edited.widthM,(label.point.y+.8f*PalmMenuLayout.cellM)/edited.heightM)==null)
+    check(customized.itemAt(PalmPage.MAIN,label.point.x/edited.widthM,(label.point.y+.8f*PalmMenuLayout.cellM)/edited.heightM)!=PalmDragItem.Label(label.point))
     val l = floatArrayOf(-0.21f,0.06f,0f); val r = floatArrayOf(0.19f,-0.04f,0f)
     val initial = MonitorPlacement(Pose(floatArrayOf(0.4f,0.2f,-1.3f), normalize4(floatArrayOf(0.2f,0.3f,0.1f,0.9f))))
     fun event(side: String, action: InputEvent.Action, hit: FloatArray? = null) = SpatialInputEvent(side,action,hit?.let{Vector3(it[0]*1000,it[1]*1000,0f)})

@@ -79,8 +79,12 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
         }
         if(section=="Focus & magnification") {
             Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)){
-                androidx.compose.material3.Switch(checked=quality.gazeToFocus,enabled=info?.gazeFocus==true || quality.gazeToFocus,onCheckedChange={onQuality(quality.copy(gazeToFocus=it))})
-                Text("Gaze to focus",color=Color.White)
+                androidx.compose.material3.Switch(checked=quality.gazeToFocus,enabled=info?.windowMagnify==true || quality.gazeToFocus,onCheckedChange={onQuality(quality.copy(gazeToFocus=it))})
+                Text("Gaze to magnify",color=Color.White)
+            }
+            Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)){
+                androidx.compose.material3.Switch(checked=quality.aimToMagnify,enabled=info?.windowMagnify==true || quality.aimToMagnify,onCheckedChange={onQuality(quality.copy(aimToMagnify=it))})
+                Text("Aim to magnify",color=Color.White)
             }
             Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)){
                 androidx.compose.material3.Switch(checked=quality.magnifyWindow,enabled=info?.windowMagnify==true || quality.magnifyWindow,onCheckedChange={onQuality(quality.copy(magnifyWindow=it))})

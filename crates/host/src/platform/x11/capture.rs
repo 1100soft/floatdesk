@@ -978,6 +978,29 @@ mod scaled_checks {
             .unwrap()
             .check()
             .unwrap();
+        assert_eq!(
+            crate::platform::x11::windows::window_popups(&link, window).unwrap()[0].id,
+            cover
+        );
+        link.conn
+            .change_window_attributes(
+                cover,
+                &x11rb::protocol::xproto::ChangeWindowAttributesAux::new().override_redirect(0),
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+        link.conn
+            .change_property32(
+                PropMode::REPLACE,
+                cover,
+                atom(b"_NET_WM_WINDOW_TYPE"),
+                AtomEnum::ATOM,
+                &[atom(b"_NET_WM_WINDOW_TYPE_NORMAL")],
+            )
+            .unwrap()
+            .check()
+            .unwrap();
         let popups = crate::platform::x11::windows::window_popups(&link, window).unwrap();
         assert_eq!(popups.len(), 1);
         assert_eq!(popups[0].id, cover);

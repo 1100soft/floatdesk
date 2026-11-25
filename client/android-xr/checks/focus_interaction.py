@@ -21,6 +21,14 @@ metadata=body('net/WorkspaceInfo.kt');metadata=metadata[:metadata.index('    com
 code='import kotlin.math.*\n'+body('MonitorMesh.kt')+surface_hit+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+re.search(r'internal fun deskLayout\(.*?\n}',(root/'workspace/Workspace.kt').read_text(),re.S).group(0)+body('workspace/WorkspacePlacement.kt')+metadata+body('WindowMagnification.kt')+body('LayoutOrigin.kt')+body('LayoutAdjustment.kt')+body('LayoutGuideInk.kt')+body('WindowInteraction.kt').replace('dev.floatdesk.client.workspace.MonitorPlacement','MonitorPlacement')+body('WindowToolbarState.kt')+re.search(r'internal object WindowMenuLayout \{.*?\n}',(root/'WindowActionsMenu.kt').read_text(),re.S).group(0)+'\n'+topology+body('VideoGeometry.kt')+body('MagnifierContacts.kt')+body('BoundedHistory.kt')+body('RenderPolicy.kt')+body('net/WindowCaptureRetry.kt')+body('net/WindowCaptureFormat.kt').replace('dev.floatdesk.client.RenderPolicy','RenderPolicy')+''.join(re.search(r'internal fun '+name+r'\(.*?\n}',application_sources(),re.S).group(0) for name in ('transformPoint','rotateVector','quaternionBetween','multiplyQuaternion','normalize3','normalize4'))+re.search(r'internal fun distance\(a: FloatArray.*?\n}',application_sources(),re.S).group(0)+'\n'+re.search(r'internal fun subtract\(a: FloatArray[^\n]*\n[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun dot\(a: FloatArray[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun cross3\(.*',application_sources()).group(0)+'\n'+r'''
 fun add(a:FloatArray,b:FloatArray)=FloatArray(3){a[it]+b[it]}
 fun main() {
+ val parent=DesktopWindow(1,0,0,800,600)
+ val companion=DesktopWindow(2,850,50,400,300,transientFor=1)
+ val independent=DesktopWindow(3,0,600,800,600)
+ val ownership=WorkspaceInfo(emptyList(),0,emptyList(),0,1,0,30,"",false,windows=listOf(parent,companion,independent))
+ check(ownership.magnificationOwner(2)==1L)
+ check(ownership.magnificationOwner(3)==3L)
+ check(ownership.copy(windows=listOf(companion,independent)).magnificationOwner(2)==2L)
+
  val repairMonitor=deskLayout(listOf(Triple("desktop",3456,2160))).first()
  val repairViewer=Pose(floatArrayOf(0f,0f,0f))
  val invalidPose=Pose(floatArrayOf(-1.2e8f,2.8e8f,2.7e8f),floatArrayOf(26f,223f,-220f,2305f))

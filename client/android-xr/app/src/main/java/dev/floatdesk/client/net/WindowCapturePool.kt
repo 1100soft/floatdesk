@@ -66,7 +66,7 @@ internal class WindowCapturePool @JvmOverloads constructor(private val connectio
                 val sw=meta.optInt("sourceWidth",width);val sh=meta.optInt("sourceHeight",height)
                 val bounds=DesktopWindow(id,meta.optInt("ownerX",x),meta.optInt("ownerY",y),meta.optInt("ownerWidth",sw),meta.optInt("ownerHeight",sh))
                 val rows=meta.optJSONArray("popups")
-                val popups=if(rows==null)emptyList()else (0 until rows.length()).map{i->val p=rows.getJSONObject(i);DesktopWindow(p.getLong("id"),p.getInt("x"),p.getInt("y"),p.getInt("width"),p.getInt("height"))}
+                val popups=if(rows==null)emptyList()else (0 until rows.length()).map{i->val p=rows.getJSONObject(i);DesktopWindow(p.getLong("id"),p.getInt("x"),p.getInt("y"),p.getInt("width"),p.getInt("height"),transientFor=p.optLong("transient_for").takeIf{it>0})}
                 val prior=capturedBounds.put(id,bounds);val priorPopups=popupBounds.put(id,popups)
                 if(prior!=bounds || priorPopups!=popups)main.post{boundsRevision.intValue++}
                 val region=if(member.regionId==null)bounds.takeIf{member.previewBounds==null || member.previewBounds==it}

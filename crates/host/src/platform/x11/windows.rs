@@ -15,6 +15,8 @@ pub struct FocusWindow {
     pub width: u32,
     pub height: u32,
     pub panel: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transient_for: Option<u32>,
 }
 fn atom(link: &X11Link, name: &[u8]) -> Result<u32> {
     Ok(link
@@ -61,6 +63,7 @@ pub fn catalogue() -> Result<(bool, Vec<FocusWindow>)> {
     .copied();
     let state = atom(&link, b"_NET_WM_STATE")?;
     let hidden = atom(&link, b"_NET_WM_STATE_HIDDEN")?;
+    let transient = atom(&link, b"WM_TRANSIENT_FOR")?;
     let mut windows = Vec::new();
     for id in values(&link, link.root, stacking, AtomEnum::WINDOW)?
         .into_iter()
@@ -112,6 +115,10 @@ pub fn catalogue() -> Result<(bool, Vec<FocusWindow>)> {
                 width: u32::from(g.width),
                 height: u32::from(g.height),
                 panel: false,
+                transient_for: values(&link, id, transient, AtomEnum::WINDOW)?
+                    .first()
+                    .copied()
+                    .filter(|parent| *parent != id && *parent != link.root),
             }))
         })();
         // Windows can disappear between catalogue queries.
@@ -141,9 +148,8 @@ pub fn capture_bounds(base: (i32, i32, u32, u32), popups: &[FocusWindow]) -> (i3
     )
 }
 
-/// Separately mapped menus are not part of a client's Composite backing pixmap.
-/// Include only menus owned by this client (transient chain or same PID), never
-/// unrelated application windows merely because they overlap its rectangle.
+/// Capture explicitly owned companion windows using the same atlas as transient menus.
+/// Independent top-level windows never qualify based on PID or application class.
 pub fn window_popups(link: &X11Link, client: u32) -> Result<Vec<FocusWindow>> {
     let pid_atom = atom(link, b"_NET_WM_PID")?;
     let owner_pid = values(link, client, pid_atom, AtomEnum::CARDINAL)?
@@ -170,6 +176,16 @@ pub fn window_popups(link: &X11Link, client: u32) -> Result<Vec<FocusWindow>> {
     .iter()
     .map(|name| atom(link, name))
     .collect::<Result<Vec<_>>>()?;
+    let companion_types = [
+        b"_NET_WM_WINDOW_TYPE_NORMAL".as_slice(),
+        b"_NET_WM_WINDOW_TYPE_DIALOG",
+        b"_NET_WM_WINDOW_TYPE_UTILITY",
+    ]
+    .iter()
+    .map(|name| atom(link, name))
+    .collect::<Result<Vec<_>>>()?;
+    let state = atom(link, b"_NET_WM_STATE")?;
+    let hidden = atom(link, b"_NET_WM_STATE_HIDDEN")?;
     let clients = values(
         link,
         link.root,
@@ -228,7 +244,10 @@ pub fn window_popups(link: &X11Link, client: u32) -> Result<Vec<FocusWindow>> {
                     == values(link, id, pid_atom, AtomEnum::CARDINAL)?
                         .first()
                         .copied();
-            if !(owned && (menu || a.override_redirect)
+            let companion = !a.override_redirect
+                && (kinds.is_empty() || kinds.iter().any(|t| companion_types.contains(t)))
+                && !values(link, id, state, AtomEnum::ATOM)?.contains(&hidden);
+            if !(owned && (menu || a.override_redirect || companion)
                 || menu && same_pid && !has_parent && active == Some(client))
             {
                 return Ok(None);
@@ -252,6 +271,7 @@ pub fn window_popups(link: &X11Link, client: u32) -> Result<Vec<FocusWindow>> {
                 width: g.width.into(),
                 height: g.height.into(),
                 panel: false,
+                transient_for: owned.then_some(client),
             }))
         })();
         if let Ok(Some(window)) = item {
@@ -421,6 +441,7 @@ pub fn system_catalogue() -> Result<Vec<FocusWindow>> {
                 width: bounds[2] as u32,
                 height: bounds[3] as u32,
                 panel: kinds.contains(&dock),
+                transient_for: None,
             }))
         })();
         if let Ok(Some(row)) = row {

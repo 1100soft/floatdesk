@@ -49,13 +49,6 @@ internal fun MonitorManagerPanel(connection: DeskConnection,spacing:Float,onSpac
         }
         if(section!="Settings")Button(onClick={section="Settings"}){Text("‹ Back")}
         if(section=="Workspace")Text(if(busy) "Updating screens…" else "${sizes.size} desktop screens · $available available",color=Color.White)
-        if(section=="Focus & magnification") Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(4.dp)){
-            for(mode in dev.floatdesk.client.workspace.InteractionMode.entries){
-                Button(onClick={onQuality(quality.copy(interactionMode=mode))},modifier=Modifier.weight(1f)){
-                    Text((if(quality.interactionMode==mode)"● "else "")+mode.label)
-                }
-            }
-        }
         if(section=="Focus & magnification") Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){
             Text("Connected mouse spaces",color=Color.White)
             androidx.compose.material3.Switch(enabled=RenderPolicy.CursorTopology,checked=quality.cursorRemap,onCheckedChange={onQuality(quality.copy(cursorRemap=it))})

@@ -136,9 +136,18 @@ internal fun DeskContent(
     palmPanel?.takeIf { handInputAllowed }?.let { panel ->
         val unit = panel.unitsPerMeter
         var hovered by remember(panel.page) { mutableStateOf<PalmAction?>(null) }
-        SpatialPanel(modifier = placedPanel(panel.pose, panel.widthM * unit, panel.heightM * unit, density, pixelDensity),
-            shape = androidx.xr.compose.subspace.layout.SpatialRoundedCornerShape(androidx.compose.foundation.shape.CornerSize(0.dp))) {
-            PalmControls(panel.page, workspace, connection.workspaceInfo.value, latchedFollow, panelFocused, panelPressed, { hovered = it }, onPalmAction,savedLayoutPreviews)
+        val circle=panel.page.isLayout
+        val circlePose=if(circle)panel.pose else panel.pose.copy(position=transformPoint(panel.pose,
+            floatArrayOf(0f,PalmMenuLayout.modesHeight*unit/2,0f)))
+        val palmShape=androidx.xr.compose.subspace.layout.SpatialRoundedCornerShape(androidx.compose.foundation.shape.CornerSize(0.dp))
+        SpatialPanel(modifier=placedPanel(circlePose,panel.widthM*unit,PalmMenuLayout.circleM*unit,density,pixelDensity),shape=palmShape){
+            PalmControls(panel.page,workspace,connection.workspaceInfo.value,latchedFollow,panelFocused,panelPressed,{hovered=it},onPalmAction,savedLayoutPreviews)
+        }
+        if(!circle){
+            val modePose=panel.pose.copy(position=transformPoint(panel.pose,floatArrayOf(0f,-PalmMenuLayout.circleM*unit/2,0f)))
+            SpatialPanel(modifier=placedPanel(modePose,panel.widthM*unit,PalmMenuLayout.modesHeight*unit,density,pixelDensity),shape=palmShape){
+                PalmControls(panel.page,workspace,connection.workspaceInfo.value,latchedFollow,panelFocused,panelPressed,{hovered=it},onPalmAction,modePanel=true)
+            }
         }
         panel.buttons.firstOrNull{it.action==(hovered ?: panelFocused)}?.let{button->
             val label=palmTooltip(button.action,workspace,latchedFollow)

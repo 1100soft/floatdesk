@@ -27,7 +27,7 @@ internal object WindowMenuLayout {
     const val cellM = .055f
     const val gapM = .006f
     val gridRows get() = (grids.size + columns - 1) / columns
-    fun toolbarButtons(magnifier: Boolean) = if (magnifier) 6 else 3
+    fun toolbarButtons(magnifier: Boolean) = if (magnifier) 7 else 4
     /** Sizes in units of one button cell, for a gap of [gap] cells. */
     fun toolbarWidth(magnifier: Boolean, gap: Float) = toolbarButtons(magnifier) + (toolbarButtons(magnifier) + 1) * gap + if (magnifier) 2 * gap else 0f
     fun buttonCenter(index:Int,magnifier:Boolean,gap:Float):Float {
@@ -48,7 +48,7 @@ private val SelectedCell = Color(0xFF2F7FA6)
 @Composable
 internal fun WindowToolbar(window: Long?, magnifier: Boolean, snap: SnapCell?, snapExpanded: Boolean, cell: Dp, gap: Dp,
                            onHover: (Boolean) -> Unit, onTooltip: (WindowToolbarTooltip?) -> Unit, onSnapHover: (Boolean) -> Unit,
-                           onSnapToggle: () -> Unit, onAction: (String) -> Unit, onAdd: () -> Unit, onRemove: () -> Unit, pinned:Boolean, onPin: () -> Unit) {
+                           onSnapToggle: () -> Unit, onAction: (String) -> Unit, onAdd: () -> Unit, onRemove: () -> Unit,lastMagnifier:Boolean,pinned:Boolean, onPin: () -> Unit) {
     fun tooltip(index:Int):(String?)->Unit={label->onTooltip(label?.let{WindowToolbarTooltip(it,index)})}
     val firstWindowButton=if(magnifier)3 else 0
     MaterialTheme(colorScheme = darkColorScheme()) {
@@ -58,13 +58,14 @@ internal fun WindowToolbar(window: Long?, magnifier: Boolean, snap: SnapCell?, s
                 if (magnifier) {
                     MenuIcon("add", "Add a magnifier", cell, true, tooltip(0), onClick = onAdd)
                     MenuIcon("pin", if(pinned) "Unpin this window" else "Pin this window",cell,window!=null,tooltip(1),active=pinned,onClick=onPin)
-                    MenuIcon("remove", "Remove this magnifier", cell, true, tooltip(2), onClick = onRemove)
+                    MenuIcon(if(lastMagnifier)"magnifier-off" else "remove",if(lastMagnifier)"Turn off magnification" else "Remove this magnifier",cell,true,tooltip(2),onClick=onRemove)
                     Box(Modifier.width(gap).height(cell * .6f).background(Color(0xFF3A4752)))
                 }
                 MenuIcon("minimize", "Minimize window", cell, window != null, tooltip(firstWindowButton)) { onAction("minimize") }
                 MenuIcon("snap", "Snap to grid", cell, window != null,
                     { tooltip(firstWindowButton+1)(it); onSnapHover(it != null) }, snap = snap, active = snapExpanded, onClick = onSnapToggle)
                 MenuIcon("close", "Close window", cell, window != null, tooltip(firstWindowButton+2)) { onAction("close") }
+                MenuIcon("focus","Focus on this window",cell,window!=null,tooltip(firstWindowButton+3)){onAction("focus")}
             }
         }
     }
@@ -108,6 +109,8 @@ private fun MenuIcon(action: String, description: String, cell: Dp, enabled: Boo
                         }
                         drawRect(ink, Offset.Zero, size, style = outline)
                     }
+                    "focus" -> {drawRect(ink,Offset(size.width*.1f,size.height*.15f),Size(size.width*.8f,size.height*.7f),style=Stroke(stroke));drawCircle(ink,size.minDimension*.15f)}
+                    "magnifier-off" -> {drawCircle(ink,size.minDimension*.3f,style=Stroke(stroke));line(.23f,.78f,.78f,.22f)}
                     "pin" -> {line(.25f,.19f,.75f,.19f);line(.38f,.19f,.33f,.56f);line(.62f,.19f,.67f,.56f);line(.25f,.56f,.75f,.56f);line(.5f,.56f,.5f,.94f)}
                     "add" -> { line(.05f,.5f,.95f,.5f); line(.5f,.05f,.5f,.95f) }
                     "remove" -> {

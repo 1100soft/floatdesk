@@ -120,7 +120,9 @@ internal class MouseGestures(private val thresholds:()->PinchThresholds={PinchTh
                     scrollAt=nowMs
                     return MouseGestureOutput(current.target,scroll=TouchpadFrame(2,(.5f+scrollEmitted[0]/.25f).coerceIn(.15f,.85f),(.5f-scrollEmitted[1]/.15f).coerceIn(.1f,.9f)))
                 }
-                if(current.button==1 && !dragging && nowMs-current.began>=350) {
+                val moved=target!=null && target.spaceKey==current.target.spaceKey &&
+                    hypot(target.u-current.target.u,target.v-current.target.v)>.012f
+                if(current.button==1 && !dragging && (moved || nowMs-current.began>=350)) {
                     dragging=true
                     dragTarget=current.target
                     return MouseGestureOutput(current.target,true)

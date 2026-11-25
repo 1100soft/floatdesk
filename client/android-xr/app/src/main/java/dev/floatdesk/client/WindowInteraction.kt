@@ -122,7 +122,7 @@ internal fun windowGridCell(id:Long,x:Int,y:Int,width:Int,height:Int,columns:Int
 
 /** A temporary window pane uses the same distance-scaled drag as magnifiers. */
 internal class WindowDragRay {
-    private data class Anchor(val side:String,val aimSide:String,val desktop:MonitorPlacement,val viewer:Pose,val u:Float,val v:Float,val initial:FloatArray,val pane:MagnifiedWindow)
+    private data class Anchor(val side:String,val aimSide:String,val desktop:MonitorPlacement,val viewer:Pose,val u:Float,val v:Float,val initial:FloatArray,val pane:MagnifiedWindow,val spaceKey:String)
     private var anchor:Anchor?=null
     private val drag=MagnifierRayDrag()
     var pane:MagnifiedWindow?=null;private set
@@ -136,7 +136,7 @@ internal class WindowDragRay {
         val contact=transformPoint(desktop.pose,hit.local)
         val direction=FloatArray(3){contact[it]-hand.position[it]}
         drag.begin(pane,viewer,hand.position,direction,contact,hand.position)
-        anchor=Anchor(side,aimSide,desktop,viewer,hit.u,hit.v,project(center,desktop,viewer),pane);this.pane=pane
+        anchor=Anchor(side,aimSide,desktop,viewer,hit.u,hit.v,project(center,desktop,viewer),pane,hit.spaceKey);this.pane=pane
     }
     private fun project(point:FloatArray,desktop:MonitorPlacement,viewer:Pose):FloatArray{
         val p=viewerInMonitor(point,desktop.pose.position,desktop.pose.rotation)
@@ -152,6 +152,6 @@ internal class WindowDragRay {
         val p=project(moved,a.desktop,a.viewer)
         val u=a.u+(p[0]-a.initial[0])/a.desktop.physicalWidthM
         val v=a.v-(p[1]-a.initial[1])/a.desktop.physicalHeightM
-        return a.aimSide to PointerTarget(0,u,v,floatArrayOf((u-.5f)*a.desktop.physicalWidthM,(.5f-v)*a.desktop.physicalHeightM,0f))
+        return a.aimSide to PointerTarget(0,u,v,floatArrayOf((u-.5f)*a.desktop.physicalWidthM,(.5f-v)*a.desktop.physicalHeightM,0f),a.spaceKey)
     }
 }

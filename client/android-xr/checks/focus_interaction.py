@@ -676,6 +676,18 @@ fun main() {
  check(mouse.update(2,true,false,mapOf("LEFT" to FingerPinch(.05f,.05f)),target).click==null)
  mouse.update(3,true,false,mapOf("LEFT" to FingerPinch(.003f,.05f)),target)
  check(mouse.update(4,true,false,mapOf("LEFT" to FingerPinch(.005f,.05f)),target).click?.button==1)
+ val simultaneous=WorkspaceFile(handMouse=true)
+ check(simultaneous.focusMode && simultaneous.windowGrabMode && simultaneous.handMouseActive)
+ val paused=simultaneous.copy(handsOff=true)
+ check(!paused.focusMode && !paused.windowGrabMode && !paused.handMouseActive)
+ check(paused.tapToFocus && paused.dragToMove && paused.handMouse)
+ val dragMouse=MouseGestures(thresholds={profile})
+ fun dragAt(at:Long,x:Float,pinched:Boolean)=dragMouse.update(at,true,false,
+    mapOf("LEFT" to FingerPinch(if(pinched).002f else .05f,.05f)),target.copy(u=x))
+ dragAt(800,.5f,false);dragAt(810,.5f,true)
+ check(dragAt(830,.55f,true).dragging)
+ check(dragAt(840,.58f,true).target?.u==.58f)
+ check(!dragAt(850,.58f,false).dragging)
  val scrollMouse=MouseGestures(thresholds={profile})
  fun scroll(at:Long,y:Float,closed:Boolean=true)=scrollMouse.update(at,true,false,
     mapOf("LEFT" to FingerPinch(.05f,if(closed).002f else .05f,floatArrayOf(0f,y,0f))),target)

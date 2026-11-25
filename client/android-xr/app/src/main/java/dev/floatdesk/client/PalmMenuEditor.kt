@@ -13,8 +13,16 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.TextAutoSize
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
@@ -43,7 +51,7 @@ import kotlin.math.floor
 import kotlin.math.roundToInt
 
 private const val PalmGridM=PalmMenuLayout.cellM/2
-internal const val PalmEditorControlsHeightM=.11f
+internal const val PalmEditorControlsHeightM=.06f
 
 internal data class PalmGridPoint(val column:Int,val row:Int){
     val x get()=column*PalmGridM
@@ -80,7 +88,7 @@ internal data class PalmCustomLayout(
         return labels.asReversed().firstOrNull{
             val dx=(u*PalmMenuLayout.widthM-it.point.x)/PalmGridM
             val dy=(v*PalmMenuLayout.heightM(page)-it.point.y)/PalmGridM
-            dx>=-.35f && dx<=maxOf(1f,it.text.length*.40f) && dy in -.25f..1f
+            dx>=-.35f && dx<=maxOf(1f,it.text.length*.40f) && dy>=0f && dy<1f
         }?.let{PalmDragItem.Label(it.point)}
     }
 
@@ -133,6 +141,7 @@ internal fun EditablePalmControls(
     val chosen=saved ?: remember(page){PalmCustomLayout.defaults(page)}
     val currentLayout=rememberUpdatedState(chosen)
     val changeDraft=rememberUpdatedState(onDraft)
+    val activeLabel=rememberUpdatedState(selectedLabel)
     val heightM=PalmMenuLayout.heightM(page)
     val focus=remember{FocusRequester()}
     val keyboard=LocalSoftwareKeyboardController.current
@@ -160,6 +169,7 @@ internal fun EditablePalmControls(
                     val layout=currentLayout.value
                     val item=layout.itemAt(page,u,v) ?: return@awaitEachGesture
                     val button=(item as? PalmDragItem.Button)?.let{picked->layout.buttons(page).first{it.action==picked.action}}
+                    if(item==activeLabel.value?.let{PalmDragItem.Label(it)})return@awaitEachGesture
                     down.consume()
                     displacement=Offset.Zero
                     try{
@@ -202,11 +212,32 @@ internal fun EditablePalmControls(
                     for(i in 1..floor(heightM/PalmGridM).toInt())
                         drawLine(Color(0xFF43627C),Offset(0f,i*dy),Offset(size.width,i*dy))
                 }
-                chosen.labels.forEach{label->
-                    val delta=if(dragged==PalmDragItem.Label(label.point))displacement else Offset.Zero
-                    Text(label.text,Modifier.offset(width*(label.point.x/PalmMenuLayout.widthM)+with(density){delta.x.toDp()},
-                        bodyHeight*(label.point.y/heightM)+with(density){delta.y.toDp()}),
-                        color=Color(0xFFD3E3F4),fontSize=11.sp,maxLines=1)
+                val labelRows=(chosen.labels.map{it.point}+listOfNotNull(selectedLabel)).distinct()
+                val rowHeight=bodyHeight*(PalmGridM/heightM)
+                for(point in labelRows){
+                    val label=chosen.labels.firstOrNull{it.point==point}
+                    val delta=if(dragged==PalmDragItem.Label(point))displacement else Offset.Zero
+                    val x=width*(point.x/PalmMenuLayout.widthM)
+                    val y=bodyHeight*(point.y/heightM)
+                    Box(Modifier.offset(x+with(density){delta.x.toDp()},y+with(density){delta.y.toDp()})
+                        .widthIn(max=width-x).height(rowHeight).clipToBounds(),contentAlignment=Alignment.CenterStart){
+                        if(editing && selectedLabel==point){
+                            LaunchedEffect(keyboardRequest){focus.requestFocus();keyboard?.show()}
+                            val labelSize=with(density){(rowHeight*.65f).toSp()}
+                            BasicTextField(labelText,{labelText=it.take(32)},
+                                Modifier.focusRequester(focus).background(Color(0xFF21475D)).fillMaxWidth(),
+                                textStyle=TextStyle(color=Color.White,fontSize=labelSize,lineHeight=labelSize),
+                                singleLine=true,keyboardOptions=KeyboardOptions(imeAction=ImeAction.Done),
+                                keyboardActions=KeyboardActions(onDone={
+                                    onDraft(currentLayout.value.label(point,labelText))
+                                    selectedLabel=null
+                                    keyboard?.hide()
+                                }))
+                        }else if(label!=null){
+                            Text(label.text,color=Color(0xFFD3E3F4),maxLines=1,softWrap=false,
+                                autoSize=TextAutoSize.StepBased(minFontSize=4.sp,maxFontSize=11.sp,stepSize=.5f.sp))
+                        }
+                    }
                 }
                 for(button in chosen.buttons(page)){
                     val action=button.action
@@ -232,17 +263,9 @@ internal fun EditablePalmControls(
                         point?.let(::editLabel)
                     }){Text("Add label")}
                     TextButton(onClick={onFinish(null)}){Text("Cancel")}
-                    TextButton(onClick={onFinish(selectedLabel?.let{chosen.label(it,labelText)} ?: chosen)}){Text("Save")}
+                    TextButton(onClick={onFinish(chosen)}){Text("Save")}
                 }
-                selectedLabel?.let{point->
-                    LaunchedEffect(keyboardRequest){focus.requestFocus();keyboard?.show()}
-                    Row{
-                        OutlinedTextField(labelText,{labelText=it.take(32)},Modifier.weight(1f).focusRequester(focus),singleLine=true,label={Text("Label")})
-                        TextButton(onClick={onDraft(chosen.label(point,labelText));selectedLabel=null;keyboard?.hide()}){
-                            Text(if(labelText.isBlank())"Remove" else "Done")
-                        }
-                    }
-                }
+
             }
         }
     }

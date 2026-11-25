@@ -1188,9 +1188,14 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     MouseAimSurface(it.pose,it.width,it.height,it.mesh,it)
                 }
             }
+            fun mouseWristInDesk(side:String?):FloatArray? =
+                aimPoses[side]?.position?.let{point->
+                    deskPose(current,root,androidx.xr.runtime.math.Pose(Vector3(point[0],point[1],point[2])))
+                        .translation.toArray()
+                } ?: grips[side]
             fun captureMouseAnchor(side:String,target:PointerTarget):MouseAimAnchor?{
                 val surface=mouseSurface(target) ?: return null
-                val hand=aimPoses[side]?.position ?: grips[side] ?: return null
+                val hand=mouseWristInDesk(side) ?: return null
                 val eye=magnifierViewer.get()?.position ?: return null
                 val uv=if(surface.window==null)target.u to target.v else magnifierHands[side]?.let{
                     val rect=magnifierContentRect(surface.window)
@@ -1218,14 +1223,15 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     val anchor=mouseAimAnchors[side]
                     val native=lockedMouseContact(mouseGestures.heldTarget,contextHands[side])
                     val eventAt=if(native?.spaceKey=="desktop")pointerControl.contactTime(side) else magnifierHands.contactTime(side)
-                    if(native!=null && eventAt!=null && handTracking.nowMs-eventAt<=85L){
+                    if(native!=null && eventAt!=null && handTracking.nowMs-eventAt<=85L &&
+                        movedMouseContact(anchor?.target,native)){
                         if(side!=null && eventAt>lastMouseAimAt)captureMouseAnchor(side,native)?.let{
                             mouseAimAnchors[side]=it
                             lastMouseAimAt=eventAt
                         }
                         native
                     }else{
-                        val hand=aimPoses[side]?.position ?: grips[side]
+                        val hand=mouseWristInDesk(side)
                         if(anchor==null || hand==null)null else mouseSurface(anchor.target)?.let{surface->
                             val gain=distance(anchor.eye,anchor.contact)/distance(anchor.eye,anchor.hand).coerceAtLeast(.1f*unitsPerMeter)
                             val contact=FloatArray(3){anchor.contact[it]+(hand[it]-anchor.hand[it])*gain}

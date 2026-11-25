@@ -17,6 +17,10 @@ internal fun mouseMiddleContactMetres(side:String)=PinchThresholds.Default.middl
 internal fun lockedMouseContact(held:PointerTarget?,candidate:PointerTarget?):PointerTarget? =
     candidate?.takeIf{held!=null && it.spaceKey==held.spaceKey && it.monitor==held.monitor}
 
+/** Repeated reports of the same hit are not evidence that a captured ray has moved. */
+internal fun movedMouseContact(previous:PointerTarget?,next:PointerTarget):Boolean =
+    previous==null || hypot(next.u-previous.u,next.v-previous.v)>.0001f
+
 /** Raw finger gestures are independent of which hand supplies the aiming ray. */
 internal class MouseGestures(private val thresholds:()->PinchThresholds={PinchThresholds.Default},private val diagnostic: (String)->Unit = {}) {
     private data class Hold(val side: String, val button: Int, val began: Long, val target: PointerTarget)

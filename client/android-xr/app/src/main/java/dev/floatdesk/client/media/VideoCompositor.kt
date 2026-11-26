@@ -173,7 +173,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     private val keyPaint by lazy {android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply{
         typeface=android.graphics.Typeface.DEFAULT
         textSize=32f
-        color=0xFFD9D9D9.toInt()
+        color=0xFF55E6FF.toInt()
     }}
     private var inkVertexBuffer=0
     @Volatile var outputLimit:Int=4096
@@ -584,7 +584,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         val contentWidth=rect.right-rect.left
         val contentHeight=rect.bottom-rect.top
         val aspect=keyAspect*height/width
-        val h=minOf(contentHeight*.035f,contentWidth*.45f/aspect)
+        val h=minOf(contentHeight*.045f,contentWidth*.45f/aspect)
         if(h<=0f)return
         val right=rect.right-contentWidth*.025f
         val top=rect.top+contentHeight*.025f

@@ -13,6 +13,8 @@ assert 'curvedInput?.detach()' in panel
 assert panel.count('.updateGeometry(') == 1
 assert 'forSphericalAperture' in panel
 assert 'transparentFit=sphericalFit' in panel
+assert 'if(regionId==null)entity.setSurfacePixelDimensions' in panel
+assert 'if(regionId!=null)connection.deferNativeMeshUpdates()' in panel
 assert 'transientSurface && regionId==null' in panel
 assert 'resources.authoredSize==authoredSize' in panel
 assert 'val authoredSize=savedPaneSize' in panel

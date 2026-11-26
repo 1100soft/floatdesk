@@ -133,7 +133,10 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                     resources.entity=entity
                     resources.baseGeometry=baseCanvas ?: target
                     entity.setEnabled(false)
-                    entity.setSurfacePixelDimensions(IntSize2d(pixelSize.first,pixelSize.second))
+                    // The SDK's default media backing is sufficient for captured regions.
+                    // Resizing a new child canvas here replaces native textures while
+                    // SplitEngine can still be processing the custom surface creation.
+                    if(regionId==null)entity.setSurfacePixelDimensions(IntSize2d(pixelSize.first,pixelSize.second))
                     return true
                 }
                 while(!connection.tryNativeMeshUpdate(::createSurface))delay(32)
@@ -142,7 +145,11 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                 delay(32)
                 val entity=checkNotNull(resources.entity)
                 if(!receiveInput || target.mesh?.planar==false)SurfaceInput.disableCollider(entity)
-                val pointer=SpatialPointerComponent.create(session);entity.addComponent(pointer);pointer.spatialPointerIcon=SpatialPointerIcon.NONE
+                if(receiveInput && target.mesh?.planar!=false){
+                    val pointer=SpatialPointerComponent.create(session)
+                    entity.addComponent(pointer)
+                    pointer.spatialPointerIcon=SpatialPointerIcon.NONE
+                }
                 val listener:(InputEvent)->Unit=listener@{event->
                     val active=resources.rendered?.takeIf{resources.visible} ?: return@listener
                     val expected=resources.curvedInput?.entity ?: resources.entity
@@ -257,7 +264,9 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
             fun publishForeground(){if(topologyKey!=null && resources.visible)resources.rendered?.let{tracking.displayedPanes[resources]=it}}
             var shown=false
             if(!desktopMirror)resources.stream=connection.windowCaptures.attach(captureId ?: target.id,entity.getSurface(),{
-                if(resources.generation==generation && !entity.isDisposed){shown=true;retryPolicy.reset();failureToken=0;resources.visible=true;resources.hasFrame=true;entity.setEnabled(true);resources.curvedInput?.entity?.setEnabled(true);publishForeground();android.util.Log.i("Floatdesk","pane ready key=$topologyKey id=${target.id}");displayedNow.value?.invoke(target.id);readyNow.value()}
+                if(resources.generation==generation && !entity.isDisposed){
+                    if(regionId!=null)connection.deferNativeMeshUpdates()
+                    shown=true;retryPolicy.reset();failureToken=0;resources.visible=true;resources.hasFrame=true;entity.setEnabled(true);resources.curvedInput?.entity?.setEnabled(true);publishForeground();android.util.Log.i("Floatdesk","pane ready key=$topologyKey id=${target.id}");displayedNow.value?.invoke(target.id);readyNow.value()}
             },{message->if(resources.generation==generation){resources.visible=false;tracking.displayedPanes.remove(resources);if(!retainLastFrame || !resources.hasFrame)entity.setEnabled(false);hoverNow.value("LEFT",null);hoverNow.value("RIGHT",null);clearPointerHover();errorNow.value(message);failureToken++}},regionId=regionId,previewBounds=previewBounds,transparentFit=sphericalFit,
                 aperture=if(childAperture && baseCanvas!=null)target.width/baseCanvas.width to target.height/baseCanvas.height else null,
                 expectedRegionSize=if(regionId!=null)target.sourceWidth to target.sourceHeight else null)

@@ -479,6 +479,11 @@ internal class DeskConnection(
     @Synchronized
     fun projection(index:Int,value:ViewProjection?) {viewProjections[index]=value;decoders[index]?.projection(value)}
     private var nextNativeMeshUpdate=0L
+    /** Let an arriving child become visible before replacing a desktop cutout mesh. */
+    fun deferNativeMeshUpdates(){
+        nextNativeMeshUpdate=maxOf(nextNativeMeshUpdate,android.os.SystemClock.uptimeMillis()+64L)
+    }
+
     /** Mesh replacements share one SceneCore command queue, even across different video decoders. */
     fun tryNativeMeshUpdate(submit:()->Boolean):Boolean {
         val now=android.os.SystemClock.uptimeMillis()

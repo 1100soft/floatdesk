@@ -99,12 +99,10 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
     val context = LocalContext.current
     val deviceInteractive by rememberDeviceInteractive(context)
     val activityResumed by rememberActivityResumed(context)
-    val interactiveNow=rememberUpdatedState(deviceInteractive && activityResumed)
     LaunchedEffect(connection) { connection.start(context) }
     DisposableEffect(connection) { onDispose { connection.disconnect() } }
     val session = LocalSession.current
     var sceneEpoch by remember{mutableIntStateOf(0)}
-    var activatedScene by remember{mutableStateOf(false)}
     var sceneActive by remember { mutableStateOf(false) }
     var workspace by remember { mutableStateOf(store.load()) }
     val startupWakeMac=remember{workspace.wakeMac}
@@ -114,46 +112,67 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
     val workspaceAtLifecycle=rememberUpdatedState(workspace)
     var restoreViewerPending by remember {mutableStateOf(true)}
     var centerOnStartup by remember{mutableStateOf(true)}
-    DisposableEffect(session,connection) {
+    var xrResumed by remember(session){mutableStateOf(false)}
+    var spatialUiAvailable by remember(session){mutableStateOf(false)}
+    val sceneCapabilities=remember{setOf(androidx.xr.scenecore.SpatialCapability.SPATIAL_UI,
+        androidx.xr.scenecore.SpatialCapability.SPATIAL_3D_CONTENT)}
+    DisposableEffect(session) {
         val current = session
         onSession(current)
-        sceneActive=interactiveNow.value && current?.lifecycleOwner?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.RESUMED)==true
+        val lifecycle=current?.lifecycleOwner?.lifecycle
+        xrResumed=lifecycle?.currentState?.isAtLeast(Lifecycle.State.RESUMED)==true
+        spatialUiAvailable=current?.scene?.spatialCapabilities?.containsAll(sceneCapabilities)==true
         val observer = LifecycleEventObserver { _, event ->
             if(event==Lifecycle.Event.ON_PAUSE || event==Lifecycle.Event.ON_STOP) store.save(workspaceAtLifecycle.value)
-            sceneActive=interactiveNow.value && current?.lifecycleOwner?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.RESUMED)==true
-            connection.setRenderingActive(sceneActive)
-
+            xrResumed=lifecycle?.currentState?.isAtLeast(Lifecycle.State.RESUMED)==true
         }
-        current?.lifecycleOwner?.lifecycle?.addObserver(observer)
+        val capabilities=java.util.function.Consumer<Set<androidx.xr.scenecore.SpatialCapability>> {
+            spatialUiAvailable=it.containsAll(sceneCapabilities)
+        }
+        lifecycle?.addObserver(observer)
+        current?.scene?.addSpatialCapabilitiesChangedListener(context.mainExecutor,capabilities)
         onDispose {
-            current?.lifecycleOwner?.lifecycle?.removeObserver(observer)
+            lifecycle?.removeObserver(observer)
+            current?.scene?.removeSpatialCapabilitiesChangedListener(capabilities)
             onSession(null)
         }
     }
-    LaunchedEffect(session,deviceInteractive,activityResumed) {
-        sceneActive=deviceInteractive && activityResumed && session?.lifecycleOwner?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.RESUMED)==true
-        connection.setRenderingActive(sceneActive)
+    LaunchedEffect(deviceInteractive,activityResumed,xrResumed,spatialUiAvailable) {
+        val ready=deviceInteractive && activityResumed && xrResumed && spatialUiAvailable
+        if(ready)delay(350) // Full Space capabilities can briefly flap during transition.
+        sceneActive=ready
+        connection.setRenderingActive(ready)
     }
-    LaunchedEffect(session,deviceInteractive,activityResumed,sceneActive){
+    LaunchedEffect(session,deviceInteractive,activityResumed,spatialUiAvailable) {
         val current=session ?: return@LaunchedEffect
-        if(deviceInteractive && activityResumed && !sceneActive){
-            do {
-                runCatching{current.scene.requestFullSpace()}.onFailure{Log.w("Floatdesk","Full-space recovery request failed",it)}
-                Log.i("Floatdesk","wake acquisition activity=$activityResumed xr=${current.lifecycleOwner.lifecycle.currentState}")
-                delay(1000)
-            }while(current.lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)!=true)
+        if(!deviceInteractive || !activityResumed)return@LaunchedEffect
+        // RESUMED alone can describe the gray Home Space panel after wake.
+        // Request Full Space until the runtime actually grants spatial UI.
+        while(!sceneActive || !spatialUiAvailable) {
+            runCatching{current.scene.requestFullSpace()}.onFailure{Log.w("Floatdesk","Full-space recovery request failed",it)}
+            delay(1000)
         }
     }
     LaunchedEffect(session,sceneActive) {
         val current=session ?: return@LaunchedEffect
         if(sceneActive) {
-            if(activatedScene){deskSpace.set(null);deskRootVersion++;sceneEpoch++}else activatedScene=true
-            runCatching{current.scene.requestFullSpace()}.onFailure{Log.w("Floatdesk","Full-space wake request failed",it)}
             Log.i("Floatdesk","scene recovery generation=$sceneEpoch")
             connection.recoverRenderingOutputs()
             val hands=runCatching { current.configure(Config.Builder(current.config).setHandTracking(HandTrackingMode.BOTH).build()) }
             val head=runCatching { current.configure(Config.Builder(current.config).setDeviceTracking(DeviceTrackingMode.SPATIAL).build()) }
             Log.i("Floatdesk","tracking activation hands=$hands head=$head")
+            // Preserve native parents/materials over normal sleep. A replacement
+            // is only needed if SceneCore actually lost the Compose hierarchy.
+            delay(2500)
+            val root=deskSpace.get().liveOrNull()
+            val attached=root!=null && runCatching{root.getScale(Space.ACTIVITY)}.isSuccess
+            if(!attached){
+                deskSpace.set(null)
+                deskRootVersion++
+                sceneEpoch++
+                Log.w("Floatdesk","Rebuilding detached XR workspace after wake generation=$sceneEpoch")
+                connection.recoverRenderingOutputs()
+            }
         }
     }
     LaunchedEffect(workspace.screenSpacing) {connection.configurePresentation(workspace.screenSpacing)}
@@ -755,16 +774,17 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             // are independent of ActivitySpace. Always target the actual surface parent.
             val root = deskSpace.get().liveOrNull()
             if (root == null) { palmPanel = null; grips.clear(); pointerControl.clear(); continue }
-            if (root !== deskSpace.get()) {
-                deskSpace.set(root)
-                Log.i("Floatdesk", "desk root pose=${root.getPose(Space.ACTIVITY)} scale=${root.getScale(Space.ACTIVITY)}")
-            }
-            val unitsPerMeter = current.scene.perceptionSpace.transformVectorTo(Vector3.Right, root).length
+            // A detached Compose root can still be returned by SceneCore until its
+            // replacement is parented. Skip that frame instead of treating it as live.
+            val coordinates=runCatching{
+                val scale=current.scene.perceptionSpace.transformVectorTo(Vector3.Right,root).length
+                scale to perceived?.let{deskPose(current,root,it)}
+            }.getOrNull() ?: continue
+            val (unitsPerMeter,candidateHead)=coordinates
             if (!unitsPerMeter.isFinite() || unitsPerMeter <= 0f) continue
             handTracking.unitsPerMeter = unitsPerMeter
             handTracking.nowMs = SystemClock.uptimeMillis()
             handTracking.pinched.clear()
-            val candidateHead = perceived?.let { deskPose(current, root, it) }
             displayHead.set(candidateHead?.toWorkspacePose())
             val reliable = trackingGuard.update(handTracking.nowMs, candidateHead?.takeIf { trackingAvailable }?.translation?.toArray(),
                 candidateHead?.let { floatArrayOf(it.rotation.x,it.rotation.y,it.rotation.z,it.rotation.w) },unitsPerMeter)

@@ -288,13 +288,14 @@ internal class DeskConnection(
         val started=android.os.SystemClock.elapsedRealtime()
         fun recover(attempt:Int){
             if(!running || !isVideoActive() || !desktopVisible || outputRecoveryEpoch.get()!=epoch)return
+            val awaitingSurface=monitors.value.any { activeSurfaces[it.index]?.isValid!=true }
             val stalled=decoders.filter{(index,decoder)->outputNeedsRecovery(activeSurfaces[index]?.isValid==true,decoder.lastPresentedAt(),started)}
             if(attempt==0 || stalled.isNotEmpty()){
                 stalled.values.forEach{it.recoverOutput()}
                 pendingRemote?.let{remote->stalled.values.forEach{it.punch(remote)}}
                 send(Protocol.keyframeRequest(0xff))
             }
-            if(attempt<3 && (attempt==0 || stalled.isNotEmpty()))main.postDelayed({recover(attempt+1)},1500L)
+            if(attempt<3 && (attempt==0 || awaitingSurface || stalled.isNotEmpty()))main.postDelayed({recover(attempt+1)},1500L)
             else if(attempt==3 && stalled.isNotEmpty() && dumpFile==null){
                 Log.w("Floatdesk","Rebuilding desktop decoders after wake without a presented frame")
                 rebuildStalledDecoders.set(true)

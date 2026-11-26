@@ -177,13 +177,28 @@ internal fun DeskContent(
     }
     // Retain native assets across Workspace visits; hide them instead of destroying/re-instancing glTF.
     // Keep palm and tracking coordinates independent of host video acquisition.
-    if(session!=null)SpatialExternalSurface(
-        stereoMode=StereoMode.Mono,
-        modifier=placedPanel(Pose(floatArrayOf(0f,0f,1f)),.002f,.002f,density,pixelDensity),
-    ){
-        onSurfaceCreated{surface->
-            session.scene.getEntitiesOfType(androidx.xr.scenecore.SurfaceEntity::class.java)
-                .firstOrNull{it.getSurface()===surface}?.parent?.let(onDeskRoot)
+    if(session!=null){
+        var probe by remember(session){mutableStateOf<Surface?>(null)}
+        val rootCallback=rememberUpdatedState(onDeskRoot)
+        LaunchedEffect(session,probe){
+            val surface=probe ?: return@LaunchedEffect
+            // On a remount the surface callback can precede SceneCore parenting.
+            while(surface.isValid){
+                val parent=session.scene.getEntitiesOfType(androidx.xr.scenecore.SurfaceEntity::class.java)
+                    .firstOrNull{it.getSurface()===surface}?.parent.liveOrNull()
+                if(parent!=null && runCatching{parent.getScale(androidx.xr.scenecore.Space.ACTIVITY)}.isSuccess){
+                    rootCallback.value(parent)
+                    break
+                }
+                delay(50)
+            }
+        }
+        SpatialExternalSurface(
+            stereoMode=StereoMode.Mono,
+            modifier=placedPanel(Pose(floatArrayOf(0f,0f,1f)),.002f,.002f,density,pixelDensity),
+        ){
+            onSurfaceCreated{probe=it}
+            onSurfaceDestroyed{probe=null}
         }
     }
     val controlsOpenNow=rememberUpdatedState(displayControlsOpen)

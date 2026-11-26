@@ -72,7 +72,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
         val old=resources.rendered
         val keepGeometry=resources.entity!=null && (if(savedPaneSize!=null)
             resources.authoredSize==authoredSize else sameNativePaneExtent(old,requested))
-        if(!keepGeometry)resources.detachSurface()
+        if(!keepGeometry || resources.listener==null)resources.detachSurface()
         val sphericalFit=savedPaneSize!=null && requested.spherical && requested.mesh!=null && RenderPolicy.CustomMeshes
         val baseCanvas=if(sphericalFit){
             resources.baseGeometry ?: run {
@@ -104,14 +104,29 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
             val reusedSurface=resources.entity!=null
             if(resources.entity==null){
                 delay(32) // Let the existing desktop's pending mesh commands flush before allocating a surface.
-                val initialShape=if(baseCanvas!=null){
-                    val mesh=requireNotNull(baseCanvas.mesh)
-                    nativeVideoMesh(VideoGeometry(mesh.positions,mesh.videoTexCoords,mesh.indices))
-                }else shape(target)
-                resources.retain(initialShape)
-                val entity=SurfaceEntity.create(session,shape=initialShape,parent=null,superSampling=SurfaceEntity.SuperSampling.NONE,
-                    mediaBlendingMode=if(sphericalFit)SurfaceEntity.MediaBlendingMode.TRANSPARENT else SurfaceEntity.MediaBlendingMode.OPAQUE)
-                resources.entity=entity;resources.baseGeometry=baseCanvas ?: target;entity.setEnabled(false)
+                val pixelSize=if(sphericalFit)dev.floatdesk.client.net.WindowCaptureFormat.size(
+                    RenderPolicy.WindowDimension,RenderPolicy.WindowDimension)
+                else dev.floatdesk.client.net.WindowCaptureFormat.canvasSize(target.sourceWidth,target.sourceHeight)
+                fun createSurface():Boolean {
+                    val initialShape=if(baseCanvas!=null){
+                        val mesh=requireNotNull(baseCanvas.mesh)
+                        nativeVideoMesh(VideoGeometry(mesh.positions,mesh.videoTexCoords,mesh.indices))
+                    }else shape(target)
+                    resources.retain(initialShape)
+                    val entity=SurfaceEntity.create(session,shape=initialShape,parent=null,
+                        superSampling=SurfaceEntity.SuperSampling.NONE,
+                        mediaBlendingMode=if(sphericalFit)SurfaceEntity.MediaBlendingMode.TRANSPARENT else SurfaceEntity.MediaBlendingMode.OPAQUE)
+                    resources.entity=entity
+                    resources.baseGeometry=baseCanvas ?: target
+                    entity.setEnabled(false)
+                    entity.setSurfacePixelDimensions(IntSize2d(pixelSize.first,pixelSize.second))
+                    return true
+                }
+                while(!connection.tryNativeMeshUpdate(::createSurface))delay(32)
+                // Let the native material and texture initialization settle before
+                // adding the hit mesh or handing the surface to the video compositor.
+                delay(32)
+                val entity=checkNotNull(resources.entity)
                 if(!receiveInput || target.mesh?.planar==false)SurfaceInput.disableCollider(entity)
                 val pointer=SpatialPointerComponent.create(session);entity.addComponent(pointer);pointer.spatialPointerIcon=SpatialPointerIcon.NONE
                 val listener:(InputEvent)->Unit=listener@{event->
@@ -191,13 +206,6 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
 
             }
             val entity=resources.entity!!;val p=target.pose;val q=p.rotation
-            val pixelSize=if(sphericalFit)dev.floatdesk.client.net.WindowCaptureFormat.size(
-                RenderPolicy.WindowDimension,RenderPolicy.WindowDimension)
-            else dev.floatdesk.client.net.WindowCaptureFormat.canvasSize(target.sourceWidth,target.sourceHeight)
-            // Replacing an in-use native canvas texture can race its borrowed model material.
-            // Keep the allocation stable as retained menu slots change their source bounds.
-            if(!reusedSurface)entity.setSurfacePixelDimensions(IntSize2d(pixelSize.first,pixelSize.second))
-
             val targetPose=Pose(Vector3(p.position[0],p.position[1],p.position[2]),Quaternion(q[0],q[1],q[2],q[3]))
             resources.mesh=target.mesh?.takeIf{RenderPolicy.CustomMeshes && !it.planar}
             resources.rendered=target
@@ -431,6 +439,7 @@ private class MagnifierResources:AutoCloseable{
             surface.parent=null
         }
         flatInput=null
+        listener=null
         rendered=null
         baseGeometry=null
         mesh=null

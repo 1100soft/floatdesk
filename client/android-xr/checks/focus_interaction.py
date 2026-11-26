@@ -86,6 +86,14 @@ fun main() {
  val orphan=DesktopWindow(100,0,0,20,20,transientFor=101)
  check(childPaneOrder(1,deepChildren.reversed()+listOf(orphan,orphan.copy(id=101,transientFor=100)))
      .map{it.id}==(2L..45L).toList())
+ val lockedOwner=DesktopWindow(350,2000,100,900,700)
+ val farModal=DesktopWindow(351,0,0,600,700,transientFor=350,modal=true)
+ val touching=farModal.copy(x=1400)
+ val modalCatalogue=WorkspaceInfo(emptyList(),0,emptyList(),0,1,0,30,"",false,windows=listOf(farModal,lockedOwner))
+ check(modalCatalogue.magnificationSource(350)==351L)
+ check(modalCatalogue.copy(windows=listOf(lockedOwner)).magnificationSource(350)==350L)
+ check(modalCatalogue.copy(windows=listOf(touching,lockedOwner)).magnificationSource(350)==350L)
+ check(modalCatalogue.copy(windows=listOf(farModal.copy(modal=false),lockedOwner)).magnificationSource(350)==350L)
  val popupEye=Pose()
  for(curved in listOf(false,true)){
     val popupOwner=MagnifiedWindow(70,Pose(floatArrayOf(.5f,.15f,-1.2f)),1.8f,1.2f,1200,800,
@@ -215,7 +223,7 @@ fun main() {
  }
  val layoutBase=MonitorPlacement("main","desktop",Pose(floatArrayOf(0f,0f,-1.2f)),1.2f,.8f,0f,1200,800,60)
  val layoutPane=FixedMagnifierPlacement("pane",Pose(floatArrayOf(3f,.08f,.4f)),.5f,.25f)
- val packedFile=WorkspaceFile(layoutOrigin=layoutBase.pose,layouts=mutableMapOf("Desk" to mutableListOf(layoutBase)),
+ val packedFile=WorkspaceFile(sphericalWarp=false,layoutOrigin=layoutBase.pose,layouts=mutableMapOf("Desk" to mutableListOf(layoutBase)),
     fixedMagnifiers=listOf(layoutPane)).adjustLayout(LayoutAdjustment.SNAP,Pose(),1f)
  val packedPane=packedFile.fixedMagnifiers.single()
  val logicalDepth=ViewLayers.DesktopDistanceM-packedPane.pose.position[2]
@@ -224,26 +232,31 @@ fun main() {
  check((abs(gapX)<.0001f && gapY<0f) || (abs(gapY)<.0001f && gapX<0f))
  val hidden=FixedMagnifierPlacement("disconnected-panel",Pose(floatArrayOf(.7f,0f,.3f)),4f,2f)
  val offCenter=Pose(floatArrayOf(.45f,.2f,.3f))
- val visibleLayout=WorkspaceFile(layoutOrigin=layoutBase.pose,layouts=mutableMapOf("Desk" to mutableListOf(layoutBase)),
+ val visibleLayout=WorkspaceFile(sphericalWarp=false,layoutOrigin=layoutBase.pose,layouts=mutableMapOf("Desk" to mutableListOf(layoutBase)),
     fixedMagnifiers=listOf(layoutPane),systemPanels=listOf(hidden))
  val adjusted=visibleLayout.adjustLayout(LayoutAdjustment.AUTO,offCenter,1f,visibleRecords=setOf("pane"))
  check(adjusted.systemPanels.single()===hidden && adjusted.cursorMapReference===offCenter)
  val placedPane=adjusted.fixedMagnifiers.single()
- val desktopPatch=cursorPatches("desktop",layoutBase.pose,1.2f,.8f,null,FocusRect(0f,0f,1200f,800f),offCenter).single().viewBounds
- val paneWorld=Pose(transformPoint(layoutBase.pose,placedPane.pose.position))
- val panePatch=cursorPatches("pane",paneWorld,.5f,.25f,null,FocusRect(0f,0f,500f,250f),offCenter).single().viewBounds
+ val desktopPatch=cursorPatches("desktop",adjusted.layouts.getValue("Desk").first().pose,1.2f,.8f,null,
+     FocusRect(0f,0f,1200f,800f),offCenter,projectBounds=true).single().viewBounds
+ val paneWorld=Pose(transformPoint(layoutBase.pose,placedPane.pose.position),placedPane.pose.rotation)
+ val panePatch=cursorPatches("pane",paneWorld,.5f,.25f,null,FocusRect(0f,0f,500f,250f),offCenter,projectBounds=true).single().viewBounds
  check(abs(desktopPatch.right-panePatch.left)<.0001f || abs(desktopPatch.left-panePatch.right)<.0001f ||
        abs(desktopPatch.bottom-panePatch.top)<.0001f || abs(desktopPatch.top-panePatch.bottom)<.0001f)
 
  val verticalPanel=FixedMagnifierPlacement("vertical",Pose(floatArrayOf(.83f,0f,.4f),
     floatArrayOf(0f,.38268343f,0f,.92387953f)),.05f,1.05f)
- for(curved in listOf(false,true)){
-    val result=visibleLayout.copy(sphericalWarp=curved,fixedMagnifiers=emptyList(),systemPanels=listOf(verticalPanel))
+ val horizontalPanel=verticalPanel.copy(id="horizontal",pose=Pose(floatArrayOf(0f,.32f,.4f)),widthM=1.05f,heightM=.05f)
+ for(curved in listOf(false,true))for(panel in listOf(verticalPanel,horizontalPanel)){
+    val result=visibleLayout.copy(sphericalWarp=curved,fixedMagnifiers=emptyList(),systemPanels=listOf(panel))
         .adjustLayout(LayoutAdjustment.AUTO,Pose(),1f)
     val desktop=result.layouts.getValue("Desk").first()
-    val pane=fixedMagnifier(result.systemPanels.single(),desktop.copy(pose=layoutBase.pose),DesktopWindow(1,0,0,50,1050),Pose(),1f,curved)
+    val pane=fixedMagnifier(result.systemPanels.single(),desktop.copy(pose=layoutBase.pose),DesktopWindow(1,0,0,(panel.widthM*1000).toInt(),(panel.heightM*1000).toInt()),Pose(),1f,curved)
     val unitRect=FocusRect(0f,0f,1f,1f)
-    val d=cursorPatches("desktop",desktop.pose,desktop.physicalWidthM,desktop.physicalHeightM,null,unitRect,Pose()).single().viewBounds
+    val desktopMesh=if(curved)MonitorMesh(desktop.physicalWidthM,desktop.physicalHeightM,
+        viewerInMonitor(Pose().position,desktop.pose.position,desktop.pose.rotation),columns=32,rows=20,
+        focus=floatArrayOf(0f,0f),minimumGeometryRadius=ViewLayers.DesktopDistanceM) else null
+    val d=cursorPatches("desktop",desktop.pose,desktop.physicalWidthM,desktop.physicalHeightM,desktopMesh,unitRect,Pose(),projectBounds=true).single().viewBounds
     val v=cursorPatches("shell:1",pane.pose,pane.width,pane.height,pane.mesh,unitRect,Pose(),projectBounds=true).single().viewBounds
     val separation=maxOf(v.left-d.right,d.left-v.right,v.top-d.bottom,d.top-v.bottom)
     check(abs(separation)<.002f){"panel separation=$separation curved=$curved"}

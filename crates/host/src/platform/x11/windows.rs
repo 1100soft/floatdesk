@@ -17,6 +17,8 @@ pub struct FocusWindow {
     pub panel: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transient_for: Option<u32>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub modal: bool,
 }
 fn atom(link: &X11Link, name: &[u8]) -> Result<u32> {
     Ok(link
@@ -106,6 +108,7 @@ pub fn catalogue() -> Result<(bool, Vec<FocusWindow>)> {
     .copied();
     let state = atom(&link, b"_NET_WM_STATE")?;
     let hidden = atom(&link, b"_NET_WM_STATE_HIDDEN")?;
+    let modal = atom(&link, b"_NET_WM_STATE_MODAL")?;
     let transient = atom(&link, b"WM_TRANSIENT_FOR")?;
     let role = atom(&link, b"WM_WINDOW_ROLE")?;
     let leader = atom(&link, b"WM_CLIENT_LEADER")?;
@@ -137,7 +140,8 @@ pub fn catalogue() -> Result<(bool, Vec<FocusWindow>)> {
                     return Ok(None);
                 }
             }
-            if values(&link, id, state, AtomEnum::ATOM)?.contains(&hidden) {
+            let states = values(&link, id, state, AtomEnum::ATOM)?;
+            if states.contains(&hidden) {
                 return Ok(None);
             }
             let kinds = values(&link, id, types, AtomEnum::ATOM)?;
@@ -163,6 +167,7 @@ pub fn catalogue() -> Result<(bool, Vec<FocusWindow>)> {
                 width: u32::from(g.width),
                 height: u32::from(g.height),
                 panel: false,
+                modal: states.contains(&modal),
                 transient_for: values(&link, id, transient, AtomEnum::WINDOW)?
                     .first()
                     .copied()
@@ -408,6 +413,7 @@ pub fn window_popups(link: &X11Link, client: u32) -> Result<Vec<FocusWindow>> {
                 height: g.height.into(),
                 panel: false,
                 transient_for: capture_parent,
+                modal: false,
             }))
         })();
         if let Ok(Some(window)) = item {
@@ -575,6 +581,7 @@ pub fn system_catalogue() -> Result<Vec<FocusWindow>> {
                 height: bounds[3] as u32,
                 panel: kinds.contains(&dock),
                 transient_for: None,
+                modal: false,
             }))
         })();
         if let Ok(Some(row)) = row {
@@ -1230,6 +1237,7 @@ mod tests {
             height,
             panel: false,
             transient_for: None,
+            modal: false,
         };
         let mut windows = vec![
             (row(1, 0, 0, 854, 533), 5, false),
@@ -1769,11 +1777,23 @@ mod tests {
             .unwrap()
             .check()
             .unwrap();
+        link.conn
+            .change_property32(
+                PropMode::REPLACE,
+                ids[1],
+                atom(&link, b"_NET_WM_STATE").unwrap(),
+                AtomEnum::ATOM,
+                &[atom(&link, b"_NET_WM_STATE_MODAL").unwrap()],
+            )
+            .unwrap()
+            .check()
+            .unwrap();
         let (cap, rows) = catalogue().unwrap();
         assert!(cap);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].id, ids[1]);
         assert_eq!(rows[0].transient_for, Some(ids[0]));
+        assert!(rows[0].modal);
         window_action(&serde_json::json!({"windowId":ids[1],"action":"close"})).unwrap();
         let event = link.conn.wait_for_event().unwrap();
         assert!(matches!(event, x11rb::protocol::Event::ClientMessage(event)

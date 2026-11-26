@@ -111,7 +111,7 @@ internal class MonitorWarp : AutoCloseable {
     val displayEntity: SurfaceEntity? get()=input
     fun matchesSize(placement: MonitorPlacement)=flatWidth==placement.physicalWidthM && flatHeight==placement.physicalHeightM &&
         (mesh?.center?.contentEquals(projectionCenter(placement)) ?: true)
-    private fun projectionCenter(placement:MonitorPlacement)=floatArrayOf((placement.viewCenterU-.5f)*placement.physicalWidthM,(.5f-placement.viewCenterV)*placement.physicalHeightM,0f)
+    private fun projectionCenter(placement:MonitorPlacement)=monitorProjectionCenter(placement.physicalWidthM,placement.physicalHeightM,placement.viewCenterU,placement.viewCenterV)
 
     @SuppressLint("RestrictedApi")
     suspend fun syncCurvedInput(session: Session) {

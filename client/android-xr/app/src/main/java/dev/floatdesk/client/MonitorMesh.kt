@@ -20,6 +20,9 @@ internal fun viewerInMonitor(viewer: FloatArray, position: FloatArray, rotation:
     return floatArrayOf(x+qw*tx+qy*tz-qz*ty,y+qw*ty+qz*tx-qx*tz,z+qw*tz+qx*ty-qy*tx)
 }
 
+internal fun monitorProjectionCenter(width:Float,height:Float,u:Float,v:Float)=
+    floatArrayOf((u-.5f)*width,(.5f-v)*height,0f)
+
 /** Viewer-centered sphere with optional tangent-plane vertex projection around the viewed pixel. */
 internal class MonitorMesh(
     val width: Float,

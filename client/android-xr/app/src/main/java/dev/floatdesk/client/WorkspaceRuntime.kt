@@ -529,9 +529,12 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                             PalmAction.FACE_USER->LayoutAdjustment.FACE
                             else->LayoutAdjustment.AUTO
                         }
-                        val visiblePanes=fixedWindows.get().filter{fixedReady[it.first]==true}.map{it.second}+
-                            systemWindows.get().filter{systemReady[it.id]==true}+listOfNotNull(referencePane.takeIf{workspace.desktopReference && referenceReady})
-                        val contentSizes=visiblePanes.mapNotNull{it.layoutFootprint}.associate{it.id to (it.width to it.height)}
+                        val visiblePanes=fixedWindows.get().mapNotNull{(key,_)->fixedRuntime[key]?.takeIf{fixedReady[key]==true && fixedDisplayed[key]==it.id}}+
+                            systemWindows.get().mapNotNull{pane->systemRuntime[pane.id]?.takeIf{systemReady[it.id]==true}}+listOfNotNull(referencePane.takeIf{workspace.desktopReference && referenceReady})
+                        val contentSizes=visiblePanes.mapNotNull{pane->pane.layoutFootprint?.id?.let{id->
+                            val image=magnifierContentRect(pane)
+                            id to (pane.width*(image.right-image.left) to pane.height*(image.bottom-image.top))
+                        }}.toMap()
                         workspace=workspace.adjustLayout(adjustment,view,handTracking.unitsPerMeter,contentSizes,contentSizes.keys)
                         systemPlacements.clear()
                         store.recordLayout(workspace,adjustment.name.lowercase())
@@ -1668,7 +1671,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             )
         }
         key(sceneEpoch){Subspace { desk() }}
-        val magnifierPatch=inPlaceWindow ?: lastFixedWindow
+        val magnifierPatch=(inPlaceWindow ?: lastFixedWindow)?.let{connection.workspaceInfo.value?.magnificationSource(it) ?: it}
         val detailsVisible=sceneActive && !displayControlsOpen && !connection.thermalPaused.value
         val detailId=if(!detailsVisible)null else gazeDetailWindow ?: focusedDetailWindow?.takeIf{id->connection.workspaceInfo.value?.windows?.any{it.id==id}==true} ?: magnifierPatch.takeIf{workspace.magnifyWindow}
         val magnifierRoot=remember(deskRootVersion){deskSpace.get()}
@@ -1702,7 +1705,8 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
         if(session!=null && magnifierRoot!=null && layoutBasis!=null && fixedViewer!=null){
             for(record in workspace.fixedMagnifiers) key(record.id){
                 val selected=fixedPins[record.id] ?: openToolbarWindow?.takeIf{(toolbarTarget as? ToolbarTarget.Magnifier)?.key==record.id} ?: inPlaceWindow ?: lastFixedWindow ?: connection.workspaceInfo.value?.windows?.firstOrNull()?.id
-                val source=connection.windowCaptures.source(selected) ?: fixedRuntime[record.id]?.takeIf{it.id==selected}?.let{
+                val capture=selected?.let{connection.workspaceInfo.value?.magnificationSource(it) ?: it}
+                val source=connection.windowCaptures.source(capture) ?: fixedRuntime[record.id]?.takeIf{it.id==capture}?.let{
                     dev.floatdesk.client.net.DesktopWindow(it.id,0,0,it.sourceWidth,it.sourceHeight)
                 }
                 val paneEnabled=source!=null && source.id>0L && magnifierSurfacesAllowed(workspace.magnifyWindow,sceneActive && !restoreViewerPending,displayControlsOpen)

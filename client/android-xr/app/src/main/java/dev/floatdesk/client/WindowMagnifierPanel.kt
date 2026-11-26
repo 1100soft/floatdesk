@@ -74,13 +74,19 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
         val initialFrame=if(projectFrame)magnifierFrame(initial,initial,projectionEye,units(),true)else projectPaneAtPlacement(initial,initial,projectionEye,true)
         val requested=placePaneInsideDesktop(initialFrame,projectionEye,tracking.desktopSphereRadius)
         val old=resources.rendered
-        val keepGeometry=resources.entity!=null && (if(savedPaneSize!=null)
-            resources.authoredSize==authoredSize else sameNativePaneExtent(old,requested))
+        val childAperture=regionId!=null && requested.spherical && requested.mesh!=null && RenderPolicy.CustomMeshes
+        val keepGeometry=resources.entity!=null && when {
+            childAperture -> resources.baseGeometry?.let{requested.width<=it.width && requested.height<=it.height}==true
+            savedPaneSize!=null -> resources.authoredSize==authoredSize
+            else -> sameNativePaneExtent(old,requested)
+        }
         if(!keepGeometry || resources.listener==null)resources.detachSurface()
-        val sphericalFit=savedPaneSize!=null && requested.spherical && requested.mesh!=null && RenderPolicy.CustomMeshes
+        val sphericalFit=(savedPaneSize!=null || childAperture) && requested.spherical && requested.mesh!=null && RenderPolicy.CustomMeshes
         val baseCanvas=if(sphericalFit){
             resources.baseGeometry ?: run {
-                val extent=maxOf(requested.width,requested.height)+.01f*requested.units
+                val contentExtent=maxOf(requested.width,requested.height)
+                val extent=if(childAperture)maxOf(contentExtent*1.5f,requested.units*1.25f)
+                    else contentExtent+.01f*requested.units
                 val eye=viewerInMonitor(projectionEye.position,requested.pose.position,requested.pose.rotation)
                 requested.copy(width=extent,height=extent,mesh=MonitorMesh(extent,extent,eye,columns=32,rows=20))
             }
@@ -88,8 +94,8 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
         val target=if(baseCanvas!=null){
             val extent=baseCanvas.width-.01f*baseCanvas.units
             val aspect=requested.sourceWidth.toFloat()/requested.sourceHeight.coerceAtLeast(1)
-            val width=extent*minOf(1f,aspect)
-            val height=extent*minOf(1f,1f/aspect)
+            val width=if(childAperture)requested.width else extent*minOf(1f,aspect)
+            val height=if(childAperture)requested.height else extent*minOf(1f,1f/aspect)
             val sphere=requireNotNull(baseCanvas.mesh)
             requested.copy(pose=centerPaneSphere(requested.pose,sphere,projectionEye),width=width,height=height,
                 mesh=sphere.forSphericalAperture(width,height))
@@ -242,7 +248,8 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
             var shown=false
             if(!desktopMirror)resources.stream=connection.windowCaptures.attach(captureId ?: target.id,entity.getSurface(),{
                 if(resources.generation==generation && !entity.isDisposed){shown=true;retryPolicy.reset();failureToken=0;resources.visible=true;resources.hasFrame=true;entity.setEnabled(true);resources.curvedInput?.entity?.setEnabled(true);publishForeground();android.util.Log.i("Floatdesk","pane ready key=$topologyKey id=${target.id}");displayedNow.value?.invoke(target.id);readyNow.value()}
-            },{message->if(resources.generation==generation){resources.visible=false;tracking.displayedPanes.remove(resources);if(!retainLastFrame || !resources.hasFrame)entity.setEnabled(false);hoverNow.value("LEFT",null);hoverNow.value("RIGHT",null);clearPointerHover();errorNow.value(message);failureToken++}},regionId=regionId,previewBounds=previewBounds,transparentFit=sphericalFit)
+            },{message->if(resources.generation==generation){resources.visible=false;tracking.displayedPanes.remove(resources);if(!retainLastFrame || !resources.hasFrame)entity.setEnabled(false);hoverNow.value("LEFT",null);hoverNow.value("RIGHT",null);clearPointerHover();errorNow.value(message);failureToken++}},regionId=regionId,previewBounds=previewBounds,transparentFit=sphericalFit,
+                aperture=if(childAperture && baseCanvas!=null)target.width/baseCanvas.width to target.height/baseCanvas.height else null)
             fun updateStreamFrame(pane:MagnifiedWindow){
                 val canvasWidth=baseCanvas?.width ?: (pane.width+.01f*pane.units)
                 val canvasHeight=baseCanvas?.height ?: (pane.height+.01f*pane.units)

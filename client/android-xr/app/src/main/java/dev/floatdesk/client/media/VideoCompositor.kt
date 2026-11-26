@@ -23,7 +23,7 @@ internal data class VideoAim @JvmOverloads constructor(
 )
 
 internal data class VideoCrop(val left:Float,val top:Float,val right:Float,val bottom:Float,val aspect:Float)
-internal data class VideoMirror @JvmOverloads constructor(val surface:Surface,val padX:Float=0f,val padY:Float=0f,val pinned:Boolean=false,val aspect:Float=0f,val before:((Long)->Unit)?=null,val presented:(()->Unit)?=null,val crop:(()->VideoCrop?)?=null,val ink:(()->VideoAim)?=null,val minFrameIntervalNs:(()->Long)?=null,val transparentFit:Boolean=false)
+internal data class VideoMirror @JvmOverloads constructor(val surface:Surface,val padX:Float=0f,val padY:Float=0f,val pinned:Boolean=false,val aspect:Float=0f,val before:((Long)->Unit)?=null,val presented:(()->Unit)?=null,val crop:(()->VideoCrop?)?=null,val ink:(()->VideoAim)?=null,val minFrameIntervalNs:(()->Long)?=null,val transparentFit:Boolean=false,val aperture:Pair<Float,Float>?=null)
 
 /** One GPU pass keeps aiming decorations and live video in the same compositor layer. */
 internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
@@ -447,6 +447,7 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         GLES20.glUniform1i(uniform(program,"framePinned"),if(mirror?.pinned==true)1 else 0)
         GLES20.glUniform1i(uniform(program,"transparentFit"),if(mirror?.transparentFit==true)1 else 0)
         GLES20.glUniform1f(uniform(program,"paneAspect"),mirror?.aspect ?: 0f)
+        GLES20.glUniform2f(uniform(program,"paneAperture"),mirror?.aperture?.first ?: 0f,mirror?.aperture?.second ?: 0f)
         val crop=mirror?.crop?.invoke()
         GLES20.glUniform1f(uniform(program,"sourceAspect"),crop?.aspect ?: sourceAspect)
         GLES20.glUniform4f(uniform(program,"videoCrop"),crop?.left ?: 0f,crop?.top ?: 0f,crop?.right ?: 1f,crop?.bottom ?: 1f)
@@ -695,13 +696,14 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             uniform int framePinned;
             uniform float paneAspect;
             uniform int transparentFit;
+            uniform vec2 paneAperture;
             uniform float sourceAspect;
             void main() {
                 vec2 point=vec2(uv.x,1.0-uv.y);
                 if(transparentFit==1 && paneAspect>0.0){
                     vec2 fit=vec2(min(1.0,sourceAspect/paneAspect),min(1.0,paneAspect/sourceAspect));
                     vec2 offset=abs(point-0.5);
-                    vec2 halfImage=fit*(0.5-framePadding);
+                    vec2 halfImage=paneAperture.x>0.0 ? paneAperture*0.5 : fit*(0.5-framePadding);
                     if(any(greaterThan(offset,halfImage))){
                         gl_FragColor=any(greaterThan(offset,halfImage+framePadding)) ? vec4(0.0)
                             : (framePinned==1 ? vec4(1.0,0.65,0.02,1.0) : vec4(0.015,0.02,0.03,1.0));

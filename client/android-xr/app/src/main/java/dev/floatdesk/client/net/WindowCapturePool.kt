@@ -111,10 +111,10 @@ internal class WindowCapturePool @JvmOverloads constructor(private val connectio
         fun update(padX:Float,padY:Float,pinned:Boolean,aspect:Float){if(!closed)updateAction(padX,padY,pinned,aspect)}
         override fun close(){if(!closed){closed=true;closeAction()}}
     }
-    @JvmOverloads fun attach(id:Long,surface:Surface,onReady:()->Unit,onError:(String)->Unit,output:WindowDestination?=null,regionId:Long?=null,previewBounds:DesktopWindow?=null,transparentFit:Boolean=false):Lease{
+    @JvmOverloads fun attach(id:Long,surface:Surface,onReady:()->Unit,onError:(String)->Unit,output:WindowDestination?=null,regionId:Long?=null,previewBounds:DesktopWindow?=null,transparentFit:Boolean=false,aperture:Pair<Float,Float>?=null):Lease{
         val source=sources.getOrPut(id){Source(id)};val key=Any()
         source.outputSize().let{output?.size?.invoke(it.first,it.second)}
-        val member=Member(VideoMirror(surface,transparentFit=transparentFit),onReady,onError,output,regionId,previewBounds);source.members[key]=member;source.update()
+        val member=Member(VideoMirror(surface,aspect=if(aperture==null)0f else 1f,transparentFit=transparentFit,aperture=aperture),onReady,onError,output,regionId,previewBounds);source.members[key]=member;source.update()
         return Lease(source.video::tryShapeUpdate,{x,y,pin,aspect->
             val prior=member.mirror
             if(kotlin.math.abs(prior.padX-x)>.0001f || kotlin.math.abs(prior.padY-y)>.0001f ||

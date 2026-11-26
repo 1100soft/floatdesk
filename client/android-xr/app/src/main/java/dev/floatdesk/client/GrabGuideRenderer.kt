@@ -171,12 +171,12 @@ internal class GrabGuideRenderer private constructor(
         if(position==null || eye==null){pointerPoint?.let{state(it).enabled(false)};return}
         // Match the toolbar glow's foreground ordering, keeping the same view ray.
         val baseline=foregroundGlowPoint(position,eye,unitsPerMeter,desktopRange)
-        val front=foregroundGuidePoint(baseline,eye,unitsPerMeter,ownerRange)
+        val front=foregroundGlowPoint(baseline,eye,unitsPerMeter,ownerRange)
         val range=distance(front,eye)
         if(!range.isFinite() || range<.0001f){pointerPoint?.let{state(it).enabled(false)};return}
-        val marker=pointerPoint ?: newGlow()?.also{pointerPoint=it} ?: return
+        val marker=pointerPoint ?: newGlow(.22f)?.also{pointerPoint=it} ?: return
         placeGlow(marker,parent,front,Quaternion.fromLookTowards(vector(eye)-vector(front),Vector3.Up),
-            range*.018f,.30f)
+            range*.018f,1f)
     }
 
     fun updateHighlight(parent:Entity,position:FloatArray?,rotation:FloatArray,diameter:Float,pulse:Float){
@@ -187,7 +187,7 @@ internal class GrabGuideRenderer private constructor(
             diameter*(.37f+.04f*pulse),.65f+.2f*pulse)
     }
 
-    private fun newGlow()=ink(glowingSphere,0,painter=::paintSphereGlow)
+    private fun newGlow(textureOpacity:Float=1f)=ink(glowingSphere,0){paintSphereGlow(it,textureOpacity)}
 
     private fun placeGlow(marker:SurfaceEntity,parent:Entity,position:FloatArray,rotation:Quaternion,radius:Float,opacity:Float){
         state(marker).apply{
@@ -199,10 +199,12 @@ internal class GrabGuideRenderer private constructor(
         }
     }
 
-    private fun paintSphereGlow(canvas:android.graphics.Canvas){
+    private fun paintSphereGlow(canvas:android.graphics.Canvas,textureOpacity:Float){
+        val colors=intArrayOf(0x003EEFFF,0x003EEFFF,0x223EEFFF,0x806FEFFF.toInt(),0xB8E6FCFF.toInt())
+        for(i in colors.indices)colors[i]=(colors[i] and 0x00FFFFFF) or (((colors[i] ushr 24)*textureOpacity).toInt() shl 24)
         val paint=android.graphics.Paint().apply{
             shader=android.graphics.LinearGradient(0f,0f,canvas.width.toFloat(),0f,
-                intArrayOf(0x003EEFFF,0x003EEFFF,0x223EEFFF,0x806FEFFF.toInt(),0xB8E6FCFF.toInt()),
+                colors,
                 floatArrayOf(0f,.5f,.62f,.86f,1f),android.graphics.Shader.TileMode.CLAMP)
         }
         canvas.drawColor(android.graphics.Color.TRANSPARENT,android.graphics.PorterDuff.Mode.CLEAR)

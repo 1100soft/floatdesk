@@ -24,7 +24,7 @@ internal class WindowMagnification(private val dwellMs:Long=600,private val trav
         if(active!=null && !ready){if(now-entered>4000)dismiss(now);return active}
         if(active!=null && readyAt==0L)readyAt=now
         if(pinned || hold || !validGaze || active!=null && now-readyAt<travelMs){departed=0;candidate=null;return active}
-        if(active!=null && inside){departed=0;candidate=null;return active}
+        if(active!=null && inside && (target==null || target==active)){departed=0;candidate=null;return active}
         if(target!=null && target!=active){
             if(candidate!=target){candidate=target;since=now}
             if(now-since>=dwellMs){active=target;entered=now;readyAt=0;departed=0;candidate=null;return active}

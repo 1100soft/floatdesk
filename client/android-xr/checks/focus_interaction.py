@@ -21,6 +21,12 @@ metadata=body('net/WorkspaceInfo.kt');metadata=metadata[:metadata.index('    com
 code='import kotlin.math.*\n'+body('MonitorMesh.kt')+surface_hit+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+re.search(r'internal fun deskLayout\(.*?\n}',(root/'workspace/Workspace.kt').read_text(),re.S).group(0)+body('workspace/WorkspacePlacement.kt')+metadata+body('WindowMagnification.kt')+body('LayoutOrigin.kt')+body('LayoutAdjustment.kt')+body('LayoutGuideInk.kt')+body('WindowInteraction.kt').replace('dev.floatdesk.client.workspace.MonitorPlacement','MonitorPlacement')+body('WindowToolbarState.kt')+re.search(r'internal object WindowMenuLayout \{.*?\n}',(root/'WindowActionsMenu.kt').read_text(),re.S).group(0)+'\n'+topology+body('VideoGeometry.kt')+body('MagnifierContacts.kt')+body('BoundedHistory.kt')+body('RenderPolicy.kt')+body('net/WindowCaptureRetry.kt')+body('net/WindowCaptureFormat.kt').replace('dev.floatdesk.client.RenderPolicy','RenderPolicy')+''.join(re.search(r'internal fun '+name+r'\(.*?\n}',application_sources(),re.S).group(0) for name in ('transformPoint','rotateVector','quaternionBetween','multiplyQuaternion','normalize3','normalize4'))+re.search(r'internal fun distance\(a: FloatArray.*?\n}',application_sources(),re.S).group(0)+'\n'+re.search(r'internal fun subtract\(a: FloatArray[^\n]*\n[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun dot\(a: FloatArray[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun cross3\(.*',application_sources()).group(0)+'\n'+r'''
 fun add(a:FloatArray,b:FloatArray)=FloatArray(3){a[it]+b[it]}
 fun main() {
+ val magnifyWhileAiming=WindowMagnification(dwellMs=100,travelMs=0)
+ magnifyWhileAiming.update(1,true,false,11,false,true)
+ check(magnifyWhileAiming.update(101,true,false,11,false,true)==11L)
+ check(magnifyWhileAiming.update(102,true,false,12,true,true)==11L)
+ check(magnifyWhileAiming.update(202,true,false,12,true,true)==12L)
+
  val nativeWide=MonitorMesh(1.6f,.8f,floatArrayOf(0f,0f,2f),columns=8,rows=8)
  val fittedTall=nativeWide.forPaneExtent(.6f,1.5f)
  check(fittedTall.width==.6f && fittedTall.height==1.5f)

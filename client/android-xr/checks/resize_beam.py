@@ -39,7 +39,7 @@ fun main() {
  val panePoint=floatArrayOf(.45f,.12f,.44f)
  val paneRange=.7f
  val baseGlow=foregroundGlowPoint(panePoint,eye,1f,1.4f)
- val paneGlow=foregroundGuidePoint(baseGlow,eye,1f,paneRange)
+ val paneGlow=foregroundGlowPoint(baseGlow,eye,1f,paneRange)
  val paneGlowRange=distance(paneGlow,eye)
  check(paneGlowRange*1.018f<paneRange)
  for(axis in 0..2) check(kotlin.math.abs(

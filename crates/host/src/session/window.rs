@@ -397,7 +397,25 @@ pub(super) fn start(
                                     ));
                                 }
                             }
-                            base.atlas_layers(&layers, 0)?
+                            match base.atlas_layers(&layers, 0) {
+                                Ok(image) => image,
+                                Err(error) if !popups.is_empty() => {
+                                    // A child can be destroyed between the catalogue and the
+                                    // composite request. Keep the owner stream alive and rebuild
+                                    // the child captures on the next frame.
+                                    tracing::debug!(%error, id, "Retrying companion window capture");
+                                    popup_captures.clear();
+                                    popup_background = None;
+                                    let header = serde_json::json!({
+                                        "type":"window-unchanged-v1", "windowId":id, "bytes":0
+                                    })
+                                    .to_string();
+                                    socket.write_all(&(header.len() as u32).to_be_bytes())?;
+                                    socket.write_all(header.as_bytes())?;
+                                    continue;
+                                }
+                                Err(error) => return Err(error),
+                            }
                         };
                         if let Ok(cursor) = shared.cursor.lock() {
                             let contains = |x: i32, y: i32, width: u32, height: u32| {

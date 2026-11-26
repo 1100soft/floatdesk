@@ -36,6 +36,23 @@ fn values(link: &X11Link, window: u32, property: u32, kind: AtomEnum) -> Result<
         .map_err(Error::x11)?;
     Ok(reply.value32().map(|v| v.collect()).unwrap_or_default())
 }
+/// Thunderbird identifies Compose by role, but does not set WM_TRANSIENT_FOR.
+fn thunderbird_compose_links(roles: &[(u32, u32, Vec<u8>)]) -> Vec<(u32, u32)> {
+    roles
+        .iter()
+        .filter_map(|(id, leader, role)| {
+            if role != b"Msgcompose" {
+                return None;
+            }
+            let mut parents = roles
+                .iter()
+                .filter(|(_, group, role)| group == leader && role == b"3pane");
+            let parent = parents.next()?.0;
+            parents.next().is_none().then_some((*id, parent))
+        })
+        .collect()
+}
+
 pub fn catalogue() -> Result<(bool, Vec<FocusWindow>)> {
     let link = X11Link::open()?;
     let supported = values(
@@ -64,6 +81,9 @@ pub fn catalogue() -> Result<(bool, Vec<FocusWindow>)> {
     let state = atom(&link, b"_NET_WM_STATE")?;
     let hidden = atom(&link, b"_NET_WM_STATE_HIDDEN")?;
     let transient = atom(&link, b"WM_TRANSIENT_FOR")?;
+    let role = atom(&link, b"WM_WINDOW_ROLE")?;
+    let leader = atom(&link, b"WM_CLIENT_LEADER")?;
+    let mut thunderbird_roles = Vec::new();
     let mut windows = Vec::new();
     for id in values(&link, link.root, stacking, AtomEnum::WINDOW)?
         .into_iter()
@@ -123,7 +143,36 @@ pub fn catalogue() -> Result<(bool, Vec<FocusWindow>)> {
         })();
         // Windows can disappear between catalogue queries.
         if let Ok(Some(window)) = row {
+            if let Ok(reply) =
+                link.conn
+                    .get_property(false, id, AtomEnum::WM_CLASS, AtomEnum::STRING, 0, 64)
+            {
+                if reply.reply().ok().is_some_and(|reply| {
+                    reply.value.split(|b| *b == 0).any(|field| {
+                        field.eq_ignore_ascii_case(b"thunderbird")
+                            || field.eq_ignore_ascii_case(b"thunderbird_thunderbird")
+                    })
+                }) {
+                    if let (Some(group), Some(role)) = (
+                        values(&link, id, leader, AtomEnum::WINDOW)
+                            .ok()
+                            .and_then(|v| v.first().copied())
+                            .filter(|id| *id != 0),
+                        link.conn
+                            .get_property(false, id, role, AtomEnum::STRING, 0, 32)
+                            .ok()
+                            .and_then(|reply| reply.reply().ok()),
+                    ) {
+                        thunderbird_roles.push((id, group, role.value));
+                    }
+                }
+            }
             windows.push(window);
+        }
+    }
+    for (child, owner) in thunderbird_compose_links(&thunderbird_roles) {
+        if let Some(row) = windows.iter_mut().find(|row| row.id == child) {
+            row.transient_for.get_or_insert(owner);
         }
     }
     Ok((true, windows))
@@ -198,6 +247,13 @@ pub fn window_popups(link: &X11Link, client: u32) -> Result<Vec<FocusWindow>> {
         .map_err(Error::x11)?
         .reply()
         .map_err(Error::x11)?;
+    let (_, catalogue) = observed_catalogue();
+    let fallback_parent = |id| {
+        catalogue
+            .iter()
+            .find(|row| row.id == id)
+            .and_then(|row| row.transient_for)
+    };
     let mut result = Vec::new();
     for id in tree.children.into_iter().chain(clients) {
         if id == client || result.iter().any(|w: &FocusWindow| w.id == id) {
@@ -216,10 +272,17 @@ pub fn window_popups(link: &X11Link, client: u32) -> Result<Vec<FocusWindow>> {
                 return Ok(None);
             }
             let kinds = values(link, id, types, AtomEnum::ATOM)?;
-            let mut parent = values(link, id, transient, AtomEnum::WINDOW)?
-                .first()
-                .copied();
-            let has_parent = parent.is_some_and(|p| p != link.root);
+            let parent_of = |id| {
+                values(link, id, transient, AtomEnum::WINDOW).map(|parent| {
+                    parent
+                        .first()
+                        .copied()
+                        .filter(|p| *p != link.root && *p != id)
+                        .or_else(|| fallback_parent(id))
+                })
+            };
+            let mut parent = parent_of(id)?;
+            let has_parent = parent.is_some();
             let mut owned = false;
             for _ in 0..12 {
                 match parent {
@@ -227,11 +290,7 @@ pub fn window_popups(link: &X11Link, client: u32) -> Result<Vec<FocusWindow>> {
                         owned = true;
                         break;
                     }
-                    Some(p) if p != id => {
-                        parent = values(link, p, transient, AtomEnum::WINDOW)?
-                            .first()
-                            .copied()
-                    }
+                    Some(p) if p != id => parent = parent_of(p)?,
                     _ => break,
                 }
             }
@@ -964,6 +1023,28 @@ pub fn window_action(value: &serde_json::Value) -> Result<()> {
     let link = X11Link::open()?;
     let mask = EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY;
     let action = value["action"].as_str().unwrap_or("");
+    if action == "close" {
+        let protocols = atom(&link, b"WM_PROTOCOLS")?;
+        let delete = atom(&link, b"WM_DELETE_WINDOW")?;
+        if values(&link, id, protocols, AtomEnum::ATOM)?.contains(&delete) {
+            link.conn
+                .send_event(
+                    false,
+                    id,
+                    EventMask::NO_EVENT,
+                    ClientMessageEvent::new(
+                        32,
+                        id,
+                        protocols,
+                        [delete, x11rb::CURRENT_TIME, 0, 0, 0],
+                    ),
+                )
+                .map_err(Error::x11)?
+                .check()
+                .map_err(Error::x11)?;
+            return link.conn.flush().map_err(Error::x11);
+        }
+    }
     let (name, data) = match action {
         "close" => ("_NET_CLOSE_WINDOW", [x11rb::CURRENT_TIME, 2, 0, 0, 0]),
         "minimize" => ("WM_CHANGE_STATE", [3, 0, 0, 0, 0]),
@@ -1064,6 +1145,19 @@ pub fn window_action(value: &serde_json::Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compose_requires_a_unique_matching_thunderbird_leader() {
+        let mut roles = vec![
+            (1, 10, b"3pane".to_vec()),
+            (2, 10, b"Msgcompose".to_vec()),
+            (3, 11, b"Msgcompose".to_vec()),
+            (4, 10, b"MessageWindow".to_vec()),
+        ];
+        assert_eq!(thunderbird_compose_links(&roles), vec![(2, 1)]);
+        roles.push((5, 10, b"3pane".to_vec()));
+        assert!(thunderbird_compose_links(&roles).is_empty());
+    }
     use x11rb::protocol::xproto::{CreateWindowAux, PropMode, WindowClass};
     use x11rb::wrapper::ConnectionExt as _;
     #[test]
@@ -1541,10 +1635,53 @@ mod tests {
             .unwrap()
             .check()
             .unwrap();
+        let role = atom(&link, b"WM_WINDOW_ROLE").unwrap();
+        let leader = atom(&link, b"WM_CLIENT_LEADER").unwrap();
+        let protocols = atom(&link, b"WM_PROTOCOLS").unwrap();
+        let delete = atom(&link, b"WM_DELETE_WINDOW").unwrap();
+        for (id, window_role) in [(ids[0], b"3pane".as_slice()), (ids[1], b"Msgcompose")] {
+            link.conn
+                .change_property8(
+                    PropMode::REPLACE,
+                    id,
+                    AtomEnum::WM_CLASS,
+                    AtomEnum::STRING,
+                    b"Thunderbird\0thunderbird_thunderbird\0",
+                )
+                .unwrap()
+                .check()
+                .unwrap();
+            link.conn
+                .change_property8(PropMode::REPLACE, id, role, AtomEnum::STRING, window_role)
+                .unwrap()
+                .check()
+                .unwrap();
+            link.conn
+                .change_property32(PropMode::REPLACE, id, leader, AtomEnum::WINDOW, &[ids[0]])
+                .unwrap()
+                .check()
+                .unwrap();
+        }
+        link.conn
+            .change_property32(
+                PropMode::REPLACE,
+                ids[1],
+                protocols,
+                AtomEnum::ATOM,
+                &[delete],
+            )
+            .unwrap()
+            .check()
+            .unwrap();
         let (cap, rows) = catalogue().unwrap();
         assert!(cap);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].id, ids[1]);
+        assert_eq!(rows[0].transient_for, Some(ids[0]));
+        window_action(&serde_json::json!({"windowId":ids[1],"action":"close"})).unwrap();
+        let event = link.conn.wait_for_event().unwrap();
+        assert!(matches!(event, x11rb::protocol::Event::ClientMessage(event)
+            if event.window == ids[1] && event.type_ == protocols && event.data.as_data32()[0] == delete));
         assert_eq!(
             (rows[0].x, rows[0].y, rows[0].width, rows[0].height),
             (100, 120, 300, 200)

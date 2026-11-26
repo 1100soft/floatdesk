@@ -439,6 +439,10 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 foreground(transformPoint(pane.pose,edge),subtract(at(pane.width*.12f),at(-pane.width*.12f)),true)
             }
             is ToolbarTarget.Window->{
+                popupWindows.get().firstOrNull{it.id==target.id}?.let{pane->
+                    fun at(u:Float)=magnifierCursorPoint(pane,u,0f)
+                    return foreground(at(.5f),subtract(at(.65f),at(.35f)),false)
+                }
                 val info=connection.workspaceInfo.value ?: return null
                 val source=info.windows.firstOrNull{it.id==target.id} ?: return null
                 val desktop=workspace.monitorAt(0) ?: return null;val b=info.bounds() ?: return null
@@ -1357,7 +1361,10 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 ?: magnifierPointerHover.entries.firstOrNull{(key,hover)->workspace.fixedMagnifiers.any{record->record.id==key} && (hover.first || eyeAiming && hover.second)}?.key
             fun windowAt(hit:PointerTarget?)=hit?.takeIf{it.monitor==0}?.let{connection.desktopPoint(it.monitor,it.u,it.v)}?.let{(u,v)->focusInfo?.hover(u,v)?.window?.windowId}
             val systemGaze=if(hudReading)null else pointerControl.systemGaze()
-            val windowHover=(if(!eyeAiming || gazeBlockedByPane)null else windowAt(systemGaze) ?: windowAt(rawDesktopGazeTarget))
+            val childHover=paneGaze?.takeIf{it.third.startsWith("menu:")}?.first?.id
+                ?: panelHands.values.firstNotNullOfOrNull{hit->hit.spaceKey.removePrefix("menu:")
+                    .takeIf{hit.spaceKey.startsWith("menu:")}?.toLongOrNull()}
+            val windowHover=childHover?.takeIf{id->focusInfo?.windows?.any{it.id==id}==true} ?: (if(!eyeAiming || gazeBlockedByPane)null else windowAt(systemGaze) ?: windowAt(rawDesktopGazeTarget))
                 ?: hoverHands.filterKeys{it !in magnifierHands}.values.firstNotNullOfOrNull{windowAt(it)}
             val viewerPoint=handTracking.points["VIEWER"] ?: handTracking.points["HEAD"]
             val stripRays=contentEyeRays+listOfNotNull(systemGaze?.let{g->
@@ -1373,7 +1380,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 litStrip!=null && stripRays.any{(o,d)->litStrip.containsMarker(o,d)}->toolbar.highlight
                 else->null
             }
-            if(workspace.layoutModeActive)toolbar.clear() else toolbar.update(handTracking.nowMs,magnifierHover?.let{ToolbarTarget.Magnifier(it)} ?: windowHover?.let{ToolbarTarget.Window(it)},gazeStrip,toolbarEngaged,
+            if(workspace.layoutModeActive)toolbar.clear() else toolbar.update(handTracking.nowMs,windowHover?.takeIf{it==childHover}?.let{ToolbarTarget.Window(it)} ?: magnifierHover?.let{ToolbarTarget.Magnifier(it)} ?: windowHover?.let{ToolbarTarget.Window(it)},gazeStrip,toolbarEngaged,
                 windowGrab.engaged || magnifierMoving || monitorGrab || nativeManipulation || displayControlsOpen || palmPanel!=null || !sceneActive || !resumed)
             if(toolbar.open!=toolbarTarget){
                 val opened=toolbar.open

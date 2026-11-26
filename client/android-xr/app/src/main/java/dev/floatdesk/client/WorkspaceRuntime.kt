@@ -1807,14 +1807,14 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     else->fixedRuntime[ownerKey]
                 })?.takeIf{it.id==requestedOwner.id} ?: requestedOwner
                 val popups=connection.windowCaptures.popups(owner.id).filter{p->systemInfo?.systemWindows?.none{it.id==p.id}!=false && assignedPopups.add(p.id)}
-                var retainedSlots by remember {mutableIntStateOf(0)}
-                val count=maxOf(retainedSlots,popups.size)
-                SideEffect{retainedSlots=count}
-                for(slot in 0 until count) key(slot){
-                    val popup=popups.getOrNull(slot)
+                var retainedSlots by remember {mutableStateOf(emptyList<Long?>())}
+                val slots=retainedChildSlots(retainedSlots,popups.map{it.id})
+                SideEffect{retainedSlots=slots}
+                for((slot,id) in slots.withIndex()) key(slot){
+                    val popup=popups.firstOrNull{it.id==id}
                     val source=connection.windowCaptures.source(owner.id)
                     val pane=if(source!=null && popup!=null)
-                        foregroundMagnifierPopup(owner,stickyMagnifier(owner,source,popup,fixedViewer,slot),fixedViewer,handTracking.desktopSphereRadius)
+                        foregroundMagnifierPopup(owner,stickyMagnifier(owner,source,popup,fixedViewer,popups.indexOf(popup)),fixedViewer,handTracking.desktopSphereRadius)
                     else null
                     val name="popup:$ownerKey:$slot"
                     DisposableEffect(name,popup?.id){popupReady[name]=false;onDispose{popupReady.remove(name);popupRuntime.remove(name)}}

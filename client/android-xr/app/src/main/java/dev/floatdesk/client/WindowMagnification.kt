@@ -114,6 +114,17 @@ internal fun sameNativePaneExtent(current:MagnifiedWindow?,requested:MagnifiedWi
     current!=null && current.spherical==requested.spherical &&
         abs(current.width-requested.width)<.003f && abs(current.height-requested.height)<.003f
 
+/** Keep existing children on their native slots when X11 changes stacking order. */
+internal fun retainedChildSlots(previous:List<Long?>,children:List<Long>):List<Long?> {
+    val remaining=children.toMutableSet()
+    val slots=previous.map{it?.takeIf(remaining::remove)}.toMutableList()
+    for(id in remaining){
+        val empty=slots.indexOf(null)
+        if(empty<0)slots.add(id) else slots[empty]=id
+    }
+    return slots
+}
+
 /** Translate the retained sphere so its local eye stays at the viewer. */
 internal fun centerPaneSphere(pose:Pose,mesh:MonitorMesh,viewer:Pose):Pose {
     val offset=rotateVector(pose.rotation,mesh.eye[0],mesh.eye[1],mesh.eye[2])

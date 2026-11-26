@@ -80,7 +80,11 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
             savedPaneSize!=null -> resources.authoredSize==authoredSize
             else -> sameNativePaneExtent(old,requested)
         }
-        if(!keepGeometry || resources.listener==null)resources.detachSurface()
+        if(!keepGeometry || resources.listener==null){
+            if(regionId!=null && resources.entity!=null)android.util.Log.i("Floatdesk",
+                "child canvas replace owner=$captureId child=$regionId previous=${old?.id} generation=${resources.generation} requested=${requested.width}x${requested.height}")
+            resources.detachSurface()
+        }
         val sphericalFit=(savedPaneSize!=null || childAperture) && requested.spherical && requested.mesh!=null && RenderPolicy.CustomMeshes
         val baseCanvas=if(sphericalFit){
             resources.baseGeometry ?: run {

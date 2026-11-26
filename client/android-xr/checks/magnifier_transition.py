@@ -32,6 +32,11 @@ fun main() {
         check(!sameNativePaneExtent(pane,pane.copy(spherical=!curved)))
         check(!sameNativePaneExtent(null,pane))
     }
+    val original=retainedChildSlots(emptyList(),listOf(41L,42L))
+    check(original==listOf(41L,42L))
+    check(retainedChildSlots(original,listOf(42L,41L))==original)
+    check(retainedChildSlots(original,listOf(42L))==listOf(null,42L))
+    check(retainedChildSlots(original,listOf(42L,43L))==listOf(43L,42L))
     println("PASS immutable magnifier meshes, reusable extent, and flat/curved separation")
 }
 '''

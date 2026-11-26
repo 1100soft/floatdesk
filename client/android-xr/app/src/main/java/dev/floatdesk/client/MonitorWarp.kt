@@ -82,6 +82,7 @@ internal class MonitorWarp : AutoCloseable {
     val gazeReference:MonitorMesh? get()=if(mesh==null)null else referenceMesh ?: mesh
     private var projectionUpdatedAt=0L
     private var geometryUpdatedAt=0L
+    private var appliedMinimumRadius=0f
     fun presentation(rects:FloatArray,inset:Float) {
         if(!screenRects.contentEquals(rects) || spacing!=inset) {screenRects=rects.copyOf();spacing=inset;presentationDirty=true}
     }
@@ -171,7 +172,7 @@ internal class MonitorWarp : AutoCloseable {
     }
 
     @SuppressLint("RestrictedApi")
-    fun attach(session: Session, inputSurface: Surface, placement: MonitorPlacement, density: PixelDensity? = null, onEvent: ((SpatialInputEvent) -> Unit)? = null, onHover: ((String, FloatArray?, FloatArray?, Float, Float) -> Unit)? = null, forwardGaze:()->Boolean={false}): Surface {
+    fun attach(session: Session, inputSurface: Surface, placement: MonitorPlacement, density: PixelDensity? = null, onEvent: ((SpatialInputEvent) -> Unit)? = null, onHover: ((String, FloatArray?, FloatArray?, Float, Float) -> Unit)? = null, forwardGaze:()->Boolean={false},hideHandMarker:()->Boolean={false}): Surface {
         close()
         val target = session.scene.getEntitiesOfType(SurfaceEntity::class.java)
             .firstOrNull { it.getSurface() === inputSurface }
@@ -192,7 +193,7 @@ internal class MonitorWarp : AutoCloseable {
                 // Keep the native monitor hit and its matrix together instead of using the front hit.
                 val info = event.hitInfoList.firstOrNull { it.inputEntity === expected } ?: event.hitInfoList.firstOrNull()
                 val gazeSource=event.source==InputEvent.Source.GAZE_AND_GESTURE
-                if(info?.inputEntity===expected)updateSurfaceAimingIcon(expected,gazeSource)
+                if(info?.inputEntity===expected)updateSurfaceAimingIcon(expected,gazeSource || hideHandMarker() && event.source==InputEvent.Source.HANDS)
                 val pointerSide=event.pointerType.toString()
                 val side=when{
                     gazeSource->"GAZE"
@@ -348,7 +349,8 @@ internal class MonitorWarp : AutoCloseable {
         }
         val selectedFocus=focus?.let {floatArrayOf(it[0].coerceIn(-reference!!.width*.5f,reference.width*.5f),it[1].coerceIn(-reference.height*.5f,reference.height*.5f))} ?: center.copyOf(2)
         val focusChanged=(previous?.focus==null || (0..1).any {kotlin.math.abs(selectedFocus[it]-previous.focus!![it])>.001f})
-        val foregroundIntrusion=previous!=null && previous.innerRadius+0.001f<minimumGeometryRadius
+        val foregroundIntrusion=previous!=null && minimumGeometryRadius>appliedMinimumRadius+.001f &&
+            previous.innerRadius+.001f<minimumGeometryRadius
         val changed = cutouts!=appliedCutouts || foregroundIntrusion || focusChanged || previous?.center?.contentEquals(center)!=true || presentationDirty || previous == null || previous.width != placement.physicalWidthM || previous.height != placement.physicalHeightM ||
             viewer.indices.any { kotlin.math.abs(viewer[it] - previous.eye[it]) > 0.01f }
         if (changed) {
@@ -368,29 +370,37 @@ internal class MonitorWarp : AutoCloseable {
                 next.eye[2]-next.normal[2]*next.geometryRadius,
             )
             val shape = videoShape(next.width,next.height,next,origin,cutouts)
-            val target = if (live === original && retainedCurved!=null) retainedCurved!!.also {
-                syncCurvedPose(original)
-                applyPixels(it,placement)
-            } else if(live === original) SurfaceEntity.create(session,
-                shape = shape, pose = original.getPose(), parent = null,
-                superSampling = SurfaceEntity.SuperSampling.NONE,mediaBlendingMode=SurfaceEntity.MediaBlendingMode.OPAQUE).also {
-                it.setEnabled(false)
-                it.setScale(original.getScale())
-                applyPixels(it,placement)
-                val pointer=SpatialPointerComponent.create(session)
-                check(it.addComponent(pointer))
-                pointer.spatialPointerIcon=SpatialPointerIcon.NONE
-                retainedCurved=it;curvedState=NativeNodeState(it)
-                recentShapes.retain(shape)
-                syncCurvedPose(original)
-            } else live!!
-            if(submitShape!=null){
-                if(!submitShape{applyShape(target,shape)})return
-            }else applyShape(target,shape)
+            val submit: () -> Unit = {
+                val existing = retainedCurved
+                if (existing != null) {
+                    applyShape(existing, shape)
+                } else {
+                    // Creation already submits the initial mesh. Do not immediately replace it.
+                    recentShapes.retain(shape)
+                    val created = SurfaceEntity.create(session,
+                        shape = shape, pose = original.getPose(), parent = null,
+                        superSampling = SurfaceEntity.SuperSampling.NONE,
+                        mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE)
+                    created.setEnabled(false)
+                    created.setScale(original.getScale())
+                    val pointer = SpatialPointerComponent.create(session)
+                    check(created.addComponent(pointer))
+                    pointer.spatialPointerIcon = SpatialPointerIcon.NONE
+                    retainedCurved = created
+                    curvedState = NativeNodeState(created)
+                    appliedShape = shape
+                }
+            }
+            if (submitShape != null) {
+                if (!submitShape(submit)) return
+            } else submit()
+            val target = checkNotNull(retainedCurved)
+            applyPixels(target, placement)
             appliedCutouts=cutouts
             videoOrigin=origin
             live=target;syncCurvedPose(original);curvedState?.enabled(shown)
             flatWidth = next.width; flatHeight = next.height
+            appliedMinimumRadius=minimumGeometryRadius
             mesh = next;presentationDirty=false;geometryUpdatedAt=android.os.SystemClock.uptimeMillis()
         }
     }
@@ -413,6 +423,7 @@ internal class MonitorWarp : AutoCloseable {
         referenceMesh=null
         projectionUpdatedAt=0L
         geometryUpdatedAt=0L
+        appliedMinimumRadius=0f
         appliedShape = null
         videoOrigin=Vector3.Zero
         appliedCutouts=emptyList()

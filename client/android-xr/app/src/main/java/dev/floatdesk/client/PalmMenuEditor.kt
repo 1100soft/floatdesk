@@ -70,8 +70,8 @@ internal data class PalmCustomLayout(
     fun move(page:PalmPage,action:PalmAction,point:PalmGridPoint):PalmCustomLayout{
         val occupied=buttons(page).any{other->
             other.action!=action &&
-                abs((other.x+other.w/2)*PalmMenuLayout.widthM-point.x)<PalmMenuLayout.cellM-.00001f &&
-                abs((other.y+other.h/2)*PalmMenuLayout.heightM(page)-point.y)<PalmMenuLayout.cellM-.00001f
+                abs((other.x+other.w/2)*PalmMenuLayout.widthM-point.x)<PalmMenuLayout.buttonM-.00001f &&
+                abs((other.y+other.h/2)*PalmMenuLayout.heightM(page)-point.y)<PalmMenuLayout.buttonM-.00001f
         }
         return if(occupied)this else copy(positions=positions+(action to point))
     }

@@ -1,6 +1,9 @@
 package dev.floatdesk.client
 
-internal data class PointerTarget(val monitor: Int, val u: Float, val v: Float, val local: FloatArray, val spaceKey: String = "desktop")
+internal data class PointerTarget(val monitor: Int, val u: Float, val v: Float, val local: FloatArray, val spaceKey: String = "desktop",val sourcePoint:Pair<Float,Float>?=null)
+internal fun PointerTarget.hostPoint(desktopPoint:(Int,Float,Float)->Pair<Float,Float>?):Pair<Float,Float>? =
+    sourcePoint ?: desktopPoint(monitor,u,v)
+
 internal data class HandAimPose(val position: FloatArray,val rotation: FloatArray)
 internal enum class PointerMode { OFF, GAZE, HAND, PREVIEW, GRAB;
     val reservesDesktop get()=this==PREVIEW || this==GRAB

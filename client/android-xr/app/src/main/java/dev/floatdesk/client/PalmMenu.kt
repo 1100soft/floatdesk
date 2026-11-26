@@ -36,41 +36,40 @@ import dev.floatdesk.client.workspace.WorkspaceFile
 import kotlin.math.cos
 import kotlin.math.sin
 
-internal enum class PalmAction { FOLLOW, RESET, SEARCH, SETTINGS, WARP, MOVE, HAND_MOUSE, FREE, REFERENCE, TAP_TO_FOCUS, DRAG_TO_MOVE, HANDS_OFF, DIAGNOSTICS, GAZE_FOCUS, MAGNIFIER, MOUSE_SPACES, LAYOUT, ALIGN_AXES, SNAP_OBJECTS, FACE_USER, AUTO_ADJUST, RESET_ORIGIN, UNDO, REDO, LOAD_1, LOAD_2, LOAD_3, SAVE_1, SAVE_2, SAVE_3, DONE, EDIT }
+internal enum class PalmAction { FOLLOW, RESET, SEARCH, SETTINGS, WARP, MOVE, HAND_MOUSE, FREE, REFERENCE, TAP_TO_FOCUS, DRAG_TO_MOVE, HANDS_OFF, DIAGNOSTICS, GAZE_FOCUS, MAGNIFIER, MOUSE_SPACES, LAYOUT, ALIGN_AXES, SNAP_OBJECTS, FACE_USER, AUTO_ADJUST, RESET_ORIGIN, UNDO, REDO, LOAD_1, LOAD_2, LOAD_3, SAVE_1, SAVE_2, SAVE_3, DONE, EDIT, AIM_MAGNIFY }
 internal enum class PalmPage { MAIN, LAYOUT; val isLayout get()=this==LAYOUT }
 internal data class PalmButton(val action: PalmAction, val x: Float, val y: Float, val w: Float, val h: Float)
 
 /** Same cell metrics as [WindowMenuLayout]; button rectangles are normalized to the panel. */
 internal object PalmMenuLayout {
     const val cellM = .041f
+    const val buttonM = .037f
     const val circleM=.36f
     const val modesHeight=.057f
     const val widthM = circleM
     const val tooltipHeightM = .038f
-    private val modes = listOf(PalmAction.HAND_MOUSE,PalmAction.TAP_TO_FOCUS,PalmAction.DRAG_TO_MOVE,PalmAction.HANDS_OFF)
     internal data class Item(val action:PalmAction,val x:Float,val y:Float)
     internal data class Cluster(val label:String,val x:Float,val y:Float,val items:List<Item>)
-    private fun cluster(label:String,x:Float,y:Float,vararg items:Item)=Cluster(label,x,y,items.toList())
-    private val main=run{
-        listOf(
-            cluster("Navigation",.37f,.09f,Item(PalmAction.RESET,.44f,.22f),Item(PalmAction.LAYOUT,.57f,.22f),Item(PalmAction.FOLLOW,.50f,.35f)),
-            cluster("Surfaces",.65f,.36f,Item(PalmAction.MAGNIFIER,.67f,.48f),Item(PalmAction.REFERENCE,.81f,.48f),Item(PalmAction.WARP,.74f,.62f)),
-            cluster("Input",.15f,.37f,Item(PalmAction.GAZE_FOCUS,.20f,.49f),Item(PalmAction.MOUSE_SPACES,.30f,.62f)),
-            cluster("System",.395f,.67f,Item(PalmAction.SETTINGS,.37f,.78f),Item(PalmAction.DIAGNOSTICS,.50f,.83f),Item(PalmAction.SEARCH,.63f,.78f)),
-        )
-    }
-    private val layout=run{
-        listOf(
-            cluster("Manipulate",.37f,.08f,Item(PalmAction.MOVE,.43f,.19f),Item(PalmAction.FREE,.57f,.19f)),
-            cluster("Arrange",.17f,.27f,Item(PalmAction.ALIGN_AXES,.22f,.39f),Item(PalmAction.SNAP_OBJECTS,.36f,.39f),
-                Item(PalmAction.FACE_USER,.22f,.52f),Item(PalmAction.AUTO_ADJUST,.36f,.52f)),
-            cluster("Restore",.64f,.28f,Item(PalmAction.RESET_ORIGIN,.65f,.40f),Item(PalmAction.RESET,.79f,.40f)),
-            cluster("History",.64f,.49f,Item(PalmAction.UNDO,.65f,.61f),Item(PalmAction.REDO,.79f,.61f)),
-            cluster("Saved layouts",.13f,.60f,Item(PalmAction.LOAD_1,.24f,.70f),Item(PalmAction.LOAD_2,.37f,.70f),Item(PalmAction.LOAD_3,.50f,.70f),
-                Item(PalmAction.SAVE_1,.24f,.83f),Item(PalmAction.SAVE_2,.37f,.83f),Item(PalmAction.SAVE_3,.50f,.83f)),
-            cluster("",.70f,.79f,Item(PalmAction.DONE,.68f,.80f)),
-        )
-    }
+    private const val grid = cellM / (2 * circleM)
+    private fun item(action:PalmAction,column:Int,row:Int)=Item(action,column*grid,row*grid)
+    private fun cluster(label:String,column:Int,row:Int,vararg items:Item)=Cluster(label,column*grid,row*grid,items.toList())
+    private val main=listOf(
+        cluster("Support objects",1,3,item(PalmAction.MAGNIFIER,2,5),item(PalmAction.REFERENCE,4,5),item(PalmAction.DIAGNOSTICS,6,5)),
+        cluster("Mode switches",11,3,item(PalmAction.GAZE_FOCUS,13,5),item(PalmAction.MOUSE_SPACES,15,5),
+            item(PalmAction.FOLLOW,13,7),item(PalmAction.WARP,15,7),item(PalmAction.AIM_MAGNIFY,15,9)),
+        cluster("",8,8,item(PalmAction.RESET,9,8),item(PalmAction.SETTINGS,8,10),item(PalmAction.LAYOUT,10,10),item(PalmAction.SEARCH,13,10)),
+        cluster("Aim interaction",6,12,item(PalmAction.HANDS_OFF,9,14),item(PalmAction.HAND_MOUSE,7,16),
+            item(PalmAction.TAP_TO_FOCUS,9,16),item(PalmAction.DRAG_TO_MOVE,11,16)),
+    )
+    private val layout=listOf(
+        cluster("Layout mode",7,1,item(PalmAction.MOVE,8,3),item(PalmAction.FREE,10,3)),
+        cluster("Adjustment",2,6,item(PalmAction.ALIGN_AXES,2,5),item(PalmAction.FACE_USER,4,5),
+            item(PalmAction.SNAP_OBJECTS,6,5),item(PalmAction.AUTO_ADJUST,4,8)),
+        cluster("",8,8,item(PalmAction.DONE,9,8),item(PalmAction.RESET,8,10),item(PalmAction.RESET_ORIGIN,10,10),
+            item(PalmAction.UNDO,12,8),item(PalmAction.REDO,14,8)),
+        cluster("Saved layouts",6,12,item(PalmAction.LOAD_1,7,14),item(PalmAction.LOAD_2,9,14),item(PalmAction.LOAD_3,11,14),
+            item(PalmAction.SAVE_1,7,16),item(PalmAction.SAVE_2,9,16),item(PalmAction.SAVE_3,11,16)),
+    )
     fun clusters(page:PalmPage)=if(page.isLayout)layout else main
     val layoutActions=layout.flatMap{group->group.items.map{it.action}}
 
@@ -79,11 +78,10 @@ internal object PalmMenuLayout {
     fun buttons(page:PalmPage):List<PalmButton> = buildList {
         val height=heightM(page)
         fun button(action:PalmAction,x:Float,y:Float){
-            add(PalmButton(action,(x-cellM*.5f)/widthM,(y-cellM*.5f)/height,cellM/widthM,cellM/height))
+            add(PalmButton(action,(x-buttonM*.5f)/widthM,(y-buttonM*.5f)/height,buttonM/widthM,buttonM/height))
         }
         for(group in clusters(page))for(item in group.items)button(item.action,item.x*circleM,item.y*circleM)
-        button(PalmAction.EDIT,circleM*.50f,circleM*if(page.isLayout).47f else .51f)
-        if(!page.isLayout)modes.forEachIndexed{i,action->button(action,circleM*.5f+(i-1.5f)*.047f,circleM+modesHeight*.5f)}
+        button(PalmAction.EDIT,15*cellM/2,if(page.isLayout)16*cellM/2 else circleM+modesHeight/2)
     }
 }
 
@@ -93,7 +91,8 @@ internal fun palmActionEnabled(action:PalmAction,workspace:WorkspaceFile,info:Wo
     if(action != PalmAction.RESET && action in PalmMenuLayout.layoutActions)return false
     return when(action){
         PalmAction.WARP->RenderPolicy.SphericalDesktop
-        PalmAction.GAZE_FOCUS->info?.gazeFocus==true || workspace.gazeToFocus
+        PalmAction.GAZE_FOCUS->info?.windowMagnify==true || workspace.gazeToFocus
+        PalmAction.AIM_MAGNIFY->info?.windowMagnify==true || workspace.aimToMagnify
         PalmAction.MAGNIFIER->info?.windowMagnify==true || workspace.magnifyWindow
         PalmAction.MOUSE_SPACES->RenderPolicy.CursorTopology
         else->true
@@ -118,25 +117,15 @@ internal fun palmState(action: PalmAction, workspace: WorkspaceFile, latched: Bo
         PalmAction.REFERENCE -> toggle(workspace.desktopReference)
         PalmAction.DIAGNOSTICS -> toggle(workspace.viewDetailDebug)
         PalmAction.GAZE_FOCUS -> toggle(workspace.gazeToFocus)
+        PalmAction.AIM_MAGNIFY -> toggle(workspace.aimToMagnify)
         PalmAction.MOUSE_SPACES -> toggle(workspace.cursorRemap)
         PalmAction.WARP -> PalmState(2, if (workspace.sphericalWarp) 1 else 0)
-        PalmAction.MAGNIFIER -> PalmState(3, listOf("fixed", "floating", "off").indexOf(magnifierLabel(workspace)))
+        PalmAction.MAGNIFIER -> toggle(workspace.magnifyWindow)
         else -> null
     }
 }
 
-internal fun magnifierLabel(workspace: WorkspaceFile) = when {
-    !workspace.magnifyWindow -> "off"
-    workspace.magnifierMode == "fixed" -> "fixed"
-    else -> "floating"
-}
-
-/** Cycles fixed → floating → off → fixed, using the same fields as Settings. */
-internal fun nextMagnifier(workspace: WorkspaceFile): WorkspaceFile = when (magnifierLabel(workspace)) {
-    "off" -> workspace.copy(magnifyWindow = true, magnifierMode = "fixed")
-    "fixed" -> workspace.copy(magnifyWindow = true, magnifierMode = "floating")
-    else -> workspace.copy(magnifyWindow = false)
-}
+internal fun nextMagnifier(workspace:WorkspaceFile)=workspace.copy(magnifyWindow=!workspace.magnifyWindow)
 
 internal fun palmTooltip(action: PalmAction, workspace: WorkspaceFile, latched: Boolean): String = when (action) {
     PalmAction.SETTINGS -> "Settings"
@@ -156,8 +145,9 @@ internal fun palmTooltip(action: PalmAction, workspace: WorkspaceFile, latched: 
     PalmAction.FREE -> "Two-hand manual layout"
     PalmAction.REFERENCE -> "Desktop reference"
     PalmAction.SEARCH -> "Reconnect"
-    PalmAction.GAZE_FOCUS -> if (workspace.gazeToFocus) "Gaze to focus on" else "Gaze to focus off"
-    PalmAction.MAGNIFIER -> "Magnifier ${magnifierLabel(workspace)} · tap for ${magnifierLabel(nextMagnifier(workspace))}"
+    PalmAction.GAZE_FOCUS -> if (workspace.gazeToFocus) "Gaze to magnify on" else "Gaze to magnify off"
+    PalmAction.AIM_MAGNIFY -> if(workspace.aimToMagnify) "Aim to magnify on" else "Aim to magnify off"
+    PalmAction.MAGNIFIER -> if(workspace.magnifyWindow) "Magnifier on" else "Magnifier off"
     PalmAction.MOUSE_SPACES -> if (workspace.cursorRemap) "Mouse spaces connected" else "Mouse spaces separate"
     PalmAction.LAYOUT -> "Layout"
     PalmAction.ALIGN_AXES -> "Align with axes"
@@ -187,7 +177,7 @@ internal fun PalmControls(page: PalmPage, workspace: WorkspaceFile, info: Worksp
                         drawCircle(if(page.isLayout)Color(0xFF28344F) else Color(0xFF202D3B),size.height/2)
                         for(group in PalmMenuLayout.clusters(page)){
                             for(item in group.items){
-                                drawCircle(Color(0xFF34465D),size.width*.065f,Offset(item.x*size.width,item.y*size.height))
+                                drawCircle(Color(0xFF34465D),size.width*(PalmMenuLayout.buttonM/PalmMenuLayout.widthM*.5f),Offset(item.x*size.width,item.y*size.height))
                             }
                         }
                     }
@@ -366,12 +356,13 @@ private fun DrawScope.drawPalmIcon(action: PalmAction, workspace: WorkspaceFile,
             line(.05f, .95f, .28f, .95f); line(.05f, .95f, .05f, .72f); line(.95f, .95f, .72f, .95f); line(.95f, .95f, .95f, .72f)
             eye(.5f, .5f, .3f)
         }
+        PalmAction.AIM_MAGNIFY -> {
+            ring(.63f,.37f,.23f);line(.79f,.53f,.95f,.69f)
+            line(.07f,.88f,.49f,.49f);line(.28f,.5f,.49f,.49f);line(.48f,.72f,.49f,.49f)
+        }
         PalmAction.MAGNIFIER -> {
             ring(.42f, .42f, .3f); line(.64f, .64f, .95f, .95f)
-            when (magnifierLabel(workspace)) {
-                "off" -> line(.05f, .95f, .95f, .05f)
-                "fixed" -> { line(.42f, .26f, .42f, .5f); dot(.42f, .26f, .08f) }
-            }
+            if(!workspace.magnifyWindow)line(.05f,.95f,.95f,.05f)
         }
         PalmAction.MOUSE_SPACES -> {
             box(.02f, .25f, .36f, .65f); box(.64f, .25f, .98f, .65f)

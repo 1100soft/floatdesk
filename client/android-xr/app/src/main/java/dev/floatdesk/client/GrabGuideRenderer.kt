@@ -39,6 +39,10 @@ internal fun foregroundGuidePoint(point:FloatArray,eye:FloatArray?,units:Float,d
     return FloatArray(3){eye[it]+(point[it]-eye[it])*limit/distance}
 }
 
+/** Keep foreground glow centers on the original sightline, with clearance from video. */
+internal fun foregroundGlowPoint(point:FloatArray,eye:FloatArray,units:Float,desktopRange:Float?):FloatArray =
+    visibleGrabContact(foregroundGuidePoint(point,eye,units,desktopRange?.times(.88f)),eye,units)
+
 /** Native meshes without Interactable/Movable components: guides must not capture hand input. */
 @Suppress("DEPRECATION")
 @android.annotation.SuppressLint("RestrictedApi")
@@ -51,7 +55,7 @@ internal class GrabGuideRenderer private constructor(
     private var closed = false
     private val nodeStates=java.util.IdentityHashMap<Entity,NativeNodeState>()
     private fun state(entity:Entity)=nodeStates.getOrPut(entity){NativeNodeState(entity)}
-    private var pointerPoint: GltfModelEntity? = null
+    private var pointerPoint: SurfaceEntity? = null
     private var highlight:SurfaceEntity?=null
     private var nextInkAllocation=0L
     private val aimBeams=mutableMapOf<Int,SurfaceEntity>()
@@ -162,44 +166,73 @@ internal class GrabGuideRenderer private constructor(
 
     }
 
-    fun updatePointer(parent: Entity, position: FloatArray?, eye: FloatArray?, unitsPerMeter: Float) {
-        if (closed) return
-        if (position == null) { pointerPoint?.setEnabled(false); return }
-        val entity = pointerPoint ?: GltfModelEntity.create(session,models[2]).also { pointerPoint=it; it.setAlpha(.2f) }
-        entity.parent=parent
-        entity.setEnabled(true)
-        point(entity,visibleGrabContact(position,eye,unitsPerMeter),.003f*unitsPerMeter)
+    fun updatePointer(parent:Entity,position:FloatArray?,eye:FloatArray?,unitsPerMeter:Float,desktopRange:Float?,ownerRange:Float?){
+        if(closed)return
+        if(position==null || eye==null){pointerPoint?.let{state(it).enabled(false)};return}
+        // Match the toolbar glow's foreground ordering, keeping the same view ray.
+        val baseline=foregroundGlowPoint(position,eye,unitsPerMeter,desktopRange)
+        val front=foregroundGlowPoint(baseline,eye,unitsPerMeter,ownerRange)
+        val range=distance(front,eye)
+        if(!range.isFinite() || range<.0001f){pointerPoint?.let{state(it).enabled(false)};return}
+        val marker=pointerPoint ?: newGlow(.42f)?.also{pointerPoint=it} ?: return
+        placeGlow(marker,parent,front,Quaternion.fromLookTowards(vector(eye)-vector(front),Vector3.Up),
+            range*.018f,1f)
     }
 
     fun updateHighlight(parent:Entity,position:FloatArray?,rotation:FloatArray,diameter:Float,pulse:Float){
         if(closed)return
         if(position==null || diameter<=0f){highlight?.let{state(it).enabled(false)};return}
-        val marker=highlight ?: ink(layoutOriginSphereGeometry(),0x6639DFFF)?.also{highlight=it} ?: return
+        val marker=highlight ?: newGlow()?.also{highlight=it} ?: return
+        placeGlow(marker,parent,position,Quaternion(rotation[0],rotation[1],rotation[2],rotation[3]),
+            diameter*(.37f+.04f*pulse),.65f+.2f*pulse)
+    }
+
+    private fun newGlow(textureOpacity:Float=1f)=
+        ink(glowingSphere,0){paintSphereGlow(it,textureOpacity)}
+
+    private fun placeGlow(marker:SurfaceEntity,parent:Entity,position:FloatArray,rotation:Quaternion,radius:Float,opacity:Float){
         state(marker).apply{
             this.parent(parent)
-            pose(Pose(vector(position),Quaternion(rotation[0],rotation[1],rotation[2],rotation[3])))
-            scale(diameter*(.37f+.04f*pulse))
-            alpha(.65f+.2f*pulse)
+            pose(Pose(vector(position),rotation))
+            scale(radius)
+            alpha(opacity)
             enabled(true)
         }
     }
 
+    private fun paintSphereGlow(canvas:android.graphics.Canvas,textureOpacity:Float){
+        val colors=intArrayOf(0x003EEFFF,0x003EEFFF,0x223EEFFF,0x806FEFFF.toInt(),0xB8E6FCFF.toInt())
+        for(i in colors.indices){
+            colors[i]=(colors[i] and 0x00FFFFFF) or (((colors[i] ushr 24)*textureOpacity).toInt() shl 24)
+        }
+        val paint=android.graphics.Paint().apply{
+            shader=android.graphics.LinearGradient(0f,0f,canvas.width.toFloat(),0f,
+                colors,
+                floatArrayOf(0f,.5f,.62f,.86f,1f),android.graphics.Shader.TileMode.CLAMP)
+        }
+        canvas.drawColor(android.graphics.Color.TRANSPARENT,android.graphics.PorterDuff.Mode.CLEAR)
+        canvas.drawPaint(paint)
+    }
+
+    private fun ink(geometry:VideoGeometry,color:Int,painter:((android.graphics.Canvas)->Unit)?=null):SurfaceEntity? =
+        ink({nativeVideoMesh(geometry)},color,painter)
+
     @OptIn(androidx.xr.scenecore.ExperimentalSurfaceEntityPixelDimensionsApi::class)
-    private fun ink(geometry:VideoGeometry,color:Int):SurfaceEntity?{
+    private fun ink(shape:()->SurfaceEntity.Shape,color:Int,painter:((android.graphics.Canvas)->Unit)?=null):SurfaceEntity?{
         val now=android.os.SystemClock.uptimeMillis()
         if(now<nextInkAllocation)return null
         nextInkAllocation=now+90L
-        val entity=SurfaceEntity.create(session,shape=nativeVideoMesh(geometry),parent=null,
+        val entity=SurfaceEntity.create(session,shape=shape(),parent=null,
             superSampling=SurfaceEntity.SuperSampling.NONE,mediaBlendingMode=SurfaceEntity.MediaBlendingMode.TRANSPARENT)
         entity.setEnabled(false)
         if(!SurfaceInput.disableCollider(entity)){
             entity.dispose()
             return null
         }
-        entity.setSurfacePixelDimensions(IntSize2d(16,8))
+        entity.setSurfacePixelDimensions(if(painter==null)IntSize2d(16,8) else IntSize2d(64,64))
         val surface=entity.getSurface()
         val canvas=surface.lockCanvas(null)
-        try{canvas.drawColor(color,android.graphics.PorterDuff.Mode.SRC)}finally{surface.unlockCanvasAndPost(canvas)}
+        try{if(painter==null)canvas.drawColor(color,android.graphics.PorterDuff.Mode.SRC)else painter(canvas)}finally{surface.unlockCanvasAndPost(canvas)}
         return entity
     }
 
@@ -264,13 +297,19 @@ internal class GrabGuideRenderer private constructor(
         }
         (aimBeams.values+grabBeams.values+grabContacts).forEach { if(!it.isDisposed){it.parent=null; it.dispose()} }
         aimBeams.clear();grabBeams.clear();grabContacts.clear()
-        pointerPoint?.dispose(); pointerPoint = null
+        pointerPoint?.let { if(!it.isDisposed){it.setEnabled(false);it.parent=null} }; pointerPoint = null
         highlight?.let { if(!it.isDisposed){it.parent=null; it.dispose()} }; highlight = null
         groups.clear()
         if(session.lifecycleOwner.lifecycle.currentState!=androidx.lifecycle.Lifecycle.State.DESTROYED)models.forEach { it.close() }
     }
 
     companion object {
+        private val glowingSphere=layoutOriginSphereGeometry().let{sphere->
+            val uv=FloatArray(sphere.texCoords.size){i->
+                if(i%2==0)(sphere.positions[i/2*3+2]+1f)*.5f else .5f
+            }
+            sphere.copy(texCoords=uv)
+        }
         private val beamGeometry=VideoGeometry(
             floatArrayOf(-.5f,-.5f,-.5f,-.5f,.5f,-.5f,.5f,.5f,-.5f,.5f,-.5f,-.5f,
                 -.5f,-.5f,.5f,-.5f,.5f,.5f,.5f,.5f,.5f,.5f,-.5f,.5f),

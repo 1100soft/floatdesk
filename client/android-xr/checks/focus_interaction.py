@@ -21,6 +21,85 @@ metadata=body('net/WorkspaceInfo.kt');metadata=metadata[:metadata.index('    com
 code='import kotlin.math.*\n'+body('MonitorMesh.kt')+surface_hit+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+re.search(r'internal fun deskLayout\(.*?\n}',(root/'workspace/Workspace.kt').read_text(),re.S).group(0)+body('workspace/WorkspacePlacement.kt')+metadata+body('WindowMagnification.kt')+body('LayoutOrigin.kt')+body('LayoutAdjustment.kt')+body('LayoutGuideInk.kt')+body('WindowInteraction.kt').replace('dev.floatdesk.client.workspace.MonitorPlacement','MonitorPlacement')+body('WindowToolbarState.kt')+re.search(r'internal object WindowMenuLayout \{.*?\n}',(root/'WindowActionsMenu.kt').read_text(),re.S).group(0)+'\n'+topology+body('VideoGeometry.kt')+body('MagnifierContacts.kt')+body('BoundedHistory.kt')+body('RenderPolicy.kt')+body('net/WindowCaptureRetry.kt')+body('net/WindowCaptureFormat.kt').replace('dev.floatdesk.client.RenderPolicy','RenderPolicy')+''.join(re.search(r'internal fun '+name+r'\(.*?\n}',application_sources(),re.S).group(0) for name in ('transformPoint','rotateVector','quaternionBetween','multiplyQuaternion','normalize3','normalize4'))+re.search(r'internal fun distance\(a: FloatArray.*?\n}',application_sources(),re.S).group(0)+'\n'+re.search(r'internal fun subtract\(a: FloatArray[^\n]*\n[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun dot\(a: FloatArray[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun cross3\(.*',application_sources()).group(0)+'\n'+r'''
 fun add(a:FloatArray,b:FloatArray)=FloatArray(3){a[it]+b[it]}
 fun main() {
+ val magnifyWhileAiming=WindowMagnification(dwellMs=100,travelMs=0)
+ magnifyWhileAiming.update(1,true,false,11,false,true)
+ check(magnifyWhileAiming.update(101,true,false,11,false,true)==11L)
+ check(magnifyWhileAiming.update(102,true,false,12,true,true)==11L)
+ check(magnifyWhileAiming.update(202,true,false,12,true,true)==12L)
+
+ val nativeWide=MonitorMesh(1.6f,.8f,floatArrayOf(0f,0f,2f),columns=8,rows=8)
+ val fittedTall=nativeWide.forPaneExtent(.6f,1.5f)
+ check(fittedTall.width==.6f && fittedTall.height==1.5f)
+ check(fittedTall.texCoords.contentEquals(nativeWide.texCoords))
+ val picked=floatArrayOf(.18f,-.4f,0f)
+ val curvedHit=fittedTall.project(picked,onTriangles=true)
+ check(distance(fittedTall.unproject(curvedHit)!!,picked)<.0001f)
+ check(distance(meshRayHit(fittedTall,fittedTall.eye,subtract(curvedHit,fittedTall.eye))!!,curvedHit)<.0001f)
+ check(fittedTall.forPaneExtent(1.6f,.8f)===nativeWide)
+ val squareSphere=MonitorMesh(1.6f,1.6f,floatArrayOf(0f,0f,2f),columns=32,rows=20)
+ val tallAperture=squareSphere.forSphericalAperture(.6f,1.5f)
+ check(tallAperture.eye.contentEquals(squareSphere.eye))
+ check(tallAperture.geometryRadius==squareSphere.geometryRadius)
+ for(sample in listOf(floatArrayOf(.2f,.65f,0f),floatArrayOf(-.25f,-.7f,0f))){
+    val spherePoint=tallAperture.project(sample,onTriangles=true)
+    check(abs(distance(spherePoint,tallAperture.eye)-squareSphere.radius)<.002f)
+    check(distance(tallAperture.unproject(spherePoint)!!,sample)<.0001f)
+ }
+ val movedEye=Pose(floatArrayOf(.4f,.2f,.1f))
+ val recentered=centerPaneSphere(Pose(),tallAperture,movedEye)
+ check(distance(transformPoint(recentered,tallAperture.eye),movedEye.position)<.0001f)
+ val cursorPose=Pose(floatArrayOf(.2f,0f,-1.6f))
+ val cursorPane=MagnifiedWindow(987,cursorPose,.6f,1.5f,400,1000,spherical=true,mesh=tallAperture)
+ val markerUv=cursorSourceUv(CursorLocation("pane",.5f,.5f,0f,0f,430f,510f),30f,10f,500f,1000f)!!
+ check(markerUv==(.8f to .5f))
+ val markerPoint=magnifierCursorPoint(cursorPane,markerUv.first,markerUv.second)
+ check(distance(markerPoint,transformPoint(cursorPose,tallAperture.project(floatArrayOf(.18f,0f,0f),onTriangles=true)))<.0001f)
+ var lastVertical=1.01f
+ for(step in 0..20){
+    val v=.98f-step*.048f
+    val local=squareSphere.project(floatArrayOf(.12f,(.5f-v)*cursorPane.height,0f),onTriangles=true)
+    val world=transformPoint(cursorPose,local)
+    val eye=transformPoint(cursorPose,squareSphere.eye)
+    val contact=sphericalPaneContact(cursorPane,squareSphere,eye to subtract(world,eye))!!
+    check(contact.second.second<lastVertical && abs(contact.second.second-v)<.0001f)
+    lastVertical=contact.second.second
+ }
+ val hitMatrix=floatArrayOf(1f,0f,0f,0f,0f,1f,0f,0f,0f,0f,1f,0f,-.7f,.2f,0f,1f)
+ val nativeOffset=floatArrayOf(.7f,-.2f,0f)
+ for(v in listOf(.05f,.5f,.95f)){
+    val desired=squareSphere.project(floatArrayOf(0f,(.5f-v)*cursorPane.height,0f),onTriangles=true)
+    val raw=add(desired,nativeOffset)
+    val nativeEye=add(squareSphere.eye,nativeOffset)
+    val resolved=eventMatrixHit(raw,hitMatrix,squareSphere.width,squareSphere.height,squareSphere,
+        rayDirection=subtract(raw,nativeEye),rayOrigin=nativeEye)!!
+    check(abs(sphericalPanePoint(cursorPane,squareSphere,resolved)!!.second.second-v)<.0001f)
+ }
+ val offPane=transformPoint(cursorPose,squareSphere.project(floatArrayOf(.55f,0f,0f),onTriangles=true))
+ val cursorEye=transformPoint(cursorPose,squareSphere.eye)
+ check(sphericalPaneContact(cursorPane,squareSphere,cursorEye to subtract(offPane,cursorEye))==null)
+ val popupEye=Pose()
+ for(curved in listOf(false,true)){
+    val popupOwner=MagnifiedWindow(70,Pose(floatArrayOf(.5f,.15f,-1.2f)),1.8f,1.2f,1200,800,
+        spherical=curved,mesh=if(curved)MonitorMesh(1.8f,1.2f,floatArrayOf(-.5f,-.15f,1.2f)) else null)
+    val largePopup=MagnifiedWindow(71,Pose(floatArrayOf(.7f,.3f,-1.1f)),1.4f,1.3f,400,350,
+        spherical=curved,mesh=if(curved)MonitorMesh(1.4f,1.3f,floatArrayOf(-.7f,-.3f,1.1f)) else null)
+    val foreground=foregroundMagnifierPopup(popupOwner,largePopup,popupEye,2f)
+    val ownerNear=paneFrontRadius(popupOwner,popupEye)
+    val outline=foreground.mesh?.outline ?: listOf(
+        floatArrayOf(-foreground.width/2,foreground.height/2,0f),floatArrayOf(foreground.width/2,foreground.height/2,0f),
+        floatArrayOf(-foreground.width/2,-foreground.height/2,0f),floatArrayOf(foreground.width/2,-foreground.height/2,0f))
+    check(outline.all{distance(transformPoint(foreground.pose,it),popupEye.position)<ownerNear})
+    check(distance(normalize3(foreground.pose.position),normalize3(largePopup.pose.position))<1e-5f)
+ }
+
+ val parent=DesktopWindow(1,0,0,800,600)
+ val companion=DesktopWindow(2,850,50,400,300,transientFor=1)
+ val independent=DesktopWindow(3,0,600,800,600)
+ val ownership=WorkspaceInfo(emptyList(),0,emptyList(),0,1,0,30,"",false,windows=listOf(parent,companion,independent))
+ check(ownership.magnificationOwner(2)==1L)
+ check(ownership.magnificationOwner(3)==3L)
+ check(ownership.copy(windows=listOf(companion,independent)).magnificationOwner(2)==2L)
+
  val repairMonitor=deskLayout(listOf(Triple("desktop",3456,2160))).first()
  val repairViewer=Pose(floatArrayOf(0f,0f,0f))
  val invalidPose=Pose(floatArrayOf(-1.2e8f,2.8e8f,2.7e8f),floatArrayOf(26f,223f,-220f,2305f))

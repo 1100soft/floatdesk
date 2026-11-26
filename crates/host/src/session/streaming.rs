@@ -289,6 +289,8 @@ pub(super) fn monitor_thread(
             let mut view_was_active = false;
             let mut seen_generation = 0;
             let mut seen_cursor = 0;
+            let mut last_capture = None;
+            let mut pending_tail = false;
             let mut clip: Option<(Vec<MonitorRect>, crate::media::desktop_mask::DesktopMask)> =
                 None;
             while !done.load(Ordering::Relaxed)
@@ -355,11 +357,20 @@ pub(super) fn monitor_thread(
                     seen_cursor = cursor_generation;
                     capture.note_cursor();
                 }
-                let Some(mut frame) = capture.poll(interval, force)? else {
+                let mut frame = capture.poll(interval, force)?;
+                let tail = frame.is_none()
+                    && pending_tail
+                    && last_capture.is_some_and(|last: Instant| last.elapsed() >= interval);
+                if tail {
+                    frame = capture.poll(interval, true)?;
+                }
+                let Some(mut frame) = frame else {
                     shared.skipped.fetch_add(1, Ordering::Relaxed);
                     thread::sleep(Duration::from_millis(2));
                     continue;
                 };
+                last_capture = Some(Instant::now());
+                pending_tail = !tail;
                 if let Ok(cursor) = shared.cursor.lock() {
                     paint_cursor_scaled(&mut frame, rect, &cursor);
                 }

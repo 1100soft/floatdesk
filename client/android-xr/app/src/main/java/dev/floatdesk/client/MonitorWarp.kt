@@ -82,6 +82,7 @@ internal class MonitorWarp : AutoCloseable {
     val gazeReference:MonitorMesh? get()=if(mesh==null)null else referenceMesh ?: mesh
     private var projectionUpdatedAt=0L
     private var geometryUpdatedAt=0L
+    private var appliedMinimumRadius=0f
     fun presentation(rects:FloatArray,inset:Float) {
         if(!screenRects.contentEquals(rects) || spacing!=inset) {screenRects=rects.copyOf();spacing=inset;presentationDirty=true}
     }
@@ -348,7 +349,8 @@ internal class MonitorWarp : AutoCloseable {
         }
         val selectedFocus=focus?.let {floatArrayOf(it[0].coerceIn(-reference!!.width*.5f,reference.width*.5f),it[1].coerceIn(-reference.height*.5f,reference.height*.5f))} ?: center.copyOf(2)
         val focusChanged=(previous?.focus==null || (0..1).any {kotlin.math.abs(selectedFocus[it]-previous.focus!![it])>.001f})
-        val foregroundIntrusion=previous!=null && previous.innerRadius+0.001f<minimumGeometryRadius
+        val foregroundIntrusion=previous!=null && minimumGeometryRadius>appliedMinimumRadius+.001f &&
+            previous.innerRadius+.001f<minimumGeometryRadius
         val changed = cutouts!=appliedCutouts || foregroundIntrusion || focusChanged || previous?.center?.contentEquals(center)!=true || presentationDirty || previous == null || previous.width != placement.physicalWidthM || previous.height != placement.physicalHeightM ||
             viewer.indices.any { kotlin.math.abs(viewer[it] - previous.eye[it]) > 0.01f }
         if (changed) {
@@ -398,6 +400,7 @@ internal class MonitorWarp : AutoCloseable {
             videoOrigin=origin
             live=target;syncCurvedPose(original);curvedState?.enabled(shown)
             flatWidth = next.width; flatHeight = next.height
+            appliedMinimumRadius=minimumGeometryRadius
             mesh = next;presentationDirty=false;geometryUpdatedAt=android.os.SystemClock.uptimeMillis()
         }
     }
@@ -420,6 +423,7 @@ internal class MonitorWarp : AutoCloseable {
         referenceMesh=null
         projectionUpdatedAt=0L
         geometryUpdatedAt=0L
+        appliedMinimumRadius=0f
         appliedShape = null
         videoOrigin=Vector3.Zero
         appliedCutouts=emptyList()

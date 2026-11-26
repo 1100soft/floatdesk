@@ -62,7 +62,11 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
         hoverNow.value("LEFT",null);hoverNow.value("RIGHT",null);clearPointerHover()
         fun surfaceMode(value:MagnifiedWindow)=if(value.spherical==projectionMode)value else value.copy(spherical=projectionMode,mesh=null)
         val initial=window?.takeIf{(desktopMirror || it.id>0L) && it.sourceWidth>0 && it.sourceHeight>0}?.let(::surfaceMode) ?: return@LaunchedEffect
-        if(transientSurface && regionId==null)delay(80) // Let a captured region settle before allocating its native mesh.
+        if(transientSurface && regionId==null)delay(80)
+        // Captured children can announce provisional dimensions several frames
+        // before the final ones. Cancel obsolete mesh allocations when they do.
+        if(transientSurface && regionId!=null &&
+            resources.rendered?.let{it.sourceWidth!=initial.sourceWidth || it.sourceHeight!=initial.sourceHeight}!=false)delay(320)
         while(connection.thermalPaused.value)delay(100)
         var initialViewer=viewer.get()
         while(initialViewer==null){withFrameNanos{};initialViewer=viewer.get()}

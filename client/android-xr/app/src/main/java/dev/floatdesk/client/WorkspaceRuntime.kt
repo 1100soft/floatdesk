@@ -1474,15 +1474,16 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 focusHover.filterKeys{focusContacts[it]?.spaceKey=="reference"}.values.flatMap{listOfNotNull(it.screen,it.window)}.distinct()
                 else emptyList()
             referenceInk.set(if(focusInfo==null)dev.floatdesk.client.media.VideoAim() else focusOutlines(referenceTargets,focusInfo,workspace.screenSpacing))
+            val keyLabel=connection.typingLabel(handTracking.nowMs)
             for((index,placement) in workspace.layouts[workspace.activeLayout].orEmpty().withIndex()) {
                 val segments=ArrayList<Float>();val colors=ArrayList<Float>()
-                if(index==0 && typingLocked && focusInfo!=null){
+                if(index==0 && keyLabel!=null && focusInfo!=null){
                     val typed=focusInfo.windows.firstOrNull{it.id==connection.typingWindow}
                     val b=focusInfo.bounds()
                     if(typed!=null && b!=null){
                         val rect=FocusRect((typed.x-b[0]).toFloat()/b[2],(typed.y-b[1]).toFloat()/b[3],(typed.x+typed.width-b[0]).toFloat()/b[2],(typed.y+typed.height-b[1]).toFloat()/b[3])
                         for(visible in focusInfo.visibleRects(rect,workspace.screenSpacing)){
-                            val cue=typingInk.segments(connection.typingShortcut ?: "Typing",visible,
+                            val cue=typingInk.segments(keyLabel,visible,
                                 placement.pixelWidth.toFloat()/placement.pixelHeight.coerceAtLeast(1))
                             segments.addAll(cue.toList());repeat(cue.size/4){colors.addAll(listOf(1f,.75f,.25f))}
                         }
@@ -1996,7 +1997,9 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 val nominal=toolbarStrip.copy(pose=Pose(transformPoint(barPose,floatArrayOf(snapOffset,-(barH+gridH)*.5f,.002f*unit)),barPose.rotation),
                     width=gridW,height=gridH)
                 val viewer=magnifierViewer.get()
-                val grid=if(viewer==null)nominal else nominal.insideViewSphere(viewer.position,handTracking.desktopSphereRadius,unit)
+                val gridOwner=toolbarMagnifier?.let{fixedRuntime[it]}
+                    ?: popupWindows.get().firstOrNull{it.id==toolbarWindow}
+                val grid=if(viewer==null)nominal else nominal.gridInFrontOf(viewer,handTracking.desktopSphereRadius,gridOwner,unit)
                 shownGrid=grid
                 shownPanels+=grid
                 val ratio=grid.width/gridW

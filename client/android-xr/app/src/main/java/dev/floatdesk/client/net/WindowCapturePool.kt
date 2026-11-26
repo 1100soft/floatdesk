@@ -128,6 +128,11 @@ internal class WindowCapturePool @JvmOverloads constructor(private val connectio
         },{
             source.members.remove(key);output?.clear?.invoke()
             if(source.members.isEmpty())source.retire() else if(!source.retired){source.update();source.video.flushOutputs()}
-        },{value->member.ink=value})
+        },{value->
+            if(!member.ink.sameInk(value)){
+                member.ink=value
+                source.video.invalidateInk()
+            }
+        })
     }
 }

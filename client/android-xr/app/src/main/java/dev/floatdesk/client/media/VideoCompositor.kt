@@ -22,6 +22,9 @@ internal data class VideoAim @JvmOverloads constructor(
     val thickness: Float = 2f, val opacity: Float = .18f, val colors: FloatArray = floatArrayOf(),
 )
 
+internal fun VideoAim.sameInk(other:VideoAim)=thickness==other.thickness && opacity==other.opacity &&
+    segments.contentEquals(other.segments) && contacts.contentEquals(other.contacts) && colors.contentEquals(other.colors)
+
 internal data class VideoCrop(val left:Float,val top:Float,val right:Float,val bottom:Float,val aspect:Float)
 internal data class VideoMirror @JvmOverloads constructor(val surface:Surface,val padX:Float=0f,val padY:Float=0f,val pinned:Boolean=false,val aspect:Float=0f,val before:((Long)->Unit)?=null,val presented:(()->Unit)?=null,val crop:(()->VideoCrop?)?=null,val ink:(()->VideoAim)?=null,val minFrameIntervalNs:(()->Long)?=null,val transparentFit:Boolean=false,val aperture:Pair<Float,Float>?=null)
 
@@ -330,13 +333,12 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
 
 
     fun overlay(value: VideoAim) {
-        val before=aim
-        if(before.thickness==value.thickness && before.opacity==value.opacity &&
-            before.segments.contentEquals(value.segments) && before.contacts.contentEquals(value.contacts) &&
-            before.colors.contentEquals(value.colors)) return
+        if(aim.sameInk(value))return
         aim=value
         requestDraw()
     }
+
+    fun invalidateInk(){requestDraw()}
 
     fun presentation(value:ScreenPresentation) {
         val before=presentation

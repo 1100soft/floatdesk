@@ -141,6 +141,15 @@ fun main() {
  check(!gridInk.expired(2000L))
  val gridEye=floatArrayOf(0f,0f,0f)
  val grid=ToolbarStrip(Pose(floatArrayOf(.8f,.3f,-1f)),.5f,.7f,.06f,.01f,false)
+ val curvedGridOwner=MagnifiedWindow(657,Pose(floatArrayOf(0f,0f,-.7f)),1f,1f,500,500,
+     spherical=true,mesh=MonitorMesh(1f,1f,floatArrayOf(0f,0f,.7f)))
+ val ownerGrid=grid.gridInFrontOf(Pose(gridEye),1.25f,curvedGridOwner,1f)
+ val gridClearance=paneFrontRadius(curvedGridOwner,Pose(gridEye))
+ for(y in listOf(-.49f,0f,.49f))for(x in listOf(-.49f,0f,.49f)){
+    val p=transformPoint(ownerGrid.pose,floatArrayOf(x*ownerGrid.width,y*ownerGrid.height,0f))
+    check(distance(gridEye,p)<gridClearance)
+    check(ownerGrid.contains(gridEye,subtract(p,gridEye)))
+ }
  val insetGrid=grid.insideViewSphere(gridEye,1f,1f)
  for(x in listOf(-.5f,.5f))for(y in listOf(-.5f,.5f)){
     val near=transformPoint(insetGrid.pose,floatArrayOf(x*insetGrid.width,y*insetGrid.height,0f))

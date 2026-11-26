@@ -1,4 +1,4 @@
-//! Observe typing age and ephemeral shortcut labels. Unmodified printable keys stay private.
+//! Observe typing activity and retain only the latest key label for the connected headset.
 use super::*;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -12,12 +12,17 @@ static LAST: AtomicU64 = AtomicU64::new(0);
 static WINDOW: AtomicU64 = AtomicU64::new(0);
 static LABEL: Mutex<Option<(u64, u64, String)>> = Mutex::new(None);
 
-pub fn shortcut_label(window: u64) -> Option<String> {
-    LABEL
-        .lock()
-        .ok()?
+pub fn key_label(window: u64) -> Option<String> {
+    let mut latest = LABEL.lock().ok()?;
+    if latest
         .as_ref()
-        .filter(|(at, owner, _)| *owner == window && now().saturating_sub(*at) < 1500)
+        .is_some_and(|(at, _, _)| now().saturating_sub(*at) >= 1500)
+    {
+        *latest = None;
+    }
+    latest
+        .as_ref()
+        .filter(|(_, owner, _)| *owner == window)
         .map(|(_, _, label)| label.clone())
 }
 
@@ -42,7 +47,7 @@ fn keyboard_map(link: &X11Link) -> Option<Vec<u32>> {
     Some(keys)
 }
 
-fn format_shortcut(symbol: u32, held: impl Fn(u32, u32) -> bool) -> Option<String> {
+fn format_key_label(symbol: u32, held: impl Fn(u32, u32) -> bool) -> Option<String> {
     let ctrl = held(0xffe3, 0xffe4);
     let alt = held(0xffe9, 0xffea);
     let super_key = held(0xffeb, 0xffec);
@@ -58,11 +63,14 @@ fn format_shortcut(symbol: u32, held: impl Fn(u32, u32) -> bool) -> Option<Strin
     if super_key {
         parts.push("Super".to_owned());
     }
+    if level_shift {
+        parts.push("AltGr".to_owned());
+    }
     if shift {
         parts.push("Shift".to_owned());
     }
     let key = match symbol {
-        0xffe1..=0xffee => None,
+        0xffe1..=0xffee | 0xfe03 | 0xfe11 | 0xff7e => None,
         0xff08 => Some("Backspace".into()),
         0xff09 => Some("Tab".into()),
         0xff0d => Some("Enter".into()),
@@ -77,11 +85,19 @@ fn format_shortcut(symbol: u32, held: impl Fn(u32, u32) -> bool) -> Option<Strin
         0xff56 => Some("Page Down".into()),
         0xff57 => Some("End".into()),
         0xffbe..=0xffd5 => Some(format!("F{}", symbol - 0xffbe + 1)),
-        0x20..=0x7e if (ctrl || alt || super_key) && !level_shift => Some(if symbol == 0x20 {
-            "Space".into()
-        } else {
-            char::from_u32(symbol)?.to_ascii_uppercase().to_string()
-        }),
+        0x20 => Some("Space".into()),
+        0x21..=0x7e | 0xa0..=0xff | 0x01000100..=0x0110ffff => {
+            let letter = char::from_u32(if symbol >= 0x01000100 {
+                symbol & 0x00ffffff
+            } else {
+                symbol
+            })?;
+            Some(if shift || ctrl || alt || super_key {
+                letter.to_uppercase().collect()
+            } else {
+                letter.to_string()
+            })
+        }
         _ => return None,
     };
     if let Some(key) = key {
@@ -163,7 +179,7 @@ pub fn start() -> bool {
                                 }
                                 let label = map.as_ref().and_then(|map| {
                                     let symbol = *map.get(event.detail as usize)?;
-                                    format_shortcut(symbol, |left, right| {
+                                    format_key_label(symbol, |left, right| {
                                         map.iter().enumerate().any(|(code, symbol)| {
                                             (*symbol == left || *symbol == right)
                                                 && (code == event.detail as usize
@@ -205,15 +221,21 @@ pub fn start() -> bool {
 mod tests {
     use super::*;
     #[test]
-    fn labels_shortcuts_without_disclosing_plain_text() {
-        assert_eq!(format_shortcut(b'a'.into(), |_, _| false), None);
-        assert_eq!(format_shortcut(b'A'.into(), |left, _| left == 0xffe1), None);
+    fn labels_normal_keys_and_shortcuts() {
         assert_eq!(
-            format_shortcut(b'v'.into(), |left, _| left == 0xffe3).as_deref(),
+            format_key_label(b'a'.into(), |_, _| false).as_deref(),
+            Some("a")
+        );
+        assert_eq!(
+            format_key_label(b'a'.into(), |left, _| left == 0xffe1).as_deref(),
+            Some("Shift + A")
+        );
+        assert_eq!(
+            format_key_label(b'v'.into(), |left, _| left == 0xffe3).as_deref(),
             Some("Ctrl + V")
         );
         assert_eq!(
-            format_shortcut(0xff0d, |left, _| left == 0xffe1).as_deref(),
+            format_key_label(0xff0d, |left, _| left == 0xffe1).as_deref(),
             Some("Shift + Enter")
         );
     }
@@ -260,6 +282,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(age_ms() < 1000, "raw keystroke not observed");
+        assert_eq!(key_label(window_id()).as_deref(), Some("a"));
         std::thread::sleep(Duration::from_millis(25));
         assert!(age_ms() >= 20);
     }

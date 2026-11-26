@@ -303,8 +303,8 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                         else rect.top+values[i]*(rect.bottom-rect.top)}
                 }
                 val ink=surfaceCoordinates(wire ?: floatArrayOf())
-                val typed=connection.typingLocked(now) && connection.typingWindow==renderedPane?.id
-                val cue=if(typed && renderedPane!=null)typingInk.segments(connection.typingShortcut ?: "Typing",
+                val keyLabel=connection.typingLabel(now)?.takeIf{connection.typingWindow==renderedPane?.id}
+                val cue=if(keyLabel!=null && renderedPane!=null)typingInk.segments(keyLabel,
                     paneVideoContentRect(renderedPane,baseCanvas,showFrame),
                     if(baseCanvas!=null)1f else renderedPane.width/renderedPane.height)else floatArrayOf()
                 val colors=FloatArray((ink.size+cue.size)/4*3){i->

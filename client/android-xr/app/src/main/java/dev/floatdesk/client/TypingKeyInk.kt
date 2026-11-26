@@ -48,7 +48,7 @@ internal class TypingKeyInk {
         val contentWidth=rect.right-rect.left
         val contentHeight=rect.bottom-rect.top
         if(contentWidth<=0f || contentHeight<=0f || bufferAspect<=0f)return floatArrayOf()
-        val height=minOf(contentHeight*.055f,contentWidth*.55f*bufferAspect/aspect)
+        val height=minOf(contentHeight*.075f,contentWidth*.55f*bufferAspect/aspect)
         val width=height*aspect/bufferAspect
         val left=rect.right-contentWidth*.035f-width
         val top=rect.top+contentHeight*.04f

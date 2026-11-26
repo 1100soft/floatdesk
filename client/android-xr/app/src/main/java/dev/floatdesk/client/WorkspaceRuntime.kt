@@ -535,9 +535,17 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                             val image=magnifierContentRect(pane)
                             id to (pane.width*(image.right-image.left) to pane.height*(image.bottom-image.top))
                         }}.toMap()
-                        workspace=workspace.adjustLayout(adjustment,view,handTracking.unitsPerMeter,contentSizes,contentSizes.keys)
-                        systemPlacements.clear()
-                        store.recordLayout(workspace,adjustment.name.lowercase())
+                        val adjusted=try{
+                            workspace.adjustLayout(adjustment,view,handTracking.unitsPerMeter,contentSizes,contentSizes.keys)
+                        }catch(failure:IllegalArgumentException){
+                            Log.w("Floatdesk","Layout adjustment rejected invalid geometry",failure)
+                            null
+                        }
+                        if(adjusted!=null && adjusted!==workspace){
+                            workspace=adjusted
+                            systemPlacements.clear()
+                            store.recordLayout(workspace,adjustment.name.lowercase())
+                        }
                     }
                 }
                 PalmAction.REFERENCE -> { workspace=workspace.copy(desktopReference=!workspace.desktopReference);store.save(workspace) }

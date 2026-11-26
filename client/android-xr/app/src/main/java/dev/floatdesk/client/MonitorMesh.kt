@@ -23,6 +23,13 @@ internal fun viewerInMonitor(viewer: FloatArray, position: FloatArray, rotation:
 internal fun monitorProjectionCenter(width:Float,height:Float,u:Float,v:Float)=
     floatArrayOf((u-.5f)*width,(.5f-v)*height,0f)
 
+/** Build the same desktop sphere for presentation and layout footprint calculation. */
+internal fun desktopSphericalMesh(
+    width:Float,height:Float,eye:FloatArray,center:FloatArray,minimumRadius:Float,
+    focusX:Float=center[0],focusY:Float=center[1],
+):MonitorMesh = MonitorMesh(width,height,eye,columns=32,rows=20,
+    center=center,focus=floatArrayOf(focusX,focusY),minimumGeometryRadius=minimumRadius)
+
 /** Viewer-centered sphere with optional tangent-plane vertex projection around the viewed pixel. */
 internal class MonitorMesh(
     val width: Float,

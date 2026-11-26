@@ -87,6 +87,7 @@ private fun axisAlignedRotation(rotation:FloatArray):FloatArray {
 internal fun WorkspaceFile.adjustLayout(action:LayoutAdjustment,viewer:Pose,units:Float,contentSizes:Map<String,Pair<Float,Float>> = emptyMap(),visibleRecords:Set<String>?=null):WorkspaceFile{
     if(action==LayoutAdjustment.AUTO)return adjustLayout(LayoutAdjustment.ALIGN,viewer,units,contentSizes,visibleRecords)
         .adjustLayout(LayoutAdjustment.FACE,viewer,units,contentSizes,visibleRecords).adjustLayout(LayoutAdjustment.SNAP,viewer,units,contentSizes,visibleRecords)
+    if(!units.isFinite() || units<=0f || viewer.position.any{!it.isFinite()} || viewer.rotation.any{!it.isFinite()})return this
     val desktop=layouts[activeLayout]?.toList().orEmpty()
     val origin=layoutOrigin ?: desktop.firstOrNull()?.pose ?: return this
     val records=fixedMagnifiers+systemPanels+listOfNotNull(referencePlacement)
@@ -101,7 +102,10 @@ internal fun WorkspaceFile.adjustLayout(action:LayoutAdjustment,viewer:Pose,unit
         }
     val snapped=world.toMutableList()
     if(action==LayoutAdjustment.SNAP){
-        val visible=boxes.indices.filter{i->-boxes[i].center[2]>.001f &&
+        val visible=boxes.indices.filter{i->
+            val box=boxes[i]
+            box.center.all{it.isFinite()} && -box.center[2]>.001f &&
+            box.width.isFinite() && box.height.isFinite() && box.width>0f && box.height>0f &&
             (i<desktop.size || visibleRecords==null || records[i-desktop.size].id in visibleRecords)}
         // The desktop must be in front of the reference before it can anchor a pack.
         if(visible.firstOrNull()!=0 || desktop.isEmpty())return this
@@ -126,8 +130,8 @@ internal fun WorkspaceFile.adjustLayout(action:LayoutAdjustment,viewer:Pose,unit
             val mesh=if(!sphericalWarp)null else if(record==null){
                 val screen=desktop[index]
                 val anchor=monitorProjectionCenter(box.width,box.height,screen.viewCenterU,screen.viewCenterV)
-                MonitorMesh(box.width,box.height,eye,columns=32,rows=20,focus=anchor.copyOf(2),center=anchor,
-                    minimumGeometryRadius=ViewLayers.DesktopDistanceM*units)
+                if(anchor.all{it.isFinite()} && distance(eye,anchor)>.0001f)
+                    desktopSphericalMesh(box.width,box.height,eye,anchor,ViewLayers.DesktopDistanceM*units) else null
             }else projectMagnifier(MagnifiedWindow(0,pose,box.width,box.height,1,1,spherical=true),
                 viewer,pose,box.width,box.height,true,.003f,.003f)
             val bounds=cursorPatches(record?.id ?: "desktop",pose,box.width,box.height,mesh,FocusRect(0f,0f,1f,1f),

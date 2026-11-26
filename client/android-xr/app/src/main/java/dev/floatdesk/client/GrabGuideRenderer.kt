@@ -166,16 +166,17 @@ internal class GrabGuideRenderer private constructor(
 
     }
 
-    fun updatePointer(parent:Entity,position:FloatArray?,eye:FloatArray?,unitsPerMeter:Float,desktopRange:Float?){
+    fun updatePointer(parent:Entity,position:FloatArray?,eye:FloatArray?,unitsPerMeter:Float,desktopRange:Float?,ownerRange:Float?){
         if(closed)return
         if(position==null || eye==null){pointerPoint?.let{state(it).enabled(false)};return}
         // Match the toolbar glow's foreground ordering, keeping the same view ray.
-        val front=foregroundGlowPoint(position,eye,unitsPerMeter,desktopRange)
+        val baseline=foregroundGlowPoint(position,eye,unitsPerMeter,desktopRange)
+        val front=foregroundGuidePoint(baseline,eye,unitsPerMeter,ownerRange)
         val range=distance(front,eye)
         if(!range.isFinite() || range<.0001f){pointerPoint?.let{state(it).enabled(false)};return}
         val marker=pointerPoint ?: newGlow()?.also{pointerPoint=it} ?: return
         placeGlow(marker,parent,front,Quaternion.fromLookTowards(vector(eye)-vector(front),Vector3.Up),
-            range*.018f,.46f)
+            range*.018f,.30f)
     }
 
     fun updateHighlight(parent:Entity,position:FloatArray?,rotation:FloatArray,diameter:Float,pulse:Float){

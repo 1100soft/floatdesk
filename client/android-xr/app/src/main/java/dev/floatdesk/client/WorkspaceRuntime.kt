@@ -1462,10 +1462,12 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                 runCatching {
                     val guides=grabs.mapNotNull { (index,grab) -> workspace.monitorAt(index)?.let {grab.displayGuide(it,pointerControl.meshes[index])} ?: previews[index] } + handTracking.paneGuides.values
                     renderer.update(root,guides,handTracking.desktopSphereRadius)
-                    val pointer=connection.cursorLocation?.let{location->
+                    val location=connection.cursorLocation
+                    val ownerPane=visibleMagnifiers.firstOrNull{it.first==location?.key}?.second
+                    val pointer=location?.let{location->
                         val source=if(location.key=="desktop" || location.key=="reference")
                             focusInfo?.bounds()?.let{dev.floatdesk.client.net.DesktopWindow(0,it[0],it[1],it[2],it[3])}
-                        else visibleMagnifiers.firstOrNull{it.first==location.key}?.second?.let{connection.windowCaptures.source(it.id)}
+                        else ownerPane?.let{connection.windowCaptures.source(it.id)}
                         val uv=source?.let{cursorSourceUv(location,it.x.toFloat(),it.y.toFloat(),it.width.toFloat(),it.height.toFloat())}
                         if(uv==null)null
                         else if(location.key=="desktop"){
@@ -1474,7 +1476,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                                 transformPoint(pane.pose,pointerSurfacePoint(PointerTarget(0,point.first,point.second,FloatArray(3)),
                                     pane.physicalWidthM,pane.physicalHeightM,pointerControl.meshes[0]))
                             }
-                        }else visibleMagnifiers.firstOrNull{it.first==location.key}?.second?.let{pane->
+                        }else ownerPane?.let{pane->
                             val point=if(location.key=="reference")
                                 connection.presentation().extendedDisplayPoint(uv.first,uv.second) ?: return@let null
                             else uv
@@ -1482,7 +1484,12 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                         }
                     }
                     val pointerViewer=magnifierViewer.get()
-                    renderer.updatePointer(root,pointer,pointerViewer?.position,handTracking.unitsPerMeter,handTracking.desktopSphereRadius)
+                    val ownerRange=ownerPane?.let{pane->pointerViewer?.let{eye->
+                        // Native surface ordering can also use the entity's origin.
+                        minOf(paneFrontRadius(pane,eye),distance(pane.pose.position,eye.position))
+                    }}
+                    renderer.updatePointer(root,pointer,pointerViewer?.position,handTracking.unitsPerMeter,
+                        handTracking.desktopSphereRadius,ownerRange)
                     val pulse=.5f+.5f*kotlin.math.sin(SystemClock.uptimeMillis()%2400L/2400f*2f*Math.PI.toFloat())
                     renderer.updateHighlight(root,highlightStrip?.pose?.position,highlightStrip?.pose?.rotation ?: floatArrayOf(0f,0f,0f,1f),highlightStrip?.cell ?: 0f,pulse)
                     val draw: ()->Unit = {

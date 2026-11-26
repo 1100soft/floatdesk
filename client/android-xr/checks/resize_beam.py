@@ -35,6 +35,15 @@ fun main() {
  }
  val flat=PointerTarget(0,.75f,.25f,floatArrayOf(9f,9f,-5f))
  check(pointerSurfacePoint(flat,8f,5f,null).contentEquals(floatArrayOf(2f,1.25f,0f)))
+ // A narrow supporting pane can be closer than the desktop's foreground limit.
+ val panePoint=floatArrayOf(.45f,.12f,.44f)
+ val paneRange=.7f
+ val baseGlow=foregroundGlowPoint(panePoint,eye,1f,1.4f)
+ val paneGlow=foregroundGuidePoint(baseGlow,eye,1f,paneRange)
+ val paneGlowRange=distance(paneGlow,eye)
+ check(paneGlowRange*1.018f<paneRange)
+ for(axis in 0..2) check(kotlin.math.abs(
+     (paneGlow[axis]-eye[axis])/paneGlowRange-(panePoint[axis]-eye[axis])/distance(panePoint,eye))<.00001f)
  val lifted=visibleGrabContact(pointerSurfacePoint(flat,8f,5f,null),eye,1f)
  check(lifted[2]>0f)
  println("PASS stale-hit recovery across large resize/release, exact live UVs, full-ray foreground depth and unchanged logical targets in flat/geodesic modes")

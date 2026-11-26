@@ -387,12 +387,12 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
                 if(!mirror.value.surface.isValid || mirror.egl==EGL14.EGL_NO_SURFACE)continue
                 val now=System.nanoTime()
                 if(mirror.lastDraw!=0L && now-mirror.lastDraw<(mirror.value.minFrameIntervalNs?.invoke() ?: 0L))continue
-                window=mirror.egl;target=mirror.value.surface;activeMirror=mirror.value
-                check(EGL14.eglMakeCurrent(display,window,window,context))
                 val pts=texture.timestamp/1000
                 mirror.value.before?.invoke(pts)
                 val crop=mirror.value.crop?.invoke()
                 if(crop!=null && (crop.right<=crop.left || crop.bottom<=crop.top))continue
+                window=mirror.egl;target=mirror.value.surface;activeMirror=mirror.value
+                check(EGL14.eglMakeCurrent(display,window,window,context))
                 EGLExt.eglPresentationTimeANDROID(display,window,pts*1000)
                 if(drawSurface()){mirror.lastDraw=now;mirror.value.presented?.invoke()}
             }

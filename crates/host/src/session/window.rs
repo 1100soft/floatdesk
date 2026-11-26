@@ -62,6 +62,7 @@ pub(super) fn start(
                     let mut capture = None;
                     let mut encoder = None;
                     let mut native = (0, 0);
+                    let mut coded = (0, 0);
                     let mut current_id = 0;
                     let mut client_size = (0, 0);
                     let mut frame = 0u64;
@@ -190,9 +191,14 @@ pub(super) fn start(
                             && (current_id != id
                                 || popups_at.elapsed() >= Duration::from_millis(80))
                         {
-                            popups =
+                            if current_id != id {
+                                popups.clear();
+                            }
+                            if let Ok(next) =
                                 crate::platform::x11::windows::window_popups(&position_link, id)
-                                    .unwrap_or_default();
+                            {
+                                popups = next;
+                            }
                             popups_at = Instant::now();
                         }
                         if root_capture || shell_preview {
@@ -226,15 +232,22 @@ pub(super) fn start(
                             .min(dimension / source_width as f64)
                             .min(dimension / source_height as f64)
                             .min((pixels / (source_width as f64 * source_height as f64)).sqrt());
-                        let w = ((source_width as f64 * scale) as u32 / 2 * 2).max(128) as u16;
-                        let h = ((source_height as f64 * scale) as u32 / 2 * 2).max(128) as u16;
-                        if capture.is_none()
+                        let restart = capture.is_none()
                             || preview_remapped
-                            || native != (source_width, source_height)
+                            || (root_capture && native != (source_width, source_height))
                             || root_mode != root_capture
                             || current_id != id
-                            || client_size != (geometry.width, geometry.height)
-                        {
+                            || client_size != (geometry.width, geometry.height);
+                        // The client crops from per-frame source coordinates. Changes
+                        // to atlas bounds do not require replacing its codec or EGL input.
+                        if restart {
+                            coded = (
+                                ((source_width as f64 * scale) as u32 / 2 * 2).max(128) as u16,
+                                ((source_height as f64 * scale) as u32 / 2 * 2).max(128) as u16,
+                            );
+                        }
+                        let (w, h) = coded;
+                        if restart {
                             last_sent = None;
                             decoder_priming = 3;
                             encoder.take();

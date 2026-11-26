@@ -72,7 +72,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
         while(initialViewer==null){withFrameNanos{};initialViewer=viewer.get()}
         val projectionEye=placementViewerNow.value ?: initialViewer
         val initialFrame=if(projectFrame)magnifierFrame(initial,initial,projectionEye,units(),true)else projectPaneAtPlacement(initial,initial,projectionEye,true)
-        val requested=placePaneInsideDesktop(initialFrame,projectionEye,tracking.desktopSphereRadius)
+        val requested=if(regionId!=null)initialFrame else placePaneInsideDesktop(initialFrame,projectionEye,tracking.desktopSphereRadius)
         val old=resources.rendered
         val childAperture=regionId!=null && requested.spherical && requested.mesh!=null && RenderPolicy.CustomMeshes
         val keepGeometry=resources.entity!=null && when {
@@ -255,7 +255,8 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
             if(!desktopMirror)resources.stream=connection.windowCaptures.attach(captureId ?: target.id,entity.getSurface(),{
                 if(resources.generation==generation && !entity.isDisposed){shown=true;retryPolicy.reset();failureToken=0;resources.visible=true;resources.hasFrame=true;entity.setEnabled(true);resources.curvedInput?.entity?.setEnabled(true);publishForeground();android.util.Log.i("Floatdesk","pane ready key=$topologyKey id=${target.id}");displayedNow.value?.invoke(target.id);readyNow.value()}
             },{message->if(resources.generation==generation){resources.visible=false;tracking.displayedPanes.remove(resources);if(!retainLastFrame || !resources.hasFrame)entity.setEnabled(false);hoverNow.value("LEFT",null);hoverNow.value("RIGHT",null);clearPointerHover();errorNow.value(message);failureToken++}},regionId=regionId,previewBounds=previewBounds,transparentFit=sphericalFit,
-                aperture=if(childAperture && baseCanvas!=null)target.width/baseCanvas.width to target.height/baseCanvas.height else null)
+                aperture=if(childAperture && baseCanvas!=null)target.width/baseCanvas.width to target.height/baseCanvas.height else null,
+                expectedRegionSize=if(regionId!=null)target.sourceWidth to target.sourceHeight else null)
             fun updateStreamFrame(pane:MagnifiedWindow){
                 val canvasWidth=baseCanvas?.width ?: (pane.width+.01f*pane.units)
                 val canvasHeight=baseCanvas?.height ?: (pane.height+.01f*pane.units)
@@ -372,7 +373,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                 resources.pending=null
                 val projectionEye=if(resources.moving || resources.resizing || resources.free.engaged)head else placementViewerNow.value ?: head
                 val frame=if(projectFrame)magnifierFrame(current,prior,projectionEye,units(),false)else projectPaneAtPlacement(current,prior,projectionEye,false)
-                val presented=placePaneInsideDesktop(frame,projectionEye,tracking.desktopSphereRadius,prior)
+                val presented=if(regionId!=null)frame else placePaneInsideDesktop(frame,projectionEye,tracking.desktopSphereRadius,prior)
                 val actualPose=baseCanvas?.mesh?.let{centerPaneSphere(presented.pose,it,projectionEye)} ?: presented.pose
                 val next=presented.copy(pose=actualPose,width=prior.width,height=prior.height,mesh=prior.mesh)
                 if(moveMode.value){

@@ -30,7 +30,7 @@ internal class MonitorMesh(
     focus:FloatArray?=null,
     val center:FloatArray=floatArrayOf(0f,0f,0f),
     val planar:Boolean=false,
-    minimumGeometryRadius:Float=0f,
+    private val minimumGeometryRadius:Float=0f,
     private val nativeBase:MonitorMesh?=null,
     private val sphericalAperture:Boolean=false,
 ) {
@@ -216,6 +216,15 @@ internal class MonitorMesh(
             for(col in columns downTo 1 step 4) add(vertex(rows,col))
             for(row in rows downTo 1 step 4) add(vertex(row,0))
         }
+    }
+
+    /** Apply the uniform SceneCore scale to the matching logical surface. */
+    fun uniformlyScaled(factor:Float):MonitorMesh {
+        if(factor==1f)return this
+        val base=nativeBase?.uniformlyScaled(factor)
+        return MonitorMesh(width*factor,height*factor,FloatArray(3){eye[it]*factor},columns,rows,
+            focus?.let{FloatArray(it.size){i->it[i]*factor}},FloatArray(3){center[it]*factor},planar,
+            minimumGeometryRadius*factor,base,sphericalAperture)
     }
 
     fun forPaneExtent(width:Float,height:Float):MonitorMesh{

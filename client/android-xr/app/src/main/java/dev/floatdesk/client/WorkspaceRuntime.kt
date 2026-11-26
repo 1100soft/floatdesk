@@ -188,7 +188,6 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
     var magnifierViewerReady by remember { mutableStateOf(false) }
     var magnifierMoving by remember { mutableStateOf(false) }
     var typingLocked by remember { mutableStateOf(false) }
-    val typingInk=remember{TypingKeyInk()}
     var magnifierReady by remember { mutableStateOf(false) }
     var magnifierFailed by remember { mutableStateOf(false) }
     val magnifierHands=remember { MagnifierContacts() }
@@ -1477,20 +1476,19 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
             val keyLabel=connection.typingLabel(handTracking.nowMs)
             for((index,placement) in workspace.layouts[workspace.activeLayout].orEmpty().withIndex()) {
                 val segments=ArrayList<Float>();val colors=ArrayList<Float>()
+                var keyCue:dev.floatdesk.client.media.VideoKeyLabel?=null
                 if(index==0 && keyLabel!=null && focusInfo!=null){
                     val typed=focusInfo.windows.firstOrNull{it.id==connection.typingWindow}
                     val b=focusInfo.bounds()
                     if(typed!=null && b!=null){
                         val rect=FocusRect((typed.x-b[0]).toFloat()/b[2],(typed.y-b[1]).toFloat()/b[3],(typed.x+typed.width-b[0]).toFloat()/b[2],(typed.y+typed.height-b[1]).toFloat()/b[3])
-                        for(visible in focusInfo.visibleRects(rect,workspace.screenSpacing)){
-                            val cue=typingInk.segments(keyLabel,visible,
-                                placement.pixelWidth.toFloat()/placement.pixelHeight.coerceAtLeast(1))
-                            segments.addAll(cue.toList());repeat(cue.size/4){colors.addAll(listOf(1f,.75f,.25f))}
-                        }
+                        focusInfo.visibleRects(rect,workspace.screenSpacing).maxByOrNull{visible->
+                            (visible.right-visible.left)*(visible.bottom-visible.top)
+                        }?.let{keyCue=dev.floatdesk.client.media.VideoKeyLabel(keyLabel,it)}
                     }
                 }
                 if(index==0)connection.cursorWires["desktop"]?.let{wires->segments.addAll(wires.toList());repeat(wires.size/4){colors.addAll(listOf(.6f,.85f,1f))}}
-                connection.aimOverlay(index,dev.floatdesk.client.media.VideoAim(segments.toFloatArray(),floatArrayOf(),maxOf(2f,placement.pixelWidth*.001f),.85f,colors.toFloatArray()))
+                connection.aimOverlay(index,dev.floatdesk.client.media.VideoAim(segments.toFloatArray(),floatArrayOf(),maxOf(2f,placement.pixelWidth*.001f),.85f,colors.toFloatArray(),keyCue))
             }
             guideRenderer?.let { renderer ->
                 runCatching {

@@ -88,14 +88,21 @@ internal fun magnifierGeometry(window:MagnifiedWindow,viewer:Pose,units:Float,pr
     return window.copy(pose=pose,width=width,height=height,mesh=mesh,units=stableUnits,headOffset=offset,headRotation=headRotation)
 
 }
+/** One-handed placement changes direction on the object's configured radial layer. */
+internal fun oneHandLayerPosition(position:FloatArray,viewer:Pose,depthM:Float,units:Float):FloatArray {
+    val ray=subtract(position,viewer.position)
+    val range=distance(position,viewer.position)
+    if(!range.isFinite() || range<.0001f)return position
+    return FloatArray(3){viewer.position[it]+ray[it]*(depthM*units/range)}
+}
+
 internal fun angularMagnifierPlacement(window:MagnifiedWindow,viewer:Pose,units:Float,position:FloatArray,updateMesh:Boolean=true):MagnifiedWindow {
-    if(window.freePose) {
-        // The angular drag already preserves the original radius, including a custom free depth.
-        val rotation=facingMagnifierRotation(position,viewer,window.desktopRotation ?: window.pose.rotation)
-        return magnifierFrame(window.copy(pose=Pose(position,rotation),requestedPosition=position),window,viewer,units,updateMesh)
-    }
-    return if(window.fixed)fixedMagnifierGeometry(window,viewer,position,updateMesh)
-        else magnifierGeometry(window,viewer,units,position,updateMesh)
+    val depth=window.nominalLayerDistanceM ?: window.layerDistanceM
+    val atLayer=oneHandLayerPosition(position,viewer,depth,units)
+    val rotation=facingMagnifierRotation(atLayer,viewer,window.desktopRotation ?: window.pose.rotation)
+    val next=window.copy(pose=Pose(atLayer,rotation),requestedPosition=atLayer,layerDistanceM=depth)
+    return if(window.fixed || window.freePose)magnifierFrame(next,window,viewer,units,updateMesh)
+        else magnifierGeometry(next,viewer,units,atLayer,updateMesh)
 }
 
 /** Equality of the actual submitted mesh, independent of capture identity. */

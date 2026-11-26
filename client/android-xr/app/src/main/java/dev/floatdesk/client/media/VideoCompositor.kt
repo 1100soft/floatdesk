@@ -20,9 +20,12 @@ import android.view.Choreographer
 internal data class VideoAim @JvmOverloads constructor(
     val segments: FloatArray = floatArrayOf(), val contacts: FloatArray = floatArrayOf(),
     val thickness: Float = 2f, val opacity: Float = .18f, val colors: FloatArray = floatArrayOf(),
+    val keyLabel:VideoKeyLabel?=null,
 )
 
-internal fun VideoAim.sameInk(other:VideoAim)=thickness==other.thickness && opacity==other.opacity &&
+internal data class VideoKeyLabel(val text:String,val bounds:dev.floatdesk.client.FocusRect)
+
+internal fun VideoAim.sameInk(other:VideoAim)=keyLabel==other.keyLabel && thickness==other.thickness && opacity==other.opacity &&
     segments.contentEquals(other.segments) && contacts.contentEquals(other.contacts) && colors.contentEquals(other.colors)
 
 internal data class VideoCrop(val left:Float,val top:Float,val right:Float,val bottom:Float,val aspect:Float)
@@ -163,6 +166,15 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
     @Volatile private var viewProjection:ViewProjection?=null
     private var program=0
     private var inkProgram=0
+    private var keyLabelProgram=0
+    private var keyTexture=0
+    private var keyText=""
+    private var keyAspect=1f
+    private val keyPaint by lazy {android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply{
+        typeface=android.graphics.Typeface.DEFAULT
+        textSize=32f
+        color=0xFFD9D9D9.toInt()
+    }}
     private var inkVertexBuffer=0
     @Volatile var outputLimit:Int=4096
         private set
@@ -521,7 +533,9 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             }
         }
         GLES20.glDisable(GLES20.GL_SCISSOR_TEST)
-        drawInk(w[0],h[0])
+        val ink=activeMirror?.ink?.invoke() ?: aim
+        drawInk(w[0],h[0],ink)
+        ink.keyLabel?.let{drawKeyLabel(it,w[0],h[0])}
         check(EGL14.eglSwapBuffers(display,window)) { "video swap failed" }
         if(activeMirror==null)lastPresentedAt=android.os.SystemClock.elapsedRealtime()
         lastDraw=System.nanoTime();submitNs+=lastDraw-drawStarted;swaps++;outputPresented?.invoke()
@@ -538,9 +552,59 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
         statsAt=now;statsBase=baseFrames;statsView=detailUploads;statsSwaps=swaps;statsSubmit=submitNs
     }
 
-    private fun drawInk(width: Int,height: Int) {
+    private fun drawKeyLabel(label:VideoKeyLabel,width:Int,height:Int) {
+        if(width<=0 || height<=0)return
+        val text=label.text.take(36)
+        if(text.isBlank())return
+        if(keyLabelProgram==0){
+            keyLabelProgram=link(KEY_LABEL_VERTEX,KEY_LABEL_FRAGMENT)
+            val id=IntArray(1)
+            GLES20.glGenTextures(1,id,0)
+            keyTexture=id[0]
+        }
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D,keyTexture)
+        if(keyText!=text){
+            val metrics=keyPaint.fontMetrics
+            val w=kotlin.math.ceil(keyPaint.measureText(text)).toInt()+4
+            val h=kotlin.math.ceil(metrics.descent-metrics.ascent).toInt()+4
+            val bitmap=android.graphics.Bitmap.createBitmap(w,h,android.graphics.Bitmap.Config.ARGB_8888)
+            try{
+                android.graphics.Canvas(bitmap).drawText(text,2f,2f-metrics.ascent,keyPaint)
+                android.opengl.GLUtils.texImage2D(GLES20.GL_TEXTURE_2D,0,bitmap,0)
+            }finally{bitmap.recycle()}
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_MIN_FILTER,GLES20.GL_LINEAR)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_MAG_FILTER,GLES20.GL_LINEAR)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_WRAP_S,GLES20.GL_CLAMP_TO_EDGE)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D,GLES20.GL_TEXTURE_WRAP_T,GLES20.GL_CLAMP_TO_EDGE)
+            keyText=text
+            keyAspect=w.toFloat()/h
+        }
+        val rect=label.bounds
+        val contentWidth=rect.right-rect.left
+        val contentHeight=rect.bottom-rect.top
+        val aspect=keyAspect*height/width
+        val h=minOf(contentHeight*.035f,contentWidth*.45f/aspect)
+        if(h<=0f)return
+        val right=rect.right-contentWidth*.025f
+        val top=rect.top+contentHeight*.025f
+        val left=right-aspect*h
+        GLES20.glUseProgram(keyLabelProgram)
+        GLES20.glUniform1i(uniform(keyLabelProgram,"glyph"),0)
+        GLES20.glUniform4f(uniform(keyLabelProgram,"bounds"),2f*left-1f,1f-2f*(top+h),2f*right-1f,1f-2f*top)
+        GLES20.glEnable(GLES20.GL_BLEND)
+        GLES20.glBlendFuncSeparate(GLES20.GL_ONE,GLES20.GL_ONE_MINUS_SRC_ALPHA,GLES20.GL_ONE,GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        val position=attribute(keyLabelProgram,"position")
+        vertices.position(0)
+        GLES20.glEnableVertexAttribArray(position)
+        GLES20.glVertexAttribPointer(position,2,GLES20.GL_FLOAT,false,0,vertices)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP,0,4)
+        GLES20.glDisableVertexAttribArray(position)
+        GLES20.glDisable(GLES20.GL_BLEND)
+    }
+
+    private fun drawInk(width: Int,height: Int,overlay:VideoAim) {
         if(width<=0 || height<=0 || inkVertexBuffer==0)return
-        val overlay=activeMirror?.ink?.invoke() ?: aim
         if(overlay.segments.isEmpty() && overlay.contacts.isEmpty()) return
         val values=inkValues;var valueCount=0
         fun vertex(x: Float,y: Float,alpha: Float,red: Float,green: Float,blue: Float) {
@@ -792,6 +856,22 @@ internal class VideoCompositor(width: Int, height: Int) : AutoCloseable {
             uniform mat4 textureMatrix;
             varying vec2 uv;
             void main(){gl_FragColor=texture2D(video,(textureMatrix*vec4(uv,0.0,1.0)).xy);}
+        """
+        private const val KEY_LABEL_VERTEX="""
+            attribute vec2 position;
+            uniform vec4 bounds;
+            varying vec2 uv;
+            void main() {
+                vec2 p=position*0.5+0.5;
+                gl_Position=vec4(mix(bounds.xy,bounds.zw,p),0.0,1.0);
+                uv=vec2(p.x,1.0-p.y);
+            }
+        """
+        private const val KEY_LABEL_FRAGMENT="""
+            precision mediump float;
+            uniform sampler2D glyph;
+            varying vec2 uv;
+            void main(){gl_FragColor=texture2D(glyph,uv)*0.8;}
         """
         private const val INK_VERTEX="""
             attribute vec2 position;

@@ -152,23 +152,25 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                     val ray=lazy{surfaceInputRay(session,root,event)}
                     val sphere=resources.baseGeometry?.mesh?.takeIf{sphericalFit}
                     val inputMesh=sphere ?: mesh
+                    val factor=resources.presentationScale
+                    val activeSphere=sphere?.let{resources.presentedSphere ?: it}
                     // Native hit data is timestamped with the collider. Do not resolve it
                     // against the newer viewer-relative pose while the pane is moving.
                     val eventLocal=hit?.hitPosition?.let{point->
                         eventMatrixHit(floatArrayOf(point.x,point.y,point.z),hit.transform.data,
-                            inputMesh?.width ?: active.width,inputMesh?.height ?: active.height,inputMesh,
+                            inputMesh?.width ?: active.width/factor,inputMesh?.height ?: active.height/factor,inputMesh,
                             (expected ?: entity).getScale(Space.ACTIVITY),
                             rayDirection=if(inputMesh!=null)floatArrayOf(event.direction.x,event.direction.y,event.direction.z) else null,
                             rayOrigin=if(inputMesh!=null)floatArrayOf(event.origin.x,event.origin.y,event.origin.z) else null)
-                    }
-                    val aperture=if(sphere==null)null else if(eventLocal!=null)
-                        sphericalPanePoint(active,sphere,eventLocal)
-                    else if(hit==null && capturedMove)sphericalPaneContact(active,sphere,ray.value)
+                    }?.let{point->FloatArray(3){point[it]*factor}}
+                    val aperture=if(activeSphere==null)null else if(eventLocal!=null)
+                        sphericalPanePoint(active,activeSphere,eventLocal)
+                    else if(hit==null && capturedMove)sphericalPaneContact(active,activeSphere,ray.value)
                     else null
                     val local=if(sphere!=null)aperture?.first else eventLocal
-                        ?: (if(hit!=null || capturedMove)surfaceInputHit(ray.value,active.pose,active.width,active.height,mesh) else null)
+                        ?: (if(hit!=null || capturedMove)surfaceInputHit(ray.value,active.pose,active.width,active.height,active.mesh) else null)
                     val uv=if(sphere!=null)aperture?.second else local?.let{point->
-                        val flat=mesh?.unproject(point) ?: point
+                        val flat=active.mesh?.unproject(point) ?: point
                         val u=flat[0]/active.width+.5f
                         val v=.5f-flat[1]/active.height
                         if(u in -.001f..1.001f && v in -.001f..1.001f)u.coerceIn(0f,1f) to v.coerceIn(0f,1f) else null
@@ -207,7 +209,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                     if(event.action==InputEvent.Action.MOVE && resources.moving && side==resources.dragSide && resources.dragHandSide==null && !resources.resizing){
                         val head=viewer.get()
                         if(head!=null){val ray=ray.value;val proposed=resources.drag.move(head,ray.first,ray.second)
-                            if(proposed!=null){if(!resources.dragged)movingNow.value(true);resources.dragged=true;resources.pending=angularMagnifierPlacement(active,head,units(),proposed)}
+                            if(proposed!=null){if(!resources.dragged)movingNow.value(true);resources.dragged=true;resources.oneHandPlaced=true;resources.pending=angularMagnifierPlacement(active,head,units(),proposed)}
                         }
                     }
                     if((event.action==InputEvent.Action.UP || event.action==InputEvent.Action.CANCEL) && side==resources.dragSide){
@@ -230,6 +232,8 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
             val submittedScale=if(savedPaneSize!=null && !sphericalFit)
                 Vector3(target.width/base.width,target.height/base.height,1f) else Vector3(1f,1f,1f)
             entity.setScale(submittedScale)
+            resources.presentationScale=1f
+            resources.presentedSphere=null
             logMagnifierSubmission(if(reusedSurface)"reuse" else "start",target,entity)
             if(receiveInput){
                 val mesh=resources.mesh
@@ -266,7 +270,6 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
             }
             updateStreamFrame(target)
             var prior=target
-            val typingInk=TypingKeyInk()
             var inkAt=Long.MIN_VALUE
             val mirrorPresented=java.util.concurrent.atomic.AtomicBoolean(false)
             val mirrorInk=java.util.concurrent.atomic.AtomicReference(VideoAim())
@@ -297,20 +300,16 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                 val wire=connection.cursorWires[topologyKey]
                 val renderedPane=resources.rendered
                 fun surfaceCoordinates(values:FloatArray):FloatArray {
-                    val pane=renderedPane ?: return values
-                    val rect=paneVideoContentRect(pane,baseCanvas,showFrame)
+                    val rect=paneVideoContentRect(target,baseCanvas,showFrame)
                     return FloatArray(values.size){i->if(i%2==0)rect.left+values[i]*(rect.right-rect.left)
                         else rect.top+values[i]*(rect.bottom-rect.top)}
                 }
                 val ink=surfaceCoordinates(wire ?: floatArrayOf())
                 val keyLabel=connection.typingLabel(now)?.takeIf{connection.typingWindow==renderedPane?.id}
-                val cue=if(keyLabel!=null && renderedPane!=null)typingInk.segments(keyLabel,
-                    paneVideoContentRect(renderedPane,baseCanvas,showFrame),
-                    if(baseCanvas!=null)1f else renderedPane.width/renderedPane.height)else floatArrayOf()
-                val colors=FloatArray((ink.size+cue.size)/4*3){i->
-                    if(i/3<cue.size/4)listOf(1f,.75f,.25f)[i%3] else listOf(.6f,.85f,1f)[i%3]
-                }
-                val overlay=VideoAim(cue+ink,opacity=.85f,colors=colors)
+                val cue=if(keyLabel!=null && renderedPane!=null)
+                    VideoKeyLabel(keyLabel,paneVideoContentRect(target,baseCanvas,showFrame)) else null
+                val colors=FloatArray(ink.size/4*3){listOf(.6f,.85f,1f)[it%3]}
+                val overlay=VideoAim(ink,opacity=.85f,colors=colors,keyLabel=cue)
                 resources.stream?.overlay(overlay)
                 if(mirror!=null){
                     val focus=mirrorOverlayNow.value?.invoke()
@@ -328,6 +327,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                         for(side in listOf("LEFT","RIGHT"))resources.free.acquire(side,resources.freeContacts.getValue(side),current,tracking,active.mesh)
                     }
                     resources.free.advance(tracking,current,smoothingMs=if(desktopMirror)42f else 0f)?.let { next ->
+                        resources.oneHandPlaced=false
                         resources.pending=active.copy(pose=next.pose,width=next.physicalWidthM,height=next.physicalHeightM,freePose=true,mesh=null)
                         resources.dragged=true
                     }
@@ -367,6 +367,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                     val active=windowNow.value
                     if(hand!=null && active!=null){resources.drag.moveHand(head,hand)?.let{proposed->
                         resources.dragged=true
+                        resources.oneHandPlaced=true
                         resources.pending=angularMagnifierPlacement(active,head,units(),proposed,updateMesh=false)
                     }}
                 }
@@ -376,11 +377,24 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                 resources.pending=null
                 val projectionEye=if(resources.moving || resources.resizing || resources.free.engaged)head else placementViewerNow.value ?: head
                 val frame=if(projectFrame)magnifierFrame(current,prior,projectionEye,units(),false)else projectPaneAtPlacement(current,prior,projectionEye,false)
-                val presented=if(regionId!=null)frame else placePaneInsideDesktop(frame,projectionEye,tracking.desktopSphereRadius,prior)
-                val actualPose=baseCanvas?.mesh?.let{centerPaneSphere(presented.pose,it,projectionEye)} ?: presented.pose
-                val next=presented.copy(pose=actualPose,width=prior.width,height=prior.height,mesh=prior.mesh)
+                val presented=if(regionId!=null || resources.oneHandPlaced)frame else placePaneInsideDesktop(frame,projectionEye,tracking.desktopSphereRadius,prior)
+                val nativeSphere=baseCanvas?.mesh ?: target.mesh?.takeUnless{it.planar}
+                val layerScale=if(resources.oneHandPlaced && nativeSphere!=null)
+                    distance(presented.pose.position,projectionEye.position)/nativeSphere.geometryRadius else 1f
+                val scaleChanged=kotlin.math.abs(layerScale-resources.presentationScale)>.001f
+                if(scaleChanged && !resources.resizing){
+                    resources.presentationScale=layerScale
+                    resources.presentedSphere=nativeSphere?.uniformlyScaled(layerScale)
+                    entity.setScale(submittedScale*layerScale)
+                }
+                val appliedScale=resources.presentationScale
+                val placedSphere=resources.presentedSphere ?: nativeSphere
+                val actualPose=if((baseCanvas!=null || resources.oneHandPlaced) && placedSphere!=null)
+                    centerPaneSphere(presented.pose,placedSphere,projectionEye) else presented.pose
+                val next=presented.copy(pose=actualPose,width=target.width*appliedScale,height=target.height*appliedScale,
+                    mesh=if(scaleChanged)target.mesh?.uniformlyScaled(appliedScale) else prior.mesh)
                 if(moveMode.value){
-                    resources.corners.update(session,entity,next.width,next.height,units(),next.layerDistanceM,tracking,resources.hovering.isNotEmpty() && !resources.free.engaged){active,factor->
+                    resources.corners.update(session,entity,target.width,target.height,units(),next.layerDistanceM,tracking,resources.hovering.isNotEmpty() && !resources.free.engaged){active,factor->
                         val start=resources.resizeStart ?: prior.also{resources.resizeStart=it}
                         resources.resizing=active
                         resources.resizeFactor=factor
@@ -390,18 +404,18 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                             if(kotlin.math.abs(factor-1f)>.0001f){
                                 val authored=windowNow.value ?: start
                                 placementNow.value(resizedMagnifier(authored,factor),true)
-                            }else entity.setScale(submittedScale)
+                            }else entity.setScale(submittedScale*resources.presentationScale)
                             resources.resizeStart=null
                             movingNow.value(false)
                         }
                     }
                 }else{
                     resources.corners.cancel()
-                    if(resources.resizing){entity.setScale(submittedScale);resources.resizing=false;resources.resizeStart=null;movingNow.value(false)}
+                    if(resources.resizing){entity.setScale(submittedScale*resources.presentationScale);resources.resizing=false;resources.resizeStart=null;movingNow.value(false)}
                 }
 
                 if(resources.resizing){
-                    val factor=resources.resizeFactor
+                    val factor=resources.resizeFactor*resources.presentationScale
                     if(submittedScale.x==submittedScale.y && submittedScale.y==submittedScale.z)
                         entity.setScale(submittedScale.x*factor)
                     else entity.setScale(submittedScale*factor)
@@ -410,12 +424,12 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                 val poseChanged=(0..2).any{kotlin.math.abs(next.pose.position[it]-prior.pose.position[it])>.0005f} ||
                     (0..3).any{kotlin.math.abs(next.pose.rotation[it]-prior.pose.rotation[it])>.0005f}
                 updateStreamFrame(next)
-                if(!poseChanged)continue
+                if(!poseChanged && !scaleChanged)continue
                 if(poseChanged){
                     val pose=next.pose;val q=pose.rotation
                     entity.setPose(Pose(Vector3(pose.position[0],pose.position[1],pose.position[2]),Quaternion(q[0],q[1],q[2],q[3])))
                 }
-                resources.rendered=next;prior=next;publishForeground();placementNow.value(next,resources.dragged && !resources.resizing)
+                resources.rendered=next;prior=next;publishForeground();placementNow.value(next,false)
             }
         }catch(e:kotlinx.coroutines.CancellationException){throw e}
         catch(e:Exception){resources.close();errorNow.value(e.message ?: "Window magnifier unavailable");failureToken++}
@@ -447,9 +461,10 @@ private class MagnifierResources:AutoCloseable{
     var authoredSize:Pair<Int,Int>?=null
     var baseGeometry:MagnifiedWindow?=null
     var rendered:MagnifiedWindow?=null;var pending:MagnifiedWindow?=null
+    var presentationScale=1f;var presentedSphere:MonitorMesh?=null
     val free=TwoHandState();val freeContacts=mutableMapOf<String,FloatArray>()
     val corners=PaneCornerResize();var resizing=false;var resizeFactor=1f;var resizeStart:MagnifiedWindow?=null
-    val drag=MagnifierRayDrag();var dragSide:String?=null;var dragHandSide:String?=null;var moving=false;var dragged=false
+    val drag=MagnifierRayDrag();var dragSide:String?=null;var dragHandSide:String?=null;var moving=false;var dragged=false;var oneHandPlaced=false
     var moveContact:Pair<Float,Float>?=null
     var moveStarted=0L
     val hovering=mutableSetOf<String>()

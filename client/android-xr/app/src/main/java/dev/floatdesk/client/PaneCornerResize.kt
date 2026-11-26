@@ -36,6 +36,7 @@ internal class PaneCornerResize : AutoCloseable {
     private var lastFactor=1f
     private var grabProjection=Float.NaN
     private var grabPlane=0f
+    private var grabScale=1f
     private var planeZ=0f
     private var submittedWidth=Float.NaN;private var submittedHeight=Float.NaN;private var submittedEdge=Float.NaN;private var submittedFront=Float.NaN
     private var frontSign=1f
@@ -67,6 +68,7 @@ internal class PaneCornerResize : AutoCloseable {
                 if(leaving && corner.hovered){corner.hovered=false;aimedHandles.decrementAndGet()}
                 if(event.action==InputEvent.Action.DOWN && active==null){
                     active=corner;handResize=null;startWidth=this.width;startHeight=this.height;lastFactor=1f
+                    grabScale=video.getScale()
                     grabPlane=planeZ;grabProjection=cornerProjection(session,video,event,grabPlane,x,y) ?: Float.NaN
                     callback(true,1f)
                 }
@@ -174,7 +176,7 @@ internal class PaneCornerResize : AutoCloseable {
         if(kotlin.math.abs(dz)<=.00001f)return null
         val t=(plane-o.z)/dz
         val px=o.x+(p.x-o.x)*t;val py=o.y+(p.y-o.y)*t
-        val projection=px*x*startWidth*.5f+py*y*startHeight*.5f
+        val projection=(px*x*startWidth*.5f+py*y*startHeight*.5f)*video.getScale()/grabScale
         return projection.takeIf{it.isFinite()}
     }
 

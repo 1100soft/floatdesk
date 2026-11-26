@@ -50,6 +50,11 @@ fun main() {
  check(distance(transformPoint(recentered,tallAperture.eye),movedEye.position)<.0001f)
  val cursorPose=Pose(floatArrayOf(.2f,0f,-1.6f))
  val cursorPane=MagnifiedWindow(987,cursorPose,.6f,1.5f,400,1000,spherical=true,mesh=tallAperture)
+ val tallVideoRect=paneVideoContentRect(cursorPane,cursorPane.copy(width=1.6f,height=1.6f),true)
+ check(abs(tallVideoRect.left-.3125f)<.00001f && abs(tallVideoRect.right-.6875f)<.00001f)
+ check(abs(tallVideoRect.top-.03125f)<.00001f && abs(tallVideoRect.bottom-.96875f)<.00001f)
+ val flatVideoRect=paneVideoContentRect(cursorPane,null,true)
+ check(flatVideoRect.left>0f && flatVideoRect.top>0f && flatVideoRect.right<1f && flatVideoRect.bottom<1f)
  val markerUv=cursorSourceUv(CursorLocation("pane",.5f,.5f,0f,0f,430f,510f),30f,10f,500f,1000f)!!
  check(markerUv==(.8f to .5f))
  val markerPoint=magnifierCursorPoint(cursorPane,markerUv.first,markerUv.second)

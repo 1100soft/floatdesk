@@ -1855,7 +1855,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                             val logical=FocusRect((screen.x-bounds[0]).toFloat()/bounds[2],(screen.y-bounds[1]).toFloat()/bounds[3],(screen.x+screen.width-bounds[0]).toFloat()/bounds[2],(screen.y+screen.height-bounds[1]).toFloat()/bounds[3])
                             val region=info.visibleRects(logical,workspace.screenSpacing).firstOrNull() ?: continue
                             addAll(cursorPatches("desktop",desktop.pose,desktop.physicalWidthM,desktop.physicalHeightM,
-                                pointerControl.meshes[0],source,view,region,divisions=1).map{it.copy(depth=ViewLayers.DesktopDistanceM)})
+                                pointerControl.meshes[0],source,view,region,divisions=1,projectBounds=true).map{it.copy(depth=ViewLayers.DesktopDistanceM)})
                         }
                     }
                     val canonicalDesktop=desktopPatches(mapViewer ?: head).filter{it.valid()}
@@ -1875,12 +1875,9 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                         val source=if(key=="reference")info.bounds()?.let{dev.floatdesk.client.net.DesktopWindow(-1,it[0],it[1],it[2],it[3])}
                             else paneSource(key,pane.id)
                         if(source==null)continue
-                        val authored=pane.layoutFootprint
-                        patches+=cursorPatches(key,authored?.pose ?: pane.pose,authored?.width ?: pane.width,
-                            authored?.height ?: pane.height,pane.mesh,
+                        patches+=cursorPatches(key,pane.pose,pane.width,pane.height,pane.mesh,
                             FocusRect(source.x.toFloat(),source.y.toFloat(),(source.x+source.width).toFloat(),(source.y+source.height).toFloat()),mapViewer!!,
-                            region=if(authored!=null)FocusRect(0f,0f,1f,1f) else magnifierContentRect(pane),
-                            front=true,projectBounds=authored==null && key.startsWith("shell:")).map{it.copy(depth=pane.layerDistanceM)}
+                            region=magnifierContentRect(pane),front=true,projectBounds=true).map{it.copy(depth=pane.layerDistanceM)}
                     }
                 }
                 val topology=CursorTopology(patches).logicalPixels()

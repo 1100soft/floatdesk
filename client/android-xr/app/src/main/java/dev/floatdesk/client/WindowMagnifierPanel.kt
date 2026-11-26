@@ -227,7 +227,9 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
             placementNow.value(target,false)
             val base=resources.baseGeometry ?: target
             entity.parent=root;entity.setPose(targetPose)
-            if(savedPaneSize!=null && !sphericalFit)entity.setScale(Vector3(target.width/base.width,target.height/base.height,1f))
+            val submittedScale=if(savedPaneSize!=null && !sphericalFit)
+                Vector3(target.width/base.width,target.height/base.height,1f) else Vector3(1f,1f,1f)
+            entity.setScale(submittedScale)
             logMagnifierSubmission(if(reusedSurface)"reuse" else "start",target,entity)
             if(receiveInput){
                 val mesh=resources.mesh
@@ -294,15 +296,13 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                 val renderedPane=resources.rendered
                 fun surfaceCoordinates(values:FloatArray):FloatArray {
                     val pane=renderedPane ?: return values
-                    val rect=magnifierContentRect(pane)
-                    val padX=if(showFrame).005f*pane.units/(pane.width+.01f*pane.units)else 0f
-                    val padY=if(showFrame).005f*pane.units/(pane.height+.01f*pane.units)else 0f
-                    return FloatArray(values.size){i->if(i%2==0)padX+(rect.left+values[i]*(rect.right-rect.left))*(1-2*padX)
-                        else padY+(rect.top+values[i]*(rect.bottom-rect.top))*(1-2*padY)}
+                    val rect=paneVideoContentRect(pane,baseCanvas,showFrame)
+                    return FloatArray(values.size){i->if(i%2==0)rect.left+values[i]*(rect.right-rect.left)
+                        else rect.top+values[i]*(rect.bottom-rect.top)}
                 }
                 val ink=surfaceCoordinates(wire ?: floatArrayOf())
                 val typed=connection.typingLocked(now) && connection.typingWindow==renderedPane?.id
-                val cue=if(typed)typingIndicator(FocusRect(0f,0f,1f,1f))else floatArrayOf()
+                val cue=if(typed)surfaceCoordinates(typingIndicator(FocusRect(0f,0f,1f,1f)))else floatArrayOf()
                 val colors=FloatArray((ink.size+cue.size)/4*3){i->
                     if(i/3<ink.size/4)listOf(.6f,.85f,1f)[i%3] else listOf(1f,.75f,.25f)[i%3]
                 }
@@ -378,17 +378,27 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                 val next=presented.copy(pose=actualPose,width=prior.width,height=prior.height,mesh=prior.mesh)
                 if(moveMode.value){
                     resources.corners.update(session,entity,next.width,next.height,units(),next.layerDistanceM,tracking,resources.hovering.isNotEmpty() && !resources.free.engaged){active,factor->
-                        if(resources.resizeStart==null){resources.resizeStart=resources.rendered;resources.dragged=true}
-                        resources.resizeStart?.let{resources.pending=resizedMagnifier(it,factor)}
+                        val start=resources.resizeStart ?: prior.also{resources.resizeStart=it}
                         resources.resizing=active
-                        if(!active){finishPlacement();resources.resizeStart=null}
-                        movingNow.value(active)
+                        val scale=factor
+                        entity.setScale(submittedScale*scale)
+                        if(active){
+                            movingNow.value(true)
+                        }else{
+                            if(kotlin.math.abs(scale-1f)>.0001f){
+                                val authored=windowNow.value ?: start
+                                placementNow.value(resizedMagnifier(authored,scale),true)
+                            }else entity.setScale(submittedScale)
+                            resources.resizeStart=null
+                            movingNow.value(false)
+                        }
                     }
                 }else{
                     resources.corners.cancel()
-                    if(resources.resizing){resources.resizing=false;resources.resizeStart=null;movingNow.value(false)}
+                    if(resources.resizing){entity.setScale(submittedScale);resources.resizing=false;resources.resizeStart=null;movingNow.value(false)}
                 }
 
+                if(resources.resizing)continue
                 val poseChanged=(0..2).any{kotlin.math.abs(next.pose.position[it]-prior.pose.position[it])>.0005f} ||
                     (0..3).any{kotlin.math.abs(next.pose.rotation[it]-prior.pose.rotation[it])>.0005f}
                 updateStreamFrame(next)

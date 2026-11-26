@@ -307,6 +307,21 @@ internal fun magnifierContentRect(window:MagnifiedWindow):FocusRect {
     val x=minOf(1f,source/pane);val y=minOf(1f,pane/source)
     return FocusRect((1-x)*.5f,(1-y)*.5f,(1+x)*.5f,(1+y)*.5f)
 }
+/** Bounds of the image in the actual video buffer, including retained canvas padding. */
+internal fun paneVideoContentRect(pane:MagnifiedWindow,canvas:MagnifiedWindow?,showFrame:Boolean):FocusRect {
+    if(canvas!=null){
+        val w=(pane.width/canvas.width).coerceIn(0f,1f)
+        val h=(pane.height/canvas.height).coerceIn(0f,1f)
+        return FocusRect((1f-w)*.5f,(1f-h)*.5f,(1f+w)*.5f,(1f+h)*.5f)
+    }
+    val rect=magnifierContentRect(pane)
+    if(!showFrame)return rect
+    val x=.005f*pane.units/(pane.width+.01f*pane.units)
+    val y=.005f*pane.units/(pane.height+.01f*pane.units)
+    return FocusRect(x+rect.left*(1f-2*x),y+rect.top*(1f-2*y),
+        x+rect.right*(1f-2*x),y+rect.bottom*(1f-2*y))
+}
+
 internal fun magnifierContentPoint(window:MagnifiedWindow,point:Pair<Float,Float>):Pair<Float,Float>{
     val rect=magnifierContentRect(window)
     return ((point.first-rect.left)/(rect.right-rect.left)).coerceIn(0f,1f) to

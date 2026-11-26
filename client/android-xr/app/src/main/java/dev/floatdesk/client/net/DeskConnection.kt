@@ -361,6 +361,8 @@ internal class DeskConnection(
     }
     @Volatile private var lastTypingAt=0L
     private var lastTypingPoll=0L
+    @Volatile var typingShortcut:String?=null
+        private set
     @Volatile var typingWindow:Long?=null
     var typingQuietMs=1000L
     fun typingLocked(now:Long=android.os.SystemClock.uptimeMillis()):Boolean=lastTypingAt>0 && now-lastTypingAt<typingQuietMs
@@ -510,6 +512,7 @@ internal class DeskConnection(
         assembler = CursorAssembler()
         lastTypingAt = 0L
         typingWindow = null
+        typingShortcut=null
         monitorPending.set(0)
         focusPending.set(0)
         gazeFocusPending.set(0)
@@ -608,6 +611,7 @@ internal class DeskConnection(
                             }
                             reply?.takeIf{it.optString("type")=="typingState"}?.let{reply->
                                 typingWindow=reply.optLong("windowId").takeIf{it>0L}
+                                typingShortcut=reply.optString("shortcut","").takeIf{it.isNotBlank() && it!="null"}
                                 if(reply.optBoolean("available"))lastTypingAt=(android.os.SystemClock.uptimeMillis()-reply.optLong("ageMs",60000)).coerceAtLeast(1)
                             }
                             reply?.takeIf{it.optString("type")=="gazeFocusResult"}?.let{reply->

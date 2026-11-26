@@ -769,7 +769,10 @@ fn run(
                                     .is_some_and(|c| c.control == from)
                                 {
                                     let age = crate::platform::x11::typing::age_ms().min(60_000);
-                                    let reply=ControlPacket::Workspace{json:serde_json::json!({"type":"typingState","windowId":crate::platform::x11::typing::window_id(),"ageMs":age,"available":crate::platform::x11::typing::start()}).to_string()}.encode();
+                                    let window = crate::platform::x11::typing::window_id();
+                                    let reply=ControlPacket::Workspace{json:serde_json::json!({"type":"typingState","windowId":window,"ageMs":age,
+                                        "shortcut":crate::platform::x11::typing::shortcut_label(window),
+                                        "available":crate::platform::x11::typing::start()}).to_string()}.encode();
                                     let _ = socket.send_to(&reply, from);
                                 }
                                 continue;

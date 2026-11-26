@@ -188,6 +188,7 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
     var magnifierViewerReady by remember { mutableStateOf(false) }
     var magnifierMoving by remember { mutableStateOf(false) }
     var typingLocked by remember { mutableStateOf(false) }
+    val typingInk=remember{TypingKeyInk()}
     var magnifierReady by remember { mutableStateOf(false) }
     var magnifierFailed by remember { mutableStateOf(false) }
     val magnifierHands=remember { MagnifierContacts() }
@@ -1481,7 +1482,9 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     if(typed!=null && b!=null){
                         val rect=FocusRect((typed.x-b[0]).toFloat()/b[2],(typed.y-b[1]).toFloat()/b[3],(typed.x+typed.width-b[0]).toFloat()/b[2],(typed.y+typed.height-b[1]).toFloat()/b[3])
                         for(visible in focusInfo.visibleRects(rect,workspace.screenSpacing)){
-                            val cue=typingIndicator(visible);segments.addAll(cue.toList());repeat(cue.size/4){colors.addAll(listOf(1f,.75f,.25f))}
+                            val cue=typingInk.segments(connection.typingShortcut ?: "Typing",visible,
+                                placement.pixelWidth.toFloat()/placement.pixelHeight.coerceAtLeast(1))
+                            segments.addAll(cue.toList());repeat(cue.size/4){colors.addAll(listOf(1f,.75f,.25f))}
                         }
                     }
                 }

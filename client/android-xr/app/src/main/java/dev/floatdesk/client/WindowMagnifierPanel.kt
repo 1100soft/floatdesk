@@ -266,6 +266,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
             }
             updateStreamFrame(target)
             var prior=target
+            val typingInk=TypingKeyInk()
             var inkAt=Long.MIN_VALUE
             val mirrorPresented=java.util.concurrent.atomic.AtomicBoolean(false)
             val mirrorInk=java.util.concurrent.atomic.AtomicReference(VideoAim())
@@ -303,11 +304,13 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                 }
                 val ink=surfaceCoordinates(wire ?: floatArrayOf())
                 val typed=connection.typingLocked(now) && connection.typingWindow==renderedPane?.id
-                val cue=if(typed)surfaceCoordinates(typingIndicator(FocusRect(0f,0f,1f,1f)))else floatArrayOf()
+                val cue=if(typed && renderedPane!=null)typingInk.segments(connection.typingShortcut ?: "Typing",
+                    paneVideoContentRect(renderedPane,baseCanvas,showFrame),
+                    if(baseCanvas!=null)1f else renderedPane.width/renderedPane.height)else floatArrayOf()
                 val colors=FloatArray((ink.size+cue.size)/4*3){i->
-                    if(i/3<ink.size/4)listOf(.6f,.85f,1f)[i%3] else listOf(1f,.75f,.25f)[i%3]
+                    if(i/3<cue.size/4)listOf(1f,.75f,.25f)[i%3] else listOf(.6f,.85f,1f)[i%3]
                 }
-                val overlay=VideoAim(ink+cue,opacity=.85f,colors=colors)
+                val overlay=VideoAim(cue+ink,opacity=.85f,colors=colors)
                 resources.stream?.overlay(overlay)
                 if(mirror!=null){
                     val focus=mirrorOverlayNow.value?.invoke()

@@ -53,6 +53,75 @@ fn thunderbird_compose_links(roles: &[(u32, u32, Vec<u8>)]) -> Vec<(u32, u32)> {
         .collect()
 }
 
+/// Only marked Brave extension popups can borrow the last browser window's ownership.
+#[derive(Default)]
+struct BraveOwnership {
+    last_browser: std::collections::HashMap<u32, u32>,
+    parents: std::collections::HashMap<u32, u32>,
+}
+impl BraveOwnership {
+    fn links(
+        &mut self,
+        windows: &[(FocusWindow, u32, bool)],
+        active: Option<u32>,
+    ) -> Vec<(u32, u32)> {
+        self.last_browser
+            .retain(|pid, _| windows.iter().any(|(_, current, _)| current == pid));
+        self.parents.retain(|popup, _| {
+            windows
+                .iter()
+                .any(|(window, _, extension)| *extension && window.id == *popup)
+        });
+        if let Some((browser, pid, _)) = windows
+            .iter()
+            .find(|(window, _, extension)| !extension && Some(window.id) == active)
+        {
+            self.last_browser.insert(*pid, browser.id);
+        }
+        windows
+            .iter()
+            .filter_map(|(popup, pid, extension)| {
+                if !extension {
+                    return None;
+                }
+                let browsers = || {
+                    windows
+                        .iter()
+                        .filter(|(_, owner_pid, extension)| !extension && owner_pid == pid)
+                };
+                let mut contained = browsers().filter(|(owner, _, _)| {
+                    owner.x <= popup.x
+                        && owner.y <= popup.y
+                        && i64::from(owner.x) + i64::from(owner.width)
+                            >= i64::from(popup.x) + i64::from(popup.width)
+                        && i64::from(owner.y) + i64::from(owner.height)
+                            >= i64::from(popup.y) + i64::from(popup.height)
+                });
+                let unique_containment = contained
+                    .next()
+                    .filter(|_| contained.next().is_none())
+                    .map(|entry| entry.0.id);
+                let current = self
+                    .parents
+                    .get(&popup.id)
+                    .or_else(|| self.last_browser.get(pid))
+                    .copied()
+                    .filter(|id| browsers().any(|(browser, _, _)| browser.id == *id));
+                let mut candidates = browsers();
+                let only_browser = candidates
+                    .next()
+                    .filter(|_| candidates.next().is_none())
+                    .map(|entry| entry.0.id);
+                let owner = current.or(unique_containment).or(only_browser)?;
+                self.parents.insert(popup.id, owner);
+                Some((popup.id, owner))
+            })
+            .collect()
+    }
+}
+static BRAVE_OWNERS: std::sync::OnceLock<std::sync::Mutex<BraveOwnership>> =
+    std::sync::OnceLock::new();
+
 pub fn catalogue() -> Result<(bool, Vec<FocusWindow>)> {
     let link = X11Link::open()?;
     let supported = values(
@@ -84,6 +153,8 @@ pub fn catalogue() -> Result<(bool, Vec<FocusWindow>)> {
     let role = atom(&link, b"WM_WINDOW_ROLE")?;
     let leader = atom(&link, b"WM_CLIENT_LEADER")?;
     let mut thunderbird_roles = Vec::new();
+    let pid_atom = atom(&link, b"_NET_WM_PID")?;
+    let mut brave_roles = Vec::new();
     let mut windows = Vec::new();
     for id in values(&link, link.root, stacking, AtomEnum::WINDOW)?
         .into_iter()
@@ -167,10 +238,50 @@ pub fn catalogue() -> Result<(bool, Vec<FocusWindow>)> {
                     }
                 }
             }
+            let class = link
+                .conn
+                .get_property(false, id, AtomEnum::WM_CLASS, AtomEnum::STRING, 0, 64)
+                .ok()
+                .and_then(|cookie| cookie.reply().ok());
+            if let Some(class) = class {
+                let mut fields = class.value.split(|byte| *byte == 0);
+                let instance = fields.next().unwrap_or_default();
+                let class = fields.next().unwrap_or_default();
+                if class.eq_ignore_ascii_case(b"brave-browser") {
+                    let role = link
+                        .conn
+                        .get_property(false, id, role, AtomEnum::STRING, 0, 32)
+                        .ok()
+                        .and_then(|cookie| cookie.reply().ok())
+                        .map(|reply| reply.value);
+                    let extension =
+                        instance.starts_with(b"crx_") && role.as_deref() == Some(b"pop-up");
+                    if extension || role.as_deref() == Some(b"browser") {
+                        if let Some(pid) = values(&link, id, pid_atom, AtomEnum::CARDINAL)
+                            .ok()
+                            .and_then(|ids| ids.first().copied())
+                            .filter(|id| *id != 0)
+                        {
+                            brave_roles.push((window.clone(), pid, extension));
+                        }
+                    }
+                }
+            }
             windows.push(window);
         }
     }
-    for (child, owner) in thunderbird_compose_links(&thunderbird_roles) {
+    let active_id = values(&link, link.root, active, AtomEnum::WINDOW)?
+        .first()
+        .copied();
+    let extensions = BRAVE_OWNERS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .links(&brave_roles, active_id);
+    for (child, owner) in thunderbird_compose_links(&thunderbird_roles)
+        .into_iter()
+        .chain(extensions)
+    {
         if let Some(row) = windows.iter_mut().find(|row| row.id == child) {
             row.transient_for.get_or_insert(owner);
         }
@@ -1159,6 +1270,25 @@ pub fn window_action(value: &serde_json::Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn brave_popup_keeps_its_browser_after_focus_changes() {
+        let row = |id, x| FocusWindow {
+            id,
+            x,
+            y: 0,
+            width: 100,
+            height: 100,
+            panel: false,
+            transient_for: None,
+        };
+        let mut ownership = BraveOwnership::default();
+        let mut windows = vec![(row(1, 0), 5, false), (row(2, 100), 5, false)];
+        assert!(ownership.links(&windows, Some(2)).is_empty());
+        windows.push((row(3, 300), 5, true));
+        assert_eq!(ownership.links(&windows, Some(3)), vec![(3, 2)]);
+        assert_eq!(ownership.links(&windows, Some(1)), vec![(3, 2)]);
+    }
 
     #[test]
     fn compose_requires_a_unique_matching_thunderbird_leader() {

@@ -370,8 +370,6 @@ fun main() {
    val movedPoint=other.point(mapOf("RIGHT" to transformedHand.copy(position=transformPoint(frame,floatArrayOf(.02f,0f,-.5f)))))!!
    check(movedPoint.first=="GAZE" && abs(movedPoint.second.u-p.u)<.001f && abs(movedPoint.second.v-p.v)<.001f)
    ray.clear();check(ray.point(mapOf("LEFT" to hand))==null)
-   val cue=typingIndicator(FocusRect(.2f,.3f,.8f,.9f));check(cue.size%4==0)
-   check(cue.indices.all{if(it%2==0)cue[it] in .2f.. .8f else cue[it] in .3f.. .9f})
  }
 
  run {

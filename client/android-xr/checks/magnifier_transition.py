@@ -18,7 +18,7 @@ assert 'resources.authoredSize==authoredSize' in panel
 assert 'val authoredSize=savedPaneSize' in panel
 source = (root / 'WindowMagnification.kt').read_text()
 start = source.index('internal fun sameNativePaneExtent(')
-end = source.index('/** Translate the retained sphere', start)
+end = source.index('/** Parent-first traversal', start)
 code = 'import kotlin.math.abs\n' + '''
 internal data class MagnifiedWindow(val width:Float,val height:Float,val spherical:Boolean)
 ''' + source[start:end] + '''

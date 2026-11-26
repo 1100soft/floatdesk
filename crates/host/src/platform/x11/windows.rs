@@ -281,34 +281,51 @@ pub fn window_popups(link: &X11Link, client: u32) -> Result<Vec<FocusWindow>> {
                         .or_else(|| fallback_parent(id))
                 })
             };
-            let mut parent = parent_of(id)?;
-            let has_parent = parent.is_some();
-            let mut owned = false;
-            for _ in 0..12 {
-                match parent {
-                    Some(p) if p == client => {
-                        owned = true;
+            let belongs_to_client = |mut parent| -> Result<bool> {
+                let mut visited = std::collections::HashSet::from([id]);
+                while let Some(p) = parent {
+                    if p == client {
+                        return Ok(true);
+                    }
+                    if !visited.insert(p) {
                         break;
                     }
-                    Some(p) if p != id => parent = parent_of(p)?,
-                    _ => break,
+                    parent = parent_of(p)?;
                 }
-            }
+                Ok(false)
+            };
+            let direct_parent = parent_of(id)?;
+            let owned = belongs_to_client(direct_parent)?;
             let menu = kinds.iter().any(|t| menu_types.contains(t));
             if owner_is_dock && !menu {
                 return Ok(None);
             }
-            let same_pid = owner_pid.is_some()
-                && owner_pid
-                    == values(link, id, pid_atom, AtomEnum::CARDINAL)?
-                        .first()
-                        .copied();
             let companion = !a.override_redirect
                 && (kinds.is_empty() || kinds.iter().any(|t| companion_types.contains(t)))
                 && !values(link, id, state, AtomEnum::ATOM)?.contains(&hidden);
-            if !(owned && (menu || a.override_redirect || companion)
-                || menu && same_pid && !has_parent && active == Some(client))
-            {
+            let capture_parent = if owned && (menu || a.override_redirect || companion) {
+                direct_parent
+            } else if menu && direct_parent.is_none() && belongs_to_client(active)? {
+                // Some toolkits leave the context menu's parent unset. Resolve it
+                // to the active window within this already-validated capture tree.
+                let active = active.unwrap_or(client);
+                let active_pid = if active == client {
+                    owner_pid
+                } else {
+                    values(link, active, pid_atom, AtomEnum::CARDINAL)?
+                        .first()
+                        .copied()
+                };
+                let menu_pid = values(link, id, pid_atom, AtomEnum::CARDINAL)?
+                    .first()
+                    .copied();
+                active_pid
+                    .filter(|pid| Some(*pid) == menu_pid)
+                    .map(|_| active)
+            } else {
+                None
+            };
+            if capture_parent.is_none() {
                 return Ok(None);
             }
             let g = link
@@ -330,14 +347,11 @@ pub fn window_popups(link: &X11Link, client: u32) -> Result<Vec<FocusWindow>> {
                 width: g.width.into(),
                 height: g.height.into(),
                 panel: false,
-                transient_for: owned.then_some(client),
+                transient_for: capture_parent,
             }))
         })();
         if let Ok(Some(window)) = item {
             result.push(window);
-        }
-        if result.len() >= 16 {
-            break;
         }
     }
     Ok(result)

@@ -125,6 +125,23 @@ internal fun retainedChildSlots(previous:List<Long?>,children:List<Long>):List<L
     return slots
 }
 
+/** Parent-first traversal of one capture atlas, retaining sibling stacking order. */
+internal fun childPaneOrder(owner:Long,windows:List<DesktopWindow>):List<DesktopWindow> {
+    val children=windows.groupBy{it.transientFor ?: owner}
+    val visited=mutableSetOf(owner)
+    val parents=ArrayDeque<Long>()
+    parents.add(owner)
+    return buildList{
+        while(parents.isNotEmpty()){
+            for(child in children[parents.removeFirst()].orEmpty()){
+                if(!visited.add(child.id))continue
+                add(child)
+                parents.add(child.id)
+            }
+        }
+    }
+}
+
 /** Translate the retained sphere so its local eye stays at the viewer. */
 internal fun centerPaneSphere(pose:Pose,mesh:MonitorMesh,viewer:Pose):Pose {
     val offset=rotateVector(pose.rotation,mesh.eye[0],mesh.eye[1],mesh.eye[2])

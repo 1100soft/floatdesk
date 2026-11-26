@@ -1813,20 +1813,34 @@ internal fun FloatdeskApp(store: WorkspaceStore, dumpFile: File?,onSession:(andr
                     ownerKey.startsWith("system:")->systemRuntime[requestedOwner.id]
                     else->fixedRuntime[ownerKey]
                 })?.takeIf{it.id==requestedOwner.id} ?: requestedOwner
-                val popups=connection.windowCaptures.popups(owner.id).filter{p->systemInfo?.systemWindows?.none{it.id==p.id}!=false && assignedPopups.add(p.id)}
+                val popups=childPaneOrder(owner.id,connection.windowCaptures.popups(owner.id))
+                    .filter{p->systemInfo?.systemWindows?.none{it.id==p.id}!=false && assignedPopups.add(p.id)}
                 var retainedSlots by remember {mutableStateOf(emptyList<Long?>())}
                 val slots=retainedChildSlots(retainedSlots,popups.map{it.id})
                 SideEffect{retainedSlots=slots}
-                for((slot,id) in slots.withIndex()) key(slot){
-                    val popup=popups.firstOrNull{it.id==id}
-                    val source=connection.windowCaptures.source(owner.id)
-                    val pane=if(source!=null && popup!=null)
-                        foregroundMagnifierPopup(owner,stickyMagnifier(owner,source,popup,fixedViewer,popups.indexOf(popup)),fixedViewer,handTracking.desktopSphereRadius)
+                val visibleParents=mutableMapOf(owner.id to owner)
+                val byId=popups.associateBy{it.id}
+                val slotById=slots.withIndex().associate{(slot,id)->id to slot}
+                val order=popups.map{slotById.getValue(it.id)} + slots.indices.filter{slots[it]==null}
+                val siblingIndices=popups.groupBy{it.transientFor ?: owner.id}.values
+                    .flatMap{siblings->siblings.mapIndexed{index,popup->popup.id to index}}.toMap()
+                for(slot in order)key(slot){
+                    val popup=byId[slots[slot]]
+                    val parentId=popup?.transientFor ?: owner.id
+                    val parent=visibleParents[parentId]
+                    val source=if(parentId==owner.id)connection.windowCaptures.source(parentId)
+                        else connection.windowCaptures.region(parentId)
+                    val pane=if(parent!=null && source!=null && popup!=null)
+                        foregroundMagnifierPopup(parent,stickyMagnifier(parent,source,popup,fixedViewer,
+                            siblingIndices.getValue(popup.id)),fixedViewer,handTracking.desktopSphereRadius)
                     else null
                     val name="popup:$ownerKey:$slot"
                     DisposableEffect(name,popup?.id){popupReady[name]=false;onDispose{popupReady.remove(name);popupRuntime.remove(name)}}
                     val actual=popupRuntime[name]?.takeIf{it.id==pane?.id}
-                    if(actual!=null && popupReady[name]==true)renderedPopups.add(actual)
+                    if(actual!=null && popupReady[name]==true){
+                        renderedPopups.add(actual)
+                        visibleParents[actual.id]=actual
+                    }
                     WindowMagnifierPanel(session,magnifierRoot,pane,connection,false,magnifierViewer,{handTracking.unitsPerMeter},handTracking,
                         {popupReady[name]=true},{message->popupReady[name]=false;Log.w("Floatdesk",message)},
                         {side,uv->magnifierHands.update(name,side,if(pane!=null)uv?.let{magnifierContentPoint(actual ?: pane,it)}else null,pane?.id,now=SystemClock.uptimeMillis())},

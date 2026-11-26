@@ -366,9 +366,8 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                         resources.pending=angularMagnifierPlacement(active,head,units(),proposed,updateMesh=false)
                     }}
                 }
-                // Popup and companion atlas regions get their curve on opening. Keep their native mesh/material fixed until the region
-                // closes so pointer motion and head tracking cannot race material replacement.
-                if(transientSurface)continue
+                // Transient panes follow their parent by pose only. Their submitted
+                // canvas and aperture stay intact until capture dimensions change.
                 val current=(resources.pending ?: windowNow.value)?.let(::surfaceMode) ?: continue
                 resources.pending=null
                 val projectionEye=if(resources.moving || resources.resizing || resources.free.engaged)head else placementViewerNow.value ?: head
@@ -380,14 +379,13 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                     resources.corners.update(session,entity,next.width,next.height,units(),next.layerDistanceM,tracking,resources.hovering.isNotEmpty() && !resources.free.engaged){active,factor->
                         val start=resources.resizeStart ?: prior.also{resources.resizeStart=it}
                         resources.resizing=active
-                        val scale=factor
-                        entity.setScale(submittedScale*scale)
+                        resources.resizeFactor=factor
                         if(active){
                             movingNow.value(true)
                         }else{
-                            if(kotlin.math.abs(scale-1f)>.0001f){
+                            if(kotlin.math.abs(factor-1f)>.0001f){
                                 val authored=windowNow.value ?: start
-                                placementNow.value(resizedMagnifier(authored,scale),true)
+                                placementNow.value(resizedMagnifier(authored,factor),true)
                             }else entity.setScale(submittedScale)
                             resources.resizeStart=null
                             movingNow.value(false)
@@ -398,7 +396,13 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                     if(resources.resizing){entity.setScale(submittedScale);resources.resizing=false;resources.resizeStart=null;movingNow.value(false)}
                 }
 
-                if(resources.resizing)continue
+                if(resources.resizing){
+                    val factor=resources.resizeFactor
+                    if(submittedScale.x==submittedScale.y && submittedScale.y==submittedScale.z)
+                        entity.setScale(submittedScale.x*factor)
+                    else entity.setScale(submittedScale*factor)
+                    continue
+                }
                 val poseChanged=(0..2).any{kotlin.math.abs(next.pose.position[it]-prior.pose.position[it])>.0005f} ||
                     (0..3).any{kotlin.math.abs(next.pose.rotation[it]-prior.pose.rotation[it])>.0005f}
                 updateStreamFrame(next)
@@ -440,7 +444,7 @@ private class MagnifierResources:AutoCloseable{
     var baseGeometry:MagnifiedWindow?=null
     var rendered:MagnifiedWindow?=null;var pending:MagnifiedWindow?=null
     val free=TwoHandState();val freeContacts=mutableMapOf<String,FloatArray>()
-    val corners=PaneCornerResize();var resizing=false;var resizeStart:MagnifiedWindow?=null
+    val corners=PaneCornerResize();var resizing=false;var resizeFactor=1f;var resizeStart:MagnifiedWindow?=null
     val drag=MagnifierRayDrag();var dragSide:String?=null;var dragHandSide:String?=null;var moving=false;var dragged=false
     var moveContact:Pair<Float,Float>?=null
     var moveStarted=0L

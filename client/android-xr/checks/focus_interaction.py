@@ -82,6 +82,10 @@ fun main() {
  val offPane=transformPoint(cursorPose,squareSphere.project(floatArrayOf(.55f,0f,0f),onTriangles=true))
  val cursorEye=transformPoint(cursorPose,squareSphere.eye)
  check(sphericalPaneContact(cursorPane,squareSphere,cursorEye to subtract(offPane,cursorEye))==null)
+ val deepChildren=(2L..45L).map{id->DesktopWindow(id,0,0,20,20,transientFor=id-1)}
+ val orphan=DesktopWindow(100,0,0,20,20,transientFor=101)
+ check(childPaneOrder(1,deepChildren.reversed()+listOf(orphan,orphan.copy(id=101,transientFor=100)))
+     .map{it.id}==(2L..45L).toList())
  val popupEye=Pose()
  for(curved in listOf(false,true)){
     val popupOwner=MagnifiedWindow(70,Pose(floatArrayOf(.5f,.15f,-1.2f)),1.8f,1.2f,1200,800,

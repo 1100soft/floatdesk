@@ -21,6 +21,7 @@ internal class WindowCapturePool @JvmOverloads constructor(private val connectio
     private val popupBounds=ConcurrentHashMap<Long,List<DesktopWindow>>()
     fun owner(id:Long):Long=popupBounds.entries.firstOrNull{(_,rows)->rows.any{it.id==id}}?.key ?: id
     fun popups(owner:Long):List<DesktopWindow>{boundsRevision.intValue;return popupBounds[owner].orEmpty()}
+    fun popupGroups():Map<Long,List<DesktopWindow>> = popupBounds.toMap()
     fun region(id:Long):DesktopWindow? {
         boundsRevision.intValue
         return popupBounds.values.firstNotNullOfOrNull{rows->rows.firstOrNull{it.id==id}}

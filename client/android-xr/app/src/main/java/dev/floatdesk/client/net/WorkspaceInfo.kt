@@ -7,9 +7,14 @@ import dev.floatdesk.client.FocusTarget
 
 internal data class DesktopWindow(val id:Long,val x:Int,val y:Int,val width:Int,val height:Int,val panel:Boolean=false,val transientFor:Long?=null,val modal:Boolean=false)
 
-internal fun DesktopWindow.separatedFrom(other:DesktopWindow):Boolean =
-    x.toLong()+width<other.x || other.x.toLong()+other.width<x ||
-        y.toLong()+height<other.y || other.y.toLong()+other.height<y
+/** A child separated from its parent by more than this share of the parent's extent opens at the magnifier center. */
+internal const val FarChildGap=.1f
+
+internal fun DesktopWindow.farFrom(parent:DesktopWindow):Boolean {
+    val gapX=maxOf(parent.x.toLong()-x-width,x.toLong()-parent.x-parent.width,0L)
+    val gapY=maxOf(parent.y.toLong()-y-height,y.toLong()-parent.y-parent.height,0L)
+    return gapX>parent.width*FarChildGap || gapY>parent.height*FarChildGap
+}
 
 internal data class DesktopOutput(val name:String,val width:Int,val height:Int,val x:Int,val y:Int,val managed:Boolean,val primary:Boolean,val role:Int,val modes:List<Pair<Int,Int>>,val refreshHz:Double=0.0)
 internal data class WorkspaceInfo(val screens:List<DesktopOutput>,val available:Int,val modes:List<Pair<Int,Int>>,val memoryBytes:Long,val cpuThreads:Int,val recommendedPixels:Long,val fps:Int,val estimate:String,val setupRequired:Boolean,val limits:Pair<Int,Int> = 32767 to 32767,val windowFocus:Boolean=false,val windows:List<DesktopWindow> = emptyList(),val gazeFocus:Boolean=false,val windowMagnify:Boolean=false,val systemWindows:List<DesktopWindow> = emptyList(),val virtualScreensDisabled:Boolean=false) {
@@ -24,26 +29,21 @@ internal data class WorkspaceInfo(val screens:List<DesktopOutput>,val available:
         }
         return id
     }
-    /** A detached visible modal replaces its magnified owner until it closes. */
-    fun magnificationSource(id:Long):Long {
-        val root=magnificationOwner(id)
-        return windows.firstOrNull{child->
-            val parent=if(child.modal)windows.firstOrNull{it.id==child.transientFor} else null
-            parent!=null && magnificationOwner(child.id)==root && child.separatedFrom(parent)
-        }?.id ?: id
-    }
     fun bounds():IntArray? {
         if(screens.isEmpty())return null
         val x=screens.minOf{it.x};val y=screens.minOf{it.y}
         return intArrayOf(x,y,screens.maxOf{it.x+it.width}-x,screens.maxOf{it.y+it.height}-y)
     }
-    fun hover(u:Float,v:Float):FocusHover? {
+    /** [captured] maps a capture owner to its child regions; uncatalogued menus there resolve to that owner. */
+    fun hover(u:Float,v:Float,captured:Map<Long,List<DesktopWindow>> = emptyMap()):FocusHover? {
         val b=bounds() ?: return null
         val x=b[0]+u*b[2];val y=b[1]+v*b[3]
         val screen=screens.firstOrNull{x>=it.x && x<=it.x+it.width && y>=it.y && y<=it.y+it.height} ?: return null
         fun rect(x:Int,y:Int,w:Int,h:Int)=FocusRect((x-b[0]).toFloat()/b[2],(y-b[1]).toFloat()/b[3],(x+w-b[0]).toFloat()/b[2],(y+h-b[1]).toFloat()/b[3])
         val display=FocusTarget(rect(screen.x,screen.y,screen.width,screen.height),screen.name,contactU=u,contactV=v)
-        val window=if(windowFocus)windows.firstOrNull{x>=it.x && x<=it.x+it.width && y>=it.y && y<=it.y+it.height} else null
+        fun DesktopWindow.contains()=x>=this.x && x<=this.x+width && y>=this.y && y<=this.y+height
+        val menuOwner=captured.entries.firstOrNull{(_,rows)->rows.any{row->row.contains() && windows.none{it.id==row.id}}}?.key
+        val window=if(windowFocus)menuOwner?.let{id->windows.firstOrNull{it.id==id}} ?: windows.firstOrNull{it.contains()} else null
         return FocusHover(display,window?.let{FocusTarget(rect(it.x,it.y,it.width,it.height),screen.name,it.id,u,v)})
     }
     /** Source rectangles may cross screens; map each visible piece through its visual inset. */

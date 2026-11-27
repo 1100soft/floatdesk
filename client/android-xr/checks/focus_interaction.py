@@ -90,10 +90,20 @@ fun main() {
  val farModal=DesktopWindow(351,0,0,600,700,transientFor=350,modal=true)
  val touching=farModal.copy(x=1400)
  val modalCatalogue=WorkspaceInfo(emptyList(),0,emptyList(),0,1,0,30,"",false,windows=listOf(farModal,lockedOwner))
- check(modalCatalogue.magnificationSource(350)==351L)
- check(modalCatalogue.copy(windows=listOf(lockedOwner)).magnificationSource(350)==350L)
- check(modalCatalogue.copy(windows=listOf(touching,lockedOwner)).magnificationSource(350)==350L)
- check(modalCatalogue.copy(windows=listOf(farModal.copy(modal=false),lockedOwner)).magnificationSource(350)==350L)
+ // A child never replaces its owner; a far one opens at the magnifier center instead.
+ check(modalCatalogue.magnificationOwner(351)==350L && modalCatalogue.magnificationOwner(350)==350L)
+ check(farModal.farFrom(lockedOwner) && !touching.farFrom(lockedOwner) && !farModal.copy(x=1350).farFrom(lockedOwner))
+ check(farModal.copy(x=2100,y=880).farFrom(lockedOwner) && !farModal.copy(x=2100,y=830).farFrom(lockedOwner))
+ val menuScreen=DesktopOutput("A",4000,2000,0,0,true,true,0,emptyList())
+ val menuOwner=DesktopWindow(360,0,0,1000,800)
+ val beneath=DesktopWindow(361,1000,0,1000,800)
+ val contextMenu=DesktopWindow(362,950,100,300,400,transientFor=360)
+ val menuInfo=WorkspaceInfo(listOf(menuScreen),0,emptyList(),0,1,0,30,"",false,windowFocus=true,windows=listOf(beneath,menuOwner))
+ val onMenu=1100f/4000f to 300f/2000f
+ check(menuInfo.hover(onMenu.first,onMenu.second)?.window?.windowId==361L)
+ check(menuInfo.hover(onMenu.first,onMenu.second,mapOf(360L to listOf(contextMenu)))?.window?.windowId==360L)
+ check(menuInfo.copy(windows=listOf(contextMenu,beneath,menuOwner)).hover(onMenu.first,onMenu.second,mapOf(360L to listOf(contextMenu)))?.window?.windowId==362L)
+ check(menuInfo.hover(1500f/4000f,700f/2000f,mapOf(360L to listOf(contextMenu)))?.window?.windowId==361L)
  val popupEye=Pose()
  for(curved in listOf(false,true)){
     val popupOwner=MagnifiedWindow(70,Pose(floatArrayOf(.5f,.15f,-1.2f)),1.8f,1.2f,1200,800,
@@ -495,6 +505,12 @@ fun main() {
   check(single.layerDistanceM==wide.layerDistanceM && wide.spherical==curved)
   check(abs(wide.width/wide.height-1800f/240f)<.0001f)
   check(wide.width<stickyMagnifier(pane,source,popup.copy(width=1800),layerViewer).width)
+  val paneCenter=transformPoint(pane.pose,pane.mesh?.project(floatArrayOf(0f,0f,0f)) ?: floatArrayOf(0f,0f,0f))
+  val farChild=popup.copy(x=3000,y=1500)
+  val centered=stickyMagnifier(pane,source,farChild,layerViewer,viewHalfAngles=floatArrayOf(.45f,.35f),center=pane)
+  check(distance(normalize3(centered.pose.position),normalize3(paneCenter))<.001f && centered.layerDistanceM<pane.layerDistanceM)
+  check(centered.sourceWidth==300 && abs(centered.width/centered.height-300f/240f)<.0001f)
+  check(distance(normalize3(stickyMagnifier(pane,source,farChild,layerViewer).pose.position),normalize3(paneCenter))>.1f)
   val bar=DesktopWindow(3,0,950,1600,50,true)
   val anchor=640f to 975f
   val panel=pane.copy(sourceWidth=bar.width,sourceHeight=bar.height,width=1.6f,height=.05f,mesh=null)

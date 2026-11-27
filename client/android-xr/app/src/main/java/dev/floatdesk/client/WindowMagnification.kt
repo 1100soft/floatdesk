@@ -499,8 +499,8 @@ internal fun projectMagnifier(window:MagnifiedWindow,viewer:Pose,pose:Pose,width
     return MonitorMesh(width,height,eye,columns=32,rows=20,focus=focus)
 }
 
-/** A popup keeps its desktop-pixel offset/scale beside its owner; it never refits the owner. */
-internal fun stickyMagnifier(owner:MagnifiedWindow,source:DesktopWindow,popup:DesktopWindow,viewer:Pose,level:Int=0,viewHalfAngles:FloatArray?=null,panelAnchor:Pair<Float,Float>?=null):MagnifiedWindow {
+/** A popup keeps its desktop-pixel offset/scale beside its owner; it never refits the owner. A [center] pane takes the popup to its center instead. */
+internal fun stickyMagnifier(owner:MagnifiedWindow,source:DesktopWindow,popup:DesktopWindow,viewer:Pose,level:Int=0,viewHalfAngles:FloatArray?=null,panelAnchor:Pair<Float,Float>?=null,center:MagnifiedWindow?=null):MagnifiedWindow {
     val distance=ViewLayers.popupDistance(owner.layerDistanceM,level)
     val ratio=distance/owner.layerDistanceM
     val fitX=minOf(1f,(owner.sourceWidth.toFloat()/owner.sourceHeight)/(owner.width/owner.height))
@@ -530,7 +530,8 @@ internal fun stickyMagnifier(owner:MagnifiedWindow,source:DesktopWindow,popup:De
             flat[1]=-(panelAnchor.second-sourceY)*sy
         }
     }
-    val position=transformPoint(owner.pose,owner.mesh?.project(flat) ?: flat)
+    val position=if(center!=null)transformPoint(center.pose,center.mesh?.project(floatArrayOf(0f,0f,0f)) ?: floatArrayOf(0f,0f,0f))
+        else transformPoint(owner.pose,owner.mesh?.project(flat) ?: flat)
     val window=MagnifiedWindow(popup.id,Pose(position,owner.pose.rotation),width*scale,height*scale,popup.width,popup.height,owner.spherical,
         units=owner.units,fixed=true,desktopRotation=owner.pose.rotation,requestedPosition=position,layerDistanceM=distance)
     return magnifierFrame(window,window,viewer,owner.units,true)

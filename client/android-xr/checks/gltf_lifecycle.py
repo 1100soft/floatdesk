@@ -39,7 +39,9 @@ internal fun frozenFrameGlb(pixel:ByteArray,mesh:MonitorMesh,interactionOnly:Boo
 internal open class Entity {
  var parent:Entity?=null
  var disposed=false
+ var shown=true
  val isDisposed get()=disposed
+ fun setEnabled(value:Boolean){check(!disposed);shown=value}
  open fun dispose(){check(!disposed);disposed=true}
 }
 internal class GltfModel {
@@ -85,6 +87,10 @@ suspend fun main() {
   check(flat.entity===original && flat.mesh==null)
  }
  flat.close();flat.close();check(original.disposed)
+ val retained=CurvedMonitorInput.create(session,parent,MonitorMesh()) {}
+ retained.detach();retained.detach();retained.close()
+ check(!retained.entity.disposed && !retained.entity.shown && retained.entity.parent==null && retained.entity.model.instances>0) // Detach borrows the material until the scene retires the entity.
+ retained.entity.dispose()
  GltfModelEntity.failComponent=true
  check(runCatching {CurvedMonitorInput.create(session,parent,MonitorMesh()) {}}.isFailure)
  check(GltfModel.all.size==2 && GltfModel.all.all {it.instances==0})
@@ -115,4 +121,4 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-gltf-') as temp:
  path=Path(temp);code=path/'GltfLifecycle.kt';code.write_text('import kotlinx.coroutines.*\n'+stubs+'\n'.join(sources)+main)
  subprocess.run(['java','-cp',str(lib/'*'),'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler','-no-stdlib','-no-reflect','-classpath',classpath,'-d',temp,str(code)],check=True)
  subprocess.run(['java','-cp',temp+':'+classpath,'GltfLifecycleKt'],check=True)
-print('Passed: 1000 input instances reuse session materials, repeated close, session-first teardown and failed setup cleanup')
+print('Passed: 1000 input instances reuse session materials, repeated close, detach without dispose, session-first teardown and failed setup cleanup')

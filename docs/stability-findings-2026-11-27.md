@@ -118,6 +118,18 @@ Proposed registry record: pane key, X11 id, surface generation, submitted geomet
 - The Android lint warning `UseKtx createBitmap` at `FrozenMonitor.kt:95` predates this work. I left it alone.
 - The `Quad` shapes outside the mesh gate are described under T1.1.
 
+## Follow-up: layout control regressions and changes (same day)
+
+Eric reported that one-hand drag sent objects to unintended places, sometimes behind him, and that Auto adjust did not bring support objects next to the desktop. Both are fixed in pure code and covered by JVM checks. Neither has been observed on the headset yet.
+
+- One-hand drag. `MagnifierRayDrag.moveHand` and `LayoutOriginGrab.advance` amplified the full hand delta by the distance gain, about 3 to 4 times. Pulling the hand toward the body moved the held point along the line of sight. Nothing changed until the pull times the gain passed the contact distance, and then the direction flipped through the viewer. Both now use `lateralHandDelta`, which removes the component along the line of sight to the held point, so the result stays within 90° of its start. Desktop, magnifier, reference, panel and window drags all use `MagnifierRayDrag`.
+- Auto adjust. SNAP packs footprints projected onto the viewer's tangent plane, and it skipped anything behind or beside the viewer, which therefore never moved. Auto now first seats such objects (more than about 80° off the line of sight) at their default side, then runs Align, Face and Snap as before.
+- New `seatSupportObjects` and `supportSeats` in `LayoutAdjustment.kt` implement "Reset support objects" on both palm pages. They work in angles: flat surfaces use 2·atan(w/2d) and curved surfaces arc over radius. A one-dimensional solve then makes each object's projected bounds (the ones the cursor map uses) touch its inner neighbor along its side. I did not use SNAP here. Its box packing let a desktop-sized magnifier's corner bounds block the reference, which left a gap of about 4.6° from the desktop. A desktop-sized object beside a wide desktop can extend past 90°. It keeps its angular seat there, and the 2D map cannot represent its outer part.
+- `grabToMove` and `freeManipulation` are replaced by one non-persisted `layoutMode`. The palm Move and Free buttons are gone. On the desktop, every native event reaches `TwoHandState`. One hand starts the angular drag, and a second hand on the same object cancels it and engages the two-hand grab from the current pose. Grips are surface-local, so there is no jump. Magnifier panes arbitrate the same way.
+- The palm menu gained a magnified-panels toggle (`magnifySystemPanels`, the same setting as the settings switch). Custom palm layouts that saved Move or Free positions ignore those names, and a saved "Layout mode" label stays until the user edits it.
+
+Needs the headset: the one-hand drag feel and its gain toward and away from the body, the two-hand takeover mid-drag on the desktop and on a magnifier, Reset with real panel sizes in flat and curved, and whether resizing on Reset reallocates surfaces cleanly (a size increase allocates a new canvas through the existing path).
+
 ## Environment notes
 
 - Earlier in this session I ran `adb logcat -c`, which cleared the device's main and crash buffers. Crash evidence from before about 19:00 on 2026-11-27 is gone. Do not run `logcat -c`; use `xr-crash-report.py`, which only reads.

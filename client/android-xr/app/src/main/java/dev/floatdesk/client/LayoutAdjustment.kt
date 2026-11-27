@@ -1,16 +1,143 @@
 package dev.floatdesk.client
 
 import dev.floatdesk.client.workspace.FixedMagnifierPlacement
+import dev.floatdesk.client.workspace.MonitorPlacement
 import dev.floatdesk.client.workspace.Pose
 import dev.floatdesk.client.workspace.WorkspaceFile
 import dev.floatdesk.client.workspace.ViewLayers
 import kotlin.math.abs
+import kotlin.math.atan
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.round
 import kotlin.math.sin
+import kotlin.math.sqrt
+import kotlin.math.tan
 
 internal enum class LayoutAdjustment { ALIGN, SNAP, FACE, AUTO }
+
+internal enum class SupportSide { LEFT, RIGHT, TOP, BOTTOM }
+
+/** A support object seated around the desktop: [aspect] is its content width over height, [distanceM] its default radial layer. */
+internal data class SupportSeat(val id:String,val side:SupportSide,val panel:Boolean,val aspect:Float,val distanceM:Float)
+
+/** Panel placement keys end with the edge the panel occupies on its output. */
+internal fun panelSide(id:String):SupportSide?=when(id.substringAfterLast(':')){
+    "left"->SupportSide.LEFT
+    "right"->SupportSide.RIGHT
+    "top"->SupportSide.TOP
+    "bottom"->SupportSide.BOTTOM
+    else->null
+}
+
+/** Magnifiers sit below the desktop, the reference to its left and each panel on its own edge. */
+internal fun WorkspaceFile.supportSeats(shown:Set<String>,aspects:Map<String,Float> = emptyMap()):List<SupportSeat>{
+    val desktop=layouts[activeLayout]?.firstOrNull() ?: return emptyList()
+    fun aspect(record:FixedMagnifierPlacement,fallback:Float)=aspects[record.id]?.takeIf{it.isFinite() && it>0f}
+        ?: fallback.takeIf{it.isFinite() && it>0f} ?: 1f
+    return buildList{
+        for(record in systemPanels)if(record.id in shown){
+            val a=aspect(record,record.widthM/record.heightM)
+            add(SupportSeat(record.id,panelSide(record.id) ?: if(a<1f)SupportSide.RIGHT else SupportSide.BOTTOM,true,a,ViewLayers.ShellDistanceM))
+        }
+        for(record in fixedMagnifiers)if(record.id in shown)
+            add(SupportSeat(record.id,SupportSide.BOTTOM,false,aspect(record,record.widthM/record.heightM),ViewLayers.MagnifierDistanceM))
+        if(desktopReference)referencePlacement?.takeIf{it.id in shown}?.let{record->
+            add(SupportSeat(record.id,SupportSide.LEFT,false,aspect(record,desktop.pixelWidth.toFloat()/desktop.pixelHeight),ViewLayers.MagnifierDistanceM))
+        }
+    }
+}
+
+/**
+ * Seat support objects edge to edge around the desktop in the viewer's projection, panels nearest on their side.
+ * With [resize] each takes the desktop's apparent size; a vertical panel its apparent height, a horizontal one its width.
+ * The desktop itself is not moved.
+ */
+internal fun WorkspaceFile.seatSupportObjects(viewer:Pose,units:Float,seats:List<SupportSeat>,resize:Boolean):WorkspaceFile{
+    if(seats.isEmpty() || !units.isFinite() || units<=0f || viewer.position.any{!it.isFinite()} || viewer.rotation.any{!it.isFinite()})return this
+    val desktop=layouts[activeLayout]?.firstOrNull() ?: return this
+    val origin=layoutOrigin ?: desktop.pose
+    val originQ=origin.rotation
+    val inverse=floatArrayOf(-originQ[0],-originQ[1],-originQ[2],originQ[3])
+    val center=viewerInMonitor(desktop.pose.position,viewer.position,viewer.rotation)
+    val range=sqrt(center.sumOf{(it*it).toDouble()}).toFloat()
+    if(!range.isFinite() || range<.0001f || -center[2]<=.0001f)return this
+    val yaw=atan2(center[0],-center[2])
+    val pitch=atan2(center[1],sqrt(center[0]*center[0]+center[2]*center[2]))
+    // Curved surfaces subtend arc over radius; flat viewer-facing ones subtend twice the half-size arctangent.
+    fun angle(size:Float,distance:Float)=if(sphericalWarp)size/distance else 2f*atan(size*.5f/distance)
+    fun extent(angle:Float,distance:Float)=if(sphericalWarp)angle*distance else 2f*distance*tan(angle.coerceAtMost(2.8f)*.5f)
+    val deskW=angle(desktop.physicalWidthM,range);val deskH=angle(desktop.physicalHeightM,range)
+    fun outer(b:FocusRect,side:SupportSide)=when(side){
+        SupportSide.LEFT->b.left;SupportSide.RIGHT->b.right;SupportSide.TOP->b.top;SupportSide.BOTTOM->b.bottom
+    }
+    fun inner(b:FocusRect,side:SupportSide)=when(side){
+        SupportSide.LEFT->b.right;SupportSide.RIGHT->b.left;SupportSide.TOP->b.bottom;SupportSide.BOTTOM->b.top
+    }
+    fun FocusRect.finite()=left.isFinite() && right.isFinite() && top.isFinite() && bottom.isFinite()
+    // Contact is measured on the projected bounds the cursor map uses. A side whose bounds diverge keeps angular seating.
+    val desktopBounds=projectedBounds("desktop",viewer,desktop.pose,desktop.physicalWidthM,desktop.physicalHeightM,sphericalWarp,units,desktop)
+        ?.takeIf{it.finite()}
+    val edge=SupportSide.entries.associateWith{side->desktopBounds?.let{outer(it,side)}}.toMutableMap()
+    val records=(fixedMagnifiers+systemPanels+listOfNotNull(referencePlacement)).associateBy{it.id}
+    val reach=mutableMapOf<SupportSide,Float>()
+    val placed=mutableMapOf<String,FixedMagnifierPlacement>()
+    for(seat in seats.filter{it.panel}+seats.filterNot{it.panel}){
+        val record=records[seat.id] ?: continue
+        if(seat.distanceM<=0f || !seat.aspect.isFinite() || seat.aspect<=0f)continue
+        val (w,h)=when{
+            !resize->angle(record.widthM,seat.distanceM) to angle(record.heightM,seat.distanceM)
+            seat.panel && seat.aspect<1f->deskH*seat.aspect to deskH
+            seat.panel->deskW to deskW/seat.aspect
+            seat.aspect>=deskW/deskH->deskW to deskW/seat.aspect
+            else->deskH*seat.aspect to deskH
+        }
+        if(!w.isFinite() || !h.isFinite() || w<=0f || h<=0f)continue
+        val offset=reach[seat.side] ?: 0f
+        val (startYaw,startPitch)=when(seat.side){
+            SupportSide.LEFT->yaw-deskW*.5f-offset-w*.5f to pitch
+            SupportSide.RIGHT->yaw+deskW*.5f+offset+w*.5f to pitch
+            SupportSide.TOP->yaw to pitch+deskH*.5f+offset+h*.5f
+            SupportSide.BOTTOM->yaw to pitch-deskH*.5f-offset-h*.5f
+        }
+        reach[seat.side]=offset+if(seat.side==SupportSide.LEFT || seat.side==SupportSide.RIGHT)w else h
+        val width=if(resize)extent(w,seat.distanceM) else record.widthM
+        val height=if(resize)extent(h,seat.distanceM) else record.heightM
+        val distance=seat.distanceM*units
+        fun at(y:Float,p:Float)=transformPoint(viewer,floatArrayOf(sin(y)*cos(p)*distance,sin(p)*distance,-cos(y)*cos(p)*distance))
+        fun pose(y:Float,p:Float)=at(y,p).let{Pose(it,facingMagnifierRotation(it,viewer,originQ))}
+        var y=startYaw;var p=startPitch
+        val target=edge[seat.side]
+        var reached:Float?=null
+        if(target!=null)for(step in 0..8){
+            val b=projectedBounds(seat.id,viewer,pose(y,p),width*units,height*units,sphericalWarp,units)?.takeIf{it.finite()}
+            if(b==null){y=startYaw;p=startPitch;reached=null;break}
+            reached=outer(b,seat.side)
+            val error=atan(target)-atan(inner(b,seat.side))
+            if(abs(error)<.00002f || step==8)break
+            if(seat.side==SupportSide.LEFT || seat.side==SupportSide.RIGHT)y+=error else p-=error
+        }
+        edge[seat.side]=reached
+        val world=pose(y,p)
+        val local=viewerInMonitor(world.position,origin.position,originQ)
+        placed[seat.id]=record.copy(pose=Pose(FloatArray(3){local[it]/units},multiplyQuaternion(inverse,world.rotation)),
+            widthM=width,heightM=height,freePose=true)
+    }
+    if(placed.isEmpty())return this
+    return copy(cursorMapReference=viewer,fixedMagnifiers=fixedMagnifiers.map{placed[it.id] ?: it},
+        systemPanels=systemPanels.map{placed[it.id] ?: it},referencePlacement=referencePlacement?.let{placed[it.id] ?: it})
+}
+
+/** Projected image bounds in the viewer's tangent plane, as the cursor map measures them. */
+private fun projectedBounds(key:String,viewer:Pose,pose:Pose,width:Float,height:Float,spherical:Boolean,units:Float,screen:MonitorPlacement?=null):FocusRect?{
+    val mesh=if(!spherical)null else if(screen!=null){
+        val eye=viewerInMonitor(viewer.position,pose.position,pose.rotation)
+        val anchor=monitorProjectionCenter(width,height,screen.viewCenterU,screen.viewCenterV)
+        if(anchor.all{it.isFinite()} && distance(eye,anchor)>.0001f)
+            desktopSphericalMesh(width,height,eye,anchor,ViewLayers.DesktopDistanceM*units) else null
+    }else projectMagnifier(MagnifiedWindow(0,pose,width,height,1,1,spherical=true),viewer,pose,width,height,true,.003f,.003f)
+    return cursorPatches(key,pose,width,height,mesh,FocusRect(0f,0f,1f,1f),viewer,projectBounds=true).firstOrNull()?.viewBounds
+}
 
 internal data class LayoutBox(val center:FloatArray,val width:Float,val height:Float)
 
@@ -84,9 +211,22 @@ private fun axisAlignedRotation(rotation:FloatArray):FloatArray {
 }
 
 /** Auto lays out in the reference axes, then faces each resulting surface toward the viewer. */
-internal fun WorkspaceFile.adjustLayout(action:LayoutAdjustment,viewer:Pose,units:Float,contentSizes:Map<String,Pair<Float,Float>> = emptyMap(),visibleRecords:Set<String>?=null):WorkspaceFile{
-    if(action==LayoutAdjustment.AUTO)return adjustLayout(LayoutAdjustment.ALIGN,viewer,units,contentSizes,visibleRecords)
-        .adjustLayout(LayoutAdjustment.FACE,viewer,units,contentSizes,visibleRecords).adjustLayout(LayoutAdjustment.SNAP,viewer,units,contentSizes,visibleRecords)
+internal fun WorkspaceFile.adjustLayout(action:LayoutAdjustment,viewer:Pose,units:Float,contentSizes:Map<String,Pair<Float,Float>> = emptyMap(),visibleRecords:Set<String>?=null,seats:List<SupportSeat> = emptyList()):WorkspaceFile{
+    if(action==LayoutAdjustment.AUTO){
+        // Packing projects onto the viewer's view plane, so objects behind or beside the viewer are first seated at their default side.
+        val basis=layoutOrigin ?: layouts[activeLayout]?.firstOrNull()?.pose
+        val records=(fixedMagnifiers+systemPanels+listOfNotNull(referencePlacement)).associateBy{it.id}
+        val outside=if(basis==null || !units.isFinite() || units<=0f)emptyList() else seats.filter{seat->
+            val record=records[seat.id]
+            record!=null && (visibleRecords==null || seat.id in visibleRecords) && run{
+                val v=viewerInMonitor(transformPoint(basis,FloatArray(3){record.pose.position[it]*units}),viewer.position,viewer.rotation)
+                -v[2]<=sqrt(v[0]*v[0]+v[1]*v[1])*.18f
+            }
+        }
+        return seatSupportObjects(viewer,units,outside,resize=false)
+            .adjustLayout(LayoutAdjustment.ALIGN,viewer,units,contentSizes,visibleRecords)
+            .adjustLayout(LayoutAdjustment.FACE,viewer,units,contentSizes,visibleRecords).adjustLayout(LayoutAdjustment.SNAP,viewer,units,contentSizes,visibleRecords)
+    }
     if(!units.isFinite() || units<=0f || viewer.position.any{!it.isFinite()} || viewer.rotation.any{!it.isFinite()})return this
     val desktop=layouts[activeLayout]?.toList().orEmpty()
     val origin=layoutOrigin ?: desktop.firstOrNull()?.pose ?: return this
@@ -126,16 +266,8 @@ internal fun WorkspaceFile.adjustLayout(action:LayoutAdjustment,viewer:Pose,unit
             val box=boxes[index]
             val pose=Pose(worldAt(point),if(record==null)desktop[index].pose.rotation
                 else multiplyQuaternion(originQ,record.pose.rotation))
-            val eye=viewerInMonitor(viewer.position,pose.position,pose.rotation)
-            val mesh=if(!sphericalWarp)null else if(record==null){
-                val screen=desktop[index]
-                val anchor=monitorProjectionCenter(box.width,box.height,screen.viewCenterU,screen.viewCenterV)
-                if(anchor.all{it.isFinite()} && distance(eye,anchor)>.0001f)
-                    desktopSphericalMesh(box.width,box.height,eye,anchor,ViewLayers.DesktopDistanceM*units) else null
-            }else projectMagnifier(MagnifiedWindow(0,pose,box.width,box.height,1,1,spherical=true),
-                viewer,pose,box.width,box.height,true,.003f,.003f)
-            val bounds=cursorPatches(record?.id ?: "desktop",pose,box.width,box.height,mesh,FocusRect(0f,0f,1f,1f),
-                viewer,projectBounds=true).firstOrNull()?.viewBounds ?: return angular[slot].copy(center=point)
+            val bounds=projectedBounds(record?.id ?: "desktop",viewer,pose,box.width,box.height,sphericalWarp,units,
+                if(record==null)desktop[index] else null) ?: return angular[slot].copy(center=point)
             val footprint=LayoutBox(floatArrayOf((bounds.left+bounds.right)*.5f,-(bounds.top+bounds.bottom)*.5f,point[2]),
                 bounds.right-bounds.left,bounds.bottom-bounds.top)
             cached[slot]=point to footprint

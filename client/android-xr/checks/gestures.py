@@ -61,6 +61,16 @@ code += '''
 private fun near(a: FloatArray, b: FloatArray) { check(distance(a,b) < 0.0001f) { "${a.contentToString()} != ${b.contentToString()}" } }
 private fun point(m: MonitorPlacement, local: FloatArray, scale: Float = 1f) = transformPoint(m.pose, local, scale)
 fun main() {
+    for(page in PalmPage.entries){
+        val buttons=PalmMenuLayout.buttons(page)
+        check(buttons.count{it.action==PalmAction.RESET_SUPPORT}==1){"reset support on $page"}
+        for(i in buttons.indices)for(j in 0 until i){
+            val a=buttons[i];val b=buttons[j]
+            check(a.x>=b.x+b.w || b.x>=a.x+a.w || a.y>=b.y+b.h || b.y>=a.y+a.h){"${a.action} overlaps ${b.action} on $page"}
+        }
+    }
+    check(PalmAction.RESET_SUPPORT in PalmMenuLayout.sharedActions && PalmAction.RESET in PalmMenuLayout.sharedActions)
+    check(PalmMenuLayout.buttons(PalmPage.MAIN).any{it.action==PalmAction.PANELS} && PalmAction.PANELS !in PalmMenuLayout.layoutActions)
     val custom=PalmCustomLayout(emptyMap(),emptyList())
     val movedButton=custom.move(PalmPage.MAIN,PalmAction.RESET,PalmGridPoint(1,7))
     check(movedButton.positions[PalmAction.RESET]==PalmGridPoint(1,7))

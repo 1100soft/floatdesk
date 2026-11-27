@@ -49,8 +49,8 @@ internal data class WorkspaceFile(
     val handMouse: Boolean = false,
     val wakeMac:String="",
     val reverseHandScroll:Boolean=true,
-    val grabToMove: Boolean = false,
-    val freeManipulation: Boolean = false,
+    /** One- and two-hand manipulation are both available while layout is open; not persisted. */
+    val layoutMode: Boolean = false,
     val desktopReference: Boolean = false,
     val referencePlacement: FixedMagnifierPlacement? = null,
     val layoutOrigin:Pose?=null,
@@ -85,7 +85,7 @@ internal data class WorkspaceFile(
     /** Loaded from a file laid out for the fixed 0.9–1.5 m layers; not persisted. */
     val legacyDistances:Boolean=false,
 ){
-    val layoutModeActive get()=grabToMove || freeManipulation
+    val layoutModeActive get()=layoutMode
     val handMouseActive get()=handMouse && !layoutModeActive && !handsOff
     val focusMode get()=!layoutModeActive && !handsOff && tapToFocus
     val windowGrabMode get()=!layoutModeActive && !handsOff && dragToMove
@@ -261,7 +261,7 @@ internal fun WorkspaceFile.monitorPlaced(
     val current = layouts[activeLayout] ?: return this
     if (index !in current.indices) return this
     val updated = current.toMutableList()
-    updated[index] = if(placement.freePose || grabToMove)placement else store.viewerReference?.let{fixedDesktopDepth(placement,it,store.viewerUnitsPerMeter,sphericalWarp)} ?: placement
+    updated[index] = if(placement.freePose || layoutModeActive)placement else store.viewerReference?.let{fixedDesktopDepth(placement,it,store.viewerUnitsPerMeter,sphericalWarp)} ?: placement
     val nextLayouts = layouts.toMutableMap()
     nextLayouts[activeLayout] = updated
     val home=if(index==0 && layoutModeActive)updated[index].pose else desktopHome

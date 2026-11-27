@@ -424,6 +424,12 @@ internal fun facingMagnifierRotation(center:FloatArray,viewer:Pose,horizontalRot
 
 
 /** Captured native DOWN/MOVE/UP rays drag the actual pane without a Movable affordance. */
+/** Hand motion across the line of sight. Amplified motion along it would carry a held point through the viewer. */
+internal fun lateralHandDelta(delta:FloatArray,sight:FloatArray):FloatArray{
+    val along=(0..2).sumOf{(delta[it]*sight[it]).toDouble()}.toFloat()
+    return FloatArray(3){delta[it]-sight[it]*along}
+}
+
 internal class MagnifierRayDrag{
     private var start:MagnifiedWindow?=null
     private var from=floatArrayOf();private var offset=floatArrayOf();private var rayDistance=0f
@@ -459,7 +465,8 @@ internal class MagnifierRayDrag{
         // Intent is measured at the hand, so increased gain cannot turn pinch jitter into a drag.
         if(!dragging && movement<.008f*window.units)return null
         dragging=true
-        val to=normalize3(FloatArray(3){contactStart[it]+delta[it]*gain-viewer.position[it]})
+        val lateral=lateralHandDelta(delta,from)
+        val to=normalize3(FloatArray(3){contactStart[it]+lateral[it]*gain-viewer.position[it]})
         return rotateTo(viewer,to)
     }
     private fun rotateTo(viewer:Pose,to:FloatArray):FloatArray?{

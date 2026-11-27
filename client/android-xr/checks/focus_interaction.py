@@ -263,9 +263,66 @@ fun main() {
  }
  val originGrab=LayoutOriginGrab()
  originGrab.begin("LEFT",0L,savedOrigin,Pose(),floatArrayOf(0f,0f,-.4f),1f)
- val movedOrigin=originGrab.advance(Pose(),mapOf("LEFT" to floatArrayOf(.1f,0f,-.4f)),setOf("LEFT"),150L,false)!!
+ val movedOrigin=originGrab.advance(Pose(),mapOf("LEFT" to floatArrayOf(.1f,0f,-.4f)),setOf("LEFT"),150L)!!
  check(movedOrigin.position[0]>savedOrigin.position[0] && abs(distance(movedOrigin.position,FloatArray(3))-distance(savedOrigin.position,FloatArray(3)))<.00001f)
- check(originGrab.advance(Pose(),emptyMap(),emptySet(),160L,false)==null && !originGrab.active)
+ check(originGrab.advance(Pose(),emptyMap(),emptySet(),160L)==null && !originGrab.active)
+ // Pulling the hand toward the body must not carry the origin through the viewer.
+ originGrab.begin("LEFT",0L,savedOrigin,Pose(),floatArrayOf(0f,0f,-.4f),1f)
+ for(pull in listOf(.1f,.3f,.6f)){
+    val pulled=originGrab.advance(Pose(),mapOf("LEFT" to floatArrayOf(0f,0f,-.4f+pull)),setOf("LEFT"),150L)
+    check(pulled==null || dot(pulled.position,savedOrigin.position)>0f){"origin crossed the viewer pull=$pull"}
+ }
+ originGrab.clear()
+ run {
+    val desk=MonitorPlacement("main","desktop",Pose(floatArrayOf(0f,0f,-ViewLayers.DesktopDistanceM)),1.6f,.9f,0f,1920,1080,60)
+    val panel=FixedMagnifierPlacement("panel:eDP-1:bottom",Pose(floatArrayOf(1.3f,.1f,.2f)),1f,.05f)
+    val side=FixedMagnifierPlacement("panel:eDP-1:right",Pose(floatArrayOf(.2f,0f,2.4f)),.05f,.8f)
+    val magnifier=FixedMagnifierPlacement("magnifier",Pose(floatArrayOf(-.9f,-.5f,.3f)),.5f,.3f)
+    val reference=FixedMagnifierPlacement("reference",Pose(floatArrayOf(0f,.9f,.3f)),.42f,.25f)
+    val unitRect=FocusRect(0f,0f,1f,1f)
+    for(curved in listOf(false,true)){
+        val file=WorkspaceFile(sphericalWarp=curved,layoutOrigin=desk.pose,layouts=mutableMapOf("Desk" to mutableListOf(desk)),
+            fixedMagnifiers=listOf(magnifier),systemPanels=listOf(panel,side),referencePlacement=reference,desktopReference=true)
+        val shown=setOf(panel.id,side.id,magnifier.id,reference.id)
+        val seats=file.supportSeats(shown,mapOf(magnifier.id to 1.6f,panel.id to 20f,side.id to 1f/16f))
+        check(seats.map{it.id to it.side}==listOf(panel.id to SupportSide.BOTTOM,side.id to SupportSide.RIGHT,
+            magnifier.id to SupportSide.BOTTOM,reference.id to SupportSide.LEFT))
+        check(file.supportSeats(shown-magnifier.id).none{it.id==magnifier.id})
+        fun bounds(result:WorkspaceFile,id:String):FocusRect{
+            val record=(result.fixedMagnifiers+result.systemPanels+listOfNotNull(result.referencePlacement)).single{it.id==id}
+            val pane=fixedMagnifier(record,desk,DesktopWindow(1,0,0,(record.widthM*1000).toInt(),(record.heightM*1000).toInt()),Pose(),1f,curved)
+            return cursorPatches(id,pane.pose,pane.width,pane.height,pane.mesh,unitRect,Pose(),projectBounds=true).single().viewBounds
+        }
+        val mesh=if(curved)desktopSphericalMesh(desk.physicalWidthM,desk.physicalHeightM,viewerInMonitor(Pose().position,desk.pose.position,desk.pose.rotation),
+            FloatArray(3),ViewLayers.DesktopDistanceM) else null
+        val d=cursorPatches("desktop",desk.pose,desk.physicalWidthM,desk.physicalHeightM,mesh,unitRect,Pose(),projectBounds=true).single().viewBounds
+        // Reset: panels nearest on their edge, the magnifier stacked below the panel, the reference left, no projected gap.
+        val reset=file.seatSupportObjects(Pose(),1f,seats,resize=true)
+        check(reset.layouts.getValue("Desk").single()===desk && reset.cursorMapReference!=null)
+        val bottom=bounds(reset,panel.id);val right=bounds(reset,side.id);val below=bounds(reset,magnifier.id);val left=bounds(reset,reference.id)
+        val tolerance=.003f
+        check(abs(bottom.top-d.bottom)<tolerance){"bottom panel gap ${bottom.top-d.bottom} curved=$curved"}
+        check(abs(right.left-d.right)<tolerance){"side panel gap ${right.left-d.right} curved=$curved"}
+        check(abs(below.top-bottom.bottom)<tolerance){"magnifier gap ${below.top-bottom.bottom} curved=$curved"}
+        check(abs(left.right-d.left)<tolerance){"reference gap ${left.right-d.left} curved=$curved"}
+        // Apparent sizes follow the desktop: full height or width by aspect, panels across the matching desktop edge.
+        fun angle(size:Float,range:Float)=if(curved)size/range else 2f*kotlin.math.atan(size*.5f/range)
+        val deskW=angle(desk.physicalWidthM,ViewLayers.DesktopDistanceM);val deskH=angle(desk.physicalHeightM,ViewLayers.DesktopDistanceM)
+        fun record(id:String)=(reset.fixedMagnifiers+reset.systemPanels+listOfNotNull(reset.referencePlacement)).single{it.id==id}
+        check(abs(angle(record(side.id).heightM,ViewLayers.ShellDistanceM)-deskH)<.0001f)
+        check(abs(angle(record(panel.id).widthM,ViewLayers.ShellDistanceM)-deskW)<.0001f)
+        check(abs(angle(record(magnifier.id).heightM,MagnifierDistanceM)-deskH)<.0001f)
+        check(abs(angle(record(reference.id).widthM,MagnifierDistanceM)-deskW)<.0001f)
+        check(abs(angle(record(magnifier.id).widthM,MagnifierDistanceM)/angle(record(magnifier.id).heightM,MagnifierDistanceM)-1.6f)<.001f)
+        check((reset.fixedMagnifiers+reset.systemPanels+listOfNotNull(reset.referencePlacement)).all{it.freePose})
+        // Auto first seats an object behind the viewer, then packs it against the desktop.
+        val behind=file.copy(desktopReference=false,systemPanels=listOf(side),fixedMagnifiers=emptyList())
+        val sizes=mapOf(side.id to (side.widthM to side.heightM))
+        val auto=behind.adjustLayout(LayoutAdjustment.AUTO,Pose(),1f,sizes,sizes.keys,behind.supportSeats(sizes.keys,mapOf(side.id to 1f/16f)))
+        val seated=bounds(auto,side.id)
+        check(abs(seated.left-d.right)<tolerance){"auto gap ${seated.left-d.right} curved=$curved"}
+    }
+ }
 
  run {
    val local=FixedMagnifierPlacement("pane",Pose(floatArrayOf(.3f,-.1f,.2f)),.45f,.3f,freePose=true)
@@ -655,6 +712,11 @@ fun main() {
    val result=drag.moveHand(Pose(),floatArrayOf(hand[0]+.05f*units,hand[1],hand[2]))!!
    check(abs(result[0]/-result[2]-(.05f*units/handRange))<.00001f)
    check(abs(sqrt(result.sumOf{(it*it).toDouble()}).toFloat()-.85f*units)<.00001f)
+   // Hand motion toward the body is not amplified through the viewer.
+   for(pull in listOf(.1f,.3f,.6f)){
+      val pulled=drag.moveHand(Pose(),floatArrayOf(hand[0],hand[1],hand[2]+pull*units)) ?: continue
+      check(pulled[2]<0f && abs(sqrt(pulled.sumOf{(it*it).toDouble()}).toFloat()-.85f*units)<.0001f){"pull=$pull units=$units"}
+   }
  }
  val immediate=magnifierGeometry(zoom,Pose(),1f,floatArrayOf(.2f,0f,-.85f),updateMesh=false)
  check(immediate.pose.position[0]>0f && immediate.mesh===zoom.mesh)

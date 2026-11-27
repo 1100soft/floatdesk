@@ -212,7 +212,7 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                     val pointing=uv!=null && event.action!=InputEvent.Action.HOVER_EXIT && event.action!=InputEvent.Action.CANCEL
                     if(if(pointing)resources.hovering.add(pointerKey)else resources.hovering.remove(pointerKey))
                         pointerHoverNow.value(resources.hovering.any{it.startsWith("hand:")},resources.hovering.any{it.startsWith("gaze:")})
-                    if(moveMode.value && event.action==InputEvent.Action.DOWN && local!=null && !resources.resizing && !resources.moving){
+                    if(moveMode.value && event.action==InputEvent.Action.DOWN && local!=null && !resources.resizing && !resources.moving && !resources.free.engaged){
                         val head=viewer.get()
                         if(head!=null){resources.dragged=false;val ray=ray.value
                             val handSide=side.takeIf{it=="LEFT" || it=="RIGHT"} ?: tracking.pinched.filter{it in tracking.points}.singleOrNull()
@@ -346,6 +346,10 @@ internal fun WindowMagnifierPanel(session:Session,root:Entity,window:MagnifiedWi
                     if(!wasEngaged && resources.freeContacts.keys.containsAll(listOf("LEFT","RIGHT")) &&
                         tracking.pinched.containsAll(listOf("LEFT","RIGHT"))) {
                         for(side in listOf("LEFT","RIGHT"))resources.free.acquire(side,resources.freeContacts.getValue(side),current,tracking,active.mesh)
+                    }
+                    // A second hand takes over a one-hand drag; the two-hand release commits the placement.
+                    if(resources.free.engaged && resources.moving){
+                        resources.drag.clear();resources.dragHandSide=null;resources.dragSide=null;resources.moving=false
                     }
                     resources.free.advance(tracking,current,smoothingMs=if(desktopMirror)42f else 0f)?.let { next ->
                         resources.oneHandPlaced=false

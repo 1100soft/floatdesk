@@ -9,11 +9,11 @@ import subprocess
 import sys
 import tempfile
 
-from production_sources import application_sources
+from production_sources import application_sources,marker
 source = application_sources()
 def section(start, end):
     start=start.replace('private ','internal ');end=end.replace('private ','internal ')
-    return source[source.index(start):source.index(end)]
+    return source[marker(source,start):marker(source,end)]
 
 stub = '''
 private class TestState<T>(var value: T) {
@@ -33,20 +33,20 @@ private data class SpatialInputEvent(val pointerType: String, val action: InputE
 private object Log { fun i(tag: String, message: String) {} }
 '''
 guide_source = (Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client/GrabGuideRenderer.kt').read_text()
-stub += guide_source[guide_source.index('internal data class GrabGuide'):guide_source.index('/** Native meshes')]
+stub += guide_source[marker(guide_source,'internal data class GrabGuide'):marker(guide_source,'/** Native meshes')]
 mesh_source = (Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client/MonitorMesh.kt').read_text().split('\n', 1)[1]
 guard_source = (Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client/TrackingGuard.kt').read_text().split('\n',1)[1]
 pointer_source = (Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client/PointerControl.kt').read_text().split('\n',1)[1]
 pinch_source=(Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client/MouseGestures.kt').read_text()
 stub=stub.replace("private ","internal ")
-code = mesh_source + guard_source + (Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client/PinchPolicy.kt').read_text().split('\n',1)[1] + pinch_source[pinch_source.index('internal fun mouseIndexContactMetres'):pinch_source.index('internal fun mouseMiddleContactMetres')] + stub + pointer_source
+code = mesh_source + guard_source + (Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client/PinchPolicy.kt').read_text().split('\n',1)[1] + pinch_source[marker(pinch_source,'internal fun mouseIndexContactMetres'):marker(pinch_source,'internal fun mouseMiddleContactMetres')] + stub + pointer_source
 window_menu=(Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client/WindowActionsMenu.kt').read_text()
 palm_menu=(Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client/PalmMenu.kt').read_text()
-code += window_menu[window_menu.index('internal object WindowMenuLayout'):window_menu.index('private val ToolbarSurface')]
-code += palm_menu[palm_menu.index('internal enum class PalmAction'):palm_menu.index('internal fun palmActionEnabled')]
+code += window_menu[marker(window_menu,'internal object WindowMenuLayout'):marker(window_menu,'private val ToolbarSurface')]
+code += palm_menu[marker(palm_menu,'internal enum class PalmAction'):marker(palm_menu,'internal fun palmActionEnabled')]
 palm_editor=(Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client/PalmMenuEditor.kt').read_text()
-code += palm_editor[palm_editor.index('private const val PalmGridM'):palm_editor.index('    fun encode():String')].replace('abs(', 'kotlin.math.abs(')+ '}\n'
-code += palm_editor[palm_editor.index('internal sealed interface PalmDragItem'):palm_editor.index('@Composable\ninternal fun EditablePalmControls')]
+code += palm_editor[marker(palm_editor,'private const val PalmGridM'):marker(palm_editor,'    fun encode():String')].replace('abs(', 'kotlin.math.abs(')+ '}\n'
+code += palm_editor[marker(palm_editor,'internal sealed interface PalmDragItem'):marker(palm_editor,'@Composable\ninternal fun EditablePalmControls')]
 code += section('internal data class PalmPanelState', 'internal fun Vector3.toArray()')
 code += section('private fun palmRayPoint(', '/** Direct fingertip contact')
 code += section('private class PalmPoke', '/** Find the parent')
@@ -56,7 +56,7 @@ code += section('private fun palmNormal(', 'private fun openViewpoint(')
 code += section('private fun openPalm(', 'private fun readHand(')
 code += section('internal fun dot(a: FloatArray', 'private fun Pose.toRuntimePose(')
 code += section('internal fun rotateVector(', 'internal fun subtract(')
-code += source[source.index('internal fun subtract('):]
+code += source[marker(source,'internal fun subtract('):]
 code += '''
 private fun near(a: FloatArray, b: FloatArray) { check(distance(a,b) < 0.0001f) { "${a.contentToString()} != ${b.contentToString()}" } }
 private fun point(m: MonitorPlacement, local: FloatArray, scale: Float = 1f) = transformPoint(m.pose, local, scale)

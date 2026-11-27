@@ -4,8 +4,9 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from production_sources import native_journal
 root=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
-sources=[]
+sources=[native_journal()]
 for name in ['OwnedGltf.kt','CurvedMonitorInput.kt']:
     sources.append('\n'.join(line for line in (root/name).read_text().splitlines() if not line.startswith(('package ','import ')) and '@android.annotation.SuppressLint' not in line and '@SuppressLint' not in line))
 sources=[s.replace('androidx.lifecycle.LifecycleEventObserver','LifecycleEventObserver').replace('androidx.lifecycle.Lifecycle.Event','Lifecycle.Event').replace('android.os.Handler(android.os.Looper.getMainLooper()).post','postAfterDestroy') for s in sources]

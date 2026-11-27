@@ -4,11 +4,12 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from production_sources import marker
 
 folder = Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client/net'
 protocol = (folder/'Protocol.kt').read_text().split('\n',1)[1]
 connection = (folder/'DeskConnection.kt').read_text()
-methods = connection[connection.index('    fun movePointer('):]
+methods = connection[marker(connection,'    fun movePointer('):]
 stub = '''
 private val uiThread = Thread.currentThread()
 private object Looper {

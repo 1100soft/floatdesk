@@ -10,11 +10,11 @@ for name in ['HandTrackingQuality.kt','MonitorMesh.kt','PointerControl.kt','Pinc
     lines=(folder/name).read_text().splitlines()
     imports += [line for line in lines if line.startswith('import ')]
     sources.append('\n'.join(line for line in lines if not line.startswith(('package ','import '))))
-from production_sources import application_sources
+from production_sources import application_sources,marker
 main=application_sources()
 callback=next(line.split('onPalmAction = ',1)[1].strip().removesuffix(',') for line in main.splitlines() if 'onPalmAction = { action-> if(actionEpoch==' in line)
-a=main.index('            if(handInputAllowed && !allowed) palmInteractionEpoch++')
-b=main.index('            for(side in quality.rejected)',a)
+a=marker(main,'            if(handInputAllowed && !allowed) palmInteractionEpoch++')
+b=marker(main,'            for(side in quality.rejected)',a)
 transition=main[a:b]
 sources.append("""
 private class PanelCallbackHarness {

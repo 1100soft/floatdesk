@@ -4,18 +4,20 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from production_sources import native_journal,marker
 
 folder = Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client'
 mesh = (folder/'MonitorMesh.kt').read_text().split('\n', 1)[1]+'\n'+(folder/'VideoGeometry.kt').read_text().split('\n',1)[1]
 mesh+='\n'+''.join('\n'.join(l for l in (folder/n).read_text().splitlines() if not l.startswith(('package ','import ','@android.annotation.SuppressLint')))+'\n' for n in ('BoundedHistory.kt','NativeSurfaceResources.kt','NativeNodeState.kt'))
 surface_input = (folder/'SurfaceInput.kt').read_text()
-surface_input = surface_input[surface_input.index('/** SceneCore may omit HitInfo'):]
+surface_input = surface_input[marker(surface_input,'/** SceneCore may omit HitInfo'):]
 for namespace in ('androidx.xr.runtime.math.', 'androidx.xr.runtime.', 'androidx.xr.scenecore.'):
     surface_input = surface_input.replace(namespace, '')
 surface_input = surface_input.replace('dev.floatdesk.client.workspace.Pose', 'WorkspacePose')
 mesh += '\n' + surface_input
+mesh += '\n' + native_journal()
 warp = (folder/'MonitorWarp.kt').read_text()
-warp = warp[warp.index('internal class MonitorWarp'):].replace('@SuppressLint("RestrictedApi")', '').replace('androidx.xr.runtime.math.IntSize2d','IntSize2d').replace('android.os.SystemClock','SystemClock')
+warp = warp[marker(warp,'internal class MonitorWarp'):].replace('@SuppressLint("RestrictedApi")', '').replace('androidx.xr.runtime.math.IntSize2d','IntSize2d').replace('android.os.SystemClock','SystemClock')
 stubs = '''
 internal object RenderPolicy {var CustomMeshes=true}
 
@@ -127,7 +129,7 @@ internal class CurvedMonitorInput(var mesh: MonitorMesh,val entity: Entity) {
     companion object {
         var last: CurvedMonitorInput? = null
         var afterCreate: (() -> Unit)? = null
-        suspend fun create(session: Session,parent: Entity,mesh: MonitorMesh,listener: (InputEvent)->Unit): CurvedMonitorInput {
+        suspend fun create(session: Session,parent: Entity,mesh: MonitorMesh,tag: NativeTag=NativeTag("input"),listener: (InputEvent)->Unit): CurvedMonitorInput {
             val entity=Entity(); entity.parent=parent
             entity.addComponent(InteractableComponent.create(session,listener))
             return CurvedMonitorInput(mesh,entity).also { last=it;afterCreate?.invoke() }
@@ -347,6 +349,9 @@ suspend fun main() {
 
 
     warp.close()
+    val journal=NativeJournal.recent()
+    check(journal.any{it.contains("pane=desktop") && it.contains("op=create") && it.contains("target=curved")})
+    check(journal.indexOfLast{it.contains("op=dispose") && it.contains("target=curved")}>journal.indexOfLast{it.contains("op=create") && it.contains("target=curved")})
     println("Passed: native matrix localization and independent left/right sequences, flat Compose surface/input/alpha/parent preserved, separate curved video and interaction ownership, mode-switch surface restoration, curvature freezes while held, video UVs, cleanup")
 }
 '''

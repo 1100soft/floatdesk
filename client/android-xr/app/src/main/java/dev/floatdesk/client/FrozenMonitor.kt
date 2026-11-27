@@ -48,19 +48,19 @@ internal class FrozenMonitor private constructor(
         } else if(!dynamic) entity.nodes.first().localScale = Vector3(placement.physicalWidthM, placement.physicalHeightM, placement.physicalWidthM)
         // Keep submitting decoded frames to this hidden surface so release reveals current video.
         // Only this compositor layer hides; the frozen native mesh remains visible.
-        if (!hidden) { live.setEnabled(false); hidden = true }
+        if (!hidden) { NativeJournal.noteEnabled(NativeTag("frozen"),"desktop",false); live.setEnabled(false); hidden = true }
     }
 
-    fun suspendVisibility(){entity.setEnabled(false);hidden=false}
+    fun suspendVisibility(){NativeJournal.noteEnabled(NativeTag("frozen"),"snapshot",false);entity.setEnabled(false);hidden=false}
 
     @android.annotation.SuppressLint("RestrictedApi")
     override fun close() {
         if (closed) return
         closed = true
         try {
-            if (hidden && !live.isDisposed) live.setEnabled(originallyEnabled)
+            if (hidden && !live.isDisposed) { NativeJournal.noteEnabled(NativeTag("frozen"),"desktop",originallyEnabled); live.setEnabled(originallyEnabled) }
         } finally {
-            releaseOwnedGltf(model, entity)
+            releaseOwnedGltf(model, entity, NativeTag("frozen"))
         }
     }
 
@@ -80,12 +80,12 @@ internal class FrozenMonitor private constructor(
                     if(dynamic && mesh!=null) snapshotGridGlb(png) else frozenFrameGlb(png, mesh,transparent=true)
                 }
             } finally { bitmap.recycle() }
-            val model = GltfModel.create(session, bytes, "floatdesk-frozen-${System.nanoTime()}")
+            val model = NativeJournal.native(NativeTag("frozen"),"gltf-load","bytes=${bytes.size}") { GltfModel.create(session, bytes, "floatdesk-frozen-${System.nanoTime()}") }
             try {
-                val entity = GltfModelEntity.create(session, model)
+                val entity = NativeJournal.native(NativeTag("frozen"),"create","target=snapshot") { GltfModelEntity.create(session, model) }
                 return FrozenMonitor(live, model, entity,dynamic && mesh!=null)
             } catch (failure: Throwable) {
-                model.close()
+                NativeJournal.native(NativeTag("frozen"),"gltf-release","failed=true") { model.close() }
                 throw failure
             }
         }

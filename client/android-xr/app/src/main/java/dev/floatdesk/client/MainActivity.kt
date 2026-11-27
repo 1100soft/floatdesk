@@ -26,6 +26,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        NativeJournal.install(android.os.Process.myPid(),android.os.SystemClock::uptimeMillis){android.util.Log.i(NativeJournal.Tag,it)}
         // A root XR task should pause on Back, just as on Home. Keeping its
         // session avoids the reproducible native SDK final-teardown fault;
         // existing lifecycle gates stop video/input work while backgrounded.

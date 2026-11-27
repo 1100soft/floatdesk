@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from production_sources import marker
 
 root = Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client'
 panel = (root / 'WindowMagnifierPanel.kt').read_text()
@@ -13,14 +14,15 @@ assert 'curvedInput?.detach()' in panel
 assert panel.count('.updateGeometry(') == 1
 assert 'forSphericalAperture' in panel
 assert 'transparentFit=sphericalFit' in panel
-assert 'if(regionId==null)entity.setSurfacePixelDimensions' in panel
+assert 'if(regionId==null)NativeJournal.native(resources.tag(),"texture-size"' in panel
+assert panel.count('setSurfacePixelDimensions') == 1
 assert 'if(regionId!=null)connection.deferNativeMeshUpdates()' in panel
 assert 'transientSurface && regionId==null' in panel
 assert 'resources.authoredSize==authoredSize' in panel
 assert 'val authoredSize=savedPaneSize' in panel
 source = (root / 'WindowMagnification.kt').read_text()
-start = source.index('internal fun sameNativePaneExtent(')
-end = source.index('/** Parent-first traversal', start)
+start = marker(source,'internal fun sameNativePaneExtent(')
+end = marker(source,'/** Parent-first traversal', start)
 code = 'import kotlin.math.abs\n' + '''
 internal data class MagnifiedWindow(val width:Float,val height:Float,val spherical:Boolean)
 ''' + source[start:end] + '''

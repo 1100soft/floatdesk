@@ -460,6 +460,7 @@ internal class DeskConnection(
 
     @Synchronized
     fun attachSurface(index: Int, surface: Surface) {
+        dev.floatdesk.client.NativeJournal.record(dev.floatdesk.client.NativeTag("desktop:$index"),"producer-attach","surface=${System.identityHashCode(surface)}")
         activeSurfaces[index]=surface
         decoders[index]?.attach(surface)
         send(Protocol.keyframeRequest(index))
@@ -504,6 +505,7 @@ internal class DeskConnection(
     @Synchronized
     fun detachSurface(index: Int,expected:Surface?=null) {
         if(expected==null) activeSurfaces.remove(index) else if(!activeSurfaces.remove(index,expected)) return
+        dev.floatdesk.client.NativeJournal.record(dev.floatdesk.client.NativeTag("desktop:$index"),"producer-detach","surface=${System.identityHashCode(expected)}")
         decoders[index]?.detach()
     }
 

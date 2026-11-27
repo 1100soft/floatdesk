@@ -216,7 +216,7 @@ internal fun DeskContent(
         var nativeResizeStartWidth by remember(index) { mutableStateOf(1f) }
         var nativeResizeStartHeight by remember(index) { mutableStateOf(1f) }
         val videoSurface = remember(index) { AtomicReference<Surface?>(null) }
-        val warp = remember(index, session) { MonitorWarp() }
+        val warp = remember(index, session) { MonitorWarp("desktop:$index") }
         val cornerHandles=remember(index,session) { PaneCornerResize() }
         DisposableEffect(cornerHandles) { onDispose { cornerHandles.close();pointerControl.nativeManipulation(index,false) } }
         var frozenMonitor by remember(index) { mutableStateOf<FrozenMonitor?>(null) }

@@ -4,8 +4,9 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from production_sources import native_journal
 folder=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
-sources=[];imports=[]
+sources=[native_journal()];imports=[]
 for name in ['MonitorMesh.kt','ResizeFrameGeometry.kt','NativeNodeState.kt','MonitorSystemControls.kt']:
     lines=(folder/name).read_text().splitlines()
     imports += [l for l in lines if l.startswith('import kotlin.')]
@@ -60,6 +61,7 @@ internal class ResizableComponent(val listener:java.util.function.Consumer<Resiz
 }
 '''
 stubs += """
+internal fun journalShape(tag:NativeTag,shape:Any)=NativeJournal.shape(tag,"quad",4)
 internal annotation class SuppressLint(vararg val value:String)
 internal data class FloatSize2d(val width:Float,val height:Float)
 internal data class IntSize2d(val width:Int,val height:Int)

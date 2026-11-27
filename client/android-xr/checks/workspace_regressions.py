@@ -2,12 +2,13 @@
 """Verify opaque geometry holes and viewer-relative restart persistence math."""
 from pathlib import Path
 import subprocess,sys,tempfile
+from production_sources import marker
 root=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
 source=(root/'MonitorMesh.kt').read_text().split('\n',1)[1]+'\n'+(root/'VideoGeometry.kt').read_text().split('\n',1)[1]
 w=(root/'workspace/Workspace.kt').read_text()
 source+='\n'+(root/'PinchPolicy.kt').read_text().split('\n',1)[1]
-source+='\n'+w[w.index('internal data class Pose'):w.index('internal class WorkspaceStore')]
-source+='\n'+w[w.index('internal fun deskLayout'):w.index('internal fun WorkspaceFile.monitorPlaced')].replace('max(', 'kotlin.math.max(')
+source+='\n'+w[marker(w,'internal data class Pose'):marker(w,'internal class WorkspaceStore')]
+source+='\n'+w[marker(w,'internal fun deskLayout'):marker(w,'internal fun WorkspaceFile.monitorPlaced')].replace('max(', 'kotlin.math.max(')
 source+='\n'+'\n'.join(line for line in (root/'workspace/WorkspacePlacement.kt').read_text().splitlines() if not line.startswith(('package ','import ')))
 code=source+'''
 fun main() {

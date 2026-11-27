@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Focus pinch arbitration, window stacking, spacing and view-fit geometry without XR dependencies."""
 from pathlib import Path
-from production_sources import application_sources
+from production_sources import application_sources,marker
 import subprocess,sys,tempfile,re
 root=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
 def body(path):return '\n'.join(l for l in (root/path).read_text().splitlines() if not l.startswith(('import ','package ')))
 topology=body('CursorTopology.kt')
-start=topology.index('    fun json():String {')
+start=marker(topology,'    fun json():String {')
 end=start;depth=0;opened=False
 while end<len(topology):
     if topology[end]=='{':depth+=1;opened=True
@@ -15,9 +15,9 @@ while end<len(topology):
     if opened and depth==0:break
 topology=topology[:start]+topology[end:]
 surface_hit=body('SurfaceInput.kt')
-surface_hit=surface_hit[surface_hit.index('internal fun surfaceInputHit'):surface_hit.index('internal fun updateSurfaceAimingIcon')].replace('dev.floatdesk.client.workspace.Pose','Pose')
-workspace=body('workspace/Workspace.kt');workspace=workspace[workspace.index('internal data class Pose'):workspace.index('internal class WorkspaceStore')]
-metadata=body('net/WorkspaceInfo.kt');metadata=metadata[:metadata.index('    companion object')]+'}\n'
+surface_hit=surface_hit[marker(surface_hit,'internal fun surfaceInputHit'):marker(surface_hit,'internal fun updateSurfaceAimingIcon')].replace('dev.floatdesk.client.workspace.Pose','Pose')
+workspace=body('workspace/Workspace.kt');workspace=workspace[marker(workspace,'internal data class Pose'):marker(workspace,'internal class WorkspaceStore')]
+metadata=body('net/WorkspaceInfo.kt');metadata=metadata[:marker(metadata,'    companion object')]+'}\n'
 code='import kotlin.math.*\n'+body('MonitorMesh.kt')+surface_hit+body('PointerControl.kt')+body('PinchPolicy.kt')+body('MouseGestures.kt')+body('FocusInteraction.kt')+workspace+re.search(r'internal fun deskLayout\(.*?\n}',(root/'workspace/Workspace.kt').read_text(),re.S).group(0)+body('workspace/WorkspacePlacement.kt')+metadata+body('WindowMagnification.kt')+body('LayoutOrigin.kt')+body('LayoutAdjustment.kt')+body('LayoutGuideInk.kt')+body('WindowInteraction.kt').replace('dev.floatdesk.client.workspace.MonitorPlacement','MonitorPlacement')+body('WindowToolbarState.kt')+re.search(r'internal object WindowMenuLayout \{.*?\n}',(root/'WindowActionsMenu.kt').read_text(),re.S).group(0)+'\n'+topology+body('VideoGeometry.kt')+body('MagnifierContacts.kt')+body('BoundedHistory.kt')+body('RenderPolicy.kt')+body('net/WindowCaptureRetry.kt')+body('net/WindowCaptureFormat.kt').replace('dev.floatdesk.client.RenderPolicy','RenderPolicy')+''.join(re.search(r'internal fun '+name+r'\(.*?\n}',application_sources(),re.S).group(0) for name in ('transformPoint','rotateVector','quaternionBetween','multiplyQuaternion','normalize3','normalize4'))+re.search(r'internal fun distance\(a: FloatArray.*?\n}',application_sources(),re.S).group(0)+'\n'+re.search(r'internal fun subtract\(a: FloatArray[^\n]*\n[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun dot\(a: FloatArray[^\n]*',application_sources()).group(0)+'\n'+re.search(r'internal fun cross3\(.*',application_sources()).group(0)+'\n'+r'''
 fun add(a:FloatArray,b:FloatArray)=FloatArray(3){a[it]+b[it]}
 fun main() {

@@ -82,15 +82,3 @@ internal class GazeWindowFocus(private val dwellMs:Long=250){
         selected=window;return window
     }
 }
-
-/** Small keyboard outline and three key rows, placed at the affected window's corner. */
-internal fun typingIndicator(rect:FocusRect):FloatArray {
-    val width=(rect.right-rect.left)*.10f;val height=(rect.bottom-rect.top)*.055f
-    val right=rect.right-width*.15f;val left=right-width;val top=rect.top+height*.2f;val bottom=top+height
-    val lines=mutableListOf(left,top,right,top,right,top,right,bottom,right,bottom,left,bottom,left,bottom,left,top)
-    for(row in 1..3)for(col in 0..3){
-        val x=left+width*(.15f+col*.2f);val y=top+height*row/4f
-        lines.addAll(listOf(x,y,x+width*.10f,y))
-    }
-    return lines.toFloatArray()
-}

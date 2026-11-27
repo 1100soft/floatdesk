@@ -54,6 +54,22 @@ internal fun ToolbarStrip.insideViewSphere(eye:FloatArray,radius:Float?,units:Fl
         width=width*scale,height=height*scale,cell=cell*scale,gap=gap*scale)
 }
 
+/** Keep every corner ahead of both the desktop and the window that opened the grid. */
+internal fun ToolbarStrip.gridInFrontOf(viewer:Pose,desktopRadius:Float?,owner:MagnifiedWindow?,units:Float):ToolbarStrip {
+    val ownerRadius=owner?.let{paneFrontRadius(it,viewer)}?.takeIf{it.isFinite() && it>0f}
+    val limit=when {
+        ownerRadius==null -> desktopRadius
+        desktopRadius==null -> ownerRadius
+        else -> minOf(ownerRadius,desktopRadius)
+    }
+    val mesh=owner?.mesh?.takeUnless{it.planar}
+    val aligned=if(mesh!=null && owner!=null){
+        val center=transformPoint(owner.pose,mesh.eye)
+        copy(pose=pose.copy(rotation=facingMagnifierRotation(pose.position,Pose(center),pose.rotation)))
+    }else this
+    return aligned.insideViewSphere(viewer.position,limit,units)
+}
+
 /** [anchor] is the centre of the target's top edge; the strip is exactly where the toolbar opens. */
 internal fun toolbarStrip(anchor: Pose, cell: Float, magnifier: Boolean): ToolbarStrip {
     val ratio = WindowMenuLayout.gapM / WindowMenuLayout.cellM; val gap = cell * ratio

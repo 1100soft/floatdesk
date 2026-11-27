@@ -111,7 +111,7 @@ internal class MonitorWarp : AutoCloseable {
     val displayEntity: SurfaceEntity? get()=input
     fun matchesSize(placement: MonitorPlacement)=flatWidth==placement.physicalWidthM && flatHeight==placement.physicalHeightM &&
         (mesh?.center?.contentEquals(projectionCenter(placement)) ?: true)
-    private fun projectionCenter(placement:MonitorPlacement)=floatArrayOf((placement.viewCenterU-.5f)*placement.physicalWidthM,(.5f-placement.viewCenterV)*placement.physicalHeightM,0f)
+    private fun projectionCenter(placement:MonitorPlacement)=monitorProjectionCenter(placement.physicalWidthM,placement.physicalHeightM,placement.viewCenterU,placement.viewCenterV)
 
     @SuppressLint("RestrictedApi")
     suspend fun syncCurvedInput(session: Session) {
@@ -354,7 +354,7 @@ internal class MonitorWarp : AutoCloseable {
         val changed = cutouts!=appliedCutouts || foregroundIntrusion || focusChanged || previous?.center?.contentEquals(center)!=true || presentationDirty || previous == null || previous.width != placement.physicalWidthM || previous.height != placement.physicalHeightM ||
             viewer.indices.any { kotlin.math.abs(viewer[it] - previous.eye[it]) > 0.01f }
         if (changed) {
-            val next = MonitorMesh(placement.physicalWidthM, placement.physicalHeightM, viewer,columns=32,rows=20,focus=selectedFocus,center=center,minimumGeometryRadius=minimumGeometryRadius)
+            val next = desktopSphericalMesh(placement.physicalWidthM,placement.physicalHeightM,viewer,center,minimumGeometryRadius,selectedFocus[0],selectedFocus[1])
             if (previous == null || previous.width != next.width || previous.height != next.height) {
                 val sdkEye = eye?.let { root.transformPoseTo(Pose(Vector3(it[0],it[1],it[2])),original).translation }
                 val h=next.project(floatArrayOf(next.width*.5f,0f,0f))

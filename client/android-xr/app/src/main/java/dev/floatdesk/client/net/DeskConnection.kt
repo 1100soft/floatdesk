@@ -361,9 +361,11 @@ internal class DeskConnection(
     }
     @Volatile private var lastTypingAt=0L
     private var lastTypingPoll=0L
+    @Volatile private var lastTypingKey:String?=null
     @Volatile var typingWindow:Long?=null
     var typingQuietMs=1000L
     fun typingLocked(now:Long=android.os.SystemClock.uptimeMillis()):Boolean=lastTypingAt>0 && now-lastTypingAt<typingQuietMs
+    fun typingLabel(now:Long):String?=lastTypingKey?.takeIf{lastTypingAt>0 && now-lastTypingAt<1200}
     fun pollTyping(now:Long){if(now-lastTypingPoll>=150){lastTypingPoll=now;send(Protocol.workspace(org.json.JSONObject().put("type","typingState").toString()))}}
     fun cancelGazeFocus(){gazeFocusPending.set(0)}
     fun requestGazeFocus(window:Long){
@@ -477,6 +479,11 @@ internal class DeskConnection(
     @Synchronized
     fun projection(index:Int,value:ViewProjection?) {viewProjections[index]=value;decoders[index]?.projection(value)}
     private var nextNativeMeshUpdate=0L
+    /** Let an arriving child become visible before replacing a desktop cutout mesh. */
+    fun deferNativeMeshUpdates(){
+        nextNativeMeshUpdate=maxOf(nextNativeMeshUpdate,android.os.SystemClock.uptimeMillis()+64L)
+    }
+
     /** Mesh replacements share one SceneCore command queue, even across different video decoders. */
     fun tryNativeMeshUpdate(submit:()->Boolean):Boolean {
         val now=android.os.SystemClock.uptimeMillis()
@@ -510,6 +517,7 @@ internal class DeskConnection(
         assembler = CursorAssembler()
         lastTypingAt = 0L
         typingWindow = null
+        lastTypingKey=null
         monitorPending.set(0)
         focusPending.set(0)
         gazeFocusPending.set(0)
@@ -608,6 +616,7 @@ internal class DeskConnection(
                             }
                             reply?.takeIf{it.optString("type")=="typingState"}?.let{reply->
                                 typingWindow=reply.optLong("windowId").takeIf{it>0L}
+                                lastTypingKey=reply.optString("keyLabel",reply.optString("shortcut","")).takeIf{it.isNotBlank() && it!="null"}
                                 if(reply.optBoolean("available"))lastTypingAt=(android.os.SystemClock.uptimeMillis()-reply.optLong("ageMs",60000)).coerceAtLeast(1)
                             }
                             reply?.takeIf{it.optString("type")=="gazeFocusResult"}?.let{reply->

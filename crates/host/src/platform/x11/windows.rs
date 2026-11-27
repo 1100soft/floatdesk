@@ -17,6 +17,8 @@ pub struct FocusWindow {
     pub panel: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transient_for: Option<u32>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub modal: bool,
 }
 fn atom(link: &X11Link, name: &[u8]) -> Result<u32> {
     Ok(link
@@ -36,6 +38,49 @@ fn values(link: &X11Link, window: u32, property: u32, kind: AtomEnum) -> Result<
         .map_err(Error::x11)?;
     Ok(reply.value32().map(|v| v.collect()).unwrap_or_default())
 }
+/// Thunderbird identifies Compose by role, but does not set WM_TRANSIENT_FOR.
+fn thunderbird_compose_links(roles: &[(u32, u32, Vec<u8>)]) -> Vec<(u32, u32)> {
+    roles
+        .iter()
+        .filter_map(|(id, leader, role)| {
+            if role != b"Msgcompose" {
+                return None;
+            }
+            let mut parents = roles
+                .iter()
+                .filter(|(_, group, role)| group == leader && role == b"3pane");
+            let parent = parents.next()?.0;
+            parents.next().is_none().then_some((*id, parent))
+        })
+        .collect()
+}
+
+/// Chromium also uses the extension popup role for detached top-level app windows.
+fn brave_extension_links(windows: &[(FocusWindow, u32, bool)]) -> Vec<(u32, u32)> {
+    windows
+        .iter()
+        .filter_map(|(popup, pid, extension)| {
+            if !extension {
+                return None;
+            }
+            let mut owners = windows.iter().filter(|(owner, owner_pid, is_extension)| {
+                !is_extension
+                    && owner_pid == pid
+                    && owner.width > popup.width
+                    && owner.height > popup.height
+                    && owner.x <= popup.x
+                    && owner.y <= popup.y
+                    && i64::from(owner.x) + i64::from(owner.width)
+                        >= i64::from(popup.x) + i64::from(popup.width)
+                    && i64::from(owner.y) + i64::from(owner.height)
+                        >= i64::from(popup.y) + i64::from(popup.height)
+            });
+            let owner = owners.next()?.0.id;
+            owners.next().is_none().then_some((popup.id, owner))
+        })
+        .collect()
+}
+
 pub fn catalogue() -> Result<(bool, Vec<FocusWindow>)> {
     let link = X11Link::open()?;
     let supported = values(
@@ -63,7 +108,13 @@ pub fn catalogue() -> Result<(bool, Vec<FocusWindow>)> {
     .copied();
     let state = atom(&link, b"_NET_WM_STATE")?;
     let hidden = atom(&link, b"_NET_WM_STATE_HIDDEN")?;
+    let modal = atom(&link, b"_NET_WM_STATE_MODAL")?;
     let transient = atom(&link, b"WM_TRANSIENT_FOR")?;
+    let role = atom(&link, b"WM_WINDOW_ROLE")?;
+    let leader = atom(&link, b"WM_CLIENT_LEADER")?;
+    let mut thunderbird_roles = Vec::new();
+    let pid_atom = atom(&link, b"_NET_WM_PID")?;
+    let mut brave_roles = Vec::new();
     let mut windows = Vec::new();
     for id in values(&link, link.root, stacking, AtomEnum::WINDOW)?
         .into_iter()
@@ -89,7 +140,8 @@ pub fn catalogue() -> Result<(bool, Vec<FocusWindow>)> {
                     return Ok(None);
                 }
             }
-            if values(&link, id, state, AtomEnum::ATOM)?.contains(&hidden) {
+            let states = values(&link, id, state, AtomEnum::ATOM)?;
+            if states.contains(&hidden) {
                 return Ok(None);
             }
             let kinds = values(&link, id, types, AtomEnum::ATOM)?;
@@ -115,6 +167,7 @@ pub fn catalogue() -> Result<(bool, Vec<FocusWindow>)> {
                 width: u32::from(g.width),
                 height: u32::from(g.height),
                 panel: false,
+                modal: states.contains(&modal),
                 transient_for: values(&link, id, transient, AtomEnum::WINDOW)?
                     .first()
                     .copied()
@@ -123,7 +176,68 @@ pub fn catalogue() -> Result<(bool, Vec<FocusWindow>)> {
         })();
         // Windows can disappear between catalogue queries.
         if let Ok(Some(window)) = row {
+            if let Ok(reply) =
+                link.conn
+                    .get_property(false, id, AtomEnum::WM_CLASS, AtomEnum::STRING, 0, 64)
+            {
+                if reply.reply().ok().is_some_and(|reply| {
+                    reply.value.split(|b| *b == 0).any(|field| {
+                        field.eq_ignore_ascii_case(b"thunderbird")
+                            || field.eq_ignore_ascii_case(b"thunderbird_thunderbird")
+                    })
+                }) {
+                    if let (Some(group), Some(role)) = (
+                        values(&link, id, leader, AtomEnum::WINDOW)
+                            .ok()
+                            .and_then(|v| v.first().copied())
+                            .filter(|id| *id != 0),
+                        link.conn
+                            .get_property(false, id, role, AtomEnum::STRING, 0, 32)
+                            .ok()
+                            .and_then(|reply| reply.reply().ok()),
+                    ) {
+                        thunderbird_roles.push((id, group, role.value));
+                    }
+                }
+            }
+            let class = link
+                .conn
+                .get_property(false, id, AtomEnum::WM_CLASS, AtomEnum::STRING, 0, 64)
+                .ok()
+                .and_then(|cookie| cookie.reply().ok());
+            if let Some(class) = class {
+                let mut fields = class.value.split(|byte| *byte == 0);
+                let instance = fields.next().unwrap_or_default();
+                let class = fields.next().unwrap_or_default();
+                if class.eq_ignore_ascii_case(b"brave-browser") {
+                    let role = link
+                        .conn
+                        .get_property(false, id, role, AtomEnum::STRING, 0, 32)
+                        .ok()
+                        .and_then(|cookie| cookie.reply().ok())
+                        .map(|reply| reply.value);
+                    let extension =
+                        instance.starts_with(b"crx_") && role.as_deref() == Some(b"pop-up");
+                    if extension || role.as_deref() == Some(b"browser") {
+                        if let Some(pid) = values(&link, id, pid_atom, AtomEnum::CARDINAL)
+                            .ok()
+                            .and_then(|ids| ids.first().copied())
+                            .filter(|id| *id != 0)
+                        {
+                            brave_roles.push((window.clone(), pid, extension));
+                        }
+                    }
+                }
+            }
             windows.push(window);
+        }
+    }
+    for (child, owner) in thunderbird_compose_links(&thunderbird_roles)
+        .into_iter()
+        .chain(brave_extension_links(&brave_roles))
+    {
+        if let Some(row) = windows.iter_mut().find(|row| row.id == child) {
+            row.transient_for.get_or_insert(owner);
         }
     }
     Ok((true, windows))
@@ -198,6 +312,13 @@ pub fn window_popups(link: &X11Link, client: u32) -> Result<Vec<FocusWindow>> {
         .map_err(Error::x11)?
         .reply()
         .map_err(Error::x11)?;
+    let (_, catalogue) = observed_catalogue();
+    let fallback_parent = |id| {
+        catalogue
+            .iter()
+            .find(|row| row.id == id)
+            .and_then(|row| row.transient_for)
+    };
     let mut result = Vec::new();
     for id in tree.children.into_iter().chain(clients) {
         if id == client || result.iter().any(|w: &FocusWindow| w.id == id) {
@@ -216,40 +337,60 @@ pub fn window_popups(link: &X11Link, client: u32) -> Result<Vec<FocusWindow>> {
                 return Ok(None);
             }
             let kinds = values(link, id, types, AtomEnum::ATOM)?;
-            let mut parent = values(link, id, transient, AtomEnum::WINDOW)?
-                .first()
-                .copied();
-            let has_parent = parent.is_some_and(|p| p != link.root);
-            let mut owned = false;
-            for _ in 0..12 {
-                match parent {
-                    Some(p) if p == client => {
-                        owned = true;
+            let parent_of = |id| {
+                values(link, id, transient, AtomEnum::WINDOW).map(|parent| {
+                    parent
+                        .first()
+                        .copied()
+                        .filter(|p| *p != link.root && *p != id)
+                        .or_else(|| fallback_parent(id))
+                })
+            };
+            let belongs_to_client = |mut parent| -> Result<bool> {
+                let mut visited = std::collections::HashSet::from([id]);
+                while let Some(p) = parent {
+                    if p == client {
+                        return Ok(true);
+                    }
+                    if !visited.insert(p) {
                         break;
                     }
-                    Some(p) if p != id => {
-                        parent = values(link, p, transient, AtomEnum::WINDOW)?
-                            .first()
-                            .copied()
-                    }
-                    _ => break,
+                    parent = parent_of(p)?;
                 }
-            }
+                Ok(false)
+            };
+            let direct_parent = parent_of(id)?;
+            let owned = belongs_to_client(direct_parent)?;
             let menu = kinds.iter().any(|t| menu_types.contains(t));
             if owner_is_dock && !menu {
                 return Ok(None);
             }
-            let same_pid = owner_pid.is_some()
-                && owner_pid
-                    == values(link, id, pid_atom, AtomEnum::CARDINAL)?
-                        .first()
-                        .copied();
             let companion = !a.override_redirect
                 && (kinds.is_empty() || kinds.iter().any(|t| companion_types.contains(t)))
                 && !values(link, id, state, AtomEnum::ATOM)?.contains(&hidden);
-            if !(owned && (menu || a.override_redirect || companion)
-                || menu && same_pid && !has_parent && active == Some(client))
-            {
+            let capture_parent = if owned && (menu || a.override_redirect || companion) {
+                direct_parent
+            } else if menu && direct_parent.is_none() && belongs_to_client(active)? {
+                // Some toolkits leave the context menu's parent unset. Resolve it
+                // to the active window within this already-validated capture tree.
+                let active = active.unwrap_or(client);
+                let active_pid = if active == client {
+                    owner_pid
+                } else {
+                    values(link, active, pid_atom, AtomEnum::CARDINAL)?
+                        .first()
+                        .copied()
+                };
+                let menu_pid = values(link, id, pid_atom, AtomEnum::CARDINAL)?
+                    .first()
+                    .copied();
+                active_pid
+                    .filter(|pid| Some(*pid) == menu_pid)
+                    .map(|_| active)
+            } else {
+                None
+            };
+            if capture_parent.is_none() {
                 return Ok(None);
             }
             let g = link
@@ -271,14 +412,12 @@ pub fn window_popups(link: &X11Link, client: u32) -> Result<Vec<FocusWindow>> {
                 width: g.width.into(),
                 height: g.height.into(),
                 panel: false,
-                transient_for: owned.then_some(client),
+                transient_for: capture_parent,
+                modal: false,
             }))
         })();
         if let Ok(Some(window)) = item {
             result.push(window);
-        }
-        if result.len() >= 16 {
-            break;
         }
     }
     Ok(result)
@@ -442,6 +581,7 @@ pub fn system_catalogue() -> Result<Vec<FocusWindow>> {
                 height: bounds[3] as u32,
                 panel: kinds.contains(&dock),
                 transient_for: None,
+                modal: false,
             }))
         })();
         if let Ok(Some(row)) = row {
@@ -964,6 +1104,28 @@ pub fn window_action(value: &serde_json::Value) -> Result<()> {
     let link = X11Link::open()?;
     let mask = EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY;
     let action = value["action"].as_str().unwrap_or("");
+    if action == "close" {
+        let protocols = atom(&link, b"WM_PROTOCOLS")?;
+        let delete = atom(&link, b"WM_DELETE_WINDOW")?;
+        if values(&link, id, protocols, AtomEnum::ATOM)?.contains(&delete) {
+            link.conn
+                .send_event(
+                    false,
+                    id,
+                    EventMask::NO_EVENT,
+                    ClientMessageEvent::new(
+                        32,
+                        id,
+                        protocols,
+                        [delete, x11rb::CURRENT_TIME, 0, 0, 0],
+                    ),
+                )
+                .map_err(Error::x11)?
+                .check()
+                .map_err(Error::x11)?;
+            return link.conn.flush().map_err(Error::x11);
+        }
+    }
     let (name, data) = match action {
         "close" => ("_NET_CLOSE_WINDOW", [x11rb::CURRENT_TIME, 2, 0, 0, 0]),
         "minimize" => ("WM_CHANGE_STATE", [3, 0, 0, 0, 0]),
@@ -1064,6 +1226,42 @@ pub fn window_action(value: &serde_json::Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn brave_popup_requires_an_unambiguous_containing_window() {
+        let row = |id, x, y, width, height| FocusWindow {
+            id,
+            x,
+            y,
+            width,
+            height,
+            panel: false,
+            transient_for: None,
+            modal: false,
+        };
+        let mut windows = vec![
+            (row(1, 0, 0, 854, 533), 5, false),
+            (row(2, 1706, 2133, 854, 533), 5, false),
+            (row(3, 4236, 1078, 838, 522), 5, true),
+            (row(4, 1800, 2200, 400, 400), 5, true),
+        ];
+        assert_eq!(brave_extension_links(&windows), vec![(4, 2)]);
+        windows.push((row(5, 1710, 2140, 854, 533), 5, false));
+        assert!(brave_extension_links(&windows).is_empty());
+    }
+
+    #[test]
+    fn compose_requires_a_unique_matching_thunderbird_leader() {
+        let mut roles = vec![
+            (1, 10, b"3pane".to_vec()),
+            (2, 10, b"Msgcompose".to_vec()),
+            (3, 11, b"Msgcompose".to_vec()),
+            (4, 10, b"MessageWindow".to_vec()),
+        ];
+        assert_eq!(thunderbird_compose_links(&roles), vec![(2, 1)]);
+        roles.push((5, 10, b"3pane".to_vec()));
+        assert!(thunderbird_compose_links(&roles).is_empty());
+    }
     use x11rb::protocol::xproto::{CreateWindowAux, PropMode, WindowClass};
     use x11rb::wrapper::ConnectionExt as _;
     #[test]
@@ -1541,10 +1739,65 @@ mod tests {
             .unwrap()
             .check()
             .unwrap();
+        let role = atom(&link, b"WM_WINDOW_ROLE").unwrap();
+        let leader = atom(&link, b"WM_CLIENT_LEADER").unwrap();
+        let protocols = atom(&link, b"WM_PROTOCOLS").unwrap();
+        let delete = atom(&link, b"WM_DELETE_WINDOW").unwrap();
+        for (id, window_role) in [(ids[0], b"3pane".as_slice()), (ids[1], b"Msgcompose")] {
+            link.conn
+                .change_property8(
+                    PropMode::REPLACE,
+                    id,
+                    AtomEnum::WM_CLASS,
+                    AtomEnum::STRING,
+                    b"Thunderbird\0thunderbird_thunderbird\0",
+                )
+                .unwrap()
+                .check()
+                .unwrap();
+            link.conn
+                .change_property8(PropMode::REPLACE, id, role, AtomEnum::STRING, window_role)
+                .unwrap()
+                .check()
+                .unwrap();
+            link.conn
+                .change_property32(PropMode::REPLACE, id, leader, AtomEnum::WINDOW, &[ids[0]])
+                .unwrap()
+                .check()
+                .unwrap();
+        }
+        link.conn
+            .change_property32(
+                PropMode::REPLACE,
+                ids[1],
+                protocols,
+                AtomEnum::ATOM,
+                &[delete],
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+        link.conn
+            .change_property32(
+                PropMode::REPLACE,
+                ids[1],
+                atom(&link, b"_NET_WM_STATE").unwrap(),
+                AtomEnum::ATOM,
+                &[atom(&link, b"_NET_WM_STATE_MODAL").unwrap()],
+            )
+            .unwrap()
+            .check()
+            .unwrap();
         let (cap, rows) = catalogue().unwrap();
         assert!(cap);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].id, ids[1]);
+        assert_eq!(rows[0].transient_for, Some(ids[0]));
+        assert!(rows[0].modal);
+        window_action(&serde_json::json!({"windowId":ids[1],"action":"close"})).unwrap();
+        let event = link.conn.wait_for_event().unwrap();
+        assert!(matches!(event, x11rb::protocol::Event::ClientMessage(event)
+            if event.window == ids[1] && event.type_ == protocols && event.data.as_data32()[0] == delete));
         assert_eq!(
             (rows[0].x, rows[0].y, rows[0].width, rows[0].height),
             (100, 120, 300, 200)

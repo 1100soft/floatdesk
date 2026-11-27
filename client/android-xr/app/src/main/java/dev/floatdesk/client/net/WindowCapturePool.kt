@@ -33,7 +33,8 @@ internal class WindowCapturePool @JvmOverloads constructor(private val connectio
         val live=info?.windows?.firstOrNull{it.id==id} ?: info?.systemWindows?.firstOrNull{it.id==id} ?: popupBounds.values.firstNotNullOfOrNull{rows->rows.firstOrNull{it.id==id}} ?: return null
         return capturedBounds[id] ?: live
     }
-    private class Member(var mirror:VideoMirror,val ready:()->Unit,val error:(String)->Unit,val output:WindowDestination?=null,val regionId:Long?=null,val previewBounds:DesktopWindow?=null){var crop:VideoCrop?=if(regionId==null && previewBounds==null)null else VideoCrop(0f,0f,0f,0f,1f);@Volatile var ink=VideoAim();val shown=AtomicBoolean()}
+    private val EmptyWindowCrop=VideoCrop(0f,0f,0f,0f,1f)
+    private class Member(var mirror:VideoMirror,val ready:()->Unit,val error:(String)->Unit,val output:WindowDestination?=null,val regionId:Long?=null,val previewBounds:DesktopWindow?=null,val expectedRegionSize:Pair<Int,Int>?=null){var crop:VideoCrop?=null;@Volatile var ink=VideoAim();val shown=AtomicBoolean()}
     private data class CaptureLayout(val meta:JSONObject,val owner:DesktopWindow,val regions:List<DesktopWindow>)
     private inner class Source(val id:Long){
         val members=ConcurrentHashMap<Any,Member>()
@@ -84,12 +85,14 @@ internal class WindowCapturePool @JvmOverloads constructor(private val connectio
             val output=member.output
             val layout=frames[pts]
             val meta=layout?.meta
+            if(output==null)member.crop=EmptyWindowCrop
             if(layout!=null && meta!=null){
                 val x=meta.optInt("sourceX",info?.x ?: 0);val y=meta.optInt("sourceY",info?.y ?: 0)
                 val sw=meta.optInt("sourceWidth",width);val sh=meta.optInt("sourceHeight",height)
                 val region=if(member.regionId==null)layout.owner.takeIf{member.previewBounds==null || member.previewBounds==it}
-                    else layout.regions.firstOrNull{it.id==member.regionId}
-                member.crop=if(output!=null)null else (region?.let{VideoCrop((it.x-x).toFloat()/sw,(it.y-y).toFloat()/sh,(it.x+it.width-x).toFloat()/sw,(it.y+it.height-y).toFloat()/sh,it.width.toFloat()/it.height)} ?: VideoCrop(0f,0f,0f,0f,1f))
+                    else layout.regions.firstOrNull{it.id==member.regionId &&
+                        (member.expectedRegionSize==null || member.expectedRegionSize==(it.width to it.height))}
+                member.crop=if(output!=null)null else (region?.let{VideoCrop((it.x-x).toFloat()/sw,(it.y-y).toFloat()/sh,(it.x+it.width-x).toFloat()/sw,(it.y+it.height-y).toFloat()/sh,it.width.toFloat()/it.height)} ?: EmptyWindowCrop)
             }
             if(meta!=null)video.sourceAspect=meta.optInt("sourceWidth",width).toFloat()/meta.optInt("sourceHeight",height).coerceAtLeast(1)
             if(output!=null && meta!=null){
@@ -111,10 +114,10 @@ internal class WindowCapturePool @JvmOverloads constructor(private val connectio
         fun update(padX:Float,padY:Float,pinned:Boolean,aspect:Float){if(!closed)updateAction(padX,padY,pinned,aspect)}
         override fun close(){if(!closed){closed=true;closeAction()}}
     }
-    @JvmOverloads fun attach(id:Long,surface:Surface,onReady:()->Unit,onError:(String)->Unit,output:WindowDestination?=null,regionId:Long?=null,previewBounds:DesktopWindow?=null,transparentFit:Boolean=false,aperture:Pair<Float,Float>?=null):Lease{
+    @JvmOverloads fun attach(id:Long,surface:Surface,onReady:()->Unit,onError:(String)->Unit,output:WindowDestination?=null,regionId:Long?=null,previewBounds:DesktopWindow?=null,transparentFit:Boolean=false,aperture:Pair<Float,Float>?=null,expectedRegionSize:Pair<Int,Int>?=null):Lease{
         val source=sources.getOrPut(id){Source(id)};val key=Any()
         source.outputSize().let{output?.size?.invoke(it.first,it.second)}
-        val member=Member(VideoMirror(surface,aspect=if(aperture==null)0f else 1f,transparentFit=transparentFit,aperture=aperture),onReady,onError,output,regionId,previewBounds);source.members[key]=member;source.update()
+        val member=Member(VideoMirror(surface,aspect=if(aperture==null)0f else 1f,transparentFit=transparentFit,aperture=aperture),onReady,onError,output,regionId,previewBounds,expectedRegionSize);source.members[key]=member;source.update()
         return Lease(source.video::tryShapeUpdate,{x,y,pin,aspect->
             val prior=member.mirror
             if(kotlin.math.abs(prior.padX-x)>.0001f || kotlin.math.abs(prior.padY-y)>.0001f ||
@@ -125,6 +128,11 @@ internal class WindowCapturePool @JvmOverloads constructor(private val connectio
         },{
             source.members.remove(key);output?.clear?.invoke()
             if(source.members.isEmpty())source.retire() else if(!source.retired){source.update();source.video.flushOutputs()}
-        },{value->member.ink=value})
+        },{value->
+            if(!member.ink.sameInk(value)){
+                member.ink=value
+                source.video.invalidateInk()
+            }
+        })
     }
 }

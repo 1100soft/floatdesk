@@ -20,6 +20,16 @@ internal fun viewerInMonitor(viewer: FloatArray, position: FloatArray, rotation:
     return floatArrayOf(x+qw*tx+qy*tz-qz*ty,y+qw*ty+qz*tx-qx*tz,z+qw*tz+qx*ty-qy*tx)
 }
 
+internal fun monitorProjectionCenter(width:Float,height:Float,u:Float,v:Float)=
+    floatArrayOf((u-.5f)*width,(.5f-v)*height,0f)
+
+/** Build the same desktop sphere for presentation and layout footprint calculation. */
+internal fun desktopSphericalMesh(
+    width:Float,height:Float,eye:FloatArray,center:FloatArray,minimumRadius:Float,
+    focusX:Float=center[0],focusY:Float=center[1],
+):MonitorMesh = MonitorMesh(width,height,eye,columns=32,rows=20,
+    center=center,focus=floatArrayOf(focusX,focusY),minimumGeometryRadius=minimumRadius)
+
 /** Viewer-centered sphere with optional tangent-plane vertex projection around the viewed pixel. */
 internal class MonitorMesh(
     val width: Float,
@@ -30,7 +40,7 @@ internal class MonitorMesh(
     focus:FloatArray?=null,
     val center:FloatArray=floatArrayOf(0f,0f,0f),
     val planar:Boolean=false,
-    minimumGeometryRadius:Float=0f,
+    private val minimumGeometryRadius:Float=0f,
     private val nativeBase:MonitorMesh?=null,
     private val sphericalAperture:Boolean=false,
 ) {
@@ -216,6 +226,15 @@ internal class MonitorMesh(
             for(col in columns downTo 1 step 4) add(vertex(rows,col))
             for(row in rows downTo 1 step 4) add(vertex(row,0))
         }
+    }
+
+    /** Apply the uniform SceneCore scale to the matching logical surface. */
+    fun uniformlyScaled(factor:Float):MonitorMesh {
+        if(factor==1f)return this
+        val base=nativeBase?.uniformlyScaled(factor)
+        return MonitorMesh(width*factor,height*factor,FloatArray(3){eye[it]*factor},columns,rows,
+            focus?.let{FloatArray(it.size){i->it[i]*factor}},FloatArray(3){center[it]*factor},planar,
+            minimumGeometryRadius*factor,base,sphericalAperture)
     }
 
     fun forPaneExtent(width:Float,height:Float):MonitorMesh{

@@ -88,14 +88,21 @@ internal fun magnifierGeometry(window:MagnifiedWindow,viewer:Pose,units:Float,pr
     return window.copy(pose=pose,width=width,height=height,mesh=mesh,units=stableUnits,headOffset=offset,headRotation=headRotation)
 
 }
+/** One-handed placement changes direction on the object's configured radial layer. */
+internal fun oneHandLayerPosition(position:FloatArray,viewer:Pose,depthM:Float,units:Float):FloatArray {
+    val ray=subtract(position,viewer.position)
+    val range=distance(position,viewer.position)
+    if(!range.isFinite() || range<.0001f)return position
+    return FloatArray(3){viewer.position[it]+ray[it]*(depthM*units/range)}
+}
+
 internal fun angularMagnifierPlacement(window:MagnifiedWindow,viewer:Pose,units:Float,position:FloatArray,updateMesh:Boolean=true):MagnifiedWindow {
-    if(window.freePose) {
-        // The angular drag already preserves the original radius, including a custom free depth.
-        val rotation=facingMagnifierRotation(position,viewer,window.desktopRotation ?: window.pose.rotation)
-        return magnifierFrame(window.copy(pose=Pose(position,rotation),requestedPosition=position),window,viewer,units,updateMesh)
-    }
-    return if(window.fixed)fixedMagnifierGeometry(window,viewer,position,updateMesh)
-        else magnifierGeometry(window,viewer,units,position,updateMesh)
+    val depth=window.nominalLayerDistanceM ?: window.layerDistanceM
+    val atLayer=oneHandLayerPosition(position,viewer,depth,units)
+    val rotation=facingMagnifierRotation(atLayer,viewer,window.desktopRotation ?: window.pose.rotation)
+    val next=window.copy(pose=Pose(atLayer,rotation),requestedPosition=atLayer,layerDistanceM=depth)
+    return if(window.fixed || window.freePose)magnifierFrame(next,window,viewer,units,updateMesh)
+        else magnifierGeometry(next,viewer,units,atLayer,updateMesh)
 }
 
 /** Equality of the actual submitted mesh, independent of capture identity. */
@@ -113,6 +120,34 @@ internal fun samePaneGeometry(previous:MagnifiedWindow,next:MagnifiedWindow):Boo
 internal fun sameNativePaneExtent(current:MagnifiedWindow?,requested:MagnifiedWindow):Boolean =
     current!=null && current.spherical==requested.spherical &&
         abs(current.width-requested.width)<.003f && abs(current.height-requested.height)<.003f
+
+/** Keep existing children on their native slots when X11 changes stacking order. */
+internal fun retainedChildSlots(previous:List<Long?>,children:List<Long>):List<Long?> {
+    val remaining=children.toMutableSet()
+    val slots=previous.map{it?.takeIf(remaining::remove)}.toMutableList()
+    for(id in remaining){
+        val empty=slots.indexOf(null)
+        if(empty<0)slots.add(id) else slots[empty]=id
+    }
+    return slots
+}
+
+/** Parent-first traversal of one capture atlas, retaining sibling stacking order. */
+internal fun childPaneOrder(owner:Long,windows:List<DesktopWindow>):List<DesktopWindow> {
+    val children=windows.groupBy{it.transientFor ?: owner}
+    val visited=mutableSetOf(owner)
+    val parents=ArrayDeque<Long>()
+    parents.add(owner)
+    return buildList{
+        while(parents.isNotEmpty()){
+            for(child in children[parents.removeFirst()].orEmpty()){
+                if(!visited.add(child.id))continue
+                add(child)
+                parents.add(child.id)
+            }
+        }
+    }
+}
 
 /** Translate the retained sphere so its local eye stays at the viewer. */
 internal fun centerPaneSphere(pose:Pose,mesh:MonitorMesh,viewer:Pose):Pose {
@@ -296,6 +331,21 @@ internal fun magnifierContentRect(window:MagnifiedWindow):FocusRect {
     val x=minOf(1f,source/pane);val y=minOf(1f,pane/source)
     return FocusRect((1-x)*.5f,(1-y)*.5f,(1+x)*.5f,(1+y)*.5f)
 }
+/** Bounds of the image in the actual video buffer, including retained canvas padding. */
+internal fun paneVideoContentRect(pane:MagnifiedWindow,canvas:MagnifiedWindow?,showFrame:Boolean):FocusRect {
+    if(canvas!=null){
+        val w=(pane.width/canvas.width).coerceIn(0f,1f)
+        val h=(pane.height/canvas.height).coerceIn(0f,1f)
+        return FocusRect((1f-w)*.5f,(1f-h)*.5f,(1f+w)*.5f,(1f+h)*.5f)
+    }
+    val rect=magnifierContentRect(pane)
+    if(!showFrame)return rect
+    val x=.005f*pane.units/(pane.width+.01f*pane.units)
+    val y=.005f*pane.units/(pane.height+.01f*pane.units)
+    return FocusRect(x+rect.left*(1f-2*x),y+rect.top*(1f-2*y),
+        x+rect.right*(1f-2*x),y+rect.bottom*(1f-2*y))
+}
+
 internal fun magnifierContentPoint(window:MagnifiedWindow,point:Pair<Float,Float>):Pair<Float,Float>{
     val rect=magnifierContentRect(window)
     return ((point.first-rect.left)/(rect.right-rect.left)).coerceIn(0f,1f) to

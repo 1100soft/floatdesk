@@ -3,6 +3,7 @@ package dev.floatdesk.client
 import dev.floatdesk.client.workspace.FixedMagnifierPlacement
 import dev.floatdesk.client.workspace.Pose
 import dev.floatdesk.client.workspace.WorkspaceFile
+import dev.floatdesk.client.workspace.ViewLayers
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -86,6 +87,7 @@ private fun axisAlignedRotation(rotation:FloatArray):FloatArray {
 internal fun WorkspaceFile.adjustLayout(action:LayoutAdjustment,viewer:Pose,units:Float,contentSizes:Map<String,Pair<Float,Float>> = emptyMap(),visibleRecords:Set<String>?=null):WorkspaceFile{
     if(action==LayoutAdjustment.AUTO)return adjustLayout(LayoutAdjustment.ALIGN,viewer,units,contentSizes,visibleRecords)
         .adjustLayout(LayoutAdjustment.FACE,viewer,units,contentSizes,visibleRecords).adjustLayout(LayoutAdjustment.SNAP,viewer,units,contentSizes,visibleRecords)
+    if(!units.isFinite() || units<=0f || viewer.position.any{!it.isFinite()} || viewer.rotation.any{!it.isFinite()})return this
     val desktop=layouts[activeLayout]?.toList().orEmpty()
     val origin=layoutOrigin ?: desktop.firstOrNull()?.pose ?: return this
     val records=fixedMagnifiers+systemPanels+listOfNotNull(referencePlacement)
@@ -100,11 +102,13 @@ internal fun WorkspaceFile.adjustLayout(action:LayoutAdjustment,viewer:Pose,unit
         }
     val snapped=world.toMutableList()
     if(action==LayoutAdjustment.SNAP){
-        val visible=boxes.indices.filter{i->-boxes[i].center[2]>.001f &&
+        val visible=boxes.indices.filter{i->
+            val box=boxes[i]
+            box.center.all{it.isFinite()} && -box.center[2]>.001f &&
+            box.width.isFinite() && box.height.isFinite() && box.width>0f && box.height>0f &&
             (i<desktop.size || visibleRecords==null || records[i-desktop.size].id in visibleRecords)}
         // The desktop must be in front of the reference before it can anchor a pack.
         if(visible.firstOrNull()!=0 || desktop.isEmpty())return this
-        val panels=systemPanels.map{it.id}.toSet()
         val angular=visible.map{i->
             val box=boxes[i];val depth=-box.center[2]
             LayoutBox(floatArrayOf(box.center[0]/depth,box.center[1]/depth,box.center[2]),box.width/depth,box.height/depth)
@@ -113,26 +117,33 @@ internal fun WorkspaceFile.adjustLayout(action:LayoutAdjustment,viewer:Pose,unit
             val depth=-point[2]
             return transformPoint(viewer,floatArrayOf(point[0]*depth,point[1]*depth,point[2]))
         }
-        // Tilt shifts the center of a panel's projected bounds as well as its size.
-        // Re-evaluate both at the proposed placement so Snap and cursor routing
-        // agree even for narrow panels near the edge of the view.
+        // Use the same projected image bounds for packing and the cursor map.
+        val cached=mutableMapOf<Int,Pair<FloatArray,LayoutBox>>()
         fun footprint(slot:Int,point:FloatArray):LayoutBox{
+            cached[slot]?.takeIf{it.first.contentEquals(point)}?.let{return it.second}
             val index=visible[slot]
             val record=records.getOrNull(index-desktop.size)
-            if(record==null || record.id !in panels)return angular[slot].copy(center=point)
             val box=boxes[index]
-            val pose=Pose(worldAt(point),multiplyQuaternion(originQ,record.pose.rotation))
-            val mesh=if(sphericalWarp)projectMagnifier(
-                MagnifiedWindow(0,pose,box.width,box.height,1,1,spherical=true),
-                viewer,pose,box.width,box.height,true,.003f,.003f) else null
-            val bounds=cursorPatches(record.id,pose,box.width,box.height,mesh,FocusRect(0f,0f,1f,1f),
+            val pose=Pose(worldAt(point),if(record==null)desktop[index].pose.rotation
+                else multiplyQuaternion(originQ,record.pose.rotation))
+            val eye=viewerInMonitor(viewer.position,pose.position,pose.rotation)
+            val mesh=if(!sphericalWarp)null else if(record==null){
+                val screen=desktop[index]
+                val anchor=monitorProjectionCenter(box.width,box.height,screen.viewCenterU,screen.viewCenterV)
+                if(anchor.all{it.isFinite()} && distance(eye,anchor)>.0001f)
+                    desktopSphericalMesh(box.width,box.height,eye,anchor,ViewLayers.DesktopDistanceM*units) else null
+            }else projectMagnifier(MagnifiedWindow(0,pose,box.width,box.height,1,1,spherical=true),
+                viewer,pose,box.width,box.height,true,.003f,.003f)
+            val bounds=cursorPatches(record?.id ?: "desktop",pose,box.width,box.height,mesh,FocusRect(0f,0f,1f,1f),
                 viewer,projectBounds=true).firstOrNull()?.viewBounds ?: return angular[slot].copy(center=point)
-            return LayoutBox(floatArrayOf((bounds.left+bounds.right)*.5f,-(bounds.top+bounds.bottom)*.5f,point[2]),
+            val footprint=LayoutBox(floatArrayOf((bounds.left+bounds.right)*.5f,-(bounds.top+bounds.bottom)*.5f,point[2]),
                 bounds.right-bounds.left,bounds.bottom-bounds.top)
+            cached[slot]=point to footprint
+            return footprint
         }
         val anchors=angular.map{it.center}
         var points=anchors
-        for(iteration in 0 until if(panels.isEmpty())1 else 12){
+        for(iteration in 0 until 12){
             val actual=points.mapIndexed(::footprint)
             val packed=snapLayoutBoxes(actual.mapIndexed{i,box->
                 box.copy(center=FloatArray(3){axis->anchors[i][axis]+box.center[axis]-points[i][axis]})

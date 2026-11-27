@@ -18,6 +18,10 @@ internal fun nativeVideoMesh(geometry:VideoGeometry):SurfaceEntity.Shape{
 }
 
 @android.annotation.SuppressLint("RestrictedApi")
+internal fun journalShape(tag:NativeTag,shape:SurfaceEntity.Shape)=
+    if(shape is SurfaceEntity.Shape.CustomMesh)NativeJournal.shape(tag,"mesh",shape.leftEye.positions.capacity()/3) else NativeJournal.shape(tag,"quad",4)
+
+@android.annotation.SuppressLint("RestrictedApi")
 internal class RetainedSurfaceShapes(maxEntries:Int=512,maxBytes:Long=64L*1024*1024){
     private val history=BoundedHistory<SurfaceEntity.Shape>(maxEntries,maxBytes){shape->
         fun bytes(mesh:SurfaceEntity.Shape.TriangleMesh)=4L*(mesh.positions.capacity().toLong()+mesh.texCoords.capacity()+(mesh.indices?.capacity() ?: 0))

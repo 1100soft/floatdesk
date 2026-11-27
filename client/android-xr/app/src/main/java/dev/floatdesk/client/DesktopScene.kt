@@ -216,7 +216,7 @@ internal fun DeskContent(
         var nativeResizeStartWidth by remember(index) { mutableStateOf(1f) }
         var nativeResizeStartHeight by remember(index) { mutableStateOf(1f) }
         val videoSurface = remember(index) { AtomicReference<Surface?>(null) }
-        val warp = remember(index, session) { MonitorWarp() }
+        val warp = remember(index, session) { MonitorWarp("desktop:$index") }
         val cornerHandles=remember(index,session) { PaneCornerResize() }
         DisposableEffect(cornerHandles) { onDispose { cornerHandles.close();pointerControl.nativeManipulation(index,false) } }
         var frozenMonitor by remember(index) { mutableStateOf<FrozenMonitor?>(null) }
@@ -287,8 +287,8 @@ internal fun DeskContent(
                         val selected=handTracking.pinched.singleOrNull()
                         val hand=selected?.let{handTracking.points[it]}
                         val head=viewer.get()
-                        if(!file.grabToMove || now-nativeGestureAt>180L){
-                            angularPending=null;nativeMove=false;onManipulate(false)
+                        if(!file.layoutModeActive || hands.engaged || now-nativeGestureAt>180L){
+                            angularPending=null;nativeMove=false;if(!hands.busy)onManipulate(false)
                         }else if(hand!=null && head!=null){
                             val contact=transformPoint(screen.pose,pending)
                             val pane=MagnifiedWindow(0,screen.pose,screen.physicalWidthM,screen.physicalHeightM,
@@ -302,7 +302,9 @@ internal fun DeskContent(
                     if(side!=null) {
                         val head=viewer.get()
                         val hand=handTracking.points[side]
-                        if(!file.grabToMove || !handInputNow.value || (side !in handTracking.pinched && SystemClock.uptimeMillis()-nativeGestureAt>=120L) || hand==null) {
+                        if(hands.engaged){
+                            angularHand=null;angularPending=null;angularDrag.clear();nativeMove=false
+                        } else if(!file.layoutModeActive || !handInputNow.value || (side !in handTracking.pinched && SystemClock.uptimeMillis()-nativeGestureAt>=120L) || hand==null) {
                             angularHand=null;angularPending=null;angularDrag.clear();nativeMove=false
                             store.save(latest.value);onManipulate(false)
                         } else if(head!=null) {
@@ -315,7 +317,7 @@ internal fun DeskContent(
                         }
                     }
                     val handleEntity=warp.displayEntity
-                    if(handleEntity!=null && file.grabToMove && !hands.engaged && handInputNow.value) {
+                    if(handleEntity!=null && file.layoutModeActive && !hands.engaged && handInputNow.value) {
                         cornerHandles.update(current,handleEntity,screen.physicalWidthM,screen.physicalHeightM,handTracking.unitsPerMeter,ViewLayers.DesktopDistanceM,handTracking,pointerControl.aimedAt(index)) { active,factor ->
                             if(!handInputNow.value || hands.engaged) { nativeResize=false; return@update }
                             val existing=latest.value.monitorAt(index) ?: return@update
@@ -386,45 +388,49 @@ internal fun DeskContent(
                 object : InteractionPolicy {
                     override val isEnabled: Boolean = true
                     override fun onInputEvent(event: SpatialInputEvent) {
-                        if(!handInputNow.value || connection.thermalPaused.value || nativeResize || nativeMove) return // The explicit handle owns this sequence.
+                        if(!handInputNow.value || connection.thermalPaused.value || nativeResize) return // The explicit handle owns this sequence.
                         if (event.action == InputEvent.Action.CANCEL && frozenMonitor != null && hands.engaged) return
                         val file = latest.value
                         val existing = file.monitorAt(index) ?: return
-                        if(file.grabToMove && event.action==InputEvent.Action.DOWN) {
-                            val local=event.hitPosition?.let { eventMeters(it,pixelDensity) } ?: return
-                            val side=event.pointerType.toString().takeIf{it=="LEFT" || it=="RIGHT"}
-                                ?: handTracking.pinched.singleOrNull()
-                            val hand=side?.let{handTracking.points[it]}
-                            val head=viewer.get() ?: return
-                            if(hand==null){
-                                angularPending=local;nativeMove=true;nativeGestureAt=SystemClock.uptimeMillis();onManipulate(true)
-                                return
-                            }
-                            val contact=transformPoint(existing.pose,local)
-                            val pane=MagnifiedWindow(0,existing.pose,existing.physicalWidthM,existing.physicalHeightM,
-                                existing.pixelWidth,existing.pixelHeight,units=handTracking.unitsPerMeter)
-                            angularDrag.begin(pane,head,head.position,subtract(contact,head.position),contact,hand)
-                            angularHand=side;nativeMove=true;nativeGestureAt=SystemClock.uptimeMillis();onManipulate(true)
-                            return
-                        }
-                        if(!file.freeManipulation)return
-                        val wasBusy = hands.busy
+                        if(!file.layoutModeActive)return
+                        val wasActive = hands.busy || nativeMove
                         if (event.action == InputEvent.Action.DOWN || event.action == InputEvent.Action.UP || event.action == InputEvent.Action.CANCEL) {
-                            Log.i("Floatdesk", "monitor input index=$index side=${event.pointerType} action=${event.action} hit=${event.hitPosition} busy=${hands.busy}")
+                            Log.i("Floatdesk", "monitor input index=$index side=${event.pointerType} action=${event.action} hit=${event.hitPosition} busy=${hands.busy} oneHand=$nativeMove")
                         }
+                        // Every event reaches the two-hand state so a second hand can take over a one-hand drag.
                         // The native listener supplies a surface-validated local contact from the
                         // raw perception-space hit; do not localize it again through ActivitySpace.
                         val next = hands.onEvent(event, existing, pixelDensity, handTracking, warp.mesh)
                         if (hands.blocksNative) nativeResize = false
-                        if (next != null) onWorkspace(
-                            file.monitorPlaced(
-                                index,
-                                next,
-                                store,
-                                event.action == InputEvent.Action.UP || event.action == InputEvent.Action.CANCEL,
-                            ),
-                        )
-                        if (wasBusy != hands.busy) onManipulate(hands.busy)
+                        if(hands.engaged){
+                            angularHand=null;angularPending=null;angularDrag.clear();nativeMove=false
+                            if (next != null) onWorkspace(
+                                file.monitorPlaced(
+                                    index,
+                                    next,
+                                    store,
+                                    event.action == InputEvent.Action.UP || event.action == InputEvent.Action.CANCEL,
+                                ),
+                            )
+                        }else if(event.action==InputEvent.Action.DOWN && !nativeMove) {
+                            val local=event.hitPosition?.let { eventMeters(it,pixelDensity) }
+                            val side=event.pointerType.toString().takeIf{it=="LEFT" || it=="RIGHT"}
+                                ?: handTracking.pinched.singleOrNull()
+                            val hand=side?.let{handTracking.points[it]}
+                            val head=viewer.get()
+                            if(local!=null && hand==null){
+                                angularPending=local;nativeMove=true;nativeGestureAt=SystemClock.uptimeMillis()
+                            }else if(local!=null && head!=null){
+                                val contact=transformPoint(existing.pose,local)
+                                val pane=MagnifiedWindow(0,existing.pose,existing.physicalWidthM,existing.physicalHeightM,
+                                    existing.pixelWidth,existing.pixelHeight,units=handTracking.unitsPerMeter)
+                                angularDrag.begin(pane,head,head.position,subtract(contact,head.position),contact,hand)
+                                angularHand=side;nativeMove=true;nativeGestureAt=SystemClock.uptimeMillis()
+                            }
+                        }else if(next != null && !nativeMove) onWorkspace(
+                            file.monitorPlaced(index,next,store,event.action == InputEvent.Action.UP || event.action == InputEvent.Action.CANCEL))
+                        val active = hands.busy || nativeMove
+                        if (wasActive != active) onManipulate(active)
                     }
                 }
             }
@@ -443,7 +449,7 @@ internal fun DeskContent(
                 val current = session ?: return@onSurfaceCreated
                 val display = warp.attach(current, surface, latest.value.monitorAt(index) ?: placement, pixelDensity, inputPolicy::onInputEvent,onHover={ side, point, flat, width, height ->
                     pointerControl.hover(index,side,point,flat,width,height,SystemClock.uptimeMillis())
-                },forwardGaze={latest.value.grabToMove},hideHandMarker={connection.cursorLocation?.key=="desktop"})
+                },forwardGaze={latest.value.layoutModeActive},hideHandMarker={connection.cursorLocation?.key=="desktop"})
                 warp.coordinateParent?.let(onDeskRoot)
                 videoSurface.set(display)
                 warp.setVisible(!controlsOpenNow.value)

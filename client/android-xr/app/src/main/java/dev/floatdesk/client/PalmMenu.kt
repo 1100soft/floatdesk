@@ -36,7 +36,7 @@ import dev.floatdesk.client.workspace.WorkspaceFile
 import kotlin.math.cos
 import kotlin.math.sin
 
-internal enum class PalmAction { FOLLOW, RESET, SEARCH, SETTINGS, WARP, MOVE, HAND_MOUSE, FREE, REFERENCE, TAP_TO_FOCUS, DRAG_TO_MOVE, HANDS_OFF, DIAGNOSTICS, GAZE_FOCUS, MAGNIFIER, MOUSE_SPACES, LAYOUT, ALIGN_AXES, SNAP_OBJECTS, FACE_USER, AUTO_ADJUST, RESET_ORIGIN, UNDO, REDO, LOAD_1, LOAD_2, LOAD_3, SAVE_1, SAVE_2, SAVE_3, DONE, EDIT, AIM_MAGNIFY }
+internal enum class PalmAction { FOLLOW, RESET, SEARCH, SETTINGS, WARP, HAND_MOUSE, REFERENCE, PANELS, RESET_SUPPORT, TAP_TO_FOCUS, DRAG_TO_MOVE, HANDS_OFF, DIAGNOSTICS, GAZE_FOCUS, MAGNIFIER, MOUSE_SPACES, LAYOUT, ALIGN_AXES, SNAP_OBJECTS, FACE_USER, AUTO_ADJUST, RESET_ORIGIN, UNDO, REDO, LOAD_1, LOAD_2, LOAD_3, SAVE_1, SAVE_2, SAVE_3, DONE, EDIT, AIM_MAGNIFY }
 internal enum class PalmPage { MAIN, LAYOUT; val isLayout get()=this==LAYOUT }
 internal data class PalmButton(val action: PalmAction, val x: Float, val y: Float, val w: Float, val h: Float)
 
@@ -54,7 +54,8 @@ internal object PalmMenuLayout {
     private fun item(action:PalmAction,column:Int,row:Int)=Item(action,column*grid,row*grid)
     private fun cluster(label:String,column:Int,row:Int,vararg items:Item)=Cluster(label,column*grid,row*grid,items.toList())
     private val main=listOf(
-        cluster("Support objects",1,3,item(PalmAction.MAGNIFIER,2,5),item(PalmAction.REFERENCE,4,5),item(PalmAction.DIAGNOSTICS,6,5)),
+        cluster("Support objects",1,3,item(PalmAction.MAGNIFIER,2,5),item(PalmAction.REFERENCE,4,5),item(PalmAction.DIAGNOSTICS,6,5),
+            item(PalmAction.PANELS,4,7),item(PalmAction.RESET_SUPPORT,6,7)),
         cluster("Mode switches",11,3,item(PalmAction.GAZE_FOCUS,13,5),item(PalmAction.MOUSE_SPACES,15,5),
             item(PalmAction.FOLLOW,13,7),item(PalmAction.WARP,15,7),item(PalmAction.AIM_MAGNIFY,15,9)),
         cluster("",8,8,item(PalmAction.RESET,9,8),item(PalmAction.SETTINGS,8,10),item(PalmAction.LAYOUT,10,10),item(PalmAction.SEARCH,13,10)),
@@ -62,9 +63,8 @@ internal object PalmMenuLayout {
             item(PalmAction.TAP_TO_FOCUS,9,16),item(PalmAction.DRAG_TO_MOVE,11,16)),
     )
     private val layout=listOf(
-        cluster("Layout mode",7,1,item(PalmAction.MOVE,8,3),item(PalmAction.FREE,10,3)),
         cluster("Adjustment",2,6,item(PalmAction.ALIGN_AXES,2,5),item(PalmAction.FACE_USER,4,5),
-            item(PalmAction.SNAP_OBJECTS,6,5),item(PalmAction.AUTO_ADJUST,4,8)),
+            item(PalmAction.SNAP_OBJECTS,6,5),item(PalmAction.AUTO_ADJUST,4,8),item(PalmAction.RESET_SUPPORT,6,8)),
         cluster("",8,8,item(PalmAction.DONE,9,8),item(PalmAction.RESET,8,10),item(PalmAction.RESET_ORIGIN,10,10),
             item(PalmAction.UNDO,12,8),item(PalmAction.REDO,14,8)),
         cluster("Saved layouts",6,12,item(PalmAction.LOAD_1,7,14),item(PalmAction.LOAD_2,9,14),item(PalmAction.LOAD_3,11,14),
@@ -72,6 +72,7 @@ internal object PalmMenuLayout {
     )
     fun clusters(page:PalmPage)=if(page.isLayout)layout else main
     val layoutActions=layout.flatMap{group->group.items.map{it.action}}
+    val sharedActions=main.flatMap{group->group.items.map{it.action}}.filter{it in layoutActions}
 
     fun heightM(page:PalmPage)=circleM+(if(page.isLayout)0f else modesHeight)
     fun circleFraction(page:PalmPage)=circleM/heightM(page)
@@ -88,7 +89,7 @@ internal object PalmMenuLayout {
 internal fun palmActionEnabled(action:PalmAction,workspace:WorkspaceFile,info:WorkspaceInfo?):Boolean {
     if(action==PalmAction.EDIT)return true
     if(workspace.layoutModeActive)return action in PalmMenuLayout.layoutActions
-    if(action != PalmAction.RESET && action in PalmMenuLayout.layoutActions)return false
+    if(action !in PalmMenuLayout.sharedActions && action in PalmMenuLayout.layoutActions)return false
     return when(action){
         PalmAction.WARP->RenderPolicy.SphericalDesktop
         PalmAction.GAZE_FOCUS->info?.windowMagnify==true || workspace.gazeToFocus
@@ -108,13 +109,12 @@ internal fun palmState(action: PalmAction, workspace: WorkspaceFile, latched: Bo
     fun toggle(on: Boolean) = PalmState(1, if (on) 0 else -1)
     return when (action) {
         PalmAction.FOLLOW -> toggle(latched)
-        PalmAction.MOVE -> toggle(workspace.grabToMove)
         PalmAction.HAND_MOUSE -> toggle(workspace.handMouse)
         PalmAction.TAP_TO_FOCUS -> toggle(workspace.tapToFocus)
         PalmAction.DRAG_TO_MOVE -> toggle(workspace.dragToMove)
         PalmAction.HANDS_OFF -> toggle(workspace.handsOff)
-        PalmAction.FREE -> toggle(workspace.freeManipulation)
         PalmAction.REFERENCE -> toggle(workspace.desktopReference)
+        PalmAction.PANELS -> toggle(workspace.magnifySystemPanels)
         PalmAction.DIAGNOSTICS -> toggle(workspace.viewDetailDebug)
         PalmAction.GAZE_FOCUS -> toggle(workspace.gazeToFocus)
         PalmAction.AIM_MAGNIFY -> toggle(workspace.aimToMagnify)
@@ -137,13 +137,13 @@ internal fun palmTooltip(action: PalmAction, workspace: WorkspaceFile, latched: 
         else -> "Flat · tap for spherical"
     }
     PalmAction.DIAGNOSTICS -> if (workspace.viewDetailDebug) "Hide diagnostics" else "Show diagnostics"
-    PalmAction.MOVE -> "One-hand auto layout"
     PalmAction.HAND_MOUSE -> "Hand mouse"
     PalmAction.TAP_TO_FOCUS -> "Tap to focus"
     PalmAction.DRAG_TO_MOVE -> "Drag to move"
     PalmAction.HANDS_OFF -> "Hands off"
-    PalmAction.FREE -> "Two-hand manual layout"
     PalmAction.REFERENCE -> "Desktop reference"
+    PalmAction.PANELS -> if(workspace.magnifySystemPanels) "Magnified panels on" else "Magnified panels off"
+    PalmAction.RESET_SUPPORT -> "Reset support objects"
     PalmAction.SEARCH -> "Reconnect"
     PalmAction.GAZE_FOCUS -> if (workspace.gazeToFocus) "Gaze to magnify on" else "Gaze to magnify off"
     PalmAction.AIM_MAGNIFY -> if(workspace.aimToMagnify) "Aim to magnify on" else "Aim to magnify off"
@@ -347,8 +347,11 @@ private fun DrawScope.drawPalmIcon(action: PalmAction, workspace: WorkspaceFile,
         }
         PalmAction.EDIT -> { line(.22f,.78f,.77f,.23f);line(.60f,.20f,.81f,.41f);line(.20f,.60f,.20f,.81f);line(.20f,.81f,.41f,.81f) }
         PalmAction.DONE -> { line(.12f,.53f,.39f,.77f);line(.39f,.77f,.88f,.24f) }
-        PalmAction.MOVE -> { line(.1f,.5f,.9f,.5f); line(.5f,.1f,.5f,.9f); line(.1f,.5f,.27f,.32f); line(.9f,.5f,.73f,.68f) }
-        PalmAction.FREE -> { line(.06f,.72f,.42f,.27f); line(.58f,.72f,.94f,.27f); line(.06f,.72f,.3f,.72f); line(.70f,.27f,.94f,.27f) }
+        PalmAction.PANELS -> {
+            box(.08f,.12f,.92f,.88f);line(.08f,.72f,.92f,.72f);line(.76f,.12f,.76f,.72f)
+            if(!workspace.magnifySystemPanels)line(.05f,.95f,.95f,.05f)
+        }
+        PalmAction.RESET_SUPPORT -> { box(.3f,.3f,.7f,.62f);box(.02f,.3f,.26f,.62f);box(.3f,.66f,.7f,.96f);box(.74f,.3f,.98f,.62f) }
         PalmAction.REFERENCE -> box(.08f,.16f,.92f,.84f)
         PalmAction.SEARCH -> { arc(.05f, .25f, .95f, 1.15f, 225f, 90f); arc(.22f, .42f, .78f, .98f, 225f, 90f); dot(.5f, .78f, .08f) }
         PalmAction.GAZE_FOCUS -> {

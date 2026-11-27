@@ -449,21 +449,21 @@ pub fn decode_packet(bytes: &[u8]) -> Result<ControlPacket, ProtocolError> {
     match kind {
         KIND_CLIENT_HELLO => {
             let (name, rest) = read_name(p).ok_or(ProtocolError::Payload(kind))?;
-            if rest.len() != 2 {
+            if rest.len() < 2 {
                 return Err(ProtocolError::Payload(kind));
             }
             Ok(ControlPacket::ClientHello {
                 name,
-                video_port: u16::from_le_bytes(rest.try_into().unwrap()),
+                video_port: u16::from_le_bytes(rest[..2].try_into().unwrap()),
             })
         }
         KIND_HOST_HELLO => decode_host_hello(p).ok_or(ProtocolError::Payload(kind)),
         KIND_CURSOR => decode_cursor(p).ok_or(ProtocolError::Payload(kind)),
         KIND_POINTER_MOVE => {
-            if p.len() != 13 && p.len() != 14 {
+            if p.len() < 13 {
                 return Err(ProtocolError::Payload(kind));
             }
-            if p.len() == 14 && p[13] > 1 {
+            if p.len() >= 14 && p[13] > 1 {
                 return Err(ProtocolError::Payload(kind));
             }
             let norm_x = f32::from_le_bytes(p[1..5].try_into().unwrap());
@@ -484,7 +484,7 @@ pub fn decode_packet(bytes: &[u8]) -> Result<ControlPacket, ProtocolError> {
             })
         }
         KIND_POINTER_CLICK => {
-            if p.len() != 14 || !matches!(p[9], 1..=3) {
+            if p.len() < 14 || !matches!(p[9], 1..=3) {
                 return Err(ProtocolError::Payload(kind));
             }
             let norm_x = f32::from_le_bytes(p[1..5].try_into().unwrap());
@@ -505,7 +505,7 @@ pub fn decode_packet(bytes: &[u8]) -> Result<ControlPacket, ProtocolError> {
             })
         }
         KIND_TOUCHPAD_STATE => {
-            if p.len() != 13 || !matches!(p[0], 0 | 2) {
+            if p.len() < 13 || !matches!(p[0], 0 | 2) {
                 return Err(ProtocolError::Payload(kind));
             }
             let x = f32::from_le_bytes(p[1..5].try_into().unwrap());
@@ -535,7 +535,7 @@ pub fn decode_packet(bytes: &[u8]) -> Result<ControlPacket, ProtocolError> {
             })
         }
         KIND_MONITOR_COMMAND => {
-            if p.len() != 10 || p[4] > 4 || (p[4] != 1 && p[5] >= 6) {
+            if p.len() < 10 || p[4] > 4 || (p[4] != 1 && p[5] >= 6) {
                 return Err(ProtocolError::Payload(kind));
             }
             let width = u16::from_le_bytes(p[6..8].try_into().unwrap());
@@ -559,7 +559,7 @@ pub fn decode_packet(bytes: &[u8]) -> Result<ControlPacket, ProtocolError> {
             })
         }
         KIND_VIDEO_NACK => {
-            if p.len() != 7 || p[0] >= 6 {
+            if p.len() < 7 || p[0] >= 6 {
                 return Err(ProtocolError::Payload(kind));
             }
             Ok(ControlPacket::VideoNack {
@@ -569,7 +569,7 @@ pub fn decode_packet(bytes: &[u8]) -> Result<ControlPacket, ProtocolError> {
             })
         }
         KIND_STREAM_STATE => {
-            if p.len() != 1 || p[0] > 1 {
+            if p.is_empty() || p[0] > 1 {
                 return Err(ProtocolError::Payload(kind));
             }
             Ok(ControlPacket::StreamState {
@@ -588,7 +588,7 @@ pub fn decode_packet(bytes: &[u8]) -> Result<ControlPacket, ProtocolError> {
             let mut primary = 0;
             if p.len() > end {
                 let count = usize::from(p[end]);
-                if count > 6 || (p.len() != end + 1 + count * 4 && p.len() < end + 1 + count * 8) {
+                if count > 6 || p.len() < end + 1 + count * 4 {
                     return Err(ProtocolError::Payload(kind));
                 }
                 for v in p[end + 1..end + 1 + count * 4].chunks_exact(4) {
@@ -608,10 +608,10 @@ pub fn decode_packet(bytes: &[u8]) -> Result<ControlPacket, ProtocolError> {
                     }
                 }
                 let extension = end + 1 + count * 8;
-                if p.len() > extension {
+                // Extension 1 carries the primary mask, roles and names. Any other tag is newer.
+                if p.len() > extension && p[extension] == 1 {
                     let mut rest = &p[extension..];
-                    if rest.len() < 2 || rest[0] != 1 || rest[1] & !((1u16 << count) - 1) as u8 != 0
-                    {
+                    if rest.len() < 2 || rest[1] & !((1u16 << count) - 1) as u8 != 0 {
                         return Err(ProtocolError::Payload(kind));
                     }
                     primary = rest[1];
@@ -625,9 +625,6 @@ pub fn decode_packet(bytes: &[u8]) -> Result<ControlPacket, ProtocolError> {
                             read_name(&rest[1..]).ok_or(ProtocolError::Payload(kind))?;
                         names.push(name);
                         rest = next;
-                    }
-                    if !rest.is_empty() {
-                        return Err(ProtocolError::Payload(kind));
                     }
                 }
             }
@@ -645,7 +642,7 @@ pub fn decode_packet(bytes: &[u8]) -> Result<ControlPacket, ProtocolError> {
             })
         }
         KIND_KEYFRAME_REQUEST => {
-            if p.len() != 1 {
+            if p.is_empty() {
                 return Err(ProtocolError::Payload(kind));
             }
             Ok(ControlPacket::KeyframeRequest {
@@ -653,22 +650,13 @@ pub fn decode_packet(bytes: &[u8]) -> Result<ControlPacket, ProtocolError> {
             })
         }
         KIND_LAYOUT => decode_layout(p).ok_or(ProtocolError::Payload(kind)),
-        KIND_GOODBYE => {
-            if p.is_empty() {
-                Ok(ControlPacket::Goodbye)
-            } else {
-                Err(ProtocolError::Payload(kind))
-            }
-        }
+        KIND_GOODBYE => Ok(ControlPacket::Goodbye),
         KIND_BEACON => {
             if p.len() < 3 {
                 return Err(ProtocolError::Payload(kind));
             }
             let listen_port = u16::from_le_bytes(p[0..2].try_into().unwrap());
-            let (name, rest) = read_name(&p[2..]).ok_or(ProtocolError::Payload(kind))?;
-            if !rest.is_empty() {
-                return Err(ProtocolError::Payload(kind));
-            }
+            let (name, _) = read_name(&p[2..]).ok_or(ProtocolError::Payload(kind))?;
             Ok(ControlPacket::Beacon { listen_port, name })
         }
         other => Err(ProtocolError::Kind(other)),
@@ -702,9 +690,6 @@ fn decode_host_hello(mut p: &[u8]) -> Option<ControlPacket> {
             ssrc,
             name,
         });
-    }
-    if !p.is_empty() {
-        return None;
     }
     Some(ControlPacket::HostHello {
         session_id,
@@ -742,7 +727,7 @@ fn decode_layout(mut p: &[u8]) -> Option<ControlPacket> {
     p = &p[1..];
     let mut monitors = Vec::with_capacity(count);
     for _ in 0..count {
-        if p.len() < 11 {
+        if p.len() < 13 {
             return None;
         }
         monitors.push(LayoutEntry {
@@ -754,11 +739,7 @@ fn decode_layout(mut p: &[u8]) -> Option<ControlPacket> {
         });
         p = &p[13..];
     }
-    if p.is_empty() {
-        Some(ControlPacket::Layout { monitors })
-    } else {
-        None
-    }
+    Some(ControlPacket::Layout { monitors })
 }
 
 fn write_name(w: &mut Vec<u8>, name: &str) {
@@ -1058,5 +1039,191 @@ mod pointer_tests {
         assert_eq!(decode_packet(&bytes), Ok(packet));
         bytes[HEADER_LEN + 13] = 2;
         assert!(decode_packet(&bytes).is_err());
+    }
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    use super::*;
+
+    fn with_tail(packet: &ControlPacket, tail: &[u8]) -> Vec<u8> {
+        let mut bytes = packet.encode();
+        bytes.extend_from_slice(tail);
+        let len = (bytes.len() - HEADER_LEN) as u32;
+        bytes[8..12].copy_from_slice(&len.to_le_bytes());
+        bytes
+    }
+
+    fn raw(kind: u8, payload: &[u8]) -> Vec<u8> {
+        let mut bytes = MAGIC.to_vec();
+        bytes.extend_from_slice(&[VERSION, kind, 0, 0]);
+        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&[0; 4]);
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
+    fn status(names: bool) -> ControlPacket {
+        ControlPacket::MonitorStatus {
+            request_id: 3,
+            ok: true,
+            available: 2,
+            owned: 1,
+            screens: vec![(1920, 1080), (1280, 800)],
+            positions: vec![(0, 0), (1920, 0)],
+            names: if names {
+                vec!["eDP-1".into(), "Virtual-1-1".into()]
+            } else {
+                Vec::new()
+            },
+            roles: if names { vec![3, 1] } else { Vec::new() },
+            primary: if names { 1 } else { 0 },
+            message: "ok".into(),
+        }
+    }
+
+    #[test]
+    fn newer_peers_may_append_fields_to_every_fixed_packet() {
+        let tail = [0xEE, 0x01, 0x02, 0x03];
+        for packet in [
+            ControlPacket::ClientHello {
+                name: "xr".into(),
+                video_port: 48000,
+            },
+            ControlPacket::HostHello {
+                session_id: 9,
+                monitors: vec![MonitorHello {
+                    index: 0,
+                    width: 1920,
+                    height: 1080,
+                    port: 48000,
+                    ssrc: 7,
+                    name: "Floatdesk-1".into(),
+                }],
+            },
+            ControlPacket::PointerMove {
+                monitor_index: 0,
+                norm_x: 0.5,
+                norm_y: 0.5,
+                sequence: 4,
+                left_down: true,
+            },
+            ControlPacket::PointerClick {
+                monitor_index: 0,
+                norm_x: 0.5,
+                norm_y: 0.25,
+                button: 1,
+                sequence: 5,
+            },
+            ControlPacket::TouchpadState {
+                fingers: 2,
+                x: 0.5,
+                y: 0.5,
+                sequence: 6,
+            },
+            ControlPacket::MonitorCommand {
+                request_id: 1,
+                action: 1,
+                index: 0,
+                width: 1920,
+                height: 1080,
+            },
+            ControlPacket::VideoNack {
+                monitor_index: 1,
+                ssrc: 2,
+                sequence: 3,
+            },
+            ControlPacket::StreamState { reloading: true },
+            ControlPacket::KeyframeRequest { monitor_index: 0 },
+            ControlPacket::Goodbye,
+            ControlPacket::Beacon {
+                listen_port: 47000,
+                name: "desk".into(),
+            },
+            status(true),
+        ] {
+            assert_eq!(decode_packet(&with_tail(&packet, &tail)), Ok(packet));
+        }
+    }
+
+    #[test]
+    fn monitor_status_skips_unknown_extensions_but_validates_known_ones() {
+        assert_eq!(
+            decode_packet(&with_tail(&status(false), &[2, 9, 9])),
+            Ok(status(false))
+        );
+        let mut bad_primary = status(true).encode();
+        let primary = bad_primary
+            .windows(2)
+            .rposition(|w| w == [1, 1])
+            .expect("extension header")
+            + 1;
+        bad_primary[primary] = 0b100;
+        assert!(decode_packet(&bad_primary).is_err());
+        let mut truncated = status(true).encode();
+        truncated.truncate(truncated.len() - 3);
+        let len = (truncated.len() - HEADER_LEN) as u32;
+        truncated[8..12].copy_from_slice(&len.to_le_bytes());
+        assert!(decode_packet(&truncated).is_err());
+    }
+
+    #[test]
+    fn known_fields_are_still_validated_when_a_tail_is_present() {
+        let bad_button = with_tail(
+            &ControlPacket::PointerClick {
+                monitor_index: 0,
+                norm_x: 0.5,
+                norm_y: 0.5,
+                button: 8,
+                sequence: 1,
+            },
+            &[0],
+        );
+        assert!(decode_packet(&bad_button).is_err());
+        let mut bad_drag = with_tail(
+            &ControlPacket::PointerMove {
+                monitor_index: 0,
+                norm_x: 0.5,
+                norm_y: 0.5,
+                sequence: 1,
+                left_down: false,
+            },
+            &[0],
+        );
+        bad_drag[HEADER_LEN + 13] = 2;
+        assert!(decode_packet(&bad_drag).is_err());
+        assert!(decode_packet(&raw(KIND_STREAM_STATE, &[2, 0])).is_err());
+        assert!(decode_packet(&raw(KIND_STREAM_STATE, &[])).is_err());
+    }
+
+    #[test]
+    fn short_layout_entries_are_rejected_without_panicking() {
+        let mut entry = vec![1, 0];
+        entry.extend_from_slice(&10i32.to_le_bytes());
+        entry.extend_from_slice(&20i32.to_le_bytes());
+        entry.extend_from_slice(&1920u16.to_le_bytes());
+        entry.extend_from_slice(&1080u16.to_le_bytes());
+        let expected = ControlPacket::Layout {
+            monitors: vec![LayoutEntry {
+                index: 0,
+                x: 10,
+                y: 20,
+                width: 1920,
+                height: 1080,
+            }],
+        };
+        assert_eq!(
+            decode_packet(&raw(KIND_LAYOUT, &entry)),
+            Ok(expected.clone())
+        );
+        let mut extended = entry.clone();
+        extended.push(0xEE);
+        assert_eq!(decode_packet(&raw(KIND_LAYOUT, &extended)), Ok(expected));
+        for cut in 1..=2 {
+            assert_eq!(
+                decode_packet(&raw(KIND_LAYOUT, &entry[..entry.len() - cut])),
+                Err(ProtocolError::Payload(KIND_LAYOUT))
+            );
+        }
     }
 }

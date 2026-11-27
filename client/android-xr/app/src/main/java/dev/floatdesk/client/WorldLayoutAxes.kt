@@ -28,11 +28,11 @@ internal class WorldLayoutAxes(private val session:Session):AutoCloseable{
     private fun vector(point:FloatArray)=Vector3(point[0],point[1],point[2])
 
     private fun surface(geometry:VideoGeometry,color:Int?=null):Surface{
-        val entity=SurfaceEntity.create(session,shape=nativeVideoMesh(geometry),parent=null,
-            superSampling=SurfaceEntity.SuperSampling.NONE,mediaBlendingMode=SurfaceEntity.MediaBlendingMode.OPAQUE)
+        val entity=NativeJournal.native(NativeTag("axes"),"create","target=axis"){SurfaceEntity.create(session,shape=nativeVideoMesh(geometry),parent=null,
+            superSampling=SurfaceEntity.SuperSampling.NONE,mediaBlendingMode=SurfaceEntity.MediaBlendingMode.OPAQUE)}
         entity.setEnabled(false)
-        val inputTransparent=SurfaceInput.disableCollider(entity)
-        entity.setSurfacePixelDimensions(IntSize2d(64,4))
+        val inputTransparent=NativeJournal.native(NativeTag("axes"),"collider-disable","target=axis"){SurfaceInput.disableCollider(entity)}
+        NativeJournal.native(NativeTag("axes"),"texture-size","target=axis size=64x4"){entity.setSurfacePixelDimensions(IntSize2d(64,4))}
         val output=entity.getSurface()
         val canvas=output.lockCanvas(null)
         try{

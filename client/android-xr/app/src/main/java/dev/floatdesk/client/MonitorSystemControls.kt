@@ -35,7 +35,7 @@ internal class MonitorSystemControls : AutoCloseable {
     fun setVisible(value:Boolean) {
         if(visible==value)return
         visible=value
-        if(!value){if(ownsEntity)entity?.setEnabled(false);moving=false;resizeStartWidth=null}
+        if(!value){if(ownsEntity)entity?.let{NativeJournal.noteEnabled(NativeTag("system-controls",generation=generation.toInt()),"frame",false);it.setEnabled(false)};moving=false;resizeStartWidth=null}
         submitted?.invalidate()
     }
     private var generation=0L
@@ -76,12 +76,12 @@ internal class MonitorSystemControls : AutoCloseable {
         if(entity==null) {
             val token=++generation
             ownsEntity=allowMove || video !is SurfaceEntity
-            val root=if(!ownsEntity)video as SurfaceEntity else SurfaceEntity.create(session,shape=SurfaceEntity.Shape.Quad(FloatSize2d(frame.width+2f*padding,frame.height+2f*padding)),
-                parent=null,superSampling=SurfaceEntity.SuperSampling.NONE)
+            val root=if(!ownsEntity)video as SurfaceEntity else NativeJournal.native(NativeTag("system-controls",generation=generation.toInt()),"create","target=frame"){SurfaceEntity.create(session,shape=SurfaceEntity.Shape.Quad(FloatSize2d(frame.width+2f*padding,frame.height+2f*padding)),
+                parent=null,superSampling=SurfaceEntity.SuperSampling.NONE)}
             if(ownsEntity){
             val pointer=SpatialPointerComponent.create(session)
-            check(root.addComponent(pointer));pointer.spatialPointerIcon=SpatialPointerIcon.NONE
-            root.setSurfacePixelDimensions(IntSize2d(256,256))
+            NativeJournal.native(NativeTag("system-controls",generation=generation.toInt()),"pointer-attach","target=frame"){check(root.addComponent(pointer))};pointer.spatialPointerIcon=SpatialPointerIcon.NONE
+            NativeJournal.native(NativeTag("system-controls",generation=generation.toInt()),"texture-size","target=frame size=256x256"){root.setSurfacePixelDimensions(IntSize2d(256,256))}
             root.mediaBlendingMode=SurfaceEntity.MediaBlendingMode.TRANSPARENT
             clear(root)
             }
@@ -107,7 +107,7 @@ internal class MonitorSystemControls : AutoCloseable {
             resize.affordanceSize=FloatSize3d(nextWidth,nextHeight,.001f)
             resize.isFixedAspectRatioEnabled=true;resize.isAutoHideContentWhileResizingEnabled=false
             resize.isAlwaysShowOverlayEnabled=true
-            check(root.addComponent(resize))
+            NativeJournal.native(NativeTag("system-controls",generation=generation.toInt()),"collider-attach","target=${if(ownsEntity)"frame" else "video"} kind=resize"){check(root.addComponent(resize))}
             if(allowMove){
             val move=MovableComponent.createSystemMovable(session,scaleInZ=false)
             move.addMoveListener(object: EntityMoveListener {
@@ -123,9 +123,9 @@ internal class MonitorSystemControls : AutoCloseable {
                     if(visible && token==generation && moving) { moveListener?.invoke(SystemMovePhase.END,finalPose);moving=false }
                 }
             })
-            check(root.addComponent(move));movable=move
+            NativeJournal.native(NativeTag("system-controls",generation=generation.toInt()),"collider-attach","target=frame kind=move"){check(root.addComponent(move))};movable=move
             }
-            entity=root;submitted=NativeNodeState(root);component=resize
+            entity=root;submitted=NativeNodeState(root,NativeTag("system-controls",generation=generation.toInt()),"frame");component=resize
         }
         val scale=video.getScale()
         val offset=Vector3(frame.center[0]*scale,frame.center[1]*scale,frame.center[2]*scale)
@@ -134,7 +134,9 @@ internal class MonitorSystemControls : AutoCloseable {
             submitted!!.parent(video.parent);submitted!!.pose(video.getPose().compose(Pose(offset,Quaternion.fromLookTowards(normal,up))))
             submitted!!.scale(scale);submitted!!.enabled(enabled && visible)
             if(geometryChanged) {
-                it.shape=SurfaceEntity.Shape.Quad(FloatSize2d(nextWidth,nextHeight))
+                val shape=SurfaceEntity.Shape.Quad(FloatSize2d(nextWidth,nextHeight))
+                journalShape(NativeTag("system-controls",generation=generation.toInt()),shape)
+                it.shape=shape
                 // A reshaped surface may come back with an undefined buffer drawn over the desktop.
                 clear(it)
                 reshapes++
@@ -169,8 +171,9 @@ internal class MonitorSystemControls : AutoCloseable {
     override fun close() {
         generation++;moving=false;submitted=null
         frameMesh=null;curvedFrame=null
+        if(entity!=null)NativeJournal.record(NativeTag("system-controls",generation=generation.toInt()),"collider-detach","target=${if(ownsEntity)"frame" else "video"}")
         component?.let { entity?.takeUnless{it.isDisposed}?.removeComponent(it) };movable?.let { entity?.takeUnless{it.isDisposed}?.removeComponent(it) }
-        if(ownsEntity)entity?.dispose()
+        if(ownsEntity)entity?.let{NativeJournal.native(NativeTag("system-controls",generation=generation.toInt()),"dispose","target=frame"){it.dispose()}}
         entity=null;component=null;movable=null;listener=null;moveListener=null;resizeStartWidth=null
         shapeWidth=Float.NaN;shapeHeight=Float.NaN;canonicalWidth=Float.NaN;canonicalHeight=Float.NaN
     }

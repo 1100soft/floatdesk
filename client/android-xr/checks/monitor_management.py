@@ -5,13 +5,14 @@ import struct
 import subprocess
 import sys
 import tempfile
+from production_sources import marker
 root = Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client'
 protocol = (root / 'net/Protocol.kt').read_text().split('\n', 1)[1]
 workspace = (root / 'workspace/Workspace.kt').read_text()
 # Compile the pure data/layout portion without Android or JSON persistence.
-data = workspace[workspace.index('internal data class Pose'):workspace.index('internal class WorkspaceStore')]
-layout = workspace[workspace.index('internal fun deskLayout'):workspace.index('internal fun WorkspaceFile.monitorPlaced')]
-reconcile = workspace[workspace.index('/** Reconcile stable source'):]
+data = workspace[marker(workspace,'internal data class Pose'):marker(workspace,'internal class WorkspaceStore')]
+layout = workspace[marker(workspace,'internal fun deskLayout'):marker(workspace,'internal fun WorkspaceFile.monitorPlaced')]
+reconcile = workspace[marker(workspace,'/** Reconcile stable source'):]
 layers = 'internal object ViewLayers { const val DefaultNearestM=.9f; const val DefaultFarthestM=1.2f }\n'
 code = protocol + '\n' + (root/'PinchPolicy.kt').read_text().split('\n',1)[1] + '\n' + layers + data + layout.replace('max(', 'kotlin.math.max(') + reconcile + '''
 fun main(args:Array<String>) {
@@ -20,6 +21,16 @@ fun main(args:Array<String>) {
     val decoded=Protocol.decode(status) as Packet.MonitorStatus
     check(decoded.requestId==7 && decoded.available==3 && decoded.owned==2 && decoded.ok && decoded.screens==listOf(1920 to 1080,1920 to 1080) && decoded.positions==listOf(0 to 0,1920 to 0) && decoded.names==listOf("eDP-1","Virtual-1-1") && decoded.roles==listOf(3,1) && decoded.primary==2)
     check(Protocol.decode(status.copyOf(status.size-1))==null)
+    fun framed(kind:Int,payload:ByteArray)=java.nio.ByteBuffer.allocate(16+payload.size).order(java.nio.ByteOrder.LITTLE_ENDIAN).put("FDC1".toByteArray()).put(1).put(kind.toByte()).putShort(0).putInt(payload.size).putInt(0).put(payload).array()
+    val body=status.copyOfRange(16,status.size)
+    check(Protocol.decode(framed(12,body+byteArrayOf(0x7e,9)))==decoded)
+    val legacy=body.copyOf(8+5+1+16)
+    check((Protocol.decode(framed(12,legacy+byteArrayOf(2,9,9))) as Packet.MonitorStatus).let{it.positions==listOf(0 to 0,1920 to 0) && it.names.isEmpty() && it.primary==0})
+    check(Protocol.decode(framed(12,legacy+byteArrayOf(1,4)))==null)
+    check(Protocol.decode(framed(13,byteArrayOf(1,0x7e)))==Packet.StreamState(true) && Protocol.decode(framed(13,byteArrayOf(2,0)))==null && Protocol.decode(framed(13,ByteArray(0)))==null)
+    val hello=Protocol.decode(framed(2,java.nio.ByteBuffer.allocate(9+12+3).order(java.nio.ByteOrder.LITTLE_ENDIAN).putLong(5).put(1).put(0).putShort(1920).putShort(1080).putShort(48000.toShort()).putInt(3).put(2).put("d1".toByteArray()).put(0x7e).array())) as Packet.HostHello
+    check(hello.sessionId==5L && hello.monitors.single().name=="d1")
+    check((Protocol.decode(framed(7,byteArrayOf(0x98.toByte(),0xb7.toByte(),1,'d'.code.toByte(),0x7e))) as Packet.Beacon).name=="d")
     val first=WorkspaceFile().reconcileMonitors(listOf(Triple("existing-0",2560,1600)))
     val original=first.layouts["Desk"]!!.single().copy(pose=Pose(floatArrayOf(.2f,.3f,-2f)),physicalWidthM=1.1f)
     first.layouts["Desk"]!![0]=original
@@ -43,4 +54,4 @@ with tempfile.TemporaryDirectory(prefix='floatdesk-monitors-') as temp:
     subprocess.run(['java','-cp',str(lib/'*'),'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler','-no-stdlib','-no-reflect','-classpath',str(stdlib),'-d',temp,str(path/'MonitorManagement.kt')],check=True)
     subprocess.run(['java','-cp',temp+':'+str(stdlib),'MonitorManagementKt',str(path/'command.bin'),str(path/'status.bin')],check=True)
     assert (path/'command.bin').read_bytes()==b'FDC1'+struct.pack('<BBHII',1,11,0,10,0)+struct.pack('<IBBHH',0xffffffff,1,0,1920,1080)
-print('Passed: monitor wire fixtures, malformed status, stable poses across add/remove/resize')
+print('Passed: monitor wire fixtures, malformed status, unknown trailing fields, stable poses across add/remove/resize')

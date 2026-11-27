@@ -2,8 +2,9 @@
 """App-owned node submissions suppress no-ops, and invalidate around system movement."""
 from pathlib import Path
 import subprocess,sys,tempfile
+from production_sources import native_journal
 root=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
-source='\n'.join(l for l in (root/'NativeNodeState.kt').read_text().splitlines() if not l.startswith(('package ','import ','@android.annotation')))
+source='\n'.join(l for l in (root/'NativeNodeState.kt').read_text().splitlines() if not l.startswith(('package ','import ','@android.annotation')))+'\n'+native_journal()
 stubs='''
 internal data class Vector3(val x:Float,val y:Float,val z:Float)
 internal data class Pose(val x:Float=0f)

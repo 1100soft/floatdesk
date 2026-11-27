@@ -4,9 +4,10 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from production_sources import marker
 
 source = (Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client/media/H264.kt').read_text()
-code = source[source.index('internal class H264Depacketizer'):source.index('internal class MonitorDecoder')]
+code = source[marker(source,'internal class H264Depacketizer'):marker(source,'internal class MonitorDecoder')]
 code += '''
 fun packet(seq: Int, marker: Boolean, vararg payload: Int): ByteArray {
     val b = ByteArray(12 + payload.size)

@@ -23,16 +23,22 @@ import java.nio.IntBuffer
 
 /** Keep Compose's flat surface/handles; give curved video an independently owned native canvas. */
 @OptIn(androidx.xr.scenecore.ExperimentalSurfaceEntityPixelDimensionsApi::class)
-internal class MonitorWarp : AutoCloseable {
+internal class MonitorWarp(private val journalKey:String="desktop") : AutoCloseable {
     var mesh: MonitorMesh? = null
         private set
+    private var curvedGeneration=0
+    private fun tag(curved:Boolean=mesh!=null)=NativeTag(journalKey,generation=curvedGeneration,curved=curved)
+    private fun Entity.show(target:String,value:Boolean)=NativeJournal.enabled(tag(target=="curved"),target,value){setEnabled(value)}
     private var qualitySize:Pair<Int,Int>?=null
     private var pixelTarget:SurfaceEntity?=null
     private var pixelSize:Pair<Int,Int>?=null
     fun qualityResolution(size:Pair<Int,Int>?):Boolean {if(qualitySize==size)return false;qualitySize=size;return true}
     private fun applyPixels(target:SurfaceEntity,placement:MonitorPlacement){
         val size=qualitySize ?: (placement.pixelWidth to placement.pixelHeight)
-        if(pixelTarget!==target || pixelSize!=size){target.setSurfacePixelDimensions(androidx.xr.runtime.math.IntSize2d(size.first,size.second));pixelTarget=target;pixelSize=size}
+        if(pixelTarget!==target || pixelSize!=size){
+            NativeJournal.native(tag(target!==input),"texture-size","size=${size.first}x${size.second}"){target.setSurfacePixelDimensions(androidx.xr.runtime.math.IntSize2d(size.first,size.second))}
+            pixelTarget=target;pixelSize=size
+        }
     }
     private var input: SurfaceEntity? = null
     val coordinateParent:Entity? get()=input?.parent
@@ -68,7 +74,7 @@ internal class MonitorWarp : AutoCloseable {
         applyVisibility()
     }
     private fun applyVisibility() {
-        input?.setEnabled(shown && mesh==null)
+        input?.show("flat",shown && mesh==null)
         if(live!==input)curvedState?.enabled(shown)
         curvedInputPlacement?.enabled(shown && mesh!=null)
     }
@@ -116,19 +122,19 @@ internal class MonitorWarp : AutoCloseable {
     @SuppressLint("RestrictedApi")
     suspend fun syncCurvedInput(session: Session) {
         val sphere = mesh
-        if(!shown){input?.setEnabled(false);if(live!==input)live?.setEnabled(false);curvedInputPlacement?.enabled(false);return}
+        if(!shown){input?.show("flat",false);if(live!==input)live?.show("curved",false);curvedInputPlacement?.enabled(false);return}
         if (sphere == null) {
             curvedInputPlacement?.enabled(false)
-            input?.setEnabled(true)
+            input?.show("flat",true)
             if (!directInteraction) interaction?.let { component ->
-                check(input?.addComponent(component) == true)
+                NativeJournal.native(tag(false),"collider-attach","target=flat"){check(input?.addComponent(component) == true)}
                 directInteraction = true
             }
             return
         }
-        input?.setEnabled(false)
+        input?.show("flat",false)
         if (directInteraction) {
-            interaction?.let { input?.removeComponent(it) }
+            interaction?.let { NativeJournal.native(tag(),"collider-detach","target=flat"){input?.removeComponent(it)} }
             directInteraction = false
         }
         val owner = input ?: return
@@ -148,7 +154,7 @@ internal class MonitorWarp : AutoCloseable {
         }
         val target = live ?: return
         val listener = inputListener ?: return
-        val next = CurvedMonitorInput.create(session, inputParent, sphere, listener=listener)
+        val next = CurvedMonitorInput.create(session, inputParent, sphere, tag=tag(), listener=listener)
         // Loading suspends. A monitor removal/resize can close this owner meanwhile.
         if (input !== owner || live !== target || mesh !== sphere) {
             next.close()
@@ -156,10 +162,10 @@ internal class MonitorWarp : AutoCloseable {
         }
         val old = curvedInput
         curvedInput = next
-        curvedInputPlacement=NativeNodeState(next.entity)
+        curvedInputPlacement=NativeNodeState(next.entity,tag(),"collider")
         place()
         old?.close()
-        input?.setEnabled(false)
+        input?.show("flat",false)
     }
 
     @SuppressLint("RestrictedApi")
@@ -167,6 +173,7 @@ internal class MonitorWarp : AutoCloseable {
         if(target.isDisposed)return
         if(target===live && appliedShape===shape)return
         recentShapes.retain(shape)
+        journalShape(tag(target!==input),shape)
         target.shape = shape
         appliedShape = shape
     }
@@ -178,6 +185,7 @@ internal class MonitorWarp : AutoCloseable {
             .firstOrNull { it.getSurface() === inputSurface }
             ?: error("Could not find monitor input entity")
         Log.i("Floatdesk","desktop surface attached ${placement.physicalWidthM}x${placement.physicalHeightM}")
+        NativeJournal.record(NativeTag(journalKey),"surface-attach","target=flat extent=${placement.physicalWidthM}x${placement.physicalHeightM}")
         // onSurfaceCreated can run while the system renderer is transitioning.
         // Size the texture from the resumed frame loop, never synchronously here.
         target.mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE
@@ -266,10 +274,10 @@ internal class MonitorWarp : AutoCloseable {
             }
             inputListener = listener
             val component = NativeMonitorInput.create(session, listener)
-            check(target.addComponent(component)) { "Could not attach native monitor input" }
+            NativeJournal.native(tag(false),"collider-attach","target=flat"){check(target.addComponent(component)) { "Could not attach native monitor input" }}
             interaction = component
             val existingPointer=target.getComponentsOfType(SpatialPointerComponent::class.java).firstOrNull()
-            val pointer=existingPointer ?: SpatialPointerComponent.create(session).also{check(target.addComponent(it))}
+            val pointer=existingPointer ?: SpatialPointerComponent.create(session).also{NativeJournal.native(tag(false),"pointer-attach","target=flat"){check(target.addComponent(it))}}
             pointer.spatialPointerIcon=SpatialPointerIcon.NONE
             inputPointer=pointer;ownsInputPointer=existingPointer==null
             directInteraction = true
@@ -377,17 +385,19 @@ internal class MonitorWarp : AutoCloseable {
                 } else {
                     // Creation already submits the initial mesh. Do not immediately replace it.
                     recentShapes.retain(shape)
-                    val created = SurfaceEntity.create(session,
+                    curvedGeneration++
+                    journalShape(tag(true),shape)
+                    val created = NativeJournal.native(tag(true),"create","target=curved"){SurfaceEntity.create(session,
                         shape = shape, pose = original.getPose(), parent = null,
                         superSampling = SurfaceEntity.SuperSampling.NONE,
-                        mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE)
-                    created.setEnabled(false)
+                        mediaBlendingMode = SurfaceEntity.MediaBlendingMode.OPAQUE)}
+                    created.show("curved",false)
                     created.setScale(original.getScale())
                     val pointer = SpatialPointerComponent.create(session)
-                    check(created.addComponent(pointer))
+                    NativeJournal.native(tag(true),"pointer-attach","target=curved"){check(created.addComponent(pointer))}
                     pointer.spatialPointerIcon = SpatialPointerIcon.NONE
                     retainedCurved = created
-                    curvedState = NativeNodeState(created)
+                    curvedState = NativeNodeState(created,tag(true),"curved")
                     appliedShape = shape
                 }
             }
@@ -409,12 +419,12 @@ internal class MonitorWarp : AutoCloseable {
     override fun close() {
         // Restore the Compose-owned surface before releasing our independent curved resources.
         curvedInput?.close(); curvedInput = null;curvedInputPlacement=null
-        retainedCurved?.takeUnless{it.isDisposed}?.let { it.parent = null; it.dispose() };retainedCurved=null;curvedState=null
-        input?.takeUnless{it.isDisposed}?.setEnabled(ownerEnabled)
+        retainedCurved?.takeUnless{it.isDisposed}?.let { NativeJournal.native(tag(true),"dispose","target=curved"){it.parent = null; it.dispose()} };retainedCurved=null;curvedState=null
+        input?.takeUnless{it.isDisposed}?.show("flat",ownerEnabled)
         inputListener = null
-        interaction?.let { component -> runCatching { input?.removeComponent(component) } }
+        interaction?.let { component -> NativeJournal.native(tag(false),"collider-detach","target=flat"){runCatching { input?.removeComponent(component) }} }
         interaction = null; sequences.clear()
-        if(ownsInputPointer)inputPointer?.let{runCatching{input?.removeComponent(it)}};inputPointer=null;ownsInputPointer=false
+        if(ownsInputPointer)inputPointer?.let{NativeJournal.native(tag(false),"pointer-detach","target=flat"){runCatching{input?.removeComponent(it)}}};inputPointer=null;ownsInputPointer=false
         directInteraction = false
         live = null
         input = null

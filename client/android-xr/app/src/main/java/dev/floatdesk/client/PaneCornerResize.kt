@@ -22,6 +22,9 @@ internal class PaneCornerResize : AutoCloseable {
         @Volatile var hovered=false
     }
     private val corners=mutableListOf<Corner>()
+    var journalKey="corners"
+    private var hostGeneration=0
+    private fun tag()=NativeTag(journalKey,generation=hostGeneration)
     private val aimedHandles=AtomicInteger()
     private var width=0f;private var height=0f;private var startWidth=0f;private var startHeight=0f
     private var active:Corner?=null
@@ -47,7 +50,7 @@ internal class PaneCornerResize : AutoCloseable {
         if(video.isDisposed){cancel();return}
         this.width=width;this.height=height;this.objectAimed=objectAimed;callback=onResize
         if(host!==video){
-            corners.forEach{release(it)};corners.clear();active=null;handResize=null;host=video
+            corners.forEach{release(it)};corners.clear();active=null;handResize=null;host=video;hostGeneration++
             submittedEdge=Float.NaN;submittedFront=Float.NaN;drawnShow=false;drawnThick=false;drawnHeld=false;live=false
         }
         val wantCorners=objectAimed || active!=null
@@ -55,8 +58,8 @@ internal class PaneCornerResize : AutoCloseable {
         if(corners.size<4 && wantCorners && tracking.tryCornerAllocation(SystemClock.uptimeMillis())){
             val x=if(corners.size%2==0)-1 else 1
             val y=if(corners.size<2)-1 else 1
-            val surface=SurfaceEntity.create(session,shape=SurfaceEntity.Shape.Quad(FloatSize2d(.001f,.001f)),parent=video,superSampling=SurfaceEntity.SuperSampling.NONE)
-            surface.setSurfacePixelDimensions(IntSize2d(HandlePixels,HandlePixels))
+            val surface=NativeJournal.native(tag(),"create","target=corner:$x,$y"){SurfaceEntity.create(session,shape=SurfaceEntity.Shape.Quad(FloatSize2d(.001f,.001f)),parent=video,superSampling=SurfaceEntity.SuperSampling.NONE)}
+            NativeJournal.native(tag(),"texture-size","target=corner:$x,$y size=${HandlePixels}x$HandlePixels"){surface.setSurfacePixelDimensions(IntSize2d(HandlePixels,HandlePixels))}
             surface.mediaBlendingMode=SurfaceEntity.MediaBlendingMode.TRANSPARENT
             lateinit var corner:Corner
             val input=NativeMonitorInput.create(session) listener@{event->
@@ -90,7 +93,7 @@ internal class PaneCornerResize : AutoCloseable {
                 }
                 if(corner.hovered || active!=null || wasHeld)present()
             }
-            check(surface.addComponent(input));corner=Corner(x,y,surface,input);corners.add(corner)
+            NativeJournal.native(tag(),"collider-attach","target=corner:$x,$y"){check(surface.addComponent(input))};corner=Corner(x,y,surface,input);corners.add(corner)
             val pointer=SpatialPointerComponent.create(session);surface.addComponent(pointer);pointer.spatialPointerIcon=SpatialPointerIcon.NONE
             paint(corner,drawnShow,drawnThick,drawnHeld)
             live=false;submittedWidth=Float.NaN;submittedEdge=Float.NaN
@@ -123,10 +126,14 @@ internal class PaneCornerResize : AutoCloseable {
         // One centimetre toward the viewer, so the square wins the ray where it crosses the object.
         val front=.01f*(units.takeIf{it.isFinite() && it>0f} ?: 1f)*frontSign
         planeZ=front
-        if(!live){corners.forEach{if(!it.surface.isDisposed)it.surface.setEnabled(true)};live=true}
+        if(!live){NativeJournal.noteEnabled(tag(),"corners",true);corners.forEach{if(!it.surface.isDisposed)it.surface.setEnabled(true)};live=true}
         present()
         for(corner in corners){
-            if(edge!=submittedEdge && !corner.surface.isDisposed)corner.surface.shape=SurfaceEntity.Shape.Quad(FloatSize2d(edge,edge))
+            if(edge!=submittedEdge && !corner.surface.isDisposed){
+                val shape=SurfaceEntity.Shape.Quad(FloatSize2d(edge,edge))
+                journalShape(tag(),shape)
+                corner.surface.shape=shape
+            }
             if(width!=submittedWidth || height!=submittedHeight || edge!=submittedEdge || front!=submittedFront){
                 corner.surface.setPose(Pose(Vector3(corner.x*width*.5f,corner.y*height*.5f,front)))
             }
@@ -158,11 +165,11 @@ internal class PaneCornerResize : AutoCloseable {
         active=null;handResize=null;lastFactor=1f;grabProjection=Float.NaN;shownUntil=0L
         corners.forEach{if(it.hovered){it.hovered=false;aimedHandles.decrementAndGet()}}
         if(drawnShow || drawnThick || drawnHeld){corners.forEach{paint(it,false,false,false)};drawnShow=false;drawnThick=false;drawnHeld=false}
-        if(live){corners.forEach{if(!it.surface.isDisposed)it.surface.setEnabled(false)};live=false}
+        if(live){NativeJournal.noteEnabled(tag(),"corners",false);corners.forEach{if(!it.surface.isDisposed)it.surface.setEnabled(false)};live=false}
     }
     private fun release(corner:Corner){
         if(corner.hovered){corner.hovered=false;aimedHandles.decrementAndGet()}
-        if(!corner.surface.isDisposed){corner.surface.removeComponent(corner.input);corner.surface.dispose()}
+        if(!corner.surface.isDisposed)NativeJournal.native(tag(),"dispose","target=corner:${corner.x},${corner.y}"){corner.surface.removeComponent(corner.input);corner.surface.dispose()}
     }
     override fun close(){
         closed=true;active=null;host=null

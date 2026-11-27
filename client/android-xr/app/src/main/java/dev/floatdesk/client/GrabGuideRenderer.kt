@@ -76,9 +76,9 @@ internal class GrabGuideRenderer private constructor(
             return
         }
         val sphere=originSphere ?: createOriginSphere().also{originSphere=it}
-        val collider=originCollider ?: SurfaceEntity.create(session,shape=SurfaceEntity.Shape.Quad(androidx.xr.runtime.math.FloatSize2d(1f,1f)),
-            parent=null,superSampling=SurfaceEntity.SuperSampling.NONE,mediaBlendingMode=SurfaceEntity.MediaBlendingMode.TRANSPARENT).also{
-            check(it.addComponent(NativeMonitorInput.create(session,onInput)))
+        val collider=originCollider ?: NativeJournal.native(NativeTag("guides"),"create","target=origin-collider"){SurfaceEntity.create(session,shape=SurfaceEntity.Shape.Quad(androidx.xr.runtime.math.FloatSize2d(1f,1f)),
+            parent=null,superSampling=SurfaceEntity.SuperSampling.NONE,mediaBlendingMode=SurfaceEntity.MediaBlendingMode.TRANSPARENT)}.also{
+            NativeJournal.native(NativeTag("guides"),"collider-attach","target=origin-collider"){check(it.addComponent(NativeMonitorInput.create(session,onInput)))}
             originCollider=it
         }
         val normal=vector(guide.viewer.position)-vector(hitGuide.near)
@@ -100,11 +100,11 @@ internal class GrabGuideRenderer private constructor(
 
     @OptIn(androidx.xr.scenecore.ExperimentalSurfaceEntityPixelDimensionsApi::class)
     private fun createOriginSphere():SurfaceEntity {
-        val entity=SurfaceEntity.create(session,shape=nativeVideoMesh(layoutOriginSphereGeometry()),parent=null,
-            superSampling=SurfaceEntity.SuperSampling.NONE,mediaBlendingMode=SurfaceEntity.MediaBlendingMode.OPAQUE)
+        val entity=NativeJournal.native(NativeTag("guides"),"create","target=origin-sphere"){SurfaceEntity.create(session,shape=nativeVideoMesh(layoutOriginSphereGeometry()),parent=null,
+            superSampling=SurfaceEntity.SuperSampling.NONE,mediaBlendingMode=SurfaceEntity.MediaBlendingMode.OPAQUE)}
         entity.setEnabled(false)
-        entity.setSurfacePixelDimensions(IntSize2d(128,8))
-        SurfaceInput.disableCollider(entity)
+        NativeJournal.native(NativeTag("guides"),"texture-size","target=origin-sphere size=128x8"){entity.setSurfacePixelDimensions(IntSize2d(128,8))}
+        NativeJournal.native(NativeTag("guides"),"collider-disable","target=origin-sphere"){SurfaceInput.disableCollider(entity)}
         val surface=entity.getSurface()
         val canvas=surface.lockCanvas(null)
         try{
@@ -118,6 +118,7 @@ internal class GrabGuideRenderer private constructor(
     }
 
     private fun newGroup(edgeCount: Int): Group {
+        NativeJournal.record(NativeTag("guides"),"create","target=guide-group parts=${edgeCount+2}")
         val root = Entity.create(session, name = "Floatdesk grab guide")
         // The outline and pinch markers share the same retained model pool.
         val indices = List(edgeCount) { 0 } + listOf(2,3)
@@ -157,7 +158,7 @@ internal class GrabGuideRenderer private constructor(
         val unit=guides.firstOrNull()?.unitsPerMeter ?: 1f
         updateGuideBeams(parent,tethers,grabBeams,.0022f*unit,1f)
         for(index in contacts.indices){
-            if(index>=grabContacts.size)grabContacts+=GltfModelEntity.create(session,models[2+index%2])
+            if(index>=grabContacts.size)grabContacts+=NativeJournal.native(NativeTag("guides"),"create","target=grab-contact"){GltfModelEntity.create(session,models[2+index%2])}
             state(grabContacts[index]).apply{
                 this.parent(parent);pose(Pose(vector(contacts[index])));scale(.006f*unit);enabled(true)
             }
@@ -222,14 +223,14 @@ internal class GrabGuideRenderer private constructor(
         val now=android.os.SystemClock.uptimeMillis()
         if(now<nextInkAllocation)return null
         nextInkAllocation=now+90L
-        val entity=SurfaceEntity.create(session,shape=shape(),parent=null,
-            superSampling=SurfaceEntity.SuperSampling.NONE,mediaBlendingMode=SurfaceEntity.MediaBlendingMode.TRANSPARENT)
+        val entity=NativeJournal.native(NativeTag("guides"),"create","target=ink"){SurfaceEntity.create(session,shape=shape(),parent=null,
+            superSampling=SurfaceEntity.SuperSampling.NONE,mediaBlendingMode=SurfaceEntity.MediaBlendingMode.TRANSPARENT)}
         entity.setEnabled(false)
-        if(!SurfaceInput.disableCollider(entity)){
-            entity.dispose()
+        if(!NativeJournal.native(NativeTag("guides"),"collider-disable","target=ink"){SurfaceInput.disableCollider(entity)}){
+            NativeJournal.native(NativeTag("guides"),"dispose","target=ink failed=true"){entity.dispose()}
             return null
         }
-        entity.setSurfacePixelDimensions(if(painter==null)IntSize2d(16,8) else IntSize2d(64,64))
+        NativeJournal.native(NativeTag("guides"),"texture-size","target=ink"){entity.setSurfacePixelDimensions(if(painter==null)IntSize2d(16,8) else IntSize2d(64,64))}
         val surface=entity.getSurface()
         val canvas=surface.lockCanvas(null)
         try{if(painter==null)canvas.drawColor(color,android.graphics.PorterDuff.Mode.SRC)else painter(canvas)}finally{surface.unlockCanvasAndPost(canvas)}
@@ -286,6 +287,7 @@ internal class GrabGuideRenderer private constructor(
     override fun close() {
         if (closed) return
         closed = true
+        NativeJournal.record(NativeTag("guides"),"dispose","target=all groups=${groups.size} beams=${aimBeams.size+grabBeams.size} contacts=${grabContacts.size}")
         worldAxes.close()
         originCollider?.let{if(!it.isDisposed){it.setEnabled(false);it.parent=null}}
         originCollider=null
@@ -300,7 +302,7 @@ internal class GrabGuideRenderer private constructor(
         pointerPoint?.let { if(!it.isDisposed){it.setEnabled(false);it.parent=null} }; pointerPoint = null
         highlight?.let { if(!it.isDisposed){it.parent=null; it.dispose()} }; highlight = null
         groups.clear()
-        if(session.lifecycleOwner.lifecycle.currentState!=androidx.lifecycle.Lifecycle.State.DESTROYED)models.forEach { it.close() }
+        if(session.lifecycleOwner.lifecycle.currentState!=androidx.lifecycle.Lifecycle.State.DESTROYED)NativeJournal.native(NativeTag("guides"),"gltf-release","models=${models.size}"){models.forEach { it.close() }}
     }
 
     companion object {
@@ -322,7 +324,7 @@ internal class GrabGuideRenderer private constructor(
             val loaded = mutableListOf<GltfModel>()
             try {
                 for (asset in listOf("cyan-beam", "violet-beam", "cyan-point", "violet-point")) {
-                    loaded.add(GltfModel.create(session, Paths.get("grab-guides/$asset.glb")))
+                    loaded.add(NativeJournal.native(NativeTag("guides"),"gltf-load","asset=$asset"){GltfModel.create(session, Paths.get("grab-guides/$asset.glb"))})
                 }
                 return GrabGuideRenderer(session, loaded)
             } catch (failure: Throwable) {

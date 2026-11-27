@@ -2,9 +2,10 @@
 """Retained aiming rays must use resized live geometry and stay in front of the screen."""
 from pathlib import Path
 import subprocess,sys,tempfile
+from production_sources import marker
 root=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
 source=(root/'MonitorMesh.kt').read_text().split('\n',1)[1]+'\n'+(root/'PointerControl.kt').read_text().split('\n',1)[1]
-guide=(root/'GrabGuideRenderer.kt').read_text();source+='\n'+guide[guide.index('internal fun visibleGrabContact'):guide.index('/** Native meshes')]
+guide=(root/'GrabGuideRenderer.kt').read_text();source+='\n'+guide[marker(guide,'internal fun visibleGrabContact'):marker(guide,'/** Native meshes')]
 code=source+'''
 fun distance(a:FloatArray,b:FloatArray)=kotlin.math.sqrt((0..2).sumOf {val d=a[it]-b[it];(d*d).toDouble()}).toFloat()
 fun main() {

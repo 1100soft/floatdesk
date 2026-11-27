@@ -8,9 +8,10 @@ import subprocess
 import sys
 import tempfile
 import zlib
+from production_sources import marker
 
 source = (Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client/FrozenMonitor.kt').read_text()
-writer = source[source.index('internal fun frozenFrameGlb'):]
+writer = source[marker(source,'internal fun frozenFrameGlb'):]
 mesh_source = (Path(__file__).parents[1] / 'app/src/main/java/dev/floatdesk/client/MonitorMesh.kt').read_text().split('\n',1)[1]
 lib = Path(sys.argv[1]); stdlib = next(lib.glob('kotlin-stdlib-*.jar'))
 def chunk(kind, data):

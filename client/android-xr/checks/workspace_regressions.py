@@ -2,12 +2,13 @@
 """Verify opaque geometry holes and viewer-relative restart persistence math."""
 from pathlib import Path
 import subprocess,sys,tempfile
+from production_sources import marker
 root=Path(__file__).parents[1]/'app/src/main/java/dev/floatdesk/client'
 source=(root/'MonitorMesh.kt').read_text().split('\n',1)[1]+'\n'+(root/'VideoGeometry.kt').read_text().split('\n',1)[1]
 w=(root/'workspace/Workspace.kt').read_text()
 source+='\n'+(root/'PinchPolicy.kt').read_text().split('\n',1)[1]
-source+='\n'+w[w.index('internal data class Pose'):w.index('internal class WorkspaceStore')]
-source+='\n'+w[w.index('internal fun deskLayout'):w.index('internal fun WorkspaceFile.monitorPlaced')].replace('max(', 'kotlin.math.max(')
+source+='\n'+w[marker(w,'internal data class Pose'):marker(w,'internal class WorkspaceStore')]
+source+='\n'+w[marker(w,'internal fun deskLayout'):marker(w,'internal fun WorkspaceFile.monitorPlaced')].replace('max(', 'kotlin.math.max(')
 source+='\n'+'\n'.join(line for line in (root/'workspace/WorkspacePlacement.kt').read_text().splitlines() if not line.startswith(('package ','import ')))
 code=source+'''
 fun main() {
@@ -124,12 +125,10 @@ fun main() {
  val fallback=MonitorPlacement("fallback","existing-0",Pose(),1f,1f,0f,1000,1000,60)
  check(fitDesktopInView(listOf(fallback),Pose(),Float.NaN,0f,Float.NaN,true).single().physicalWidthM.isFinite())
  val original=MonitorPlacement("a","existing-0",Pose(floatArrayOf(1f,0f,-2f)),1.2f,.8f,0f,1920,1080,60)
- val angular=WorkspaceFile(handMouse=true,grabToMove=true,freeManipulation=false)
- check(!angular.handMouseActive && !angular.focusMode && !angular.windowGrabMode)
- check(angular.copy(grabToMove=false).handMouseActive)
- check(angular.copy(grabToMove=false,handMouse=false).focusMode)
- val free=angular.copy(grabToMove=false,freeManipulation=true)
- check(free.layoutModeActive && !free.handMouseActive && !free.focusMode && !free.windowGrabMode)
+ val layoutOpen=WorkspaceFile(handMouse=true,layoutMode=true)
+ check(layoutOpen.layoutModeActive && !layoutOpen.handMouseActive && !layoutOpen.focusMode && !layoutOpen.windowGrabMode)
+ check(layoutOpen.copy(layoutMode=false).handMouseActive)
+ check(layoutOpen.copy(layoutMode=false,handMouse=false).focusMode)
 
  val old=WorkspaceFile(layoutOrigin=original.pose,layouts=mutableMapOf("Desk" to mutableListOf(original)),viewerReference=Pose())
  val turned=Pose(floatArrayOf(10f,2f,5f),floatArrayOf(0f,.70710677f,0f,.70710677f))

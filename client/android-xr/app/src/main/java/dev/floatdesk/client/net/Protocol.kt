@@ -98,7 +98,7 @@ internal object Protocol {
             KIND_HOST_HELLO -> decodeHostHello(payload)
             KIND_CURSOR -> decodeCursor(payload)
             KIND_BEACON -> decodeBeacon(payload)
-            KIND_STREAM_STATE -> {if(payload.size!=1 || payload[0].toInt() !in 0..1) null else Packet.StreamState(payload[0].toInt()==1)}
+            KIND_STREAM_STATE -> {if(payload.isEmpty() || payload[0].toInt() !in 0..1) null else Packet.StreamState(payload[0].toInt()==1)}
             KIND_MONITOR_STATUS -> {
                 if(payload.size<8 || payload[4].toInt() !in 0..1) return null
                 val end=8+(payload[7].toInt() and 255)
@@ -106,7 +106,7 @@ internal object Protocol {
                 val screens=mutableListOf<Pair<Int,Int>>()
                 if(payload.size>end) {
                     val count=payload[end].toInt() and 255
-                    if(count>6 || (payload.size!=end+1+count*4 && payload.size<end+1+count*8)) return null
+                    if(count>6 || payload.size<end+1+count*4) return null
                     val sizes=ByteBuffer.wrap(payload,end+1,count*4).order(ByteOrder.LITTLE_ENDIAN)
                     repeat(count) {
                         val w=sizes.short.toInt() and 65535;val h=sizes.short.toInt() and 65535
@@ -121,8 +121,8 @@ internal object Protocol {
                 }
                 val names=mutableListOf<String>();val roles=mutableListOf<Int>();var primary=0
                 val extension=end+1+screens.size*8
-                if(payload.size>extension) {
-                    if(payload.size<extension+2 || payload[extension].toInt()!=1) return null
+                if(payload.size>extension && payload[extension].toInt()==1) {
+                    if(payload.size<extension+2) return null
                     primary=payload[extension+1].toInt() and 255
                     if(primary and ((1 shl screens.size)-1).inv()!=0) return null
                     var cursor=extension+2
@@ -132,7 +132,6 @@ internal object Protocol {
                         if(role>3 || cursor+length>payload.size) return null
                         roles.add(role);names.add(String(payload,cursor,length,Charsets.UTF_8));cursor+=length
                     }
-                    if(cursor!=payload.size) return null
                 }
                 Packet.MonitorStatus(ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN).int,payload[4].toInt()!=0,payload[5].toInt() and 255,payload[6].toInt() and 255,String(payload,8,end-8,Charsets.UTF_8),screens,positions,names,roles,primary)
             }
